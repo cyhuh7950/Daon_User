@@ -30,6 +30,42 @@ DEFAULT_DENY_DIGEST = "caf695f3de7e3e05feb024b3ff4b8b14cbfad5318b885ac15d8e4da25
 
 
 class CloudStorageContractTests(unittest.TestCase):
+    def test_s39_readiness_requires_0068_protection_and_flag_binding_in_both_pool_states(self):
+        class Result:
+            def __init__(self, row): self.row = row
+            def fetchone(self): return self.row
+        class Connection:
+            def __init__(self, revision, vector): self.revision, self.vector = revision, vector
+            def execute(self, query, _params=()):
+                if "alembic_version" in query: return Result((self.revision,))
+                if "pg_extension" in query: return Result(None if self.vector is None else (self.vector,))
+                raise AssertionError(query)
+        class Pool:
+            def __init__(self, closed, connection): self.closed, self.conn = closed, connection
+            @contextmanager
+            def connection(self, **_kwargs): yield self.conn
+        for closed in (True, False):
+            for revision in ("0062", "0063", "0064", "0066", "0067", "0068", "0065", "0069", "unknown"):
+                for enabled in (True, False):
+                    for protected in (True, False):
+                        connection = Connection(revision, "0.8.2")
+                        store = object.__new__(PostgresCloudStore)
+                        store._pool = Pool(closed, connection); store._dsn = "시험 전용"
+                        store._organization_admin_v2_enabled = enabled
+                        checked, opened = [], []
+                        store._organization_storage_is_protected = lambda conn: checked.append(conn) or protected
+                        store._ensure_pool_open = lambda: opened.append(True)
+                        @contextmanager
+                        def fake_connect(*_args, **_kwargs): yield connection
+                        with patch("daon_user_api.cloud_storage.connect", fake_connect): status = store.readiness()
+                        expected = (revision == "0068" and protected) or (not enabled and revision in {"0062", "0063", "0064", "0066", "0067"})
+                        self.assertEqual(status.ready, expected, (closed, revision, enabled, protected))
+                        self.assertEqual(bool(checked), revision == "0068")
+                        self.assertEqual(bool(opened), closed and expected)
+            connection = Connection("0068", None)
+            store._pool = Pool(closed, connection)
+            with patch("daon_user_api.cloud_storage.connect", fake_connect): self.assertFalse(store.readiness().ready)
+
     def test_s24_lifecycle_readiness_accepts_exact_rolling_revisions_and_rejects_reserved_future(self):
         class Result:
             def __init__(self,row): self.row=row

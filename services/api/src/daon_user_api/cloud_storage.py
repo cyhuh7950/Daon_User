@@ -85,10 +85,13 @@ class CloudNotification:
 class PostgresCloudStore:
     """A bounded pool and explicit repository port; callers supply verified scope."""
 
-    def __init__(self, dsn: str, *, min_size: int = 1, max_size: int = 4) -> None:
+    def __init__(self, dsn: str, *, min_size: int = 1, max_size: int = 4, organization_admin_v2_enabled: bool = False) -> None:
         if not isinstance(dsn, str) or not dsn:
             raise ValueError("CLOUD_DATABASE_DSN_REQUIRED")
         self._dsn = dsn
+        if type(organization_admin_v2_enabled) is not bool:
+            raise ValueError("ORGANIZATION_ADMIN_V2_FLAG_INVALID")
+        self._organization_admin_v2_enabled = organization_admin_v2_enabled
         self._open_lock = threading.Lock()
         self._pool = ConnectionPool[tuple[Any, ...]](
             conninfo=dsn,
@@ -129,6 +132,12 @@ class PostgresCloudStore:
             raise classify_database_error(error.sqlstate) from None
 
     def readiness(self) -> CloudReadiness:
+        def compatible(connection, revision, vector):
+            if vector is None:
+                return False
+            if revision == "0068":
+                return self._organization_storage_is_protected(connection)
+            return not getattr(self, "_organization_admin_v2_enabled", False) and revision in _COMPATIBLE_SCHEMA_REVISIONS
         try:
             if self._pool.closed:
                 with connect(self._dsn, connect_timeout=1) as connection:
@@ -136,9 +145,9 @@ class PostgresCloudStore:
                     vector_row = connection.execute(
                         "SELECT extversion FROM pg_extension WHERE extname = %s", ("vector",)
                     ).fetchone()
-                revision = None if revision_row is None else str(revision_row[0])
-                vector_version = None if vector_row is None else str(vector_row[0])
-                ready = revision in _COMPATIBLE_SCHEMA_REVISIONS and vector_version is not None
+                    revision = None if revision_row is None else str(revision_row[0])
+                    vector_version = None if vector_row is None else str(vector_row[0])
+                    ready = compatible(connection, revision, vector_version)
                 if ready:
                     self._ensure_pool_open()
                 return CloudReadiness(ready, revision, vector_version)
@@ -147,15 +156,21 @@ class PostgresCloudStore:
                 vector_row = connection.execute(
                     "SELECT extversion FROM pg_extension WHERE extname = %s", ("vector",)
                 ).fetchone()
-            revision = None if revision_row is None else str(revision_row[0])
-            vector_version = None if vector_row is None else str(vector_row[0])
+                revision = None if revision_row is None else str(revision_row[0])
+                vector_version = None if vector_row is None else str(vector_row[0])
+                ready = compatible(connection, revision, vector_version)
             return CloudReadiness(
-                revision in _COMPATIBLE_SCHEMA_REVISIONS and vector_version is not None,
+                ready,
                 revision,
                 vector_version,
             )
         except (Error, PoolTimeout, OSError):
             return CloudReadiness(False, None, None)
+
+    @staticmethod
+    def _organization_storage_is_protected(connection) -> bool:
+        from .postgres_adapters import organization_management_storage_is_protected
+        return organization_management_storage_is_protected(connection)
 
     def context_is_clear(self) -> bool:
         try:

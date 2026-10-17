@@ -561,8 +561,11 @@ class RuntimeSettings:
     dev_auth_bypass: bool = False
     development_stage: bool | None = None
     system_admin_user_ids: frozenset[str] = frozenset({"admin"})
+    organization_admin_v2_enabled: bool = False
 
     def __post_init__(self) -> None:
+        if type(self.organization_admin_v2_enabled) is not bool:
+            raise ValueError("ORGANIZATION_ADMIN_V2_FLAG_INVALID")
         if (
             not isinstance(self.qa_structured_ollama_workspace_id, str)
             or (self.qa_structured_ollama_workspace_id and not re.fullmatch(
@@ -643,6 +646,9 @@ class RuntimeSettings:
     @classmethod
     def from_env(cls) -> "RuntimeSettings":
         profile = os.environ.get("DAON_RUNTIME_PROFILE", "development")
+        organization_flag = os.environ.get("DAON_ORGANIZATION_ADMIN_V2_ENABLED", "false")
+        if organization_flag not in {"true", "false"}:
+            raise ValueError("ORGANIZATION_ADMIN_V2_FLAG_INVALID")
         database = os.environ.get("DAON_API_DATABASE_PATH")
         try:
             android_clients_raw = json.loads(os.environ.get("DAON_ANDROID_AUTH_CLIENTS_JSON", "{}"))
@@ -664,6 +670,7 @@ class RuntimeSettings:
         )
         return cls(
             profile=profile,
+            organization_admin_v2_enabled=organization_flag == "true",
             bind_host=os.environ.get("DAON_API_BIND_HOST", "127.0.0.1"),
             port=int(os.environ.get("DAON_API_PORT", "8000")),
             database_path=None if database is None else Path(database),
@@ -1928,6 +1935,29 @@ def _organization_provisioner(dependencies: RuntimeDependencies) -> Any:
     return provision
 
 
+def _organization_management_ready(dependencies: RuntimeDependencies) -> bool:
+    """실제 같은 PG와 0068 보호가 확인된 경우에만 여섯 쓰기를 연다."""
+    from .organization_access import OrganizationAccessBridge
+    if not dependencies.settings.organization_admin_v2_enabled:
+        return False
+    repositories = (dependencies.identity_repository, dependencies.authorization_repository, dependencies.organization_repository)
+    if any(type(repository) is not expected for repository, expected in zip(repositories,
+            (PostgresIdentityRepository, PostgresAuthorizationRepository, PostgresOrganizationRepository))):
+        return False
+    store = dependencies.cloud_store
+    if type(store) is not PostgresCloudStore or store._organization_admin_v2_enabled is not True:
+        return False
+    if any(repository._dsn != store._dsn for repository in repositories):
+        return False
+    bridge = dependencies.organization_repository._access_bridge
+    if type(bridge) is not OrganizationAccessBridge or bridge._postgres is not True:
+        return False
+    try:
+        return store.readiness().ready is True
+    except Exception:
+        return False
+
+
 def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     from .account_settings import AccountSettingsService
     account_settings_service = AccountSettingsService(dependencies.identity_service)
@@ -2232,6 +2262,12 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 except Exception:
                     # A committed switch remains pending until the next bounded batch.
                     pass
+                if dependencies.organization_repository is not None:
+                    try:
+                        dependencies.organization_repository.dispatch_pending_management_audits(stop=stop)
+                    except Exception:
+                        # S39 장애는 기존 감사 처리나 다음 주기를 건너뛰지 않는다.
+                        pass
                 stop.wait(_ADMIN_AUDIT_RETRY_INTERVAL_SECONDS)
         finally:
             finished.set_result(None)
@@ -2314,6 +2350,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             system_admin_checker=lambda principal: principal.user_id in dependencies.settings.system_admin_user_ids,
             organization_provisioner=_organization_provisioner(dependencies),
             identity_repository=dependencies.identity_repository,
+            policy_version=dependencies.settings.policy_version,
         ).mount(app, lambda request: _principal(request, dependencies))
 
     @app.middleware("http")
@@ -2410,6 +2447,20 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                     membership_state = None
                 if membership_state is not None and membership_state.value == "suspended":
                     return _error_response(403, "ORGANIZATION_MEMBERSHIP_SUSPENDED", trace_id)
+            organization_write = (
+                request.method == "POST" and (request.url.path == "/api/v1/organization/join-requests"
+                    or re.fullmatch(r"/api/v1/organization/join-requests/[^/]+/decision", request.url.path)
+                    or re.fullmatch(r"/api/v1/organization/tenants/[^/]+/invitations", request.url.path))
+                or request.method == "DELETE" and re.fullmatch(r"/api/v1/organization/tenants/[^/]+/invitations/[^/]+", request.url.path)
+                or request.method == "PATCH" and re.fullmatch(r"/api/v1/organization/tenants/[^/]+/members/[^/]+/(role|state)", request.url.path)
+            )
+            if organization_write:
+                try:
+                    _principal(request, dependencies)
+                except IdentityError:
+                    return _error_response(401, "AUTHENTICATION_REQUIRED", trace_id)
+                if not await asyncio.to_thread(_organization_management_ready, dependencies):
+                    return _error_response(503, "ORGANIZATION_WORKFLOW_UNAVAILABLE", trace_id)
             response = cast(Response, await call_next(request))
             response.headers["X-Trace-Id"] = trace_id
             response.headers["Cache-Control"] = "private, no-store" if response.headers.get("content-type", "").split(";", 1)[0] == "audio/wav" else "no-store"
@@ -2424,6 +2475,23 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     async def validation_error(request: Request, _error: RequestValidationError) -> JSONResponse:
         if request.url.path in {"/api/v1/account/profile", "/api/v1/account/devices", "/api/v1/account/sessions"}:
             return _error_response(422, "ACCOUNT_INPUT_INVALID", request.state.trace_id)
+        organization_operation = (request.method, getattr(request.scope.get("route"), "path", ""))
+        organization_writes = {
+            ("POST", "/api/v1/organization/join-requests"),
+            ("POST", "/api/v1/organization/join-requests/{request_id}/decision"),
+            ("POST", "/api/v1/organization/tenants/{tenant_id}/invitations"),
+            ("DELETE", "/api/v1/organization/tenants/{tenant_id}/invitations/{invitation_id}"),
+            ("PATCH", "/api/v1/organization/tenants/{tenant_id}/members/{user_id}/role"),
+            ("PATCH", "/api/v1/organization/tenants/{tenant_id}/members/{user_id}/state"),
+        }
+        # 승인된 헤더/폐기 query만 422이며 본문과 다른 경로의 기존 오류는 유지한다.
+        if organization_operation in organization_writes and any(
+            tuple(error.get("loc", ())) in {
+                ("header", "X-Daon-Expected-Session-Id"), ("header", "Idempotency-Key"),
+            } or (request.method == "DELETE" and tuple(error.get("loc", ())) == ("query", "expected_version"))
+            for error in _error.errors()
+        ):
+            return _error_response(422, "INVALID_REQUEST", request.state.trace_id)
         if (request.method == "POST"
                 and re.fullmatch(r"/api/v1/sources/[^/]+/deletion-requests", request.url.path)
                 and any(error.get("loc") == ("body", "step_up_authorization_id")
@@ -2523,14 +2591,17 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     @app.get("/health/ready")
     async def ready(request: Request) -> JSONResponse:
         cloud_ready = (
-            dependencies.cloud_store is None
-            or (await asyncio.to_thread(dependencies.cloud_store.readiness)).ready
+            not dependencies.settings.organization_admin_v2_enabled
+            if dependencies.cloud_store is None
+            else (await asyncio.to_thread(dependencies.cloud_store.readiness)).ready
         )
         object_ready = (
             dependencies.object_storage is None
             or await asyncio.to_thread(dependencies.object_storage.health)
         )
-        status = 200 if dependencies.state.ready and cloud_ready and object_ready else 503
+        organization_ready = (not dependencies.settings.organization_admin_v2_enabled
+            or await asyncio.to_thread(_organization_management_ready, dependencies))
+        status = 200 if dependencies.state.ready and cloud_ready and object_ready and organization_ready else 503
         response = JSONResponse(
             status_code=status,
             content={"status": "ready" if status == 200 else "not_ready"},
@@ -7222,7 +7293,7 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         assert settings.cloud_database_dsn is not None
         identity_repository = PostgresIdentityRepository(settings.cloud_database_dsn)
         authorization_repository = PostgresAuthorizationRepository(settings.cloud_database_dsn)
-        organization_repository = PostgresOrganizationRepository(settings.cloud_database_dsn)
+        organization_repository = PostgresOrganizationRepository(settings.cloud_database_dsn, audit_store=audit_store)
     else:
         identity_repository = SqliteIdentityRepository(settings.database_path)
         authorization_repository = SqliteAuthorizationRepository(settings.database_path)
@@ -7230,7 +7301,7 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
             settings.database_path.stem + "-organization.sqlite"
         )
         organization_database_path.parent.mkdir(parents=True, exist_ok=True)
-        organization_repository = SqliteOrganizationRepository(organization_database_path)
+        organization_repository = SqliteOrganizationRepository(organization_database_path, audit_store=audit_store)
     identity_service = IdentityService(
         repository=identity_repository,
         audit_store=audit_store,
@@ -7277,7 +7348,7 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
     cloud_store = (
         None
         if settings.cloud_database_dsn is None
-        else PostgresCloudStore(settings.cloud_database_dsn)
+        else PostgresCloudStore(settings.cloud_database_dsn, organization_admin_v2_enabled=settings.organization_admin_v2_enabled)
     )
     provider_connection_service = None
     provider_health_settings_service = None

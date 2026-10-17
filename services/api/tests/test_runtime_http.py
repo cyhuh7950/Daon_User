@@ -28,6 +28,7 @@ from daon_user_api.authorization import (
     AuthorizationService,
 )
 from daon_user_api.identity import ClientKind, DevicePlatform
+from daon_user_api.organization_membership import SqliteOrganizationRepository, MembershipState
 from daon_user_api.runtime import (
     WEB_SESSION_COOKIE,
     RuntimeDependencies,
@@ -155,6 +156,30 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         await self.client.aclose()
         self.dependencies.close()
         self.directory.cleanup()
+
+    async def test_s39_flag_never_opens_unprotected_workflow_and_keeps_suspension_guard(self) -> None:
+        repository = SqliteOrganizationRepository(self.db_path.with_name("organization.sqlite3"))
+        self.dependencies.organization_repository = repository
+        pending = repository.create_join_request(tenant_id=self.web.tenant_id, user_id=self.web.user_id, now=self.clock())
+        repository.decide_join_request(request_id=pending.request_id, actor_id="admin", approved=True, expected_version=1, reason=None, role="member", now=self.clock())
+        repository.set_membership(tenant_id=self.web.tenant_id, user_id=self.web.user_id, actor_id="admin", state=MembershipState.SUSPENDED, expected_version=1, reason="시험 중지", now=self.clock())
+        paths = [("POST", "/api/v1/organization/join-requests"), ("POST", "/api/v1/organization/join-requests/request-a/decision"),
+                 ("POST", "/api/v1/organization/tenants/tenant-001/invitations"), ("DELETE", "/api/v1/organization/tenants/tenant-001/invitations/invite-a"),
+                 ("PATCH", "/api/v1/organization/tenants/tenant-001/members/user-a/role"), ("PATCH", "/api/v1/organization/tenants/tenant-001/members/user-a/state")]
+        headers = {"cookie": f"{WEB_SESSION_COOKIE}={self.web.access_token}"}
+        for enabled in (False, True):
+            self.dependencies.settings = replace(self.settings, organization_admin_v2_enabled=enabled)
+            for method, path in paths:
+                response = await self.client.request(method, path, json={}, headers=headers)
+                self.assertEqual((response.status_code, response.json()["error"]["code"]), (503, "ORGANIZATION_WORKFLOW_UNAVAILABLE"))
+            response = await self.client.get("/api/v1/workspaces/workspace-001/knowledge-scope", headers=headers)
+            self.assertEqual((response.status_code, response.json()["error"]["code"]), (403, "ORGANIZATION_MEMBERSHIP_SUSPENDED"))
+            self.assertEqual((await self.client.post(paths[0][1], json={})).status_code, 401)
+
+    async def test_s39_flag_requires_verified_cloud_storage_before_ready(self) -> None:
+        self.dependencies.settings = replace(self.settings, organization_admin_v2_enabled=True)
+        response = await self.client.get("/health/ready")
+        self.assertEqual(response.status_code, 503)
 
     async def test_screen_preferences_are_authenticated_user_scope_and_reset_to_system(self) -> None:
         auth = {"cookie": f"{WEB_SESSION_COOKIE}={self.web.access_token}"}
@@ -894,6 +919,17 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RuntimeSettingsTests(unittest.TestCase):
+    def test_s39_flag_defaults_off_and_rejects_non_boolean_environment(self) -> None:
+        with patch.dict("os.environ", {"DAON_RUNTIME_PROFILE": "development"}, clear=True):
+            self.assertFalse(RuntimeSettings.from_env().organization_admin_v2_enabled)
+        for value, expected in (("true", True), ("false", False)):
+            with patch.dict("os.environ", {"DAON_ORGANIZATION_ADMIN_V2_ENABLED": value}, clear=True):
+                self.assertIs(RuntimeSettings.from_env().organization_admin_v2_enabled, expected)
+        for value in ("1", "yes", "TRUE", "", " false "):
+            with patch.dict("os.environ", {"DAON_ORGANIZATION_ADMIN_V2_ENABLED": value}, clear=True):
+                with self.assertRaisesRegex(ValueError, "ORGANIZATION_ADMIN_V2_FLAG_INVALID"):
+                    RuntimeSettings.from_env()
+
     def test_only_exact_question_post_has_no_wait_limit(self) -> None:
         settings = RuntimeSettings.for_test(database_path=Path("runtime.sqlite3"), policy_version="policy-v1")
         self.assertIsNone(request_timeout_for_path(settings, "/api/v1/workspaces/workspace-a/questions",method='POST'))

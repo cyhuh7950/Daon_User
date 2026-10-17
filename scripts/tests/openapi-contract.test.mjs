@@ -18,6 +18,41 @@ async function loadContract() {
   return JSON.parse(await readFile(contractPath, "utf8"));
 }
 
+test("L3 조직 exact 조회·Workspace·역할·폐기 version·여섯 원 세션 헤더는 계약 변조를 거부한다", async () => {
+  const document = await loadContract();
+  const invitationPath = "/api/v1/organization/tenants/{tenant_id}/invitations";
+  const rolePath = "/api/v1/organization/tenants/{tenant_id}/members/{user_id}/role";
+  const revokePath = invitationPath+"/{invitation_id}";
+  for (const path of ["/api/v1/organization/admin/tenants", "/api/v1/organization/tenants/{tenant_id}/workspaces", invitationPath]) assert.ok(document.paths[path]?.get, path);
+  assert.deepEqual(document.components.schemas.OrganizationRolePatch.properties.role.enum, ["viewer", "editor", "reviewer", "approver"]);
+  assert.equal(document.components.schemas.OrganizationInvitation.required.length, 11);
+  assert.doesNotThrow(() => validateOpenApiDocument(document));
+  const organizationOperations = Object.values(document.paths).flatMap(item => Object.values(item))
+    .filter(operation => operation?.["x-implementation-owner"] === "S39-L3");
+  assert.equal(organizationOperations.length, 9);
+  for (const operation of organizationOperations) {
+    const success = Object.values(operation.responses).find(response => response.headers);
+    assert.equal(success.headers.ETag.$ref, "#/components/headers/ETag");
+    const missing = structuredClone(document);
+    const changed = Object.values(missing.paths).flatMap(item => Object.values(item))
+      .find(value => value?.operationId === operation.operationId);
+    delete Object.values(changed.responses).find(response => response.headers).headers.ETag;
+    assert.throws(() => validateOpenApiDocument(missing), /missing ETag/u);
+  }
+  for (const change of [
+    d => { delete d.paths[invitationPath].get; },
+    d => { d.components.schemas.OrganizationInvitation.properties.code_digest = { type: "string" }; },
+    d => { d.components.schemas.OrganizationInvitation.required.pop(); },
+    d => { d.components.schemas.OrganizationRolePatch.properties.role.enum.push("organization_admin"); },
+    d => { d.components.schemas.OrganizationRolePatch.required = d.components.schemas.OrganizationRolePatch.required.filter(field => field !== "expected_auth_version"); },
+    d => { d.paths[rolePath].patch.parameters = d.paths[rolePath].patch.parameters.filter(p => p.$ref !== "#/components/parameters/OrganizationExpectedSessionId"); },
+    d => { d.paths[revokePath].delete.parameters.find(p => p.name === "expected_version").required = false; },
+    d => { d.paths["/api/v1/organization/admin/tenants"].post = d.paths[invitationPath].post; },
+  ]) {
+    const changed = structuredClone(document); change(changed); assert.throws(() => validateOpenApiDocument(changed));
+  }
+});
+
 test('S24 lifecycle exact routes bodies nullable Version fields and notice security reject contract drift',async()=>{
   const document=await loadContract();
   const paths={
@@ -349,6 +384,7 @@ test("Product Studio Version 상세는 Citation과 lifecycle 재진입 계약을
     "output_version_id", "content_version", "previous_version_id", "status", "content",
     "revision_type", "change_reason", "settings_snapshot_id", "citations", "review_request_id",
     "approval_request_id", "approval_id", "delivery_id", "knowledge_registration_id", "output_format",
+    "approval_request_state", "approval_expires_at",
   ]);
   assert.deepEqual(document.components.schemas.StudioCitationProjection.properties.origin.enum, ["raw_source", "daon_knowledge"]);
   assert.deepEqual(document.components.schemas.StudioCitationLocator.properties.kind.enum, ["page", "section", "image_region", "sheet_cell", "docx_block", "pptx_block", "audio_segment"]);

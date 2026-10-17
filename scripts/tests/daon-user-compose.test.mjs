@@ -1,8 +1,24 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { parse } from "yaml";
 
 const composeUrl = new URL("../../deploy/daon-user/compose.yaml", import.meta.url);
+
+test("S39 적용 flag는 API에만 전달하며 미설정 false·명시 true 계약을 보존한다", async () => {
+  const document = parse(await readFile(composeUrl, "utf8"));
+  const flag = "DAON_ORGANIZATION_ADMIN_V2_ENABLED";
+  const expression = document.services.api.environment[flag];
+  assert.equal(expression, "${DAON_ORGANIZATION_ADMIN_V2_ENABLED-false}");
+  // Compose의 이 한 default 표현식 계약만 확인한다. 실제 Compose config/배포 시험은 아니다.
+  for (const [provided, expected] of [[undefined, "false"], ["true", "true"], ["false", "false"]]) {
+    const expanded = expression.replace(/\$\{DAON_ORGANIZATION_ADMIN_V2_ENABLED-([^}]+)\}/u, (_match, fallback) => provided === undefined ? fallback : provided);
+    assert.equal(expanded, expected);
+  }
+  for (const [name, service] of Object.entries(document.services)) {
+    if (name !== "api") assert.equal(Object.hasOwn(service.environment || {}, flag), false, name);
+  }
+});
 
 test("provider credentials use one read-only secret reference in provider callers", async () => {
   const source = await readFile(composeUrl, "utf8");

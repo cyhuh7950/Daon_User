@@ -302,6 +302,13 @@ function routeFor(method, segments) {
   }
   // Organization workflow and administrator console contracts. The browser
   // only sees /bff/api; the internal /api/v1 origin remains server-side.
+  if (segments.length === 3 && segments[0] === "organization" && segments[1] === "admin" && segments[2] === "tenants") {
+    return method === "GET" ? { path: "/api/v1/organization/admin/tenants", query: new Set(), strictQuery: true } : { methodRejected: true };
+  }
+  if (segments.length === 4 && segments[0] === "organization" && segments[1] === "tenants"
+    && SAFE_SEGMENT.test(segments[2]) && segments[3] === "workspaces") {
+    return method === "GET" ? { path: `/api/v1/organization/tenants/${encodeURIComponent(segments[2])}/workspaces`, query: new Set(), strictQuery: true } : { methodRejected: true };
+  }
   if (segments.length === 3 && segments[0] === "organization"
     && segments[1] === "admin" && segments[2] === "directory") {
     return method === "GET"
@@ -312,7 +319,7 @@ function routeFor(method, segments) {
     && new Set(["creation-requests", "join-requests"]).has(segments[1])) {
     if (segments[1] === "join-requests") {
       return new Set(["GET", "POST"]).has(method)
-        ? { path: `/api/v1/organization/${segments[1]}`, query: new Set(["tenant_id"]) }
+        ? { path: `/api/v1/organization/${segments[1]}`, query: new Set(["tenant_id"]), orgSessionBinding: method === "POST" }
         : { methodRejected: true };
     }
     return new Set(["GET", "POST"]).has(method)
@@ -323,21 +330,21 @@ function routeFor(method, segments) {
     && new Set(["creation-requests", "join-requests"]).has(segments[1])
     && SAFE_SEGMENT.test(segments[2]) && segments[3] === "decision") {
     return method === "POST"
-      ? { path: `/api/v1/organization/${segments[1]}/${encodeURIComponent(segments[2])}/decision`, query: null }
+      ? { path: `/api/v1/organization/${segments[1]}/${encodeURIComponent(segments[2])}/decision`, query: null, orgSessionBinding: segments[1] === "join-requests" }
       : { methodRejected: true };
   }
   if (segments.length === 4 && segments[0] === "organization"
     && segments[1] === "tenants" && SAFE_SEGMENT.test(segments[2])
     && segments[3] === "invitations") {
-    return method === "POST"
-      ? { path: `/api/v1/organization/tenants/${encodeURIComponent(segments[2])}/invitations`, query: null }
+    return new Set(["GET", "POST"]).has(method)
+      ? { path: `/api/v1/organization/tenants/${encodeURIComponent(segments[2])}/invitations`, query: new Set(), strictQuery: true, orgSessionBinding: method === "POST" }
       : { methodRejected: true };
   }
   if (segments.length === 5 && segments[0] === "organization"
     && segments[1] === "tenants" && SAFE_SEGMENT.test(segments[2])
     && segments[3] === "invitations" && SAFE_SEGMENT.test(segments[4])) {
     return method === "DELETE"
-      ? { path: `/api/v1/organization/tenants/${encodeURIComponent(segments[2])}/invitations/${encodeURIComponent(segments[4])}`, query: null }
+      ? { path: `/api/v1/organization/tenants/${encodeURIComponent(segments[2])}/invitations/${encodeURIComponent(segments[4])}`, query: new Set(["expected_version"]), organizationVersionQuery: true, orgSessionBinding: true }
       : { methodRejected: true };
   }
   if (segments.length === 4 && segments[0] === "organization"
@@ -352,7 +359,7 @@ function routeFor(method, segments) {
     && segments[3] === "members" && SAFE_SEGMENT.test(segments[4])
     && new Set(["role", "state"]).has(segments[5])) {
     return method === "PATCH"
-      ? { path: `/api/v1/organization/tenants/${encodeURIComponent(segments[2])}/members/${encodeURIComponent(segments[4])}/${segments[5]}`, query: segments[5] === "state" ? new Set(["active"]) : null }
+      ? { path: `/api/v1/organization/tenants/${encodeURIComponent(segments[2])}/members/${encodeURIComponent(segments[4])}/${segments[5]}`, query: segments[5] === "state" ? new Set(["active"]) : null, orgSessionBinding: true }
       : { methodRejected: true };
   }
   if (
@@ -1212,8 +1219,16 @@ export function createBffProxy({
         return createBffSafeError(400, "INVALID_REQUEST", trace);
       }
     }
-    const expectedProfileSession = route.profileSessionBinding ? request.headers.get("x-daon-expected-session-id") : null;
-    if (route.profileSessionBinding && (typeof expectedProfileSession !== "string" || !SAFE_SEGMENT.test(expectedProfileSession))) {
+    if (route.organizationVersionQuery) {
+      const query = new URL(request.url).searchParams;
+      const version = query.get("expected_version");
+      if ([...query.keys()].some(key => key !== "expected_version") || query.getAll("expected_version").length !== 1
+        || !/^[1-9][0-9]*$/u.test(version || "") || !Number.isSafeInteger(Number(version))) {
+        return createBffSafeError(422, "INVALID_REQUEST", trace);
+      }
+    }
+    const expectedProfileSession = (route.profileSessionBinding || route.orgSessionBinding) ? request.headers.get("x-daon-expected-session-id") : null;
+    if ((route.profileSessionBinding || route.orgSessionBinding) && (typeof expectedProfileSession !== "string" || !SAFE_SEGMENT.test(expectedProfileSession))) {
       return createBffSafeError(422, "ACCOUNT_INPUT_INVALID", trace);
     }
     const destination = new URL(route.path, baseUrl);
@@ -1230,7 +1245,7 @@ export function createBffProxy({
     for (const [key, value] of request.headers) {
       if (REQUEST_HEADERS.has(key.toLowerCase())) headers.set(key, value);
     }
-    if (route.profileSessionBinding) headers.set("X-Daon-Expected-Session-Id", expectedProfileSession);
+    if (route.profileSessionBinding || route.orgSessionBinding) headers.set("X-Daon-Expected-Session-Id", expectedProfileSession);
     if (route.studioExport && request.headers.has("x-daon-step-up-authorization")) {
       headers.set("x-daon-step-up-authorization", request.headers.get("x-daon-step-up-authorization"));
     }

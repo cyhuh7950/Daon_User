@@ -7,6 +7,14 @@ import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const REQUIRED_PATHS = Object.freeze([
+  "/api/v1/organization/admin/tenants",
+  "/api/v1/organization/tenants/{tenant_id}/workspaces",
+  "/api/v1/organization/tenants/{tenant_id}/invitations",
+  "/api/v1/organization/tenants/{tenant_id}/invitations/{invitation_id}",
+  "/api/v1/organization/tenants/{tenant_id}/members/{user_id}/role",
+  "/api/v1/organization/tenants/{tenant_id}/members/{user_id}/state",
+  "/api/v1/organization/join-requests",
+  "/api/v1/organization/join-requests/{request_id}/decision",
   "/api/v1/auth/native/login",
   "/api/v1/preferences/screen",
   "/api/v1/workspaces/{id}/license",
@@ -129,6 +137,8 @@ const ANDROID_BROWSER_AUTH_POST_PATHS = new Set([
 ]);
 const COMMON_ERROR_STATUSES = ["400", "401", "403", "404", "409", "412", "500"];
 const BODY_VERSIONED_MUTATIONS = new Set([
+  "PATCH /api/v1/organization/tenants/{tenant_id}/members/{user_id}/role",
+  "PATCH /api/v1/organization/tenants/{tenant_id}/members/{user_id}/state",
   "PATCH /api/v1/account/profile",
   "DELETE /api/v1/admin/provider-connections/{connection_id}",
   "PATCH /api/v1/admin/provider-models/{connection_id}/{model_id}/capabilities",
@@ -737,6 +747,53 @@ function validateAccountSettings(document) {
   }
 }
 
+function validateOrganizationContract(document) {
+  const base = "/api/v1/organization/tenants/{tenant_id}";
+  const paths = {
+    "/api/v1/organization/admin/tenants": ["get"], [base+"/workspaces"]: ["get"],
+    [base+"/invitations"]: ["get", "post"], [base+"/invitations/{invitation_id}"]: ["delete"],
+    [base+"/members/{user_id}/role"]: ["patch"], [base+"/members/{user_id}/state"]: ["patch"],
+    "/api/v1/organization/join-requests": ["post"], "/api/v1/organization/join-requests/{request_id}/decision": ["post"],
+  };
+  const same = (actual, expected) => canonicalizeDocument(actual) === canonicalizeDocument(expected);
+  const schemas = document.components?.schemas ?? {};
+  const fields = (name, names, required = names) => {
+    const value = schemas[name];
+    if (value?.type !== "object" || value.additionalProperties !== false
+      || !same(Object.keys(value.properties ?? {}).sort(), [...names].sort())
+      || !same([...(value.required ?? [])].sort(), [...required].sort())) fail(`S39 exact schema ${name}`);
+  };
+  fields("OrganizationInvitation", ["invitation_id", "tenant_id", "workspace_id", "created_by", "expires_at", "max_uses", "used_count", "state", "version", "created_at", "updated_at"]);
+  fields("OrganizationMember", ["tenant_id", "user_id", "role", "state", "version", "updated_at", "join_workspace_id", "access_role", "access_state", "access_version"]);
+  fields("OrganizationInvitationCreate", ["workspace_id", "code", "expires_at", "max_uses"]);
+  fields("OrganizationRolePatch", ["role", "workspace_id", "expected_version", "expected_auth_version", "reason"], ["role", "workspace_id", "expected_version", "expected_auth_version"]);
+  fields("OrganizationStatePatch", ["expected_version", "reason"], ["expected_version"]);
+  for (const name of ["OrganizationManagedTenant", "OrganizationManagedWorkspace"]) fields(name, [name.endsWith("Tenant") ? "tenant_id" : "workspace_id", "display_name"]);
+  if (!same(schemas.OrganizationRolePatch.properties.role.enum, ["viewer", "editor", "reviewer", "approver"])) fail("S39 role enum");
+  for (const name of ["expected_version", "expected_auth_version"]) {
+    if (!same(schemas.OrganizationRolePatch.properties[name], { type: "integer", minimum: 1 })) fail("S39 role version");
+  }
+  for (const name of ["created_at", "updated_at", "expires_at"]) if (!same(schemas.OrganizationInvitation.properties[name], { type: "string", format: "date-time" })) fail("S39 invitation UTC datetime");
+  if (schemas.OrganizationInvitationCreate.properties.code.writeOnly !== true
+    || schemas.OrganizationInvitationCreate.properties.max_uses.maximum !== 1000000) fail("S39 invitation input bounds");
+  const expectedHeader = document.components?.parameters?.OrganizationExpectedSessionId;
+  if (expectedHeader?.name !== "X-Daon-Expected-Session-Id" || expectedHeader.in !== "header" || expectedHeader.required !== true
+    || expectedHeader.schema?.$ref !== "#/components/schemas/OpaqueId") fail("S39 session header");
+  for (const [path, methods] of Object.entries(paths)) {
+    if (!same(Object.keys(document.paths?.[path] ?? {}).filter(key => HTTP_METHODS.has(key)), methods)) fail(`S39 exact methods ${path}`);
+    for (const method of methods) {
+      const operation = document.paths[path][method];
+      const parameters = operation.parameters ?? [];
+      if (method === "get" && parameters.some(parameter => parameter.in !== "path")) fail("S39 GET query forbidden");
+      if (method !== "get" && ["#/components/parameters/IdempotencyKey", "#/components/parameters/OrganizationExpectedSessionId"].some(reference => !parameterRefs(operation).has(reference))) fail("S39 required mutation headers");
+      if (method === "delete") {
+        const query = parameters.filter(parameter => parameter.in === "query");
+        if (!same(query, [{ name: "expected_version", in: "query", required: true, schema: { type: "integer", minimum: 1 } }])) fail("S39 exact revoke version query");
+      }
+    }
+  }
+}
+
 export function validateOpenApiDocument(document) {
   validateAccountSettings(document);
   validateStudioApprovalLifecycle(document);
@@ -787,6 +844,7 @@ export function validateOpenApiDocument(document) {
   const actualPaths = Object.keys(document.paths);
   for (const requiredPath of REQUIRED_PATHS) if (!(requiredPath in document.paths)) fail(`required path missing ${requiredPath}`);
   for (const actualPath of actualPaths) if (!REQUIRED_PATHS.includes(actualPath)) fail(`unapproved path ${actualPath}`);
+  validateOrganizationContract(document);
   validateWebsiteContract(document);
   validateOpenLawContract(document);
   validateSourceDeletionContract(document);
@@ -920,7 +978,8 @@ export function validateOpenApiDocument(document) {
         const mutationKey = `${method.toUpperCase()} ${apiPath}`;
         const schema = requestSchema(document, operation);
         const expectedVersionField = mutationKey === "PATCH /api/v1/workspaces/{id}/studio/approval-policy" ? "expected_policy_version" : "expected_version";
-        if (!BODY_VERSIONED_MUTATIONS.has(mutationKey) || !(schema?.required ?? []).includes(expectedVersionField)) {
+        const organizationVersionQuery = mutationKey === "DELETE /api/v1/organization/tenants/{tenant_id}/invitations/{invitation_id}";
+        if (!organizationVersionQuery && (!BODY_VERSIONED_MUTATIONS.has(mutationKey) || !(schema?.required ?? []).includes(expectedVersionField))) {
           fail(`${operationId} missing If-Match or required expected_version`);
         }
       }
