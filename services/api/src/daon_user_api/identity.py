@@ -1232,12 +1232,18 @@ class IdentityService:
     def request_password_reset(
         self, *, identifier: str, trace_id: str, policy_version: str,
         revoke_sessions: bool = False,
+        _admin_transaction_hook: Callable[[sqlite3.Connection, sqlite3.Row], bool] | None = None,
     ) -> None:
         value = _checked_text(identifier).lower(); _checked_text(trace_id); _checked_text(policy_version)
         now = self._now()
         with self._lock, self._repository.transaction() as connection:
-            row = connection.execute("SELECT * FROM users WHERE (login_id=? OR email=?) AND issuer='local' AND email_verified_at IS NOT NULL", (value, value)).fetchone()
+            target_lock = " FOR UPDATE" if _admin_transaction_hook is not None and hasattr(connection, "_connection") else ""
+            row = connection.execute("SELECT * FROM users WHERE (login_id=? OR email=?) AND issuer='local' AND email_verified_at IS NOT NULL" + target_lock, (value, value)).fetchone()
             if row is None:
+                return
+            # Internal admin reservation/replay uses this very transaction, before any
+            # rate-limit, token, revocation or external delivery side effect.
+            if _admin_transaction_hook is not None and not _admin_transaction_hook(connection, row):
                 return
             self._enforce_mail_rate_limit(connection, table="password_reset_tokens", user_id=str(row["user_id"]), now=now)
             token = self._issue_token(connection, table="password_reset_tokens", user_id=str(row["user_id"]), now=now, ttl=timedelta(minutes=30))
