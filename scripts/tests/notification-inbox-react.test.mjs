@@ -16,6 +16,8 @@ const item = (id = "notice-a") => ({ id, workspace_id: "workspace-a", recipient_
 const listed = (items = [item()]) => ({ ok: true, status: 200, payload: { data: { items, unread_count: items.filter(row => row.read_state !== "read").length, next_cursor: null }, meta: { trace_id: "trace-a" } } });
 const inboxItem = { request_id: "new-inbox", request_kind: "review", status: "pending", workspace_id: "workspace-a", actor_id: "member-a", due_at: null,
   resource_type: "output_version", resource_id: "version-a", deep_link: "/workspaces/workspace-a" };
+const inboxListed = (items, next_cursor = null) => ({ ok: true, status: 200,
+  payload: { data: { items, next_cursor }, meta: { trace_id: "trace-inbox" } } });
 
 async function render(api, mode = "notifications") {
   const root = path.resolve(import.meta.dirname, "../..");
@@ -55,6 +57,136 @@ test("S43 전달 항목은 실제 외부 송신 성공이 아닌 전달 기록�
     assert.equal(link.length, 1);
     assert.equal(link[0].getAttribute("href"), "/notebooks/notebook-a?output_version_id=version-a");
     assert.equal(buttonByText(view.container, "읽음 처리"), undefined);
+  } finally { await view.cleanup(); }
+});
+
+test("S43 Inbox는 50건 뒤 cursor 페이지와 정확 Version을 열고 첫 페이지로 복귀한다", async () => {
+  const next = deferred(), calls = [];
+  const first = Array.from({ length: 50 }, (_, index) => ({ ...inboxItem, request_id: `review-${index}`,
+    resource_id: `version-${index}`, deep_link: `/notebooks/notebook-a?output_version_id=version-${index}` }));
+  const last = { ...inboxItem, request_id: "delivery-51", request_kind: "delivery", status: "delivered",
+    resource_id: "version-v4", deep_link: "/notebooks/notebook-a?output_version_id=version-v4" };
+  const view = await render({ list: async (mode, { cursor = null, signal } = {}) => {
+    assert.equal(mode, "inbox"); calls.push({ cursor, signal });
+    return cursor === null ? inboxListed(first, "opaque-page-2") : next.promise;
+  }, markRead: () => { throw new Error("Inbox는 읽기 전용"); } }, "inbox");
+  try {
+    assert.equal(findElements(view.container, node => node.tagName === "ARTICLE").length, 50);
+    assert.deepEqual(calls.map(call => call.cursor), [null]);
+    const firstButton = buttonByText(view.container, "첫 페이지"); assert.ok(firstButton, "첫 페이지 복귀 경로");
+    assert.ok(firstButton.disabled);
+    const oldNext = buttonByText(view.container, "다음 페이지"); assert.ok(oldNext && !oldNext.disabled);
+    await view.act(async () => {
+      oldNext.dispatchEvent(new MinimalEvent("click"));
+      assert.equal(view.container.firstChild.hidden, true);
+      oldNext.dispatchEvent(new MinimalEvent("click"));
+    });
+    assert.deepEqual(calls.map(call => call.cursor), [null, "opaque-page-2"]);
+    assert.equal(calls[0].signal.aborted, true);
+    assert.equal(findElements(view.container, node => node.tagName === "ARTICLE").length, 0);
+    await view.act(async () => { next.resolve(inboxListed([last])); });
+    const links = findElements(view.container, node => node.tagName === "A" && node.textContent === "원 요청 열기");
+    assert.deepEqual(links.map(node => node.getAttribute("href")), ["/notebooks/notebook-a?output_version_id=version-v4"]);
+    assert.match(view.container.textContent, /전달 기록.*delivered/u);
+    assert.ok(buttonByText(view.container, "다음 페이지").disabled);
+    assert.equal(buttonByText(view.container, "읽음 처리"), undefined);
+    await click(view, "첫 페이지");
+    assert.deepEqual(calls.map(call => call.cursor), [null, "opaque-page-2", null]);
+    assert.equal(findElements(view.container, node => node.tagName === "ARTICLE").length, 50);
+  } finally { next.resolve(inboxListed([])); await view.cleanup(); }
+});
+
+for (const outcome of [503, "network", "malformed"]) {
+  test(`S43 Inbox 다음 페이지 ${outcome} 실패는 이전 링크를 지우고 같은 cursor만 재시도한다`, async () => {
+    const calls = []; let attempts = 0;
+    const view = await render({ list: async (_mode, { cursor = null } = {}) => {
+      calls.push(cursor);
+      if (cursor === null) return inboxListed([inboxItem], "page-two");
+      if (++attempts > 1) return inboxListed([{ ...inboxItem, resource_id: "second-private-version" }]);
+      if (outcome === "network") throw new Error("내부 원문은 숨겨야 함");
+      if (outcome === "malformed") return { ok: true, status: 200, payload: { data: { items: [], next_cursor: null, extra: true }, meta: {} } };
+      return { ok: false, status: outcome };
+    } }, "inbox");
+    try {
+      await click(view, "다음 페이지");
+      assert.equal(view.container.firstChild.getAttribute("data-view-state"), outcome === "malformed" ? "error" : "unavailable");
+      assert.doesNotMatch(view.container.textContent, /version-a|내부 원문|표시할 항목이 없습니다/u);
+      assert.equal(findElements(view.container, node => node.tagName === "A" && node.textContent === "원 요청 열기").length, 0);
+      await click(view, "다시 시도");
+      assert.deepEqual(calls, [null, "page-two", "page-two"]);
+      assert.match(view.container.textContent, /second-private-version/u);
+      await click(view, "첫 페이지");
+      assert.deepEqual(calls, [null, "page-two", "page-two", null]);
+    } finally { await view.cleanup(); }
+  });
+}
+
+test("S43 Inbox pagehide와 focus 복귀는 현재 cursor를 재조회하고 늦은 이전 목록은 폐기한다", async () => {
+  const late = deferred(), fresh = deferred(), calls = []; let pageReads = 0;
+  const view = await render({ list: async (_mode, { cursor = null } = {}) => {
+    calls.push(cursor);
+    if (cursor === null) return inboxListed([inboxItem], "page-two");
+    if (++pageReads === 1) return inboxListed([{ ...inboxItem, resource_id: "old-page-two" }]);
+    return pageReads === 2 ? late.promise : fresh.promise;
+  } }, "inbox");
+  try {
+    await click(view, "다음 페이지");
+    await view.act(async () => { view.dom.document.dispatchEvent(new MinimalEvent("focus")); });
+    await view.act(async () => { view.dom.document.dispatchEvent(new MinimalEvent("pagehide")); });
+    assert.equal(view.container.firstChild.hidden, true);
+    await view.act(async () => { late.resolve(inboxListed([{ ...inboxItem, resource_id: "late-private" }])); });
+    assert.doesNotMatch(view.container.textContent, /old-page-two|late-private/u);
+    await view.act(async () => { view.dom.document.dispatchEvent(new MinimalEvent("pageshow")); });
+    assert.doesNotMatch(view.container.textContent, /old-page-two|late-private/u);
+    await view.act(async () => { fresh.resolve(inboxListed([{ ...inboxItem, resource_id: "fresh-page-two" }])); });
+    assert.deepEqual(calls, [null, "page-two", "page-two", "page-two"]);
+    assert.match(view.container.textContent, /fresh-page-two/u);
+  } finally { late.resolve(inboxListed([])); fresh.resolve(inboxListed([])); await view.cleanup(); }
+});
+
+for (const change of ["api", "mode"]) {
+  test(`S43 Inbox ${change} 교체는 cursor와 본문을 초기화하고 늦은 이전 페이지를 복원하지 않는다`, async () => {
+    const late = deferred(), replacement = deferred(), calls = [];
+    const originalApi = { list: async (mode, { cursor = null } = {}) => {
+      calls.push({ api: "old", mode, cursor });
+      if (mode === "notifications") return replacement.promise;
+      return cursor === null ? inboxListed([inboxItem], "page-two") : late.promise;
+    } };
+    const nextApi = { list: async (mode, { cursor = null } = {}) => {
+      calls.push({ api: "new", mode, cursor }); return replacement.promise;
+    } };
+    const view = await render(originalApi, "inbox");
+    try {
+      await click(view, "다음 페이지");
+      await view.rerender(change === "api" ? nextApi : originalApi, change === "api" ? "inbox" : "notifications");
+      assert.doesNotMatch(view.container.textContent, /version-a/u);
+      assert.equal(view.container.firstChild.getAttribute("data-view-state"), "loading");
+      assert.deepEqual(calls[2], { api: change === "api" ? "new" : "old", mode: change === "api" ? "inbox" : "notifications", cursor: null });
+      await view.act(async () => { late.resolve(inboxListed([{ ...inboxItem, resource_id: "old-private-page" }], "old-next")); });
+      assert.doesNotMatch(view.container.textContent, /old-private-page/u);
+      await view.act(async () => { replacement.resolve(change === "api" ? inboxListed([{ ...inboxItem, resource_id: "new-account-first" }]) : listed([item("notification-first")])); });
+      assert.doesNotMatch(view.container.textContent, /old-private-page/u);
+      if (change === "api") assert.match(view.container.textContent, /new-account-first/u);
+      else {
+        assert.equal(buttonByText(view.container, "다음 페이지"), undefined);
+        await view.rerender(originalApi, "inbox");
+        assert.deepEqual(calls[3], { api: "old", mode: "inbox", cursor: null });
+      }
+    } finally { late.resolve(inboxListed([])); replacement.resolve(listed([])); await view.cleanup(); }
+  });
+}
+
+test("S43 Inbox 다음 페이지가 비어도 첫 페이지로 복귀할 수 있다", async () => {
+  const calls = [];
+  const view = await render({ list: async (_mode, { cursor = null } = {}) => {
+    calls.push(cursor); return cursor === null ? inboxListed([inboxItem], "page-two") : inboxListed([]);
+  } }, "inbox");
+  try {
+    await click(view, "다음 페이지");
+    assert.equal(view.container.firstChild.getAttribute("data-view-state"), "empty");
+    await click(view, "첫 페이지");
+    assert.deepEqual(calls, [null, "page-two", null]);
+    assert.match(view.container.textContent, /review · pending/u);
   } finally { await view.cleanup(); }
 });
 

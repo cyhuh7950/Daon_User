@@ -11,10 +11,11 @@ async function asResult(response) {
 }
 
 export const notificationInboxApi = Object.freeze({
-  async list(mode, { signal } = {}) {
-    const path = mode === "notifications"
+  async list(mode, { signal, cursor = null } = {}) {
+    let path = mode === "notifications"
       ? "/bff/api/notifications?limit=50"
       : "/bff/api/inbox?limit=50";
+    if (mode === "inbox" && cursor !== null) path += `&cursor=${encodeURIComponent(cursor)}`;
     return asResult(await fetch(path, { credentials: "same-origin", cache: "no-store", signal }));
   },
 

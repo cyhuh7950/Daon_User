@@ -86,8 +86,8 @@ function Header({ mode, unreadCount }) {
 
 export function NotificationInboxWorkspace({ api, mode = "notifications" }) {
   const rootRef = useRef(null);
-  const scopeRef = useRef({ api, mode, active: false });
-  if (scopeRef.current.api !== api || scopeRef.current.mode !== mode) scopeRef.current = { api, mode, active: false };
+  const scopeRef = useRef({ api, mode, active: false, cursor: null });
+  if (scopeRef.current.api !== api || scopeRef.current.mode !== mode) scopeRef.current = { api, mode, active: false, cursor: null };
   const scope = scopeRef.current;
   const generation = useRef(0);
   const readyGeneration = useRef(0);
@@ -106,11 +106,13 @@ export function NotificationInboxWorkspace({ api, mode = "notifications" }) {
   const empty = useCallback((state) => {
     readyGeneration.current = 0;
     setSnapshot({ api, mode, scope, state, items: [], count: 0,
+      epoch: generation.current, cursor: scope.cursor, nextCursor: null,
       uncertain: readRequest.current?.scope === scope && readRequest.current.phase !== "pending" });
   }, [api, mode, scope]);
 
   const load = useCallback(async () => {
     const epoch = ++generation.current;
+    const cursor = scope.cursor;
     listRequest.current?.abort();
     const controller = new AbortController();
     listRequest.current = controller;
@@ -119,7 +121,7 @@ export function NotificationInboxWorkspace({ api, mode = "notifications" }) {
     if (rootRef.current) { rootRef.current.hidden = true; rootRef.current.inert = true; }
     empty("loading");
     try {
-      const response = await api.list(mode, { signal: controller.signal });
+      const response = await api.list(mode, { signal: controller.signal, ...(mode === "inbox" ? { cursor } : {}) });
       if (!current()) return;
       // 저장 이전에 시작한 조회는 저장 결과의 확정 근거가 될 수 없다.
       if (crossedMutation) return;
@@ -134,6 +136,7 @@ export function NotificationInboxWorkspace({ api, mode = "notifications" }) {
         item.id === pendingRead.id && item.read_state === "read" && item.version > pendingRead.version)) readRequest.current = null;
       readyGeneration.current = epoch;
       setSnapshot({ api, mode, scope, epoch, items: nextItems, uncertain: uncertain(),
+        cursor, nextCursor: mode === "inbox" ? payload.data.next_cursor : null,
         count: mode === "notifications" ? payload.data.unread_count : 0,
         state: nextItems.length ? "ready" : "empty" });
     } catch {
@@ -182,6 +185,16 @@ export function NotificationInboxWorkspace({ api, mode = "notifications" }) {
     }
   }, [snapshot, ownSnapshot]);
 
+  const openInboxPage = (cursor) => {
+    if (mode !== "inbox" || !ownSnapshot || !scope.active || scopeRef.current !== scope || concealed.current ||
+        snapshot.epoch !== generation.current || viewState === "loading" || viewState === "forbidden") return;
+    if (cursor !== null && (viewState !== "ready" || cursor !== snapshot.nextCursor)) return;
+    if (cursor === scope.cursor) return;
+    // 이벤트에서 동기 고정해 중복 클릭을 막고 focus/재시도도 같은 페이지를 조회한다.
+    scope.cursor = cursor;
+    void load();
+  };
+
   const markRead = async (item) => {
     if (item.read_state === "read" || readRequest.current?.scope === scope || concealed.current || mode !== "notifications" || viewState !== "ready" || readyGeneration.current !== generation.current || snapshot.epoch !== generation.current) return;
     const request = { controller: new AbortController(), scope, id: item.id, version: item.version, phase: "pending" };
@@ -229,6 +242,12 @@ export function NotificationInboxWorkspace({ api, mode = "notifications" }) {
           </article>;
         })}</div>
       </section></main>}
+    {mode === "inbox" && <nav className="operations-actions" aria-label="전달함 페이지">
+      <button type="button" disabled={!ownSnapshot || !snapshot.cursor || viewState === "loading" || viewState === "forbidden"}
+        onClick={() => openInboxPage(null)}>첫 페이지</button>
+      <button type="button" disabled={viewState !== "ready" || !snapshot.nextCursor}
+        onClick={() => openInboxPage(snapshot.nextCursor)}>다음 페이지</button>
+    </nav>}
     <span hidden>{VIEW_STATES.join(" ")}</span>
   </div>;
 }
