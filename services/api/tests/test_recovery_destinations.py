@@ -324,7 +324,9 @@ class ConcretePhysicalProbeTests(unittest.TestCase):
         self.other=MinioObjectStorageAdapter(endpoint="target.invalid:9000",bucket="s44-target",
             access_key=secrets.token_hex(12),secret_key=secrets.token_hex(24),secure=False)
         self.http=ProbeHttpDouble(self)
-        foundation=self.api.ProbeFoundation("tenant-a","workspace-a","actor-a","0070")
+        # 기준은 target 재조회가 아닌 별도 고정 operator fixture에서 사전 확정.
+        foundation=self.api.ProbeFoundation("tenant-a","workspace-a","actor-a","0070",
+            hashlib.sha256(encoded(studio_protection_fixture())).hexdigest())
         self.instances={
             "source-a":self.api.PhysicalProbeInstance("database-source","bucket-source","source-db",self.source.connection,self.storage,"us-east-1"),
             "target-a":self.api.PhysicalProbeInstance("database-a","bucket-a","target-db",self.target.connection,self.other,"us-east-1",
@@ -345,6 +347,75 @@ class ConcretePhysicalProbeTests(unittest.TestCase):
         self.assertEqual(self.http.admin_calls,2)
         self.assertTrue(self.http.responses and all(r.closed and r.released for r in self.http.responses))
         self.assertEqual(self.source.writes+self.target.writes,0)
+
+    def test_exact_0013_trigger_six_defaults_are_allowed_not_general_business(self):
+        self.target.studio_rows=studio_default_rows()
+        self.assertTrue(self.probe.observe(self.request).database_empty,
+            "정상0013 AFTER INSERT의 정확6행을 일반 업무행으로 오인하면 안 됨")
+        self.target.workspace_created=NOW.astimezone(timezone(timedelta(hours=9)))
+        self.assertTrue(self.probe.observe(self.request).database_empty,"같은 instant의 timestamp zone 표시는 의미를 바꾸지 않음")
+
+    def test_default6_integrity_refuses_observation_on_reentry_not_business_nonempty(self):
+        # R3 fresh=False는 업무행을 허용하지만 default6 무결성 실패는 허용하지 않는다.
+        self.target.nonempty={"sources"}
+        self.assertFalse(self.probe.observe(self.request).database_empty)
+        valid=studio_default_rows()
+        for mode in ("missing","extra","tampered"):
+            with self.subTest(mode=mode):
+                self.target.studio_rows=copy.deepcopy(valid)
+                rows=self.target.studio_rows["workspace_policies"]
+                if mode=="missing": rows.clear()
+                elif mode=="extra": rows.append(copy.deepcopy(rows[0]))
+                else: rows[0]["canonical_json"]["active"]=False
+                with self.assertRaises(RecoveryError): self.probe.observe(self.request)
+
+    def test_0013_default_scope_history_nullable_payload_and_fk_are_exact(self):
+        valid=studio_default_rows()
+        changes={"record_id":"other-id","aggregate_id":"other-aggregate","version":2,"schema_version":2,
+            "previous_version_id":"prior-id","created_by":"actor-a","trace_id":"trace-forged",
+            "created_at":(NOW+timedelta(seconds=1)).isoformat(),"tenant_id":"other-tenant","workspace_id":"other-workspace",
+            "digest_sha256":"f"*64,"canonical_text":"{}"}
+        for table in valid:
+            for field,value in changes.items():
+                with self.subTest(table=table,field=field):
+                    self.target.studio_rows=copy.deepcopy(valid)
+                    self.target.studio_rows[table][0][field]=value
+                    with self.assertRaises(RecoveryError): self.probe.observe(self.request)
+            with self.subTest(table=table,extra=True):
+                self.target.studio_rows=copy.deepcopy(valid)
+                self.target.studio_rows[table].append(copy.deepcopy(valid[table][0]))
+                with self.assertRaises(RecoveryError): self.probe.observe(self.request)
+        for table,field,value in (("ruleset_bindings","ruleset_version_snapshot_id",None),
+                ("ruleset_version_snapshots","ruleset_reference_id","other-reference"),
+                ("weight_profiles","knowledge_scope_id","other-scope")):
+            with self.subTest(fk=field):
+                self.target.studio_rows=copy.deepcopy(valid);self.target.studio_rows[table][0][field]=value
+                with self.assertRaises(RecoveryError): self.probe.observe(self.request)
+        self.target.studio_rows=copy.deepcopy(valid)
+        self.target.studio_rows["ruleset_version_snapshots"][0]["canonical_json"]["rules"]=["unexpected"]
+        with self.assertRaises(RecoveryError): self.probe.observe(self.request)
+        self.target.studio_rows=copy.deepcopy(valid)
+        self.target.studio_rows["ruleset_bindings"][0]["canonical_json"]["extra"]=True
+        with self.assertRaises(RecoveryError): self.probe.observe(self.request)
+        self.target.studio_rows=copy.deepcopy(valid)
+        self.target.nonempty={"sources"}
+        self.assertFalse(self.probe.observe(self.request).database_empty)
+        self.target.nonempty=set()
+        self.assertTrue(self.probe.observe(self.request).database_empty,"재진입에도6표 exact 검사 유지")
+
+    def test_0013_protected_reference_is_fixed_and_catalog_drift_rejected(self):
+        valid=studio_protection_fixture()
+        for part,index in ((0,0),(1,0),(2,0)):
+            with self.subTest(part=part):
+                self.target.studio_protection=copy.deepcopy(valid)
+                self.target.studio_protection[part][index][-1]="tampered"
+                with self.assertRaises(RecoveryError): self.probe.observe(self.request)
+        self.target.studio_protection=copy.deepcopy(valid)
+        target=replace(self.instances["target-a"],foundation=replace(self.instances["target-a"].foundation,studio_defaults_protection_digest=None))
+        probe=self.api.PostgresMinioPhysicalProbe({**self.instances,"target-a":target},clock=lambda:NOW,_pool_factory=self.http.pool)
+        with self.assertRaises(RecoveryError): probe.observe(self.request)
+        # 정상이지만 FK 잠금용 UPDATE grant가 있는 실제0041 의미를 금지하지 않는다.
+        self.assertTrue(self.probe.observe(self.request).database_empty)
 
     def test_alias_database_or_backend_bucket_is_rejected(self):
         self.target.oid=111
@@ -453,6 +524,7 @@ class PhysicalSqlDouble:
         self.superuser=True; self.comment="daon-restore-owner:owner-a"; self.schemas=["public"]
         self.nonempty=set(); self.foundation_foreign=False; self.bad_static=None; self.global_denied=False
         self.foreign_relation=False; self.writes=0
+        self.studio_rows=studio_default_rows(); self.studio_protection=studio_protection_fixture(); self.workspace_created=NOW
     @contextmanager
     def connection(self): yield self
     @contextmanager
@@ -467,9 +539,23 @@ class PhysicalSqlDouble:
         if "pg_control_system()" in sql:
             return ProbeCursor([(self.database_name,"10001",self.oid,self.comment,self.superuser,False)])
         if "FROM pg_catalog.pg_namespace" in sql: return ProbeCursor([(n,) for n in self.schemas])
+        if sql.startswith("SELECT c.relname,"):
+            for field in ("c.relrowsecurity","c.relforcerowsecurity","a.attnotnull","a.attidentity","a.attgenerated","pg_catalog.pg_attrdef",
+                "pg_catalog.pg_constraint","t.tgenabled","t.tgisinternal","pg_catalog.pg_get_triggerdef","pg_catalog.aclexplode",
+                "pg_catalog.pg_policy","polpermissive","polqual","polwithcheck","polroles",
+                "COALESCE(a.attacl"):
+                self.case.assertIn(field,sql)
+            self.case.assertNotIn("ORDER BY p.oid",sql)
+            return ProbeCursor(copy.deepcopy(self.studio_protection[0]))
+        if sql.startswith("SELECT p.proname,"):
+            for field in ("p.proowner","p.prosecdef","p.proconfig","p.proacl","pg_get_functiondef","pg_get_function_identity_arguments"):
+                self.case.assertIn(field,sql)
+            return ProbeCursor(copy.deepcopy(self.studio_protection[1]))
+        if sql.startswith("SELECT t.tgname,"): return ProbeCursor(copy.deepcopy(self.studio_protection[2]))
         if "FROM pg_catalog.pg_class" in sql:
             names=("alembic_version","canon_transition_rules","identity_auth_schema_metadata","tenants","workspaces","user_accounts",
                 "memberships","identity_auth_tenant_roles","sources","source_versions","object_records","unknown_business")
+            if self.studio_rows is not None: names=(*names,*self.studio_rows)
             return ProbeCursor([("public",n,"f" if self.foreign_relation and n=="unknown_business" else "r") for n in names])
         if "FROM public.alembic_version" in sql:
             return ProbeCursor([("0069" if self.bad_static=="revision" else "0070",)])
@@ -479,12 +565,18 @@ class PhysicalSqlDouble:
         if "FROM public.identity_auth_schema_metadata" in sql:
             return ProbeCursor([(1,0 if self.bad_static=="authmetadata" else AUTHORIZATION_SCHEMA_VERSION)])
         if self.global_denied: raise PermissionError("secret-canary")
+        if sql.startswith("SELECT created_at FROM public.workspaces"):
+            self.case.assertEqual(params,("tenant-a","workspace-a")); return ProbeCursor([(self.workspace_created,)])
+        if sql.startswith("SELECT to_jsonb(r)"):
+            self.case.assertNotIn(" WHERE ",sql)
+            table=next(n for n in self.studio_rows if '"'+n+'"' in sql)
+            return ProbeCursor([(copy.deepcopy(r),) for r in self.studio_rows[table]])
         if sql.startswith("SELECT count(*)"):
             self.case.assertNotIn(" WHERE ",sql.split("FROM ")[-1])
             self.case.assertTrue(params and params[0]=="tenant-a")
             return ProbeCursor([(1,int(self.foundation_foreign))])
         if sql.startswith("SELECT EXISTS"):
-            return ProbeCursor([(any('"'+n+'"' in sql for n in self.nonempty),)])
+            return ProbeCursor([(any('"'+n+'"' in sql for n in self.nonempty|set(self.studio_rows or {})),)])
         raise AssertionError("UNEXPECTED_PROBE_SQL")
 
 
@@ -557,6 +649,40 @@ class ProbeHttpDouble:
             if self.mode=="invalid-xml": body=b"<invalid"
             if self.mode=="doctype": body=b'<!DOCTYPE secret-canary [<!ENTITY x "x">]>'+body
         response=ProbeResponse(self,body,status); self.responses.append(response); return response
+
+
+def studio_default_rows():
+    suffix=hashlib.md5(b"tenant-a|workspace-a",usedforsecurity=False).hexdigest()
+    ids={name:"studio-default:"+name+":"+suffix for name in
+        ("workspace-policy","knowledge-scope","weight-profile","ruleset-reference","ruleset-snapshot","ruleset-binding")}
+    payloads={
+        "workspace_policies":("workspace-policy",dict(active=True,authority_policy="workspace_admin",current=True,data_area="cloud_sync",version=1,workspace_id="workspace-a"),{}),
+        "knowledge_scopes":("knowledge-scope",dict(active=True,current=True,scope="workspace",version=1,workspace_id="workspace-a"),{}),
+        "weight_profiles":("weight-profile",dict(active=True,current=True,profile="trusted-source-v2",version=1,workspace_id="workspace-a"),dict(knowledge_scope_id=ids["knowledge-scope"])),
+        "ruleset_references":("ruleset-reference",dict(active=True,current=True,name="default-review-required",version=1,workspace_id="workspace-a"),{}),
+        "ruleset_version_snapshots":("ruleset-snapshot",dict(active=True,current=True,review_condition="review_required",rules=[],version=1,workspace_id="workspace-a"),dict(ruleset_reference_id=ids["ruleset-reference"])),
+        "ruleset_bindings":("ruleset-binding",dict(active=True,current=True,review_condition="review_required",ruleset_version_id=ids["ruleset-snapshot"],version=1,workspace_id="workspace-a"),
+            dict(ruleset_reference_id=ids["ruleset-reference"],ruleset_version_snapshot_id=ids["ruleset-snapshot"]))}
+    rows={}
+    for table,(part,payload,extra) in payloads.items():
+        text=encoded(payload).decode()
+        rows[table]=[dict(tenant_id="tenant-a",workspace_id="workspace-a",record_id=ids[part],aggregate_id=ids[part],version=1,schema_version=1,
+            previous_version_id=None,canonical_json=payload,canonical_text=text,digest_sha256=hashlib.sha256(text.encode()).hexdigest(),
+            created_by="migration:0013",trace_id="migration:0013:"+part+":"+suffix,created_at=NOW.isoformat(),**extra)]
+    return rows
+
+
+def studio_protection_fixture():
+    """승인 기준 대역. real PG catalog digest/원문 검증 증거는 아니다."""
+    names=sorted((*studio_default_rows(),"workspaces"))
+    tables=[[name,"daon_app",True,True,[["daon_app","daon_app","UPDATE",False]],
+        [["version","integer",True,"","","1",None],["created_at","timestamp with time zone",True,"","","now()",None]],
+        [[name+"_fk","exact foreign key",True,False,False]],[[name+"_immutable","exact immutable trigger"]],
+        [[name+"_scope","*",True,["daon_app"],"exact scope using","exact scope check"]]] for name in names]
+    functions=[[name,"p_tenant_id text, p_workspace_id text" if name.startswith("ensure") else "","daon_app",False,None,"fixed "+name,
+        [["PUBLIC","daon_app","EXECUTE",False]]] for name in sorted(("ensure_studio_workspace_defaults","initialize_studio_workspace_defaults","validate_canon_insert","reject_canon_immutable_mutation"))]
+    triggers=[["studio_workspace_defaults_after_insert","O",5,"public","initialize_studio_workspace_defaults","","exact after insert row trigger"]]
+    return [tables,functions,triggers]
 
 
 if __name__ == "__main__": unittest.main()

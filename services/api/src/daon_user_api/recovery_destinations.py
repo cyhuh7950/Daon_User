@@ -50,6 +50,7 @@ _ENTRY_FIELDS = frozenset(("destination_id", "version", "display_name", "capture
     "authorized_tenant_id", "authorized_workspace_id", "authorized_actor_id", "target_instance_ref",
     "database_ref", "bucket_ref", "physical_receipt_digest", "owner_operation_id", "created_at", "expires_at",
     "application_enabled", "outbound_enabled"))
+_STUDIO_DEFAULTS=("workspace_policies","knowledge_scopes","weight_profiles","ruleset_references","ruleset_version_snapshots","ruleset_bindings")
 
 
 def _reject(status=409):
@@ -215,6 +216,7 @@ class ProbeFoundation:
     workspace_id: str
     actor_id: str
     schema_revision: str
+    studio_defaults_protection_digest: str | None = None
 
 
 @dataclass(frozen=True,slots=True,repr=False)
@@ -251,9 +253,97 @@ class PostgresMinioPhysicalProbe(TrustedPhysicalProbe):
             if instance.foundation is not None:
                 if type(instance.foundation) is not ProbeFoundation: raise _reject(503)
                 for value in (instance.foundation.tenant_id,instance.foundation.workspace_id,instance.foundation.actor_id,instance.foundation.schema_revision): _id(value)
+                if instance.foundation.studio_defaults_protection_digest is not None: _digest(instance.foundation.studio_defaults_protection_digest)
         self._instances=MappingProxyType(dict(instances))
         self._clock=clock or (lambda:datetime.now(timezone.utc))
         self._pool_factory=_pool_factory
+
+    @staticmethod
+    def _studio_protection(connection,foundation):
+        # expected는 operator의 사전 확정 기준만. target 관측 hash를 expected로 등록0.
+        expected=foundation.studio_defaults_protection_digest
+        if expected is None: raise _reject(503)
+        tables=list(connection.execute("SELECT c.relname,pg_catalog.pg_get_userbyid(c.relowner),c.relrowsecurity,c.relforcerowsecurity,"
+            "(SELECT jsonb_agg(jsonb_build_array(CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_catalog.pg_get_userbyid(a.grantee) END,"
+            "pg_catalog.pg_get_userbyid(a.grantor),a.privilege_type,a.is_grantable) ORDER BY "
+            "CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_catalog.pg_get_userbyid(a.grantee) END,pg_catalog.pg_get_userbyid(a.grantor),a.privilege_type,a.is_grantable) "
+            "FROM pg_catalog.aclexplode(COALESCE(c.relacl,pg_catalog.acldefault('r',c.relowner))) a),"
+            "(SELECT jsonb_agg(jsonb_build_array(a.attname,pg_catalog.format_type(a.atttypid,a.atttypmod),a.attnotnull,a.attidentity,a.attgenerated,"
+            "pg_catalog.pg_get_expr(d.adbin,d.adrelid),(SELECT jsonb_agg(jsonb_build_array("
+            "CASE WHEN ca.grantee=0 THEN 'PUBLIC' ELSE pg_catalog.pg_get_userbyid(ca.grantee) END,"
+            "pg_catalog.pg_get_userbyid(ca.grantor),ca.privilege_type,ca.is_grantable) ORDER BY "
+            "CASE WHEN ca.grantee=0 THEN 'PUBLIC' ELSE pg_catalog.pg_get_userbyid(ca.grantee) END,"
+            "pg_catalog.pg_get_userbyid(ca.grantor),ca.privilege_type,ca.is_grantable) "
+            "FROM pg_catalog.aclexplode(COALESCE(a.attacl,'{}'::pg_catalog.aclitem[])) ca)) ORDER BY a.attnum) "
+            "FROM pg_catalog.pg_attribute a LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum "
+            "WHERE a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped),"
+            "(SELECT jsonb_agg(jsonb_build_array(x.conname,pg_catalog.pg_get_constraintdef(x.oid,true),x.convalidated,x.condeferrable,x.condeferred) "
+            "ORDER BY x.conname) FROM pg_catalog.pg_constraint x WHERE x.conrelid=c.oid),"
+            "(SELECT jsonb_agg(signature ORDER BY signature::text) FROM (SELECT jsonb_build_array("
+            "CASE WHEN t.tgisinternal THEN NULL ELSE t.tgname END,t.tgisinternal,t.tgtype,t.tgenabled,t.tgdeferrable,t.tginitdeferred,"
+            "pg_catalog.pg_get_constraintdef(x.oid,true),pn.nspname,p.proname,pg_catalog.pg_get_function_identity_arguments(p.oid),"
+            "encode(t.tgargs,'hex'),pg_catalog.pg_get_expr(t.tgqual,t.tgrelid),CASE WHEN t.tgisinternal THEN NULL ELSE pg_catalog.pg_get_triggerdef(t.oid,true) END) signature "
+            "FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_proc p ON p.oid=t.tgfoid JOIN pg_catalog.pg_namespace pn ON pn.oid=p.pronamespace "
+            "LEFT JOIN pg_catalog.pg_constraint x ON x.oid=t.tgconstraint WHERE t.tgrelid=c.oid) s),"
+            "(SELECT jsonb_agg(jsonb_build_array(pol.polname,pol.polcmd,pol.polpermissive,"
+            "(SELECT jsonb_agg(CASE WHEN role_id=0 THEN 'PUBLIC' ELSE pg_catalog.pg_get_userbyid(role_id) END "
+            "ORDER BY CASE WHEN role_id=0 THEN 'PUBLIC' ELSE pg_catalog.pg_get_userbyid(role_id) END) FROM unnest(pol.polroles) role_id),"
+            "pg_catalog.pg_get_expr(pol.polqual,pol.polrelid),pg_catalog.pg_get_expr(pol.polwithcheck,pol.polrelid)) ORDER BY pol.polname) "
+            "FROM pg_catalog.pg_policy pol WHERE pol.polrelid=c.oid) "
+            "FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace "
+            "WHERE n.nspname='public' AND c.relname=ANY(%s) AND c.relkind='r' ORDER BY c.relname",(list((*_STUDIO_DEFAULTS,"workspaces")),)))
+        functions=list(connection.execute("SELECT p.proname,pg_catalog.pg_get_function_identity_arguments(p.oid),pg_catalog.pg_get_userbyid(p.proowner),"
+            "p.prosecdef,p.proconfig,pg_catalog.pg_get_functiondef(p.oid),"
+            "(SELECT jsonb_agg(jsonb_build_array(CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_catalog.pg_get_userbyid(a.grantee) END,"
+            "pg_catalog.pg_get_userbyid(a.grantor),a.privilege_type,a.is_grantable) ORDER BY "
+            "CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_catalog.pg_get_userbyid(a.grantee) END,pg_catalog.pg_get_userbyid(a.grantor),a.privilege_type,a.is_grantable) "
+            "FROM pg_catalog.aclexplode(COALESCE(p.proacl,pg_catalog.acldefault('f',p.proowner))) a) "
+            "FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' "
+            "AND p.proname IN ('ensure_studio_workspace_defaults','initialize_studio_workspace_defaults','validate_canon_insert','reject_canon_immutable_mutation') "
+            "ORDER BY p.proname,pg_catalog.pg_get_function_identity_arguments(p.oid)"))
+        triggers=list(connection.execute("SELECT t.tgname,t.tgenabled,t.tgtype,n.nspname,p.proname,pg_catalog.pg_get_function_identity_arguments(p.oid),"
+            "pg_catalog.pg_get_triggerdef(t.oid,true) FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_proc p ON p.oid=t.tgfoid "
+            "JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace WHERE t.tgrelid='public.workspaces'::regclass "
+            "AND t.tgname='studio_workspace_defaults_after_insert' AND NOT t.tgisinternal"))
+        if (len(tables)!=7 or {r[0] for r in tables}!=set((*_STUDIO_DEFAULTS,"workspaces"))
+            or any(r[2] is not True or r[3] is not True for r in tables)
+            or len(functions)!=4 or {r[0] for r in functions}!={"ensure_studio_workspace_defaults","initialize_studio_workspace_defaults","validate_canon_insert","reject_canon_immutable_mutation"}
+            or len(triggers)!=1 or tuple(triggers[0][1:6]) not in {("O",5,"public","initialize_studio_workspace_defaults",""),("A",5,"public","initialize_studio_workspace_defaults","")}): raise _reject(503)
+        actual=hashlib.sha256(_json([tables,functions,triggers])).hexdigest()
+        if not hmac.compare_digest(expected,actual): raise _reject(503)
+
+    @staticmethod
+    def _studio_rows(connection,foundation):
+        workspace=connection.execute("SELECT created_at FROM public.workspaces WHERE tenant_id=%s AND workspace_id=%s",
+            (foundation.tenant_id,foundation.workspace_id)).fetchone()
+        if workspace is None or len(workspace)!=1 or not isinstance(workspace[0],datetime): return False
+        if workspace[0].tzinfo is None or workspace[0].utcoffset() is None: return False
+        created=workspace[0].astimezone(timezone.utc)
+        suffix=hashlib.md5((foundation.tenant_id+"|"+foundation.workspace_id).encode(),usedforsecurity=False).hexdigest()
+        parts=("workspace-policy","knowledge-scope","weight-profile","ruleset-reference","ruleset-snapshot","ruleset-binding")
+        ids={part:"studio-default:"+part+":"+suffix for part in parts}
+        values={"active":True,"current":True,"version":1,"workspace_id":foundation.workspace_id}
+        specs={
+            "workspace_policies":({**values,"authority_policy":"workspace_admin","data_area":"cloud_sync"},{}),
+            "knowledge_scopes":({**values,"scope":"workspace"},{}),
+            "weight_profiles":({**values,"profile":"trusted-source-v2"},{"knowledge_scope_id":ids["knowledge-scope"]}),
+            "ruleset_references":({**values,"name":"default-review-required"},{}),
+            "ruleset_version_snapshots":({**values,"review_condition":"review_required","rules":[]},{"ruleset_reference_id":ids["ruleset-reference"]}),
+            "ruleset_bindings":({**values,"review_condition":"review_required","ruleset_version_id":ids["ruleset-snapshot"]},
+                {"ruleset_reference_id":ids["ruleset-reference"],"ruleset_version_snapshot_id":ids["ruleset-snapshot"]})}
+        exact=True
+        for table,part in zip(_STUDIO_DEFAULTS,parts,strict=True):
+            rows=list(connection.execute(pgsql.SQL("SELECT to_jsonb(r) FROM {} r LIMIT 2").format(pgsql.Identifier("public",table))))
+            if len(rows)!=1: exact=False; continue
+            row=rows[0][0]; payload,extra=specs[table]; text=_json(payload).decode()
+            expected=dict(tenant_id=foundation.tenant_id,workspace_id=foundation.workspace_id,record_id=ids[part],aggregate_id=ids[part],
+                version=1,schema_version=1,previous_version_id=None,canonical_json=payload,canonical_text=text,
+                digest_sha256=hashlib.sha256(text.encode()).hexdigest(),created_by="migration:0013",trace_id="migration:0013:"+part+":"+suffix,**extra)
+            if (type(row) is not dict or set(row)!=set(expected)|{"created_at"} or type(row.get("version")) is not int
+                or type(row.get("schema_version")) is not int): exact=False; continue
+            actual={k:v for k,v in row.items() if k!="created_at"}
+            if _json(actual)!=_json(expected) or _time(row["created_at"])!=created: exact=False
+        return exact
 
     @staticmethod
     def _empty_database(connection,foundation):
@@ -267,7 +357,11 @@ class PostgresMinioPhysicalProbe(TrustedPhysicalProbe):
             "AND c.relkind IN ('r','p','f','m','v') ORDER BY c.relname LIMIT 513"))
         if len(relations)>512 or any(row[0]!="public" or row[2] not in {"r","p"} for row in relations): raise _reject(503)
         names={row[1] for row in relations}
-        if not {"alembic_version","canon_transition_rules"}<=names: raise _reject(503)
+        if not {"alembic_version","canon_transition_rules",*_STUDIO_DEFAULTS}<=names: raise _reject(503)
+        PostgresMinioPhysicalProbe._studio_protection(connection,foundation)
+        # 업무 nonempty와 보호된 기본행 훼손을 구분한다. fresh=False 소비자도
+        # 무결성 실패를 nonempty 정상 재진입으로 해석할 수 없어야 한다.
+        if not PostgresMinioPhysicalProbe._studio_rows(connection,foundation): raise _reject()
         empty=True
         foundation_keys={"tenants":("tenant_id",),"workspaces":("tenant_id","workspace_id"),
             "user_accounts":("tenant_id","user_id"),"memberships":("tenant_id","workspace_id","user_id"),
@@ -276,6 +370,7 @@ class PostgresMinioPhysicalProbe(TrustedPhysicalProbe):
             "identity_auth_memberships":("tenant_id","workspace_id","user_id"),
             "identity_auth_tenant_policies":("tenant_id",),"identity_auth_workspace_policies":("tenant_id","workspace_id")}
         for _,name,_ in relations:
+            if name in _STUDIO_DEFAULTS: continue  # 위의 전역 exact 검증만 통과한6행, 생략/일반허용0.
             if name=="alembic_version":
                 rows=list(connection.execute("SELECT version_num FROM public.alembic_version LIMIT 2"))
                 if rows!=[(foundation.schema_revision,)]: empty=False
