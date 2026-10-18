@@ -1541,7 +1541,7 @@ class PostgresRecoveryService:
             "d.owner_operation_id,d.physical_receipt_digest,d.target_database_fingerprint,d.target_bucket_fingerprint,"
             "v.verification_digest FROM public.restore_requests r JOIN LATERAL (SELECT * FROM public.registered_restore_previews p0 "
             "WHERE (p0.tenant_id,p0.workspace_id,p0.request_id)=(r.tenant_id,r.workspace_id,r.request_id) ORDER BY p0.preview_version DESC LIMIT 1) p ON true "
-            "JOIN public.registered_restore_target_reservations d USING(tenant_id,workspace_id,request_id) "
+            "JOIN public.registered_restore_target_reservations d ON (d.tenant_id,d.workspace_id,d.request_id)=(r.tenant_id,r.workspace_id,r.request_id) "
             "LEFT JOIN LATERAL (SELECT verification_digest FROM public.restore_verifications v0 WHERE "
             "(v0.tenant_id,v0.workspace_id,v0.request_id)=(r.tenant_id,r.workspace_id,r.request_id) ORDER BY v0.created_at DESC LIMIT 1) v ON true "
             "WHERE r.request_id=%s AND r.actor_id=nullif(current_setting('app.actor_id',true),'')",(request_id,)).fetchone()

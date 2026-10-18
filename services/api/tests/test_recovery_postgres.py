@@ -33,6 +33,29 @@ from daon_user_api.recovery_capture import FileCaptureStore, decode_manifest
 
 
 class RegisteredRecoveryBoundaryTests(unittest.TestCase):
+    def test_r4_registered_restore_row_reservation_join_uses_parent_scope_without_ambiguous_using(self):
+        # SQL 출력 경계 검사이며 실제 PostgreSQL 실행 증거는 아니다.
+        emitted=[];row=object()
+        class Connection:
+            def execute(self,sql,params=()):
+                emitted.append((sql,params))
+                return SimpleNamespace(fetchone=lambda:row)
+        service=object.__new__(PostgresRecoveryService)
+        self.assertIs(service._registered_restore_row(Connection(),"request-a"),row)
+        self.assertEqual(len(emitted),1)
+        sql,params=emitted[0]
+        self.assertEqual(params,("request-a",))
+        self.assertIn("JOIN public.registered_restore_target_reservations d ON "
+            "(d.tenant_id,d.workspace_id,d.request_id)=(r.tenant_id,r.workspace_id,r.request_id) ",sql)
+        self.assertNotIn("USING(",sql)
+        self.assertIn("FROM public.restore_requests r JOIN LATERAL (SELECT * FROM public.registered_restore_previews p0 ",sql)
+        self.assertIn("WHERE (p0.tenant_id,p0.workspace_id,p0.request_id)=(r.tenant_id,r.workspace_id,r.request_id) "
+            "ORDER BY p0.preview_version DESC LIMIT 1) p ON true ",sql)
+        self.assertIn("LEFT JOIN LATERAL (SELECT verification_digest FROM public.restore_verifications v0 WHERE "
+            "(v0.tenant_id,v0.workspace_id,v0.request_id)=(r.tenant_id,r.workspace_id,r.request_id) "
+            "ORDER BY v0.created_at DESC LIMIT 1) v ON true ",sql)
+        self.assertTrue(sql.endswith("WHERE r.request_id=%s AND r.actor_id=nullif(current_setting('app.actor_id',true),'')"))
+
     def test_r4_purged_missing_version_excludes_only_proven_root_without_bypassing_acl(self):
         from test_recovery_lineage import Ledger,recanonical
         from daon_user_api.recovery_lineage_capture import LineageCaptureScope
