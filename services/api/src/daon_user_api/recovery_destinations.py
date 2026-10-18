@@ -274,7 +274,7 @@ class PostgresMinioPhysicalProbe(TrustedPhysicalProbe):
             "pg_catalog.pg_get_userbyid(ca.grantor),ca.privilege_type,ca.is_grantable) ORDER BY "
             "CASE WHEN ca.grantee=0 THEN 'PUBLIC' ELSE pg_catalog.pg_get_userbyid(ca.grantee) END,"
             "pg_catalog.pg_get_userbyid(ca.grantor),ca.privilege_type,ca.is_grantable) "
-            "FROM pg_catalog.aclexplode(COALESCE(a.attacl,'{}'::pg_catalog.aclitem[])) ca)) ORDER BY a.attnum) "
+            "FROM pg_catalog.aclexplode(CASE WHEN cardinality(a.attacl)>0 THEN a.attacl ELSE NULL::pg_catalog.aclitem[] END) ca)) ORDER BY a.attnum) "
             "FROM pg_catalog.pg_attribute a LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum "
             "WHERE a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped),"
             "(SELECT jsonb_agg(jsonb_build_array(x.conname,pg_catalog.pg_get_constraintdef(x.oid,true),x.convalidated,x.condeferrable,x.condeferred) "

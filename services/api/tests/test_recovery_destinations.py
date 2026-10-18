@@ -355,6 +355,20 @@ class ConcretePhysicalProbeTests(unittest.TestCase):
         self.target.workspace_created=NOW.astimezone(timezone(timedelta(hours=9)))
         self.assertTrue(self.probe.observe(self.request).database_empty,"같은 instant의 timestamp zone 표시는 의미를 바꾸지 않음")
 
+    def test_column_acl_null_empty_and_explicit_grants_use_safe_catalog_expression(self):
+        # SQL 포트 대역. 실제 PG22023/대안식 증거는 MAIN의 실PG 실행과 구분한다.
+        for label,acl in (("null",None),("empty",[]),("grant",[["daon_app","daon_app","UPDATE",False]])):
+            with self.subTest(column_acl=label):
+                fixed=studio_protection_fixture()
+                fixed[0][0][5][0][-1]=acl or None
+                self.target.studio_protection=copy.deepcopy(fixed)
+                instance=replace(self.instances["target-a"],foundation=replace(self.instances["target-a"].foundation,
+                    studio_defaults_protection_digest=hashlib.sha256(encoded(fixed)).hexdigest()))
+                probe=self.api.PostgresMinioPhysicalProbe({**self.instances,"target-a":instance},clock=lambda:NOW,_pool_factory=self.http.pool)
+                self.assertTrue(probe.observe(self.request).database_empty)
+                self.target.studio_protection[0][0][5][0][-1]=[["PUBLIC","daon_app","UPDATE",False]]
+                with self.assertRaises(RecoveryError): probe.observe(self.request)
+
     def test_default6_integrity_refuses_observation_on_reentry_not_business_nonempty(self):
         # R3 fresh=False는 업무행을 허용하지만 default6 무결성 실패는 허용하지 않는다.
         self.target.nonempty={"sources"}
@@ -543,8 +557,9 @@ class PhysicalSqlDouble:
             for field in ("c.relrowsecurity","c.relforcerowsecurity","a.attnotnull","a.attidentity","a.attgenerated","pg_catalog.pg_attrdef",
                 "pg_catalog.pg_constraint","t.tgenabled","t.tgisinternal","pg_catalog.pg_get_triggerdef","pg_catalog.aclexplode",
                 "pg_catalog.pg_policy","polpermissive","polqual","polwithcheck","polroles",
-                "COALESCE(a.attacl"):
+                "CASE WHEN cardinality(a.attacl)>0 THEN a.attacl ELSE NULL::pg_catalog.aclitem[] END"):
                 self.case.assertIn(field,sql)
+            self.case.assertNotIn("COALESCE(a.attacl,'{}'",sql)
             self.case.assertNotIn("ORDER BY p.oid",sql)
             return ProbeCursor(copy.deepcopy(self.studio_protection[0]))
         if sql.startswith("SELECT p.proname,"):
