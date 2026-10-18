@@ -29,6 +29,7 @@ async function request(path, { method = "GET", body, headers = {} } = {}) {
   const response = await fetch(path, {
     method,
     credentials: "same-origin",
+    cache: "no-store",
     headers: body === undefined ? headers : { ...JSON_HEADERS, ...headers },
     body: body === undefined ? undefined : JSON.stringify(body)
   });
@@ -38,6 +39,7 @@ async function request(path, { method = "GET", body, headers = {} } = {}) {
   if (!response.ok) {
     const error = new Error(payload?.error?.code ?? "RESOURCE_UNAVAILABLE");
     error.code = payload?.error?.code ?? "RESOURCE_UNAVAILABLE";
+    error.status = response.status;
     error.traceId = payload?.error?.trace_id ?? response.headers.get("x-trace-id");
     throw error;
   }

@@ -5,6 +5,34 @@ import test from "node:test";
 import { createBffProxy } from "../../apps/web/lib/bff-api-proxy.js";
 import { parseRecoverySessionContext, recoveryApi, resolveRecoverySession } from "../../apps/web/lib/recovery-api.js";
 
+for (const status of [404, 503]) {
+  test(`정확 복구 조회는 같은 오류 코드의 실제 HTTP ${status}를 보존한다`, async () => {
+    const previous = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => Response.json({ error: { code: "RESOURCE_UNAVAILABLE" } }, { status });
+      await assert.rejects(recoveryApi.getRestore("restore-read-target"), error =>
+        error.code === "RESOURCE_UNAVAILABLE" && error.status === status);
+    } finally { globalThis.fetch = previous; }
+  });
+}
+
+test("정확 복구·본인 session GET은 캐시를 재사용하지 않고 same-origin을 유지한다", async () => {
+  const previous = globalThis.fetch, calls = [];
+  try {
+    globalThis.fetch = async (url, options) => { calls.push([url, options]); return Response.json({ data: {} }); };
+    await recoveryApi.getSession();
+    await recoveryApi.getBackup("backup-read-target");
+    await recoveryApi.getRestore("restore-read-target");
+  } finally { globalThis.fetch = previous; }
+  assert.equal(calls.length, 3);
+  for (const [url, options] of calls) {
+    assert.ok(url.startsWith("/bff/api/"));
+    assert.equal(options.method, "GET");
+    assert.equal(options.credentials, "same-origin");
+    assert.equal(options.cache, "no-store");
+  }
+});
+
 test("Recovery Web Adapter는 정확한 Cloud 7 Route를 same-origin으로만 호출한다", async () => {
   const source = await readFile("apps/web/lib/recovery-api.js", "utf8");
   for (const token of [
