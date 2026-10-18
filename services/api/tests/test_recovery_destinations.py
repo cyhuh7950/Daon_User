@@ -6,14 +6,18 @@ import ctypes
 import hashlib
 import hmac
 import importlib
+import io
 import json
 import os
 from pathlib import Path
 import secrets
 import shutil
 import unittest
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlsplit,parse_qs
+from unittest.mock import patch
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -271,6 +275,8 @@ class RecoveryDestinationTests(unittest.TestCase):
                      "REGISTERED_RESTORE_PHASE_CONFLICT", "has_table_privilege", "has_column_privilege"):
             self.assertIn(text, sql)
         self.assertNotIn("CREATE OR REPLACE", sql)
+        self.assertFalse("backup.actor_id IS DISTINCT FROM NEW.actor_id" in sql,
+                         "현재 복원자와 원 backup 생성자의 동일성을 새 권한 정책으로 요구하면 안 됨")
         for table in ("backup_records", "backup_manifests", "restore_requests", "restore_previews"):
             self.assertNotIn("ALTER TABLE public."+table, sql)
             self.assertNotIn("GRANT UPDATE ON public."+table, sql)
@@ -303,6 +309,254 @@ class ReservationSqlDouble:
         return self
 
     def fetchone(self): return self.result
+
+
+class ConcretePhysicalProbeTests(unittest.TestCase):
+    """실 SQL/서명/HTTP 파서 제품 + 연결/응답 대역. 실제 PG/MinIO 호출0."""
+    def setUp(self):
+        self.api=importlib.import_module("daon_user_api.recovery_destinations")
+        self.assertIsNotNone(getattr(self.api,"PostgresMinioPhysicalProbe",None),"concrete physical probe missing")
+        from daon_user_api.object_queue import MinioObjectStorageAdapter
+        self.source=PhysicalSqlDouble(self,"source-db",111)
+        self.target=PhysicalSqlDouble(self,"target-db",222)
+        self.storage=MinioObjectStorageAdapter(endpoint="source.invalid:9000",bucket="s44-source",
+            access_key=secrets.token_hex(12),secret_key=secrets.token_hex(24),secure=False)
+        self.other=MinioObjectStorageAdapter(endpoint="target.invalid:9000",bucket="s44-target",
+            access_key=secrets.token_hex(12),secret_key=secrets.token_hex(24),secure=False)
+        self.http=ProbeHttpDouble(self)
+        foundation=self.api.ProbeFoundation("tenant-a","workspace-a","actor-a","0070")
+        self.instances={
+            "source-a":self.api.PhysicalProbeInstance("database-source","bucket-source","source-db",self.source.connection,self.storage,"us-east-1"),
+            "target-a":self.api.PhysicalProbeInstance("database-a","bucket-a","target-db",self.target.connection,self.other,"us-east-1",
+                foundation,"provision-a",False,False)}
+        self.probe=self.api.PostgresMinioPhysicalProbe(self.instances,clock=lambda:NOW,_pool_factory=self.http.pool)
+        self.request=self.api.ProbeRequest("source-a","target-a","database-a","bucket-a","owner-a")
+
+    def test_concrete_identity_signed_owner_and_global_empty(self):
+        value=self.probe.observe(self.request)
+        self.assertEqual((value.source_database.system_identifier,value.source_database.database_oid),("10001",111))
+        self.assertEqual(value.target_database.database_oid,222)
+        self.assertEqual(value.target_object.backend_identifier,"11111111-1111-4111-8111-111111111111")
+        self.assertEqual(value.target_object.bucket,"s44-target")
+        self.assertTrue(value.database_empty and value.bucket_empty)
+        self.assertFalse(value.application_enabled or value.outbound_enabled)
+        self.assertEqual(value.owner_operation_id,"owner-a")
+        self.assertNotIn("secret-canary",repr(value))
+        self.assertEqual(self.http.admin_calls,2)
+        self.assertTrue(self.http.responses and all(r.closed and r.released for r in self.http.responses))
+        self.assertEqual(self.source.writes+self.target.writes,0)
+
+    def test_alias_database_or_backend_bucket_is_rejected(self):
+        self.target.oid=111
+        with self.assertRaises(RecoveryError): self.probe.observe(self.request)
+        self.target.oid=222
+        self.other._bucket="s44-source"
+        with self.assertRaises(RecoveryError): self.probe.observe(self.request)
+
+    def test_global_visibility_owner_unknown_schema_and_ref_rejected(self):
+        for change in ("visibility","comment","schema","tag","ref","db-name"):
+            with self.subTest(change=change):
+                self.target.superuser=change!="visibility"
+                self.target.comment="wrong-owner" if change=="comment" else "daon-restore-owner:owner-a"
+                self.target.schemas=["public","unrelated"] if change=="schema" else ["public"]
+                self.target.database_name="foreign-db" if change=="db-name" else "target-db"
+                self.http.wrong_tag=change=="tag"
+                request=replace(self.request,bucket_ref="unknown-ref") if change=="ref" else self.request
+                with self.assertRaises(RecoveryError): self.probe.observe(request)
+
+    def test_nonempty_business_version_delete_marker_and_multipart_are_not_empty(self):
+        for table in ("sources","object_records","unknown_business"):
+            with self.subTest(table=table):
+                self.target.nonempty={table}
+                value=self.probe.observe(self.request)
+                self.assertFalse(value.database_empty)
+                self.assertTrue(value.bucket_empty)
+        self.target.nonempty=set()
+        self.target.foundation_foreign=True
+        self.assertFalse(self.probe.observe(self.request).database_empty)
+        self.target.foundation_foreign=False
+        for kind in ("Version","DeleteMarker","Upload"):
+            with self.subTest(kind=kind):
+                self.http.object_kind=kind
+                self.assertFalse(self.probe.observe(self.request).bucket_empty)
+        self.http.object_kind=None; self.http.mode="truncated"
+        self.assertFalse(self.probe.observe(self.request).bucket_empty)
+        # 재진입에서 false를 그대로 반환한다. empty 위장/registry 재등록이 아니다.
+        self.target.nonempty={"sources"}
+        self.assertFalse(self.probe.observe(self.request).database_empty)
+
+    def test_http_error_redirect_size_timeout_and_raw_secret_never_reflect(self):
+        for mode in ("redirect","denied","oversize","timeout","invalid-id","duplicate","doctype"):
+            with self.subTest(mode=mode):
+                self.http.mode=mode
+                with self.assertRaises(RecoveryError) as caught: self.probe.observe(self.request)
+                self.assertNotIn("secret-canary",str(caught.exception))
+                self.assertNotIn("target.invalid",str(caught.exception))
+                self.assertTrue(all(r.closed and r.released for r in self.http.responses))
+        self.assertEqual(self.http.error_body_reads,0)
+
+    def test_static_metadata_foundation_and_visibility_are_measured(self):
+        for change in ("rules","revision","authmetadata","global-denied","relation","enabled"):
+            with self.subTest(change=change):
+                self.target.bad_static=change if change in {"rules","revision","authmetadata"} else None
+                self.target.global_denied=change=="global-denied"
+                self.target.foreign_relation=change=="relation"
+                self.instances["target-a"]=replace(self.instances["target-a"],application_enabled=change=="enabled")
+                probe=self.api.PostgresMinioPhysicalProbe(self.instances,clock=lambda:NOW,_pool_factory=self.http.pool)
+                if change in {"global-denied","relation","enabled"}:
+                    with self.assertRaises(RecoveryError): probe.observe(self.request)
+                else: self.assertFalse(probe.observe(self.request).database_empty)
+
+    def test_actual_sigv4_and_tls_static_credentials_boundary(self):
+        # wire 서버 대역은 별도 HMAC 계산으로 실제 signature를 검사한다.
+        sign=self.api.sign_v4_s3
+        def wrong_signature(**kwargs):
+            result=sign(**kwargs)
+            result["Authorization"]=result["Authorization"][:-64]+"0"*64
+            return result
+        with patch.object(self.api,"sign_v4_s3",wrong_signature):
+            with self.assertRaises(RecoveryError): self.probe.observe(self.request)
+        self.assertEqual(self.probe.observe(self.request).target_database.database_oid,222)
+        original=self.other._client._provider
+        class UnexpectedProvider:
+            def retrieve(self): raise AssertionError("dynamic credentials must not be refreshed")
+        self.other._client._provider=UnexpectedProvider()
+        with self.assertRaises(RecoveryError): self.probe.observe(self.request)
+        self.other._client._provider=original
+        from minio import Minio
+        self.other._client=Minio("target.invalid:9000",credentials=original,secure=True)
+        self.other._client._http.connection_pool_kw["cert_reqs"]="CERT_NONE"
+        with self.assertRaises(RecoveryError): self.probe.observe(self.request)
+
+    def test_unknown_refs_identity_missing_and_duplicate_bucket_marker_fail_closed(self):
+        for field,value in (("source_instance_ref","missing"),("target_instance_ref","missing"),("database_ref","missing")):
+            with self.subTest(field=field),self.assertRaises(RecoveryError):
+                self.probe.observe(replace(self.request,**{field:value}))
+        self.target.oid=0
+        with self.assertRaises(RecoveryError): self.probe.observe(self.request)
+        self.target.oid=222
+        for mode in ("duplicate-tag","wrong-bucket","invalid-xml","missing-info","nil-id","utf16-doctype"):
+            with self.subTest(mode=mode),self.assertRaises(RecoveryError):
+                self.http.mode=mode; self.probe.observe(self.request)
+
+
+class ProbeCursor:
+    def __init__(self,rows): self.rows=list(rows)
+    def fetchone(self): return self.rows[0] if self.rows else None
+    def fetchall(self): return list(self.rows)
+    def __iter__(self): return iter(self.rows)
+
+
+class PhysicalSqlDouble:
+    def __init__(self,case,database_name,oid):
+        self.case,self.database_name,self.oid=case,database_name,oid
+        self.superuser=True; self.comment="daon-restore-owner:owner-a"; self.schemas=["public"]
+        self.nonempty=set(); self.foundation_foreign=False; self.bad_static=None; self.global_denied=False
+        self.foreign_relation=False; self.writes=0
+    @contextmanager
+    def connection(self): yield self
+    @contextmanager
+    def transaction(self): yield
+    def execute(self,statement,params=()):
+        from daon_user_api.data_canon import _TRANSITIONS
+        from daon_user_api.authorization import AUTHORIZATION_SCHEMA_VERSION
+        sql=statement if isinstance(statement,str) else statement.as_string()
+        if sql.startswith("SET TRANSACTION"):
+            self.case.assertIn("READ ONLY",sql); return ProbeCursor([])
+        self.case.assertTrue(sql.startswith("SELECT"),"probe must not write")
+        if "pg_control_system()" in sql:
+            return ProbeCursor([(self.database_name,"10001",self.oid,self.comment,self.superuser,False)])
+        if "FROM pg_catalog.pg_namespace" in sql: return ProbeCursor([(n,) for n in self.schemas])
+        if "FROM pg_catalog.pg_class" in sql:
+            names=("alembic_version","canon_transition_rules","identity_auth_schema_metadata","tenants","workspaces","user_accounts",
+                "memberships","identity_auth_tenant_roles","sources","source_versions","object_records","unknown_business")
+            return ProbeCursor([("public",n,"f" if self.foreign_relation and n=="unknown_business" else "r") for n in names])
+        if "FROM public.alembic_version" in sql:
+            return ProbeCursor([("0069" if self.bad_static=="revision" else "0070",)])
+        if "FROM public.canon_transition_rules" in sql:
+            rows=sorted((entity,*edge) for entity,edges in _TRANSITIONS.items() for edge in edges)
+            return ProbeCursor(rows[:-1] if self.bad_static=="rules" else rows)
+        if "FROM public.identity_auth_schema_metadata" in sql:
+            return ProbeCursor([(1,0 if self.bad_static=="authmetadata" else AUTHORIZATION_SCHEMA_VERSION)])
+        if self.global_denied: raise PermissionError("secret-canary")
+        if sql.startswith("SELECT count(*)"):
+            self.case.assertNotIn(" WHERE ",sql.split("FROM ")[-1])
+            self.case.assertTrue(params and params[0]=="tenant-a")
+            return ProbeCursor([(1,int(self.foundation_foreign))])
+        if sql.startswith("SELECT EXISTS"):
+            return ProbeCursor([(any('"'+n+'"' in sql for n in self.nonempty),)])
+        raise AssertionError("UNEXPECTED_PROBE_SQL")
+
+
+class ProbeResponse:
+    def __init__(self,http,body,status=200):
+        self.http,self.body,self.status=http,io.BytesIO(body),status
+        self.closed=self.released=False
+    def read1(self,size,**kwargs):
+        if self.status!=200:
+            self.http.error_body_reads+=1; raise AssertionError("ERROR_BODY_FORBIDDEN")
+        return self.body.read(min(size,333))
+    def close(self): self.closed=True
+    def release_conn(self): self.released=True
+
+
+class ProbeHttpDouble:
+    def __init__(self,case):
+        self.case=case; self.mode=None; self.wrong_tag=False; self.object_kind=None
+        self.responses=[]; self.error_body_reads=0; self.admin_calls=0
+    def pool(self,**kwargs):
+        self.case.assertIs(kwargs.get("retries"),False)
+        self.case.assertIsNotNone(kwargs.get("timeout"))
+        return self
+    def clear(self): pass
+    def urlopen(self,method,url,**kwargs):
+        self.case.assertEqual(kwargs.get("retries"),False); self.case.assertEqual(kwargs.get("redirect"),False)
+        self.case.assertEqual(kwargs.get("preload_content"),False)
+        self.case.assertEqual(kwargs.get("decode_content"),False)
+        parsed=urlsplit(url); query=parse_qs(parsed.query,keep_blank_values=True)
+        self.case.assertIn(parsed.hostname,{"source.invalid","target.invalid"})
+        headers=kwargs["headers"]
+        self.case.assertTrue(headers.get("Authorization","").startswith("AWS4-HMAC-SHA256 Credential="))
+        self.case.assertEqual(headers["Host"],parsed.netloc)
+        self.case.assertIn("x-amz-date",headers)
+        # SDK signer를 기대값으로 재사용하지 않고 AWS4 canonical request에서 독립 계산.
+        auth=headers["Authorization"]; values=dict(part.strip().split("=",1) for part in auth.split(" ",1)[1].split(","))
+        scope=values["Credential"].split("/",1)[1]
+        names=values["SignedHeaders"].split(";"); lowered={k.lower():str(v).strip() for k,v in headers.items()}
+        canonical_headers="\n".join(name+":"+lowered[name] for name in names)
+        canonical=f"{method}\n{parsed.path}\n{parsed.query}\n{canonical_headers}\n\n{';'.join(names)}\n{hashlib.sha256(b'').hexdigest()}"
+        to_sign=f"AWS4-HMAC-SHA256\n{headers['x-amz-date']}\n{scope}\n{hashlib.sha256(canonical.encode()).hexdigest()}"
+        storage=self.case.storage if parsed.hostname=="source.invalid" else self.case.other
+        credentials=storage._client._provider.retrieve()
+        key=("AWS4"+credentials.secret_key).encode()
+        for value in scope.split("/"): key=hmac.new(key,value.encode(),hashlib.sha256).digest()
+        expected=hmac.new(key,to_sign.encode(),hashlib.sha256).hexdigest()
+        self.case.assertTrue(hmac.compare_digest(expected,values["Signature"]),"invalid request signature")
+        if self.mode=="timeout": raise TimeoutError("secret-canary")
+        status=302 if self.mode=="redirect" else 403 if self.mode=="denied" else 200
+        if parsed.path=="/minio/admin/v3/info":
+            self.admin_calls+=1
+            body=encoded(dict(deploymentID="invalid" if self.mode=="invalid-id" else "11111111-1111-4111-8111-111111111111",servers=["secret-canary"]))
+            if self.mode=="oversize": body=b" "*(1024*1024+1)
+            if self.mode=="duplicate": body=b'{"deploymentID":"one","deploymentID":"two"}'
+            if self.mode=="missing-info": body=b'{}'
+            if self.mode=="nil-id": body=b'{"deploymentID":"00000000-0000-0000-0000-000000000000"}'
+        elif method=="HEAD": body=b""
+        elif "tagging" in query:
+            owner="wrong" if self.wrong_tag else "owner-a"
+            body=f'<Tagging xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><TagSet><Tag><Key>daon-restore-owner-operation</Key><Value>{owner}</Value></Tag></TagSet></Tagging>'.encode()
+            if self.mode=="duplicate-tag": body=body.replace(b"</TagSet>",b"<Tag><Key>daon-restore-owner-operation</Key><Value>owner-a</Value></Tag></TagSet>")
+            if self.mode=="utf16-doctype": body=('<!DOCTYPE Tagging [<!ENTITY owner "owner-a">]>'+body.decode().replace(">owner-a<",">&owner;<")).encode("utf-16")
+        else:
+            versions="versions" in query; root="ListVersionsResult" if versions else "ListMultipartUploadsResult"
+            kind=self.object_kind
+            child=f"<{kind}><Key>not-returned</Key></{kind}>" if kind and ((versions and kind!="Upload") or (not versions and kind=="Upload")) else ""
+            name="Name" if versions else "Bucket"
+            body=f'<{root} xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><{name}>s44-target</{name}><IsTruncated>{str(self.mode=="truncated").lower()}</IsTruncated>{child}</{root}>'.encode()
+            if self.mode=="wrong-bucket": body=body.replace(b"s44-target",b"foreign-bucket")
+            if self.mode=="invalid-xml": body=b"<invalid"
+            if self.mode=="doctype": body=b'<!DOCTYPE secret-canary [<!ENTITY x "x">]>'+body
+        response=ProbeResponse(self,body,status); self.responses.append(response); return response
 
 
 if __name__ == "__main__": unittest.main()

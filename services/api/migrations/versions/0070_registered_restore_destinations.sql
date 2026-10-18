@@ -210,7 +210,7 @@ BEGIN
       RAISE EXCEPTION 'REGISTERED_RESTORE_PARENT_CONFLICT' USING ERRCODE='23514'; END IF;
     SELECT * INTO backup FROM public.backup_records WHERE tenant_id=NEW.tenant_id AND workspace_id=NEW.workspace_id
       AND backup_id=NEW.backup_id FOR SHARE;
-    IF NOT FOUND OR backup.actor_id IS DISTINCT FROM NEW.actor_id OR backup.state<>'ready' THEN
+    IF NOT FOUND OR backup.state<>'ready' THEN
       RAISE EXCEPTION 'REGISTERED_RESTORE_BACKUP_CONFLICT' USING ERRCODE='23514'; END IF;
     SELECT * INTO manifest FROM public.backup_manifests WHERE tenant_id=NEW.tenant_id AND workspace_id=NEW.workspace_id
       AND backup_id=NEW.backup_id AND manifest_version=3 FOR SHARE;

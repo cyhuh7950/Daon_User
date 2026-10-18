@@ -1,8 +1,9 @@
-"""R2 내부 서명 registry. 공개 API/운영 등록/실 physical probe 구현이 아니다.
+"""R2 내부 서명 registry/읽기 전용 PG·MinIO physical probe. 공개 API/운영 등록0.
 
 TrustedPhysicalProbe는 운영자 코드 주입 경계다. 호출자가 만든 ref/name의 hash나
-검증 boolean을 받지 않는다. concrete PG/Object identity 수집기는 아직 연결하지
-않았으며 이 포트 없이 후보를 제공하지 않는다. 현재 authorization은 caller가
+검증 boolean을 받지 않는다. 실제 identity/소유/전역 empty를 고정 서버 ref에서
+읽으며 app/outbound는 명시 operator provisioning 설정이지 live health가 아니다.
+현재 authorization은 caller가
 검사하고, R4 연결에서 큰 검증 뒤에도 재검사해야 한다.
 """
 from __future__ import annotations
@@ -18,12 +19,25 @@ import os
 from pathlib import Path
 import re
 import stat
+import ssl
+import time
+from types import MappingProxyType
+from urllib.parse import urlsplit,urlunsplit,urlencode,quote
+from uuid import UUID
+from xml.etree import ElementTree
+
+from minio.credentials import StaticProvider
+from minio.signer import sign_v4_s3
+from psycopg import sql as pgsql
+from urllib3 import PoolManager
+from urllib3.util import Timeout
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from .recovery import RecoveryContext, RecoveryError
 from .recovery_capture import _PosixFiles, _WindowsFiles
+from .object_queue import MinioObjectStorageAdapter
 
 
 PURPOSE = b"restore-destination-registry-v1"
@@ -192,6 +206,214 @@ class TrustedPhysicalProbe(ABC):
     """
     @abstractmethod
     def observe(self, request: ProbeRequest) -> PhysicalObservation: ...
+
+
+@dataclass(frozen=True,slots=True,repr=False)
+class ProbeFoundation:
+    """운영자 준비 최소 문맥. archive의 과거 actor/credential을 복사하지 않는다."""
+    tenant_id: str
+    workspace_id: str
+    actor_id: str
+    schema_revision: str
+
+
+@dataclass(frozen=True,slots=True,repr=False)
+class PhysicalProbeInstance:
+    """서버 코드만 구성. 사용자 URL/DSN/key 또는 라이브 비활성 증명이 아니다."""
+    database_ref: str
+    bucket_ref: str
+    database_name: str
+    connection_provider: object
+    storage: MinioObjectStorageAdapter
+    region: str
+    foundation: ProbeFoundation | None = None
+    provisioning_ref: str | None = None
+    application_enabled: bool = True
+    outbound_enabled: bool = True
+
+
+class PostgresMinioPhysicalProbe(TrustedPhysicalProbe):
+    """조회만. 초기 registry는 true empty만 소비, R3 fresh=False는 실제 false도 소비.
+
+    후속 phase의 허용 내용/정확 행·보호 정의는 R3가 검증한다. 이 probe가 쓰기 뒤
+    재등록/빈 상태 위장·target 생성·owner marker 생성·role 전환을 하지 않는다.
+    socket timeout/총 응답 읽기 deadline은 hard OS DNS/process 취소 보장이 아니다.
+    """
+    def __init__(self,instances,*,clock=None,_pool_factory=PoolManager):
+        if not isinstance(instances,dict) or not 1<=len(instances)<=1000: raise _reject(503)
+        for ref,instance in instances.items():
+            _id(ref)
+            if type(instance) is not PhysicalProbeInstance or not callable(instance.connection_provider): raise _reject(503)
+            for value in (instance.database_ref,instance.bucket_ref,instance.region): _id(value)
+            if (not isinstance(instance.database_name,str) or not 1<=len(instance.database_name.encode())<=63
+                or any(ord(c)<32 or ord(c)==127 for c in instance.database_name)
+                or not isinstance(instance.storage,MinioObjectStorageAdapter)): raise _reject(503)
+            if instance.foundation is not None:
+                if type(instance.foundation) is not ProbeFoundation: raise _reject(503)
+                for value in (instance.foundation.tenant_id,instance.foundation.workspace_id,instance.foundation.actor_id,instance.foundation.schema_revision): _id(value)
+        self._instances=MappingProxyType(dict(instances))
+        self._clock=clock or (lambda:datetime.now(timezone.utc))
+        self._pool_factory=_pool_factory
+
+    @staticmethod
+    def _empty_database(connection,foundation):
+        from .data_canon import _TRANSITIONS
+        from .authorization import AUTHORIZATION_SCHEMA_VERSION
+        namespaces=[row[0] for row in connection.execute("SELECT nspname FROM pg_catalog.pg_namespace "
+            "WHERE nspname NOT IN ('pg_catalog','information_schema') AND nspname !~ '^pg_(toast|temp)'")]
+        if namespaces!=["public"]: raise _reject(503)
+        relations=list(connection.execute("SELECT n.nspname,c.relname,c.relkind FROM pg_catalog.pg_class c "
+            "JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' "
+            "AND c.relkind IN ('r','p','f','m','v') ORDER BY c.relname LIMIT 513"))
+        if len(relations)>512 or any(row[0]!="public" or row[2] not in {"r","p"} for row in relations): raise _reject(503)
+        names={row[1] for row in relations}
+        if not {"alembic_version","canon_transition_rules"}<=names: raise _reject(503)
+        empty=True
+        foundation_keys={"tenants":("tenant_id",),"workspaces":("tenant_id","workspace_id"),
+            "user_accounts":("tenant_id","user_id"),"memberships":("tenant_id","workspace_id","user_id"),
+            "identity_auth_workspaces":("tenant_id","workspace_id"),
+            "identity_auth_tenant_roles":("tenant_id","user_id"),
+            "identity_auth_memberships":("tenant_id","workspace_id","user_id"),
+            "identity_auth_tenant_policies":("tenant_id",),"identity_auth_workspace_policies":("tenant_id","workspace_id")}
+        for _,name,_ in relations:
+            if name=="alembic_version":
+                rows=list(connection.execute("SELECT version_num FROM public.alembic_version LIMIT 2"))
+                if rows!=[(foundation.schema_revision,)]: empty=False
+            elif name=="canon_transition_rules":
+                expected=sorted((entity,*edge) for entity,edges in _TRANSITIONS.items() for edge in edges)
+                rows=list(connection.execute("SELECT entity_type,source_state,target_state FROM public.canon_transition_rules "
+                    "ORDER BY entity_type,source_state,target_state LIMIT 10001"))
+                if rows!=expected: empty=False
+            elif name=="identity_auth_schema_metadata":
+                rows=list(connection.execute("SELECT singleton,schema_version FROM public.identity_auth_schema_metadata LIMIT 2"))
+                if rows not in ([],[(1,AUTHORIZATION_SCHEMA_VERSION)]): empty=False
+            elif name in foundation_keys:
+                keys=foundation_keys[name]
+                predicate=pgsql.SQL(" AND ").join(pgsql.SQL("{} IS NOT DISTINCT FROM %s").format(pgsql.Identifier(k)) for k in keys)
+                statement=pgsql.SQL("SELECT count(*),count(*) FILTER (WHERE NOT ({})) FROM {}").format(predicate,pgsql.Identifier("public",name))
+                values=tuple(foundation.actor_id if k=="user_id" else getattr(foundation,k) for k in keys)
+                row=connection.execute(statement,values).fetchone()
+                if row is None or len(row)!=2 or any(type(n) is not int or n<0 for n in row): raise _reject(503)
+                if row[0]>1 or row[1]!=0: empty=False
+            else:
+                # 미지의 자료 표도 생략하지 않는다. global operator 읽기에서 한 행이면 false.
+                row=connection.execute(pgsql.SQL("SELECT EXISTS(SELECT 1 FROM {} LIMIT 1)").format(pgsql.Identifier("public",name))).fetchone()
+                if row is None or len(row)!=1 or type(row[0]) is not bool: raise _reject(503)
+                if row[0]: empty=False
+        return empty
+
+    def _database(self,instance,owner=None):
+        with instance.connection_provider() as connection,connection.transaction():
+            connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            row=connection.execute("SELECT current_database(),c.system_identifier::text,d.oid::bigint,"
+                "pg_catalog.shobj_description(d.oid,'pg_database'),r.rolsuper,r.rolbypassrls "
+                "FROM pg_catalog.pg_control_system() c CROSS JOIN pg_catalog.pg_database d "
+                "JOIN pg_catalog.pg_roles r ON r.rolname=current_user WHERE d.datname=current_database()").fetchone()
+            if row is None or len(row)!=6 or row[0]!=instance.database_name: raise _reject(503)
+            identity=DatabaseIdentity(row[1],row[2]); identity.fingerprint()
+            if owner is None: return identity,None
+            if row[3]!="daon-restore-owner:"+owner: raise _reject()
+            if not (row[4] is True or row[5] is True): raise _reject(503)
+            return identity,self._empty_database(connection,instance.foundation)
+
+    @staticmethod
+    def _xml(raw,root_name):
+        text=raw.decode("utf-8")  # UTF16/null 우회로 entity 선언을 parser에 전달하지 않는다.
+        if "<!DOCTYPE" in text.upper() or "<!ENTITY" in text.upper(): raise _reject(503)
+        root=ElementTree.fromstring(text)
+        namespace="{http://s3.amazonaws.com/doc/2006-03-01/}"
+        if root.tag not in {root_name,namespace+root_name}: raise _reject(503)
+        for node in root.iter():
+            if node.tag.startswith(namespace): node.tag=node.tag[len(namespace):]
+            elif "{" in node.tag: raise _reject(503)
+        return root
+
+    def _object(self,instance,owner=None):
+        client=instance.storage._client
+        if type(client._provider) is not StaticProvider: raise _reject(503)
+        credentials=client._provider.retrieve()
+        if credentials.is_expired(): raise _reject(503)
+        base=client._base_url; options=client._http.connection_pool_kw
+        if base.is_https and options.get("cert_reqs") not in {"CERT_REQUIRED",ssl.CERT_REQUIRED}: raise _reject(503)
+        bucket=instance.storage._bucket
+        ObjectIdentity("validation",bucket).fingerprint()
+        pool=self._pool_factory(maxsize=1,retries=False,timeout=Timeout(total=5,connect=2,read=2),
+            cert_reqs=ssl.CERT_REQUIRED,ca_certs=options.get("ca_certs"))
+        try:
+            def get(path,query=(),method="GET"):
+                url=urlsplit(urlunsplit(("https" if base.is_https else "http",base.host,path,urlencode(sorted(query)),"")))
+                now=_utc(self._clock()); payload=hashlib.sha256(b"").hexdigest()
+                headers={"Host":url.netloc,"x-amz-date":now.strftime("%Y%m%dT%H%M%SZ"),"x-amz-content-sha256":payload}
+                if credentials.session_token: headers["X-Amz-Security-Token"]=credentials.session_token
+                headers=sign_v4_s3(method=method,url=url,region=instance.region,headers=headers,credentials=credentials,
+                    content_sha256=payload,date=now)
+                response=pool.urlopen(method,urlunsplit(url),headers=headers,retries=False,redirect=False,
+                    preload_content=False,decode_content=False)
+                try:
+                    if response.status!=200: raise _reject(503)  # 원 오류/redirect body read0.
+                    if method=="HEAD": return b""
+                    result=bytearray(); deadline=time.monotonic()+5
+                    while True:
+                        if time.monotonic()>=deadline: raise _reject(503)
+                        size=min(65536,1024*1024+1-len(result))
+                        chunk=response.read1(size,decode_content=False)
+                        if not isinstance(chunk,bytes) or len(chunk)>size: raise _reject(503)
+                        if not chunk: break
+                        result.extend(chunk)
+                        if len(result)>1024*1024: raise _reject(503)
+                    return bytes(result)
+                finally:
+                    try: response.close()
+                    finally: response.release_conn()
+            raw=get("/minio/admin/v3/info",(("metrics","false"),("no-cache","true")))
+            info=json.loads(raw,object_pairs_hook=_unique,parse_constant=lambda _:(_ for _ in ()).throw(_reject(503)))
+            if type(info) is not dict or type(info.get("deploymentID")) is not str: raise _reject(503)
+            deployment=UUID(info["deploymentID"])
+            if deployment.int==0: raise _reject(503)
+            identity=ObjectIdentity(str(deployment),bucket); identity.fingerprint()
+            del raw,info  # 서버 상세/endpoint·나머지 응답을 관측/registry/state에 보존0.
+            path="/"+quote(bucket,safe="")
+            get(path,method="HEAD")
+            if owner is None: return identity,None
+            root=self._xml(get(path,(("tagging",""),)),"Tagging")
+            owners=[]
+            for tag in root.findall("./TagSet/Tag"):
+                keys=tag.findall("Key"); values=tag.findall("Value")
+                if len(keys)!=1 or len(values)!=1: raise _reject(503)
+                if keys[0].text=="daon-restore-owner-operation": owners.append(values[0].text)
+            if owners!=[owner]: raise _reject()
+            empty=True
+            for query,root_name,field,children in (
+                ((("versions",""),("max-keys","1")),"ListVersionsResult","Name",{"Version","DeleteMarker","CommonPrefixes"}),
+                ((("uploads",""),("max-uploads","1")),"ListMultipartUploadsResult","Bucket",{"Upload","CommonPrefixes"})):
+                root=self._xml(get(path,query),root_name)
+                if len(root.findall(field))!=1 or root.findtext(field)!=bucket: raise _reject(503)
+                truncated=root.findall("IsTruncated")
+                if len(truncated)!=1 or truncated[0].text not in {"true","false"}: raise _reject(503)
+                if truncated[0].text=="true" or any(child.tag in children for child in root): empty=False
+            return identity,empty
+        finally: pool.clear()
+
+    def observe(self,request):
+        try:
+            if type(request) is not ProbeRequest: raise _reject()
+            for value in (request.source_instance_ref,request.target_instance_ref,request.database_ref,request.bucket_ref,request.owner_operation_id): _id(value)
+            if request.source_instance_ref==request.target_instance_ref: raise _reject()
+            source=self._instances.get(request.source_instance_ref); target=self._instances.get(request.target_instance_ref)
+            if source is None or target is None or (request.database_ref,request.bucket_ref)!=(target.database_ref,target.bucket_ref): raise _reject()
+            if (target.foundation is None or target.application_enabled is not False or target.outbound_enabled is not False
+                or target.provisioning_ref is None): raise _reject(503)
+            _id(target.provisioning_ref)
+            source_db,_=self._database(source)
+            target_db,database_empty=self._database(target,request.owner_operation_id)
+            if source_db.fingerprint()==target_db.fingerprint(): raise _reject()
+            source_object,_=self._object(source)
+            target_object,bucket_empty=self._object(target,request.owner_operation_id)
+            if source_object.fingerprint()==target_object.fingerprint(): raise _reject()
+            return PhysicalObservation(request,source_db,target_db,source_object,target_object,_utc(self._clock()),
+                database_empty,bucket_empty,request.owner_operation_id,False,False)
+        except RecoveryError: raise
+        except Exception: raise _reject(503) from None
 
 
 def physical_receipt_digest(observation: PhysicalObservation):
