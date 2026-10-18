@@ -22,14 +22,14 @@ from dataclasses import dataclass, field, fields, is_dataclass, replace
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, AsyncIterator, Mapping, cast
+from typing import Annotated, Any, AsyncIterator, Literal, Mapping, cast
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response
 
@@ -161,10 +161,10 @@ from .retention import (
     RetentionContext, RetentionError, RetentionService,
 )
 from .recovery import (
-    BackupObjectInput, RecoveryContext, RecoveryError, RecoveryService,
+    BackupObjectInput, BackupSelectionInput, RecoveryContext, RecoveryError, RecoveryService,
     RestoreDestination, UnavailableRecoveryService,
 )
-from .recovery_postgres import MinioRecoveryStorageAdapter, PostgresRecoveryService
+from .recovery_postgres import MinioRecoveryStorageAdapter, PostgresBackupSelectionResolver, PostgresRecoveryService
 from .provider_settings import (
     PostgresProviderSettingsRepository,
     ProviderSettingsContext,
@@ -1246,19 +1246,42 @@ class SensitiveRetentionBody(BaseModel):
 
 
 class BackupObjectBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    object_id: str
-    checksum_sha256: str
-    byte_size: int
+    model_config = ConfigDict(extra="forbid", strict=True)
+    object_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+    checksum_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    byte_size: int = Field(ge=0)
 
 
-class BackupCreateBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    workspace_id: str
-    trigger: str
-    schema_revision: str
-    retention_watermark: str
-    objects: list[BackupObjectBody]
+class LegacyBackupCreateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    workspace_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+    trigger: Literal["automatic", "manual"]
+    schema_revision: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+    retention_watermark: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+    objects: list[BackupObjectBody] = Field(min_length=1)
+
+
+class SelectionBackupCreateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    workspace_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+    notebook_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+    trigger: Literal["manual"]
+    source_version_ids: list[Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")]] = Field(
+        min_length=1, max_length=100, json_schema_extra={"uniqueItems": True})
+
+    @model_validator(mode="after")
+    def unique_selection(self) -> SelectionBackupCreateBody:
+        if len(set(self.source_version_ids)) != len(self.source_version_ids):
+            raise ValueError("RECOVERY_INPUT_INVALID")
+        return self
+
+
+def _backup_one_of(schema: dict[str, Any]) -> None:
+    schema["oneOf"] = schema.pop("anyOf")
+
+
+class BackupCreateBody(RootModel[LegacyBackupCreateBody | SelectionBackupCreateBody]):
+    model_config = ConfigDict(json_schema_extra=_backup_one_of)
 
 
 class RestoreDestinationBody(BaseModel):
@@ -1924,6 +1947,7 @@ def _recovery_context(
     return RecoveryContext(
         principal.tenant_id, workspace_id, principal.user_id, request.state.trace_id,
         dependencies.settings.policy_version, organization_admin,
+        session_id=principal.session_id, device_id=principal.device_id,
     )
 
 
@@ -7301,14 +7325,38 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     ) -> JSONResponse:
         _require_query_keys(request, frozenset())
         _idempotency_key(idempotency_key)
+        body = body.root
         principal = _principal(request, dependencies)
         dependencies.authorization_service.authorize_action(
             principal=principal, workspace_id=body.workspace_id,
             action=Action.POLICY_MANAGE, trace_id=request.state.trace_id,
             policy_version=dependencies.settings.policy_version,
         )
+        context = _recovery_context(principal, body.workspace_id, request, dependencies)
+        # Reference service는 명시 주입된 역사적 domain/HTTP 대역에서만 소비한다.
+        # 실제 runtime의 신규/legacy는 metadata 확인 이후에도 capture port가 없으면 생성하지 않는다.
+        if isinstance(body, SelectionBackupCreateBody) or not isinstance(recovery_service, RecoveryService):
+            if dependencies.cloud_store is None:
+                raise RecoveryError("RESOURCE_UNAVAILABLE", 503)
+            resolver = PostgresBackupSelectionResolver(dependencies.cloud_store)
+            if isinstance(body, SelectionBackupCreateBody):
+                resolver.resolve(context, BackupSelectionInput(body.notebook_id, tuple(body.source_version_ids)),
+                    idempotency_key=idempotency_key)
+            else:
+                resolver.resolve_legacy(context, schema_revision=body.schema_revision,
+                    retention_watermark=body.retention_watermark,
+                    objects=tuple(BackupObjectInput(**item.model_dump()) for item in body.objects),
+                    idempotency_key=idempotency_key, trigger=body.trigger)
+            current_principal = _principal(request, dependencies)
+            if (current_principal.tenant_id, current_principal.user_id, current_principal.session_id, current_principal.device_id) != (
+                    principal.tenant_id, principal.user_id, principal.session_id, principal.device_id):
+                raise RecoveryError("CURRENT_ACCESS_DENIED", 403)
+            dependencies.authorization_service.authorize_action(
+                principal=current_principal, workspace_id=body.workspace_id, action=Action.POLICY_MANAGE,
+                trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version)
+            raise RecoveryError("RESOURCE_UNAVAILABLE", 503, retryable=False)
         view = recovery_service.create_backup(
-            _recovery_context(principal, body.workspace_id, request, dependencies),
+            context,
             trigger=body.trigger, schema_revision=body.schema_revision,
             retention_watermark=body.retention_watermark,
             objects=tuple(BackupObjectInput(**item.model_dump()) for item in body.objects),

@@ -167,6 +167,191 @@ async function click(view, label) {
   await view.act(async () => node.dispatchEvent(new MinimalEvent("click")));
 }
 
+const l1Sources = (changes = {}) => ({ notebookId: "notebook-a", bindingEtag: '"notebook-binding:1"',
+  sources: [{ sourceId: "source-a", versionId: "version-a" }, { sourceId: "source-b", versionId: "version-b" }], ...changes });
+function l1Port(overrides = {}) {
+  const calls = [], p = homePort();
+  Object.assign(p.api, {
+    listSelectionNotebooks: async (...args) => { calls.push(["notebooks", ...args]); return [{ id: "notebook-a", title: "Notebook" }]; },
+    getSelectionSources: async (...args) => { calls.push(["sources", ...args]); return l1Sources(); },
+    createBackupSelection: async (...args) => { calls.push(["post", ...args]); throw failure(503); },
+    ...overrides,
+  });
+  return { ...p, selectionCalls: calls };
+}
+async function l1Select(view) {
+  await click(view, "백업 자료 선택"); await click(view, "Notebook · notebook-a"); await click(view, "SourceVersion version-a");
+}
+async function l1Submit(view, count = 1) {
+  const form = findElements(view.container, n => n.tagName === "FORM")[0]; assert.ok(form, "L1 명시 요청 form");
+  await view.act(async () => { for (let i = 0; i < count; i++) form.dispatchEvent(new MinimalEvent("submit")); });
+}
+
+test("S44 L1 실제 React는 선택 전 POST0·명시 선택 후 정확4필드1회·503 성공0이다", async () => {
+  const p = l1Port(), view = await render("", p.api);
+  try {
+    assert.deepEqual(p.selectionCalls, []);
+    await l1Select(view); await click(view, "SourceVersion version-b"); await l1Submit(view, 2);
+    const posts = p.selectionCalls.filter(c => c[0] === "post"); assert.equal(posts.length, 1);
+    assert.deepEqual(posts[0][1], { workspace_id: "workspace-a", notebook_id: "notebook-a", trigger: "manual", source_version_ids: ["version-a", "version-b"] });
+    assert.ok(posts[0][2].length >= 16); assert.ok(posts[0][3].signal);
+    assert.match(visibleText(view.container), /독립 보존.*확인|준비/u);
+    assert.doesNotMatch(visibleText(view.container), /백업 생성 완료|백업 생성 성공/u);
+    assert.doesNotMatch(view.container.textContent, /S42_표시금지|schema_revision|retention_watermark/u);
+    await click(view, "자료 다시 조회"); assert.equal(p.selectionCalls.filter(c => c[0] === "post").length, 1);
+  } finally { await view.cleanup(); }
+});
+
+test("S44 L1 검증된 Notebook 제목은 짧은 React text이며 ID는 보조·없는 파일명은 생성0이다", async () => {
+  for (const title of ["현재 접근 가능한 자료 Notebook", '<img src=x onerror="unsafe()">', "긴제목".repeat(30)]) {
+    const p = l1Port({ listSelectionNotebooks: async () => [{ id: "notebook-a", title, raw_text: canary }],
+      getSelectionSources: async () => l1Sources({ sources: [{ sourceId: "source-a", versionId: "version-a", filename: canary }] }) });
+    const view = await render("", p.api);
+    try {
+      await click(view, "백업 자료 선택");
+      const short = [...title].slice(0, 60).join("") + ([...title].length > 60 ? "…" : "");
+      assert.ok(visibleText(view.container).includes(short));
+      await click(view, `${short} · notebook-a`);
+      assert.match(visibleText(view.container), /파일명을 제공하지.*SourceVersion ID/u);
+      assert.match(visibleText(view.container), /SourceVersion version-a/u);
+      assert.equal(findElements(view.container, node => ["IMG", "SCRIPT"].includes(node.tagName)).length, 0);
+      assert.doesNotMatch(view.container.textContent, /S42_표시금지/u);
+      assert.deepEqual(p.selectionCalls.filter(c => c[0] === "post"), []);
+    } finally { await view.cleanup(); }
+  }
+});
+
+test("S44 L1 변경된 binding·선택 Version 부재는 POST0이며 빈선택·101개도 거부한다", async () => {
+  for (const mode of ["binding", "missing", "empty", "101"]) {
+    let reads = 0;
+    const p = l1Port({ getSelectionSources: async () => {
+      ++reads;
+      if (mode === "101") return l1Sources({ sources: Array.from({ length: 101 }, (_, i) => ({ sourceId: `s-${i}`, versionId: `v-${i}` })) });
+      return l1Sources(reads > 1 ? (mode === "binding" ? { bindingEtag: '"notebook-binding:2"' } : mode === "missing" ? { sources: [] } : {}) : {});
+    } });
+    const view = await render("", p.api);
+    try {
+      await click(view, "백업 자료 선택"); await click(view, "Notebook · notebook-a");
+      if (["binding", "missing"].includes(mode)) await click(view, "SourceVersion version-a");
+      if (mode === "101") for (let i = 0; i < 101; i++) await click(view, `SourceVersion v-${i}`);
+      await l1Submit(view);
+      assert.equal(p.selectionCalls.filter(c => c[0] === "post").length, 0);
+      assert.match(visibleText(view.container), /100|다시 조회|선택/u);
+    } finally { await view.cleanup(); }
+  }
+});
+
+test("S44 L1 매 action의 세션·기기·권한 변경은 이전 선택 POST0이다", async () => {
+  for (const field of ["user_id", "tenant_id", "workspace_id", "session_id", "device_id", "recovery_operations"]) {
+    let changed = false;
+    const p = l1Port({ getSession: async () => session(changed ? { [field]: field === "recovery_operations" ? [] : "changed" } : {}) });
+    const view = await render("", p.api);
+    try {
+      await l1Select(view); changed = true; await l1Submit(view);
+      assert.equal(p.selectionCalls.filter(c => c[0] === "post").length, 0);
+      assert.doesNotMatch(visibleText(view.container), /SourceVersion version-a/u);
+    } finally { await view.cleanup(); }
+  }
+});
+
+test("S44 L1 늦은 선택 조회·POST는 pagehide/주소/API/unmount 뒤 복원·자동재송신0이다", async () => {
+  for (const stage of ["read", "post"]) for (const mode of ["pagehide", "target", "adapter", "unmount"]) {
+    const gate = deferred(); let signal, writes = 0;
+    const p = l1Port({ ...(stage === "read" ? { listSelectionNotebooks: async (_ws, options) => { signal = options.signal; return gate.promise; } }
+      : { createBackupSelection: async (_input, _key, options) => { ++writes; signal = options.signal; return gate.promise; } }) });
+    const view = await render("", p.api);
+    try {
+      if (stage === "read") await click(view, "백업 자료 선택"); else { await l1Select(view); await l1Submit(view); }
+      assert.ok(signal);
+      if (mode === "pagehide") await view.act(async () => view.browser.dispatchEvent(new MinimalEvent("pagehide")));
+      if (mode === "target") await view.navigate("?restore_request_id=restore-a");
+      if (mode === "adapter") await view.rerender(homePort().api);
+      if (mode === "unmount") await view.unmount();
+      assert.equal(signal.aborted, true);
+      await view.act(async () => gate.resolve(stage === "read" ? [{ id: "notebook-a" }] : response(backup({ backup_id: "must-not-publish" }))));
+      assert.equal(writes, stage === "post" ? 1 : 0);
+      assert.doesNotMatch(view.container.textContent, /must-not-publish|백업 생성 성공|백업 생성 완료/u);
+    } finally { gate.resolve([]); await view.cleanup(); }
+  }
+});
+
+test("S44 L1 201 ready 대역 응답만으로 독립 보존 성공·새목록행을 합성하지 않는다", async () => {
+  const p = l1Port({ createBackupSelection: async () => response(backup({ backup_id: "must-not-publish" })) });
+  const view = await render("", p.api);
+  try {
+    await l1Select(view); await l1Submit(view);
+    assert.match(visibleText(view.container), /독립 보존.*확인/u);
+    assert.doesNotMatch(view.container.textContent, /must-not-publish|백업 생성 성공|백업 생성 완료/u);
+  } finally { await view.cleanup(); }
+});
+
+test("S44 L1 기본adapter의 실제 React→HTTP 대역은 context선택·정확POST1·503 안전실패다", async () => {
+  const previous = globalThis.fetch, calls = [];
+  globalThis.fetch = async (url, init) => {
+    calls.push([url, init]);
+    assert.equal(init.credentials, "same-origin"); assert.equal(init.cache, "no-store");
+    if (url === "/bff/api/session") return Response.json(session().payload);
+    if (url.endsWith("/operations/status")) return Response.json({ data: operations(), meta: { workspace_id: "workspace-a", trace_id: "trace-a" } });
+    if (url === "/bff/api/backups?workspace_id=workspace-a") return Response.json(response([]).payload);
+    if (url.endsWith("/notebooks")) return Response.json({ data: [{ notebook_id: "notebook-a", title: "Notebook", source_count: 1, output_count: 0,
+      updated_at: "2026-10-18T00:00:00Z", status: "active", etag: '"notebook:1"' }], meta: { workspace_id: "workspace-a", trace_id: "trace-a" } });
+    if (url.endsWith("/notebooks/notebook-a/context")) return Response.json({ data: { notebook_id: "notebook-a", sources: [{ source_id: "source-a", source_version_id: "version-a" }],
+      knowledge_context_ids: [], conversation_thread_ids: [], studio_output_ids: [], output_version_ids: [], generation_settings_ids: [],
+      source_deletion_requests: [], conversation: null }, meta: { workspace_id: "workspace-a", trace_id: "trace-a" } }, { headers: { ETag: '"notebook-binding:1"' } });
+    assert.equal(url, "/bff/api/backups"); assert.equal(init.method, "POST");
+    assert.deepEqual(JSON.parse(init.body), { workspace_id: "workspace-a", notebook_id: "notebook-a", trigger: "manual", source_version_ids: ["version-a"] });
+    assert.ok(init.signal); assert.ok(init.headers["Idempotency-Key"].length >= 16);
+    return Response.json({ error: { code: canary } }, { status: 503 });
+  };
+  let view;
+  try {
+    view = await render(""); await l1Select(view); await l1Submit(view, 2);
+    assert.equal(calls.filter(([, init]) => init.method === "POST").length, 1);
+    assert.match(visibleText(view.container), /처리 결과를 확정할 수 없습니다.*독립 보존/u);
+    assert.doesNotMatch(view.container.textContent, /S42_표시금지|백업 생성 완료|백업 생성 성공/u);
+  } finally { if (view) await view.cleanup(); globalThis.fetch = previous; }
+});
+
+test("S44 L1 POST 직전 context 재조회 도중 세션 변경도 쓰기0이다", async () => {
+  let changed = false, reads = 0;
+  const p = l1Port({ getSession: async () => session(changed ? { device_id: "different-device" } : {}),
+    getSelectionSources: async () => { if (++reads === 2) changed = true; return l1Sources(); } });
+  const view = await render("", p.api);
+  try {
+    await l1Select(view); await l1Submit(view);
+    assert.equal(p.selectionCalls.filter(c => c[0] === "post").length, 0);
+    assert.doesNotMatch(visibleText(view.container), /SourceVersion version-a/u);
+  } finally { await view.cleanup(); }
+});
+
+test("S44 L1 malformed 목록/context는 선택·POST를 차단하고 413·409·통신실패는 자동retry0이다", async () => {
+  for (const input of ["duplicate-notebook", "unsafe-notebook", "duplicate-version", "wrong-notebook", "etag", "unsafe-version"]) {
+    const p = l1Port({ listSelectionNotebooks: async () => input === "duplicate-notebook" ? [{ id: "notebook-a", title: "Notebook" }, { id: "notebook-a", title: "Notebook" }]
+      : input === "unsafe-notebook" ? [{ id: "https://private.example", title: "Notebook" }] : [{ id: "notebook-a", title: "Notebook" }],
+      getSelectionSources: async () => l1Sources(input === "duplicate-version" ? { sources: [{ sourceId: "s1", versionId: "v1" }, { sourceId: "s2", versionId: "v1" }] }
+        : input === "wrong-notebook" ? { notebookId: "other-notebook" } : input === "etag" ? { bindingEtag: '"notebook-binding:0"' }
+          : { sources: [{ sourceId: "s1", versionId: "https://private.example" }] }) });
+    const view = await render("", p.api);
+    try {
+      await click(view, "백업 자료 선택");
+      if (!["duplicate-notebook", "unsafe-notebook"].includes(input)) await click(view, "Notebook · notebook-a");
+      assert.match(visibleText(view.container), /확인할 수 없습니다/u);
+      assert.equal(p.selectionCalls.filter(c => c[0] === "post").length, 0);
+      assert.equal(findElements(view.container, n => n.tagName === "FORM").length, 0);
+      assert.doesNotMatch(view.container.textContent, /private.example/u);
+    } finally { await view.cleanup(); }
+  }
+  for (const status of [413, 409, null]) {
+    let writes = 0;
+    const p = l1Port({ createBackupSelection: async () => { ++writes; throw failure(status); } });
+    const view = await render("", p.api);
+    try {
+      await l1Select(view); await l1Submit(view, 2); await click(view, "자료 다시 조회");
+      assert.equal(writes, 1); assert.doesNotMatch(view.container.textContent, /S42_표시금지|백업 생성 성공|백업 생성 완료/u);
+    } finally { await view.cleanup(); }
+  }
+});
+
 const restoreResponse = data => ({ payload: { data }, etag: `"restore:${data.request_id}:${data.version}"` });
 const pendingRestore = (changes = {}) => restore({ state: "preview_ready", version: 2, verification_digest: null,
   transitions: ["requested", "preview_ready"], ...changes });
@@ -733,7 +918,8 @@ test("S44 홈은 정상 session 전후를 확인하고 실제 5상태·빈 백�
     assert.deepEqual(p.calls, homeCalls);
     const text = visibleText(view.container);
     for (const code of ["PROVIDER_CONFIGURATION_REQUIRED", "API_READY", "STORAGE_READY", "SYNC_PENDING", "QUEUE_ATTENTION_REQUIRED"]) assert.ok(text.includes(code));
-    assert.match(text, /백업 생성·새 Preview 생성은 아직 연결되지 않았습니다/u);
+    assert.match(text, /백업은 자료 선택·요청만 연결.*독립 보존 준비 전에는 생성되지 않습니다/u);
+    assert.match(text, /새 Preview 생성은 아직 연결되지 않았습니다/u);
     assert.match(text, /기존 저장 요청은 정확 ID 상세에서 제한형 Execute·Cancel을 사용할 수 있습니다/u);
     assert.match(text, /독립 전체 DB 복원은 지원하지 않습니다/u);
     assert.doesNotMatch(text, /백업 생성·복구 실행은 아직 연결되지 않았습니다/u);

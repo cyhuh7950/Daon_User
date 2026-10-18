@@ -10,13 +10,19 @@ import threading
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterator, Mapping
+from types import SimpleNamespace
 
 from psycopg import Connection, Error
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool, PoolTimeout
 
-from daon_user_api.cloud_storage import CloudAccessContext
+from daon_user_api.cloud_storage import CloudAccessContext, CloudDatabaseError, PostgresCloudStore
+from daon_user_api.authorization import Action
+from daon_user_api.data_canon import canonical_json_bytes
+from daon_user_api.document_index_postgres import _source_access_allowed
+from daon_user_api.open_law_source_access import OpenLawAccessError, _current_auth_grant
+from daon_user_api.notification_source_access import _special_source_access_allowed
 from daon_user_api.object_queue import (
     MinioObjectStorageAdapter,
     ObjectKeyPolicy,
@@ -24,6 +30,7 @@ from daon_user_api.object_queue import (
 )
 from daon_user_api.recovery import (
     BackupObjectInput,
+    BackupSelectionInput,
     BackupView,
     RecoveryContext,
     RecoveryError,
@@ -32,10 +39,164 @@ from daon_user_api.recovery import (
     RestoreRequestView,
     _fingerprint,
     _safe,
+    _resolved_backup_metadata,
 )
 
 
 UTC = timezone.utc
+
+
+class PostgresBackupSelectionResolver:
+    """현재 접근 가능한 원본 metadata만 읽는다. capture/ready 행은 만들지 않는다."""
+
+    def __init__(self, cloud_store) -> None:
+        self._store = cloud_store
+
+    @staticmethod
+    def _metadata(connection, context, selection):
+        rows = connection.execute(
+            "SELECT sv.record_id,sv.source_id,sv.object_id,sv.canonical_json,sv.digest_sha256,"
+            "o.digest_sha256,o.byte_size FROM source_versions sv JOIN sources s ON "
+            "s.tenant_id=sv.tenant_id AND s.workspace_id=sv.workspace_id AND s.record_id=sv.source_id "
+            "JOIN object_records o ON o.tenant_id=sv.tenant_id AND o.workspace_id=sv.workspace_id "
+            "AND o.object_id=sv.object_id JOIN notebook_bindings b ON b.tenant_id=sv.tenant_id "
+            "AND b.workspace_id=sv.workspace_id AND b.binding_kind='source' AND b.record_id=sv.source_id "
+            "AND b.version_id=sv.record_id JOIN notebooks n ON n.tenant_id=b.tenant_id "
+            "AND n.workspace_id=b.workspace_id AND n.notebook_id=b.notebook_id "
+            "WHERE sv.tenant_id=%s AND sv.workspace_id=%s AND b.notebook_id=%s "
+            "AND sv.record_id=ANY(%s) AND o.status='completed' AND o.area='source' "
+            "AND s.state NOT IN ('expired','disabled','deleting','deleted') "
+            "AND NOT EXISTS(SELECT 1 FROM notebook_source_unbindings u WHERE u.tenant_id=b.tenant_id "
+            "AND u.workspace_id=b.workspace_id AND u.notebook_id=b.notebook_id "
+            "AND u.source_id=b.record_id AND u.source_version_id=b.version_id) "
+            "AND NOT EXISTS(SELECT 1 FROM notebook_deletion_requests d WHERE d.tenant_id=n.tenant_id "
+            "AND d.workspace_id=n.workspace_id AND d.notebook_id=n.notebook_id "
+            "AND d.state IN ('accepted','deleting','completed')) "
+            "AND NOT EXISTS(SELECT 1 FROM deletion_requests d WHERE d.tenant_id=s.tenant_id "
+            "AND d.workspace_id=s.workspace_id AND d.source_id=s.record_id "
+            "AND (d.source_active=false OR d.state='purged')) ORDER BY sv.record_id",
+            (context.tenant_id, context.workspace_id, selection.notebook_id, list(selection.source_version_ids)),
+        ).fetchall()
+        revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
+        # 같은 tenant/Workspace의 실제 원장 전체를 결정적으로 결속한다. client watermark는 사용하지 않는다.
+        deletions = connection.execute(
+            "SELECT request_id,source_id,state,version,source_active,purge_started,policy_version "
+            "FROM deletion_requests WHERE tenant_id=%s AND workspace_id=%s ORDER BY request_id",
+            (context.tenant_id, context.workspace_id),
+        ).fetchall()
+        holds = connection.execute(
+            "SELECT hold_id,source_id,state,version,policy_version FROM legal_holds "
+            "WHERE tenant_id=%s AND workspace_id=%s ORDER BY hold_id",
+            (context.tenant_id, context.workspace_id),
+        ).fetchall()
+        if revision is None:
+            raise RecoveryError("RESOURCE_UNAVAILABLE", 503)
+        return rows, str(revision[0]), _fingerprint((deletions, holds))
+
+    @staticmethod
+    def _access(connection, context, selection) -> None:
+        _current_auth_grant(context, connection, Action.POLICY_MANAGE)
+        for version in selection.source_version_ids:
+            if not _source_access_allowed(connection, context, version) or not _special_source_access_allowed(connection, context, version):
+                raise RecoveryError("BACKUP_UNAVAILABLE", 404)
+
+    @staticmethod
+    def _resolve_rows(context, selection, snapshot, *, trigger="manual"):
+        rows, revision, watermark = snapshot
+        bindings = []
+        for version_id, source_id, object_id, canonical, canonical_digest, digest, byte_size in rows:
+            if (not isinstance(canonical, dict) or hashlib.sha256(canonical_json_bytes(canonical)).hexdigest() != canonical_digest
+                    or canonical.get("object_id") != object_id or type(canonical.get("byte_size")) is not int
+                    or canonical["byte_size"] != byte_size):
+                raise RecoveryError("BACKUP_MANIFEST_INVALID", 409)
+            expected = canonical.get("text_sha256") if canonical.get("origin_kind") in {"website", "mcp_open_law"} else canonical.get("content_digest_sha256")
+            if digest != expected:
+                raise RecoveryError("BACKUP_MANIFEST_INVALID", 409)
+            bindings.append((version_id, source_id, BackupObjectInput(object_id, digest, byte_size), canonical_digest))
+        return _resolved_backup_metadata(context, selection, revision, watermark, tuple(bindings), trigger=trigger)
+
+    def _resolve(self, connection, context, selection, ready_revision, idempotency_key, *, trigger="manual"):
+        scoped = SimpleNamespace(tenant_id=context.tenant_id, workspace_id=context.workspace_id,
+            actor_id=context.actor_id, trace_id=context.trace_id, policy_version=context.policy_version,
+            notebook_id=selection.notebook_id)
+        self._access(connection, scoped, selection)
+        snapshot = self._metadata(connection, context, selection)
+        if snapshot[1] != ready_revision:
+            raise RecoveryError("RESOURCE_UNAVAILABLE", 503)
+        result = self._resolve_rows(context, selection, snapshot, trigger=trigger)
+        # READ COMMITTED의 마지막 재조회로 도중 ACL/삭제/해제/metadata 변경도 거부한다.
+        if self._metadata(connection, context, selection) != snapshot:
+            raise RecoveryError("BACKUP_MANIFEST_INVALID", 409)
+        self._access(connection, scoped, selection)
+        if idempotency_key is not None:
+            _safe(idempotency_key)
+            previous = connection.execute(
+                "SELECT request_fingerprint FROM backup_records WHERE tenant_id=%s AND workspace_id=%s "
+                "AND actor_id=%s AND idempotency_key=%s",
+                (context.tenant_id, context.workspace_id, context.actor_id, idempotency_key),
+            ).fetchone()
+            if previous is not None:
+                result.require_replay(str(previous[0]))
+        return result
+
+    @contextmanager
+    def _read(self, context):
+        if not context.organization_admin:
+            raise RecoveryError("CURRENT_ACCESS_DENIED", 403)
+        ready = self._store.readiness()
+        if ready.ready is not True or ready.schema_revision is None:
+            raise RecoveryError("RESOURCE_UNAVAILABLE", 503)
+        try:
+            with self._store._transaction(CloudAccessContext(context.tenant_id, context.workspace_id, context.actor_id, "recovery")) as connection:
+                connection.execute("SET LOCAL ROLE daon_app")
+                yield connection, ready.schema_revision
+        except RecoveryError:
+            raise
+        except OpenLawAccessError:
+            raise RecoveryError("CURRENT_ACCESS_DENIED", 403) from None
+        except (CloudDatabaseError, Error, PoolTimeout):
+            raise RecoveryError("RESOURCE_UNAVAILABLE", 503) from None
+
+    def resolve(self, context, selection, *, idempotency_key=None):
+        with self._read(context) as (connection, revision):
+            return self._resolve(connection, context, selection, revision, idempotency_key)
+
+    def resolve_legacy(self, context, *, schema_revision, retention_watermark, objects, idempotency_key=None, trigger="manual"):
+        if not objects or len({item.object_id for item in objects}) != len(objects):
+            raise RecoveryError("BACKUP_MANIFEST_INVALID", 400)
+        with self._read(context) as (connection, revision):
+            candidates = connection.execute(
+                "SELECT b.notebook_id,sv.record_id,sv.object_id FROM source_versions sv JOIN notebook_bindings b "
+                "ON b.tenant_id=sv.tenant_id AND b.workspace_id=sv.workspace_id AND b.binding_kind='source' "
+                "AND b.record_id=sv.source_id AND b.version_id=sv.record_id "
+                "WHERE sv.tenant_id=%s AND sv.workspace_id=%s AND sv.object_id=ANY(%s) "
+                "ORDER BY b.notebook_id,sv.record_id",
+                (context.tenant_id, context.workspace_id, [item.object_id for item in objects]),
+            ).fetchall()
+            grouped = {}
+            for notebook_id, version_id, object_id in candidates:
+                grouped.setdefault(notebook_id, []).append((version_id, object_id))
+            target_ids = {item.object_id for item in objects}
+            matches = []
+            for notebook, rows in grouped.items():
+                if {row[1] for row in rows} != target_ids or len(rows) != len(target_ids):
+                    continue
+                selection = BackupSelectionInput(notebook, tuple(row[0] for row in rows))
+                try:
+                    self._resolve(connection, context, selection, revision, None, trigger=trigger)
+                except RecoveryError as error:
+                    # 현재 비공개/해제/삭제만 제외한다. 장애와 정본 불일치는 실패를 유지한다.
+                    if error.status == 404 and error.code == "BACKUP_UNAVAILABLE":
+                        continue
+                    raise
+                matches.append(selection)
+            if len(matches) != 1:
+                raise RecoveryError("BACKUP_UNAVAILABLE", 404)
+            # 다른 후보 검사 중 권한/결속이 바뀔 수 있으므로 선택 후보도 마지막에 재검증한다.
+            selection = matches[0]
+            result = self._resolve(connection, context, selection, revision, idempotency_key, trigger=trigger)
+            result.require_legacy_match(schema_revision=schema_revision, retention_watermark=retention_watermark, objects=objects)
+            return result
 
 
 def _xor_bytes(left: bytes, right: bytes) -> bytes:

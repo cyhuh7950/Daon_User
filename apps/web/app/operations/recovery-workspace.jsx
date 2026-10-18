@@ -121,6 +121,122 @@ function projectedBackups(response, core) {
   return items;
 }
 
+function selectionNotebooks(rows) {
+  if (!Array.isArray(rows) || rows.length > 500 || rows.some(item => !safeId(item?.id)
+    || typeof item.title !== "string" || item.title.length < 1 || item.title.length > 120)
+    || new Set(rows.map(item => item.id)).size !== rows.length) throw new Error("INVALID_SELECTION");
+  return rows.map(item => ({ id: item.id, title: item.title }));
+}
+
+function selectionSources(value, notebookId) {
+  if (value?.notebookId !== notebookId || typeof value.bindingEtag !== "string"
+    || !/^"notebook-binding:[1-9][0-9]*"$/u.test(value.bindingEtag)
+    || !Array.isArray(value.sources) || value.sources.length > 1000
+    || value.sources.some(item => !safeId(item?.sourceId) || !safeId(item?.versionId))
+    || new Set(value.sources.map(item => item.versionId)).size !== value.sources.length) throw new Error("INVALID_SELECTION");
+  return { notebookId, bindingEtag: value.bindingEtag, sources: value.sources.map(item => ({ sourceId: item.sourceId, versionId: item.versionId })) };
+}
+
+function BackupSelectionPane({ api, auth, scope, scopeRef, generation, paused, owner, actionRef, invalidate }) {
+  const mounted = useRef(true);
+  const [pane, setPane] = useState({ phase: "closed", notebooks: [], selection: null, ids: [] });
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; if (actionRef.current?.selectionOwner === owner) actionRef.current.controller.abort(); };
+  }, [actionRef, owner]);
+  const allowed = auth?.operations.includes("cloud_backup_create");
+  const current = operation => mounted.current && scope.active && scopeRef.current === scope
+    && generation.current === owner.epoch && !paused.current && !operation.controller.signal.aborted
+    && actionRef.current === operation && window.location.search + window.location.hash === owner.address;
+  const begin = post => {
+    if (!allowed || (actionRef.current?.selectionPost && !actionRef.current.controller.signal.aborted)) return null;
+    actionRef.current?.controller.abort();
+    const operation = { controller: new AbortController(), selectionOwner: owner, selectionPost: post, password: "", token: "" };
+    actionRef.current = operation;
+    return operation;
+  };
+  const check = operation => { if (!current(operation)) throw new Error("STALE_SELECTION"); };
+  const checkSession = async operation => {
+    check(operation);
+    const next = actionSession(await api.getSession({ signal: operation.controller.signal }));
+    check(operation);
+    if (!sameSession(auth, next) || !next.operations.includes("cloud_backup_create")) {
+      invalidate("forbidden"); throw new Error("SELECTION_SESSION_CHANGED");
+    }
+  };
+  const fail = (operation, error) => {
+    if (!current(operation)) return;
+    if ([401, 403].includes(error?.status)) { invalidate(errorState(error)); return; }
+    setPane({ phase: "error", notebooks: [], selection: null, ids: [], message: operation.selectionPost
+      ? error?.status === 413 ? "선택 자료의 정본 합계는 512MiB 이하여야 합니다. 자료 다시 조회 후 선택해 주세요."
+        : "백업 처리 결과를 확정할 수 없습니다. 독립 보존 준비와 요청 상태를 다시 확인해 주세요. 자동으로 재전송하지 않습니다."
+      : "선택 자료를 확인할 수 없습니다. 자료 다시 조회 후 선택해 주세요." });
+  };
+  const finish = operation => { if (actionRef.current === operation) actionRef.current = null; };
+  const load = async notebookId => {
+    const operation = begin(false); if (!operation) return;
+    setPane({ phase: "loading", notebooks: [], selection: null, ids: [] });
+    try {
+      await checkSession(operation);
+      const notebooks = selectionNotebooks(await api.listSelectionNotebooks(auth.identity[2], { signal: operation.controller.signal }));
+      check(operation);
+      if (notebookId !== undefined && !notebooks.some(item => item.id === notebookId)) throw new Error("NOTEBOOK_CHANGED");
+      const selected = notebookId === undefined ? null : selectionSources(await api.getSelectionSources(auth.identity[2], notebookId,
+        { signal: operation.controller.signal }), notebookId);
+      await checkSession(operation);
+      setPane({ phase: "ready", notebooks, selection: selected, ids: [] });
+    } catch (error) { fail(operation, error); } finally { finish(operation); }
+  };
+  const submit = async () => {
+    if (pane.phase !== "ready" || !pane.selection || pane.ids.length < 1 || pane.ids.length > 100) return;
+    const operation = begin(true); if (!operation) return;
+    const selected = pane.selection, ids = [...pane.ids].sort();
+    setPane(value => ({ ...value, phase: "posting" }));
+    try {
+      await checkSession(operation);
+      const notebooks = selectionNotebooks(await api.listSelectionNotebooks(auth.identity[2], { signal: operation.controller.signal }));
+      check(operation);
+      if (!notebooks.some(item => item.id === selected.notebookId)) throw new Error("NOTEBOOK_CHANGED");
+      const fresh = selectionSources(await api.getSelectionSources(auth.identity[2], selected.notebookId,
+        { signal: operation.controller.signal }), selected.notebookId);
+      check(operation);
+      if (fresh.bindingEtag !== selected.bindingEtag || ids.some(id => {
+        const original = selected.sources.find(item => item.versionId === id);
+        return !original || !fresh.sources.some(item => item.versionId === id && item.sourceId === original.sourceId);
+      })) throw new Error("SELECTION_CHANGED");
+      await checkSession(operation);
+      check(operation);
+      await api.createBackupSelection({ workspace_id: auth.identity[2], notebook_id: selected.notebookId,
+        trigger: "manual", source_version_ids: ids }, secureUuid(), { signal: operation.controller.signal });
+      await checkSession(operation);
+      // 201/ready receipt만으로 보존 성공을 만들거나 새 목록 행을 합성하지 않는다.
+      setPane({ phase: "error", notebooks: [], selection: null, ids: [], message:
+        "요청 응답을 받았지만 독립 보존 완료는 확인되지 않았습니다. 기존 백업 목록에서 다시 확인해 주세요." });
+    } catch (error) { fail(operation, error); } finally { finish(operation); }
+  };
+  if (!allowed) return null;
+  if (pane.phase === "closed") return <button type="button" onClick={() => { void load(); }}>백업 자료 선택</button>;
+  return <div aria-label="백업 자료 선택">
+    <p>실제 Notebook과 현재 연결된 SourceVersion 1~100개만 선택합니다. 최대 정본 합계는 512MiB이며 서버가 해석합니다. 독립 보존 준비 전에는 생성되지 않습니다.</p>
+    {pane.message && <p role="status">{pane.message}</p>}
+    {["loading", "posting"].includes(pane.phase) && <p role="status">현재 세션과 선택 자료를 확인하고 있습니다.</p>}
+    {pane.phase !== "posting" && <button type="button" onClick={() => { void load(); }}>자료 다시 조회</button>}
+    {pane.phase === "ready" && pane.notebooks.length === 0 && <p>선택할 Notebook이 없습니다.</p>}
+    {pane.notebooks.map(item => <button type="button" key={item.id} disabled={pane.phase !== "ready"}
+      onClick={() => { void load(item.id); }}><span>{[...item.title].slice(0, 60).join("")}{[...item.title].length > 60 ? "…" : ""}</span><small> · {item.id}</small></button>)}
+    {pane.selection && <form onSubmit={event => { event.preventDefault(); void submit(); }}>
+      <p>Notebook {pane.selection.notebookId} · 선택 {pane.ids.length}건</p>
+      <p>현재 Notebook context는 파일명을 제공하지 않아 SourceVersion ID로 구분합니다.</p>
+      {pane.selection.sources.length === 0 && <p>현재 연결된 SourceVersion이 없습니다.</p>}
+      {pane.selection.sources.map(item => <button type="button" key={item.versionId} aria-pressed={pane.ids.includes(item.versionId)}
+        disabled={pane.phase !== "ready"} onClick={() => setPane(value => ({ ...value,
+          ids: value.ids.includes(item.versionId) ? value.ids.filter(id => id !== item.versionId) : [...value.ids, item.versionId] }))}>
+        SourceVersion {item.versionId}</button>)}
+      <button type="submit" disabled={pane.phase !== "ready" || pane.ids.length < 1 || pane.ids.length > 100}>선택 자료 백업 요청</button>
+    </form>}
+  </div>;
+}
+
 export function RecoveryOperationsWorkspace({ api = recoveryApi } = {}) {
   const targetRef = useRef(null);
   const generation = useRef(0);
@@ -184,7 +300,8 @@ export function RecoveryOperationsWorkspace({ api = recoveryApi } = {}) {
             Promise.resolve().then(() => api.listBackups(before[2])),
           ]);
           if (!current()) return;
-          const after = sessionCore(await api.getSession());
+          const afterResponse = await api.getSession();
+          const after = sessionCore(afterResponse);
           if (!current()) return;
           if (!after || !before.every((value, index) => value === after[index])) { publish("forbidden"); return; }
           // 인증 거부는 한 영역만의 장애로 취급해 다른 본문을 남기지 않는다.
@@ -194,6 +311,7 @@ export function RecoveryOperationsWorkspace({ api = recoveryApi } = {}) {
           const data = status.status === "fulfilled" && status.value?.workspace_id === before[2] ? status.value : null;
           const items = backups.status === "fulfilled" ? projectedBackups(backups.value, before) : null;
           publish("home", null, {
+            actionSession: sameSession(actionSession(beforeResponse), actionSession(afterResponse)) ? actionSession(afterResponse) : null,
             status: data, statusError: data ? null : errorState(status.reason),
             items, backupsError: items ? null : errorState(backups.reason),
           });
@@ -322,7 +440,13 @@ export function RecoveryOperationsWorkspace({ api = recoveryApi } = {}) {
       <section ref={targetRef} className="operations-card" hidden={!ready} inert={!ready}
         aria-label={state === "home" ? "현재 운영 상태와 백업 목록" : "선택한 복구 대상"}>
         {ready && state === "home" && <>
-          <p>백업 생성·새 Preview 생성은 아직 연결되지 않았습니다. 기존 저장 요청은 정확 ID 상세에서 제한형 Execute·Cancel을 사용할 수 있습니다. 독립 전체 DB 복원은 지원하지 않습니다.</p>
+          <p>백업은 자료 선택·요청만 연결되며 독립 보존 준비 전에는 생성되지 않습니다. 새 Preview 생성은 아직 연결되지 않았습니다. 기존 저장 요청은 정확 ID 상세에서 제한형 Execute·Cancel을 사용할 수 있습니다. 독립 전체 DB 복원은 지원하지 않습니다.</p>
+          <BackupSelectionPane api={api} auth={loaded.home.actionSession} scope={scope} scopeRef={scopeRef}
+            generation={generation} paused={paused} owner={loaded} actionRef={actionRef} invalidate={nextState => {
+              ++generation.current;
+              if (targetRef.current) { targetRef.current.hidden = true; targetRef.current.inert = true; }
+              setLoaded({ ...loaded, state: nextState, target: null, home: null });
+            }} />
           <h2>현재 Workspace 운영 상태</h2>
           {loaded.home.status ? <>
             <p>전체 상태: {STATUS_NAMES[loaded.home.status.overall_status]} · 확인 시각: {loaded.home.status.checked_at}</p>

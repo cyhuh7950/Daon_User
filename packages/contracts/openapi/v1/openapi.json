@@ -4535,7 +4535,7 @@
         "summary": "조직 관리자 수동 또는 자동 Backup 요청", "x-implementation-owner": "R1-M5-07",
         "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BackupCreateRequest" } } } },
-        "responses": { "201": { "$ref": "#/components/responses/BackupResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" } }
+        "responses": { "201": { "$ref": "#/components/responses/BackupResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "413": { "$ref": "#/components/responses/SafeFailure" }, "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" } }
       },
       "get": {
         "operationId": "listBackups", "tags": ["Recovery"],
@@ -8427,6 +8427,24 @@
         }
       },
       "BackupCreateRequest": {
+        "oneOf": [
+          { "$ref": "#/components/schemas/BackupLegacyCreateRequest" },
+          { "$ref": "#/components/schemas/BackupSelectionCreateRequest" }
+        ]
+      },
+      "BackupSelectionCreateRequest": {
+        "type": "object", "additionalProperties": false,
+        "description": "Server-resolved canonical selection; at most 512 MiB canonical bytes. No capture-ready result without independent DB/Object preservation.",
+        "required": ["workspace_id", "notebook_id", "trigger", "source_version_ids"],
+        "properties": {
+          "workspace_id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}(?![\\s\\S])" },
+          "notebook_id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}(?![\\s\\S])" },
+          "trigger": { "type": "string", "enum": ["manual"] },
+          "source_version_ids": { "type": "array", "minItems": 1, "maxItems": 100, "uniqueItems": true,
+            "items": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}(?![\\s\\S])" } }
+        }
+      },
+      "BackupLegacyCreateRequest": {
         "type": "object", "additionalProperties": false,
         "required": ["workspace_id", "trigger", "schema_revision", "retention_watermark", "objects"],
         "properties": {

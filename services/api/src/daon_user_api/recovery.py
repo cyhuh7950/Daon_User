@@ -43,6 +43,8 @@ class RecoveryContext:
     trace_id: str
     policy_version: str
     organization_admin: bool = False
+    session_id: str | None = None
+    device_id: str | None = None
 
     def __post_init__(self) -> None:
         for value in (
@@ -52,6 +54,9 @@ class RecoveryContext:
             _safe(value)
         if not isinstance(self.organization_admin, bool):
             raise RecoveryError("RECOVERY_CONTEXT_INVALID", 400)
+        for value in (self.session_id, self.device_id):
+            if value is not None:
+                _safe(value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +73,76 @@ class BackupObjectInput:
             raise RecoveryError("BACKUP_MANIFEST_INVALID", 400)
         if not isinstance(self.byte_size, int) or isinstance(self.byte_size, bool) or self.byte_size < 0:
             raise RecoveryError("BACKUP_MANIFEST_INVALID", 400)
+
+
+@dataclass(frozen=True, slots=True)
+class BackupSelectionInput:
+    notebook_id: str
+    source_version_ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        _safe(self.notebook_id)
+        if not isinstance(self.source_version_ids, tuple) or not 1 <= len(self.source_version_ids) <= 100:
+            raise RecoveryError("RECOVERY_INPUT_INVALID", 400)
+        for value in self.source_version_ids:
+            _safe(value)
+        if len(set(self.source_version_ids)) != len(self.source_version_ids):
+            raise RecoveryError("RECOVERY_INPUT_INVALID", 400)
+        object.__setattr__(self, "source_version_ids", tuple(sorted(self.source_version_ids)))
+
+
+@dataclass(frozen=True, slots=True)
+class _ResolvedBackupSelection:
+    """Internal metadata receipt, not a public DTO or capture/ready receipt."""
+    selection: BackupSelectionInput
+    schema_revision: str
+    retention_watermark: str
+    objects: tuple[BackupObjectInput, ...]
+    fingerprint: str
+
+    def require_replay(self, fingerprint: str) -> None:
+        if fingerprint != self.fingerprint:
+            raise RecoveryError("IDEMPOTENCY_KEY_REUSED", 409)
+
+    def require_legacy_match(self, *, schema_revision: str, retention_watermark: str,
+                             objects: tuple[BackupObjectInput, ...]) -> None:
+        if (schema_revision != self.schema_revision or retention_watermark != self.retention_watermark
+                or len({item.object_id for item in objects}) != len(objects)
+                or tuple(sorted(objects, key=lambda item: item.object_id)) != self.objects):
+            raise RecoveryError("BACKUP_MANIFEST_INVALID", 409)
+
+
+def _resolved_backup_metadata(context: RecoveryContext, selection: BackupSelectionInput,
+                              schema_revision: str, retention_watermark: str,
+                              bindings: tuple[tuple[str, str, BackupObjectInput, str], ...],
+                              *, trigger: str = "manual") -> _ResolvedBackupSelection:
+    _safe(schema_revision)
+    _safe(retention_watermark)
+    if trigger not in {"manual", "automatic"}:
+        raise RecoveryError("RECOVERY_INPUT_INVALID", 400)
+    if not context.organization_admin:
+        raise RecoveryError("CURRENT_ACCESS_DENIED", 403)
+    ordered = tuple(sorted(bindings, key=lambda item: item[0]))
+    if tuple(item[0] for item in ordered) != selection.source_version_ids:
+        raise RecoveryError("BACKUP_UNAVAILABLE", 404)
+    objects: dict[str, BackupObjectInput] = {}
+    canonical_bindings = []
+    for version_id, source_id, item, canonical_digest in ordered:
+        _safe(source_id)
+        if not isinstance(canonical_digest, str) or not _SHA256.fullmatch(canonical_digest):
+            raise RecoveryError("BACKUP_MANIFEST_INVALID", 409)
+        if item.object_id in objects and objects[item.object_id] != item:
+            raise RecoveryError("BACKUP_MANIFEST_INVALID", 409)
+        objects[item.object_id] = item
+        canonical_bindings.append((version_id, source_id, item.object_id, item.checksum_sha256, item.byte_size, canonical_digest))
+    canonical_objects = tuple(objects[key] for key in sorted(objects))
+    if sum(item[2].byte_size for item in ordered) > 512 * 1024 * 1024:
+        raise RecoveryError("BACKUP_SELECTION_TOO_LARGE", 413)
+    fingerprint = _fingerprint(("backup-selection-v1", context.tenant_id, context.workspace_id,
+        context.actor_id, context.session_id, context.device_id, context.policy_version,
+        selection.notebook_id, trigger, selection.source_version_ids, canonical_bindings,
+        schema_revision, retention_watermark))
+    return _ResolvedBackupSelection(selection, schema_revision, retention_watermark, canonical_objects, fingerprint)
 
 
 @dataclass(frozen=True, slots=True)

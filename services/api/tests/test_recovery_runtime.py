@@ -3,11 +3,73 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from contextlib import nullcontext
 
 from daon_user_api.runtime import RuntimeSettings, build_dependencies, create_app
 
 
 class RecoveryRuntimeContractTests(unittest.TestCase):
+    def test_l1_legacy_workspace_shape_has_no_notebook_and_exposes_multinotebook_resolver_gap(self) -> None:
+        from daon_user_api.recovery import BackupObjectInput, RecoveryContext, RecoveryError
+        from daon_user_api.recovery_postgres import PostgresBackupSelectionResolver
+        from daon_user_api.runtime import BackupCreateBody, LegacyBackupCreateBody
+        objects = [dict(object_id=f"object-{i}", checksum_sha256="a" * 64, byte_size=1) for i in range(101)]
+        # 기존 Desktop 소비도 Notebook 필드 없이 workspace의 objects 집합을 전달한다.
+        body = BackupCreateBody.model_validate(dict(workspace_id="workspace-a", trigger="manual",
+            schema_revision="revision-a", retention_watermark="watermark-a", objects=objects))
+        self.assertIsInstance(body.root, LegacyBackupCreateBody)
+        self.assertEqual(len(body.root.objects), 101)
+        self.assertNotIn("notebook_id", body.model_dump())
+        queries = []
+        class Reader:
+            def execute(self, sql, params=()):
+                queries.append(sql)
+                candidates = [("notebook-a", "version-a", "object-a"), ("notebook-b", "version-b", "object-b")]
+                return SimpleNamespace(fetchall=lambda: candidates, fetchone=lambda: None)
+        store = SimpleNamespace(readiness=lambda: SimpleNamespace(ready=True, schema_revision="revision-a"),
+            _transaction=lambda context: nullcontext(Reader()))
+        resolver = PostgresBackupSelectionResolver(store)
+        ctx = RecoveryContext("tenant-a", "workspace-a", "actor-a", "trace-a", "policy-a", True)
+        with self.assertRaises(RecoveryError) as caught:
+            resolver.resolve_legacy(ctx, schema_revision="revision-a", retention_watermark="watermark-a",
+                objects=(BackupObjectInput("object-a", "a" * 64, 1), BackupObjectInput("object-b", "a" * 64, 1)))
+        self.assertEqual((caught.exception.code, caught.exception.status), ("BACKUP_UNAVAILABLE", 404))
+        self.assertFalse(any(query.startswith("SELECT sv.record_id") for query in queries),
+                         "현재 단일Notebook 가정은 정본/ACL 검증 전에 유효한 workspace 묶음을 거부하는 미해결 경계")
+
+    def test_l1_context_retention_preserves_existing_fields_without_recovery_scope(self) -> None:
+        from daon_user_api.identity import IdentityPrincipal
+        from daon_user_api.retention import RetentionContext
+        from daon_user_api.runtime import _retention_context
+        principal = IdentityPrincipal("actor-a", "session-a", "device-a", "tenant-a")
+        request = SimpleNamespace(state=SimpleNamespace(trace_id="trace-a"))
+        dependencies = SimpleNamespace(settings=SimpleNamespace(policy_version="policy-a"))
+        self.assertEqual(_retention_context(principal, "workspace-a", request, dependencies),
+                         RetentionContext("tenant-a", "workspace-a", "actor-a", "trace-a", "policy-a", False))
+
+    def test_l1_context_recovery_binds_exact_principal_session_and_device(self) -> None:
+        from daon_user_api.identity import IdentityPrincipal
+        from daon_user_api.runtime import _recovery_context
+        principal = IdentityPrincipal("actor-a", "session-a", "device-a", "tenant-a")
+        request = SimpleNamespace(state=SimpleNamespace(trace_id="trace-a"))
+        dependencies = SimpleNamespace(settings=SimpleNamespace(policy_version="policy-a"))
+        result = _recovery_context(principal, "workspace-a", request, dependencies)
+        self.assertEqual((result.tenant_id, result.actor_id, result.workspace_id, result.session_id, result.device_id),
+                         (principal.tenant_id, principal.user_id, "workspace-a", principal.session_id, principal.device_id))
+
+    def test_l1_exact_selection_body_and_runtime_one_of(self) -> None:
+        from daon_user_api.runtime import BackupCreateBody
+        body = {"workspace_id": "workspace-a", "notebook_id": "notebook-a", "trigger": "manual",
+                "source_version_ids": ["version-a"]}
+        self.assertEqual(BackupCreateBody.model_validate(body).model_dump(), body)
+        for extra in ({"objects": []}, {"schema_revision": "forged"}, {"unexpected": "hidden"}):
+            with self.assertRaises(ValueError):
+                BackupCreateBody.model_validate({**body, **extra})
+        schema = BackupCreateBody.model_json_schema()
+        self.assertEqual(len(schema["oneOf"]), 2)
+        self.assertNotIn("anyOf", schema)
+
     def test_runtime_registers_exact_approved_cloud_recovery_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             dependencies = build_dependencies(RuntimeSettings.for_test(

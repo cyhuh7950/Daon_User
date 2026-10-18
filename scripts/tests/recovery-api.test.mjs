@@ -5,6 +5,37 @@ import test from "node:test";
 import { createBffProxy } from "../../apps/web/lib/bff-api-proxy.js";
 import { parseRecoverySessionContext, recoveryApi, resolveRecoverySession } from "../../apps/web/lib/recovery-api.js";
 
+test("S44 L1 Web은 기존 Notebook/context를 읽고 새 정확4필드만 same-origin POST한다", async () => {
+  const previous = globalThis.fetch, calls = [], controller = new AbortController();
+  globalThis.fetch = async (url, init) => {
+    calls.push([url, init]);
+    if (url.endsWith("/notebooks")) return Response.json({ data: [{ notebook_id: "notebook-a", title: "Notebook", source_count: 1, output_count: 0,
+      updated_at: "2026-10-18T00:00:00Z", status: "active", etag: '"notebook:1"' }], meta: { workspace_id: "workspace-a", trace_id: "trace-a" } });
+    if (url.endsWith("/context")) return Response.json({ data: { notebook_id: "notebook-a", sources: [{ source_id: "source-a", source_version_id: "version-a" }],
+      knowledge_context_ids: [], conversation_thread_ids: [], studio_output_ids: [], output_version_ids: [], generation_settings_ids: [],
+      source_deletion_requests: [], conversation: null }, meta: { workspace_id: "workspace-a", trace_id: "trace-a" } }, { headers: { ETag: '"notebook-binding:1"' } });
+    return Response.json({ error: { code: "RESOURCE_UNAVAILABLE" } }, { status: 503 });
+  };
+  try {
+    assert.deepEqual(await recoveryApi.listSelectionNotebooks("workspace-a", { signal: controller.signal }), [{ id: "notebook-a", title: "Notebook" }]);
+    assert.deepEqual(await recoveryApi.getSelectionSources("workspace-a", "notebook-a", { signal: controller.signal }), {
+      notebookId: "notebook-a", bindingEtag: '"notebook-binding:1"', sources: [{ sourceId: "source-a", versionId: "version-a" }] });
+    const input = { workspace_id: "workspace-a", notebook_id: "notebook-a", trigger: "manual", source_version_ids: ["version-a"] };
+    await assert.rejects(recoveryApi.createBackupSelection(input, "l1-create-key-00001", { signal: controller.signal }), e => e.status === 503);
+    assert.deepEqual(calls.map(([url]) => url), ["/bff/api/workspaces/workspace-a/notebooks", "/bff/api/workspaces/workspace-a/notebooks/notebook-a/context", "/bff/api/backups"]);
+    for (const [, init] of calls) assert.deepEqual([init.credentials, init.cache, init.signal], ["same-origin", "no-store", controller.signal]);
+    assert.deepEqual(JSON.parse(calls[2][1].body), input);
+    assert.equal(calls[2][1].headers["Idempotency-Key"], "l1-create-key-00001");
+    const count = calls.length;
+    for (const change of [{ schema_revision: "forged" }, { objects: [] }, { source_version_ids: [] },
+      { source_version_ids: ["version-a", "version-a"] }, { source_version_ids: Array.from({ length: 101 }, (_, i) => `v-${i}`) },
+      { source_version_ids: [1] }, { notebook_id: "../invalid" }, { trigger: "automatic" }]) {
+      await assert.rejects(async () => recoveryApi.createBackupSelection({ ...input, ...change }, "l1-create-key-00001"));
+    }
+    assert.equal(calls.length, count, "거부 입력은 fetch0");
+  } finally { globalThis.fetch = previous; }
+});
+
 test("S44 fixpass Session helper는 기존 무인자 GET과 optional AbortSignal을 함께 유지한다", async () => {
   const previous = globalThis.fetch, controller = new AbortController(), calls = [];
   try {

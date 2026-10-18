@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import re
 import unittest
 from pathlib import Path
 
-from daon_user_api.runtime import _recovery_public_error_code
+from pydantic import ValidationError
+
+from daon_user_api.runtime import BackupCreateBody, _recovery_public_error_code
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -21,6 +24,50 @@ PATHS = {
 
 
 class RecoveryContractTests(unittest.TestCase):
+    def test_l1_selection_id_schema_rejects_unsafe_and_over_128_without_changing_opaque_id(self) -> None:
+        schemas = json.loads(OPENAPI.read_text(encoding="utf-8"))["components"]["schemas"]
+        selected = schemas["BackupSelectionCreateRequest"]["properties"]
+        self.assertEqual(schemas["OpaqueId"]["maxLength"], 256)
+        self.assertNotIn("pattern", schemas["OpaqueId"])
+        for field, reference in (("workspace_id", selected["workspace_id"]), ("notebook_id", selected["notebook_id"]),
+                                 ("source_version_ids", selected["source_version_ids"]["items"])):
+            schema = schemas[reference["$ref"].rsplit("/", 1)[1]] if "$ref" in reference else reference
+            self.assertEqual((schema["type"], schema["minLength"], schema["maxLength"]), ("string", 1, 128))
+            # 승인된 string/length/pattern 세 facet을 실제 입력에 적용하는 집중 검사다.
+            def accepts(value):
+                return (isinstance(value, str) and schema["minLength"] <= len(value) <= schema["maxLength"]
+                        and re.search(schema["pattern"], value) is not None)
+            def runtime_accepts(value):
+                body = {"workspace_id": "workspace-a", "notebook_id": "notebook-a", "trigger": "manual",
+                        "source_version_ids": ["version-a"]}
+                body[field] = [value] if field == "source_version_ids" else value
+                try:
+                    BackupCreateBody.model_validate(body)
+                    return True
+                except ValidationError:
+                    return False
+            for value in ("a", "a" * 128, "Id_1.a:b-c"):
+                self.assertTrue(accepts(value))
+                self.assertEqual(accepts(value), runtime_accepts(value))
+            for value in ("", "a" * 129, "../path", "with space", "한글", "-bad", "a\n", "a\x00", 1, None):
+                with self.subTest(value_type=type(value).__name__, length=len(value) if isinstance(value, str) else None):
+                    self.assertFalse(accepts(value))
+                    self.assertEqual(accepts(value), runtime_accepts(value))
+
+    def test_l1_static_contract_has_exact_disjoint_one_of_and_selection_bounds(self) -> None:
+        document = json.loads(OPENAPI.read_text(encoding="utf-8"))
+        schema = document["components"]["schemas"]["BackupCreateRequest"]
+        self.assertEqual(len(schema["oneOf"]), 2)
+        branches = [document["components"]["schemas"][item["$ref"].rsplit("/", 1)[1]] for item in schema["oneOf"]]
+        selected = next(branch for branch in branches if "source_version_ids" in branch["properties"])
+        self.assertFalse(selected["additionalProperties"])
+        self.assertEqual(set(selected["required"]), {"workspace_id", "notebook_id", "trigger", "source_version_ids"})
+        self.assertEqual(set(selected["properties"]), set(selected["required"]))
+        self.assertEqual(selected["properties"]["trigger"]["enum"], ["manual"])
+        ids = selected["properties"]["source_version_ids"]
+        self.assertEqual((ids["minItems"], ids["maxItems"], ids["uniqueItems"]), (1, 100, True))
+        self.assertIn("413", document["paths"]["/api/v1/backups"]["post"]["responses"])
+
     def test_migration_declares_scoped_fixture_only_immutable_contract(self) -> None:
         source = MIGRATION.read_text(encoding="utf-8")
         for token in (

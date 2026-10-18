@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from dataclasses import replace
+from unittest.mock import patch
 from pathlib import Path
 
 import httpx
@@ -34,8 +36,38 @@ from test_identity_support import (
 
 
 class RecoveryRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
+    async def test_l1_durable_runtime_legacy_without_capture_is_503_not_reference_ready(self) -> None:
+        from daon_user_api.recovery import UnavailableRecoveryService
+        unavailable = UnavailableRecoveryService()
+        isolated_dependencies = replace(self.dependencies, recovery_service=unavailable, cloud_store=None)
+        # 기존 별도 Reference 7route 시험의 성공을 durable runtime fallback으로 사용하지 않는다.
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(isolated_dependencies)),
+            base_url="https://app.example.com", cookies={WEB_SESSION_COOKIE: self.credentials.access_token}) as client:
+            with patch.object(unavailable, "create_backup", side_effect=AssertionError("inventory-only create forbidden")) as create:
+                result = await client.post("/api/v1/backups", headers={"Idempotency-Key": "l1-legacy-no-capture"},
+                    json={"workspace_id": self.workspace_id, "trigger": "manual", "schema_revision": "0006",
+                          "retention_watermark": "fixture-watermark", "objects": [{"object_id": "fixture-object-http", "checksum_sha256": "a" * 64, "byte_size": 128}]})
+                self.assertEqual(result.status_code, 503)
+                self.assertEqual(result.json()["error"]["code"], "RESOURCE_UNAVAILABLE")
+                create.assert_not_called()
+        self.assertEqual(self.recovery._repository.backups, {})
+
+    async def test_l1_selection_without_capture_never_uses_inventory_ready_fallback(self) -> None:
+        body = {"workspace_id": self.workspace_id, "notebook_id": "notebook-a", "trigger": "manual",
+                "source_version_ids": ["version-a"]}
+        result = await self.client.post("/api/v1/backups", headers={"Idempotency-Key": "l1-no-capture"}, json=body)
+        self.assertEqual(result.status_code, 503)
+        self.assertEqual(result.json()["error"]["code"], "RESOURCE_UNAVAILABLE")
+        self.assertEqual(self.recovery._repository.backups, {})
+        for changes in ({"source_version_ids": []}, {"source_version_ids": ["v"] * 2},
+                        {"source_version_ids": [f"v-{i}" for i in range(101)]}, {"source_version_ids": "v"},
+                        {"source_version_ids": [1]}, {"trigger": "automatic"}, {"schema_revision": "forged"}):
+            result = await self.client.post("/api/v1/backups", headers={"Idempotency-Key": "l1-invalid"}, json={**body, **changes})
+            self.assertEqual(result.status_code, 400)
+        self.assertEqual(self.recovery._repository.backups, {})
+
     async def asyncSetUp(self) -> None:
-        self.directory = tempfile.TemporaryDirectory()
+        self.directory = tempfile.TemporaryDirectory(prefix="daon-s44-l1-runtime-")
         self.db_path = Path(self.directory.name) / "runtime.sqlite3"
         self.audit = AuditEventStore()
         self.identity, self.identity_repository, _, self.clock = create_service(
