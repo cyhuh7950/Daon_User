@@ -5,6 +5,80 @@ import test from "node:test";
 import { createBffProxy } from "../../apps/web/lib/bff-api-proxy.js";
 import { parseRecoverySessionContext, recoveryApi, resolveRecoverySession } from "../../apps/web/lib/recovery-api.js";
 
+test("S44 fixpass Session helper는 기존 무인자 GET과 optional AbortSignal을 함께 유지한다", async () => {
+  const previous = globalThis.fetch, controller = new AbortController(), calls = [];
+  try {
+    globalThis.fetch = async (url, init) => { calls.push([url, init]); return Response.json({ data: {} }); };
+    await recoveryApi.getSession();
+    await recoveryApi.getSession({ signal: controller.signal });
+    for (const [url, init] of calls) {
+      assert.equal(url, "/bff/api/session");
+      assert.deepEqual([init.method, init.credentials, init.cache], ["GET", "same-origin", "no-store"]);
+    }
+    assert.equal(calls[0][1].signal, undefined);
+    assert.equal(calls[1][1].signal, controller.signal);
+  } finally { globalThis.fetch = previous; }
+});
+
+test("S44 기존복구 Step-up은 정확 요청에 새 비밀번호 인증과 abort를 결속한다", async () => {
+  const previous = globalThis.fetch, calls = [], controller = new AbortController();
+  try {
+    globalThis.fetch = async (url, init) => {
+      calls.push([url, init]);
+      return Response.json({ data: { step_up_authorization: "synthetic-execute-token",
+        issued_at: "2026-10-18T00:00:00Z", expires_at: "2026-10-18T00:05:00Z" } });
+    };
+    assert.equal(typeof recoveryApi.issueRestoreStepUp, "function");
+    const token = await recoveryApi.issueRestoreStepUp("restore-a", "synthetic-password", {
+      idempotencyKey: "restore-step-up-key-0001", signal: controller.signal,
+    });
+    assert.equal(token, "synthetic-execute-token");
+    const [url, init] = calls[0];
+    assert.equal(url, "/bff/api/session/step-up");
+    assert.deepEqual(JSON.parse(init.body), { action_group: "permanent_delete_or_restore_rollback",
+      target_id: "restore-a", password: "synthetic-password", ttl_seconds: 300 });
+    assert.deepEqual([init.method, init.credentials, init.cache, init.signal], ["POST", "same-origin", "no-store", controller.signal]);
+    assert.equal(init.headers["Idempotency-Key"], "restore-step-up-key-0001");
+  } finally { globalThis.fetch = previous; }
+});
+
+test("S44 기존복구 Step-up 잘못된 입력·응답을 거부하고 HTTP 오류 status를 보존한다", async () => {
+  const previous = globalThis.fetch; let calls = 0;
+  try {
+    globalThis.fetch = async () => { ++calls; return Response.json({ data: {} }); };
+    for (const [id, password, key] of [["https://private", "synthetic-password", "key-stepup-0000001"],
+      ["restore-a\n", "synthetic-password", "key-stepup-0000001"],
+      ["restore-a", "synthetic-password", "key-stepup-0000001\n"],
+      ["restore-a", "short", "key-stepup-0000001"], ["restore-a", "x".repeat(1025), "key-stepup-0000001"],
+      ["restore-a", "synthetic-password", "bad"]]) {
+      await assert.rejects(async () => recoveryApi.issueRestoreStepUp(id, password, { idempotencyKey: key }));
+    }
+    assert.equal(calls, 0);
+    for (const value of [null, "", "x".repeat(4097), {}, "bad\ntoken"]) {
+      globalThis.fetch = async () => Response.json({ data: { step_up_authorization: value } });
+      await assert.rejects(async () => recoveryApi.issueRestoreStepUp("restore-a", "synthetic-password", { idempotencyKey: "key-stepup-0000001" }));
+    }
+    for (const status of [401, 403, 503]) {
+      globalThis.fetch = async () => Response.json({ error: { code: "STEP_UP_REQUIRED" } }, { status });
+      await assert.rejects(async () => recoveryApi.issueRestoreStepUp("restore-a", "synthetic-password", { idempotencyKey: "key-stepup-0000001" }), e => e.status === status);
+    }
+  } finally { globalThis.fetch = previous; }
+});
+
+test("S44 기존복구 정확 GET·Execute·Cancel의 optional AbortSignal과 기존 body/header 계약을 유지한다", async () => {
+  const previous = globalThis.fetch, calls = [], controller = new AbortController();
+  try {
+    globalThis.fetch = async (url, init) => { calls.push([url, init]); return Response.json({ data: {} }); };
+    await recoveryApi.getRestore("restore-a", { signal: controller.signal });
+    await recoveryApi.executeRestore("restore-a", { preview_version: 1, step_up_authorization_id: "synthetic-token" }, '"restore:restore-a:2"', "key-execute-00001", { signal: controller.signal });
+    await recoveryApi.cancelRestore("restore-a", '"restore:restore-a:2"', "key-cancel-000001", { signal: controller.signal });
+    for (const [, init] of calls) assert.equal(init.signal, controller.signal);
+    assert.equal(calls[1][1].headers["If-Match"], '"restore:restore-a:2"');
+    assert.deepEqual(JSON.parse(calls[1][1].body), { preview_version: 1, step_up_authorization_id: "synthetic-token" });
+    assert.equal(calls[2][1].body, undefined);
+  } finally { globalThis.fetch = previous; }
+});
+
 test("S44 상태 조회는 기존 엄격한 5component helper와 same-origin GET을 사용한다", async () => {
   const previous = globalThis.fetch, calls = [];
   const data = { workspace_id: "workspace-a", overall_status: "ready", checked_at: "2026-10-18T00:00:00Z",
@@ -79,7 +153,7 @@ test("Recovery Web Adapter는 정확한 Cloud 7 Route를 same-origin으로만 �
 
 test("Recovery Web Adapter는 same-origin Session Context를 먼저 조회한다", async () => {
   const source = await readFile("apps/web/lib/recovery-api.js", "utf8");
-  assert.match(source, /getSession\(\)\s*\{\s*return request\("\/bff\/api\/session"\)/);
+  assert.match(source, /getSession\([^)]*\)\s*\{\s*return request\("\/bff\/api\/session"/);
   assert.doesNotMatch(source, /\/api\/v1/);
   assert.doesNotMatch(source, /https?:\/\/|localhost|127\.0\.0\.1|NEXT_PUBLIC_API_BASE_URL/i);
 });

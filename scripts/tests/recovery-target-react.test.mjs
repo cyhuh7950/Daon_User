@@ -34,7 +34,7 @@ const restore = (changes = {}) => ({
   request_id: "restore-a", backup_id: "backup-a", tenant_id: "tenant-a", workspace_id: "workspace-a",
   state: "completed", version: 6, verification_digest: "b".repeat(64),
   preview: { version: 1, included_object_ids: ["object-a"], excluded_object_ids: [], exclusion_reasons: [],
-    destination: { tenant_id: "destination-tenant", workspace_id: "destination-workspace", namespace: "fixture-target" },
+    destination: { tenant_id: "destination-tenant", workspace_id: "destination-workspace", database_id: "destination-db", bucket_id: "destination-bucket" },
     created_at: "2026-10-18T00:00:00Z" },
   transitions: ["requested", "preview_ready", "authorized", "restoring", "verifying", "completed"], ...changes,
 });
@@ -63,7 +63,7 @@ function noMutations(view, writes = []) {
   assert.deepEqual(writes, []);
   const controls = findElements(view.container, node => ["BUTTON", "A", "INPUT", "SELECT", "TEXTAREA", "FORM"].includes(node.tagName));
   assert.equal(controls.some(node => /생성|실행|취소|설정|복구 시작|백업 시작/u.test(node.textContent)), false);
-  assert.doesNotMatch(view.container.textContent, /S42_표시금지|destination-tenant|destination-workspace|fixture-target|object-a/u);
+  assert.doesNotMatch(view.container.textContent, /S42_표시금지|destination-tenant|destination-workspace|destination-db|destination-bucket|object-a/u);
 }
 
 let output, component;
@@ -166,6 +166,412 @@ async function click(view, label) {
   assert.ok(node, label);
   await view.act(async () => node.dispatchEvent(new MinimalEvent("click")));
 }
+
+const restoreResponse = data => ({ payload: { data }, etag: `"restore:${data.request_id}:${data.version}"` });
+const pendingRestore = (changes = {}) => restore({ state: "preview_ready", version: 2, verification_digest: null,
+  transitions: ["requested", "preview_ready"], ...changes });
+function actionPort(overrides = {}) {
+  let current = pendingRestore();
+  const calls = [];
+  const api = {
+    getSession: async () => { calls.push(["session"]); return session(); },
+    getRestore: async id => { calls.push(["get", id]); return restoreResponse(current); },
+    issueRestoreStepUp: async (...args) => { calls.push(["stepup", ...args]); return "synthetic-new-token"; },
+    executeRestore: async (...args) => { calls.push(["execute", ...args]); current = restore(); return restoreResponse(current); },
+    cancelRestore: async (...args) => { calls.push(["cancel", ...args]); current = pendingRestore({ state: "cancelled", version: 3 }); return restoreResponse(current); },
+    ...overrides,
+  };
+  return { api, calls, setCurrent: value => { current = value; } };
+}
+const reactProps = node => node[Object.keys(node).find(key => key.startsWith("__reactProps"))];
+const passwordField = view => findElements(view.container, node => node.tagName === "INPUT" && reactProps(node)?.type === "password")[0];
+async function submitExecute(view, count = 1) {
+  const field = passwordField(view);
+  assert.ok(field, "추가 인증 비밀번호 입력"); field.value = "synthetic-password";
+  const form = findElements(view.container, node => node.tagName === "FORM")[0];
+  assert.ok(form, "명시적 복구 실행 form");
+  await view.act(async () => { for (let n = 0; n < count; n++) form.dispatchEvent(new MinimalEvent("submit")); });
+  assert.equal(field.value, "", "제출 직후 비밀번호 폐기");
+}
+
+test("S44 fixpass 발급 뒤 session/target 지연은 pagehide/주소/API/unmount 시 abort되고 Execute body0이다", async () => {
+  for (const stage of ["session-before", "target", "session-after"]) for (const mode of ["pagehide", "target", "adapter", "unmount"]) {
+    const gate = deferred(), bodies = []; let issued = false, gated = false, sessionsAfterIssue = 0, signal;
+    const p = actionPort({
+      issueRestoreStepUp: async () => { issued = true; return "synthetic-issued-token"; },
+      getSession: async options => {
+        if (issued) {
+          ++sessionsAfterIssue;
+          if (!gated && ((stage === "session-before" && sessionsAfterIssue === 1) || (stage === "session-after" && sessionsAfterIssue === 2))) {
+            gated = true; signal = options?.signal; return gate.promise;
+          }
+        }
+        return session();
+      },
+      getRestore: async (_id, options) => {
+        if (issued && stage === "target" && !gated) { gated = true; signal = options?.signal; return gate.promise; }
+        return restoreResponse(pendingRestore());
+      },
+      executeRestore: async (_id, body) => { bodies.push(body); return restoreResponse(restore()); },
+    });
+    const view = await render("?restore_request_id=restore-a", p.api);
+    try {
+      await click(view, "복구 실행 준비"); await submitExecute(view);
+      assert.equal(issued, true); assert.equal(gated, true); assert.ok(signal, "발급 후 정확 조회도 AbortSignal 결속");
+      if (mode === "pagehide") await view.act(async () => view.browser.dispatchEvent(new MinimalEvent("pagehide")));
+      if (mode === "target") await view.navigate("?restore_request_id=restore-b");
+      if (mode === "adapter") await view.rerender(actionPort().api);
+      if (mode === "unmount") await view.unmount();
+      assert.equal(signal.aborted, true);
+      await view.act(async () => gate.resolve(stage === "target" ? restoreResponse(pendingRestore()) : session()));
+      assert.deepEqual(bodies, []);
+      assert.doesNotMatch(view.container.textContent, /synthetic-issued-token|synthetic-password/u);
+    } finally { gate.resolve(stage === "target" ? restoreResponse(pendingRestore()) : session()); await view.cleanup(); }
+  }
+});
+
+test("S44 fixpass 목적지 실4필드 누락·오염과 잘못된 RFC3339 시각은 본문/실행준비0이다", async () => {
+  const base = pendingRestore().preview, invalid = [];
+  for (const field of ["tenant_id", "workspace_id", "database_id", "bucket_id"]) {
+    const missing = { ...base.destination }; delete missing[field]; invalid.push({ ...base, destination: missing });
+    for (const value of [null, "", "with space", "https://private.example/path", canary]) {
+      invalid.push({ ...base, destination: { ...base.destination, [field]: value } });
+    }
+  }
+  for (const destination of [null, [], "destination"]) invalid.push({ ...base, destination });
+  for (const created_at of [undefined, null, 0, "", "2026-10-18", "2026-02-29T00:00:00Z", "2026-02-30T00:00:00Z",
+    "2026-13-01T00:00:00Z", "2026-10-18T24:00:00Z", "2026-10-18T00:00:00+99:00", "2026-10-18T00:00:00Z\n"]) invalid.push({ ...base, created_at });
+  for (const preview of invalid) {
+    const p = actionPort({ getRestore: async () => restoreResponse(pendingRestore({ preview })) });
+    const view = await render("?restore_request_id=restore-a", p.api);
+    try {
+      assert.match(visibleText(view.container), /확인할 수 없/u);
+      assert.doesNotMatch(visibleText(view.container), /restore-a|private.example|S42_표시금지/u);
+      assert.equal(findElements(view.container, n => n.tagName === "BUTTON" && /복구 실행 준비|복구 요청 취소/u.test(n.textContent)).length, 0);
+      assert.equal(p.calls.filter(c => ["stepup", "execute", "cancel"].includes(c[0])).length, 0);
+    } finally { await view.cleanup(); }
+  }
+});
+
+test("S44 fixpass 실제 목적지4필드·서버 RFC3339 시각은 안전 요약만 유지한다", async () => {
+  for (const created_at of ["2026-10-18T00:00:00Z", "2026-10-18T09:00:00.123456+09:00", "2024-02-29T00:00:00+00:00"]) {
+    const p = actionPort({ getRestore: async () => restoreResponse(pendingRestore({ preview: { ...pendingRestore().preview, created_at } })) });
+    const view = await render("?restore_request_id=restore-a", p.api);
+    try {
+      assert.ok(findElements(view.container, n => n.tagName === "BUTTON" && n.textContent === "복구 실행 준비")[0]);
+      assert.match(visibleText(view.container), /포함 1건.*제외 0건/u);
+      assert.doesNotMatch(view.container.textContent, /destination-tenant|destination-workspace|destination-db|destination-bucket/u);
+    } finally { await view.cleanup(); }
+  }
+});
+
+test("S44 fixpass 목적지 unknown extra는 접근·비교·표시하지 않고 known DTO만 결속한다", async () => {
+  let extraReads = 0, reads = 0;
+  const p = actionPort({ getRestore: async () => {
+    ++reads;
+    const destination = { ...pendingRestore().preview.destination };
+    Object.defineProperty(destination, "unknown_sensitive", { enumerable: true, get: () => { ++extraReads; return `${canary}-${reads}`; } });
+    return restoreResponse(pendingRestore({ preview: { ...pendingRestore().preview, destination } }));
+  } });
+  const view = await render("?restore_request_id=restore-a", p.api);
+  try {
+    await click(view, "복구 실행 준비"); await submitExecute(view);
+    assert.equal(extraReads, 0, "미정의 필드를 비교 문자열에 복사하지 않음");
+    assert.equal(p.calls.filter(c => c[0] === "execute").length, 1, "미정의 추가값의 변화로 동일 known Preview를 재정의하지 않음");
+    assert.doesNotMatch(view.container.textContent, /S42_표시금지|unknown_sensitive|destination-db|destination-bucket/u);
+  } finally { await view.cleanup(); }
+});
+
+test("S44 기존복구 안전 Preview는 개수·고정 제외 사유만 보이고 원장 완료와 전체 복원을 구분한다", async () => {
+  const data = restore({ preview: { ...restore().preview, included_object_ids: ["object-a"],
+    excluded_object_ids: ["private-one", "private-two", "private-three"],
+    exclusion_reasons: [["private-one", "purged"], ["private-two", "held"], ["private-three", "tombstoned"]] } });
+  const p = actionPort({ getRestore: async () => restoreResponse(data) }), view = await render("?restore_request_id=restore-a", p.api);
+  try {
+    assert.match(visibleText(view.container), /포함 1건.*제외 3건/u);
+    for (const label of ["영구 삭제", "보존", "삭제 표시"]) assert.ok(visibleText(view.container).includes(label));
+    assert.match(visibleText(view.container), /전체 DB 복원 성공을 의미하지 않습니다/u);
+    assert.doesNotMatch(view.container.textContent, /private-one|private-two|private-three|object-a|destination-tenant|fixture-target/u);
+    noMutations(view);
+  } finally { await view.cleanup(); }
+});
+
+test("S44 기존복구 명시 Execute는 새 인증·정확 ETag/preview를 보내고 정확 GET으로 결과를 확인한다", async () => {
+  const p = actionPort(), view = await render("?restore_request_id=restore-a", p.api);
+  try {
+    await click(view, "복구 실행 준비"); await submitExecute(view, 2);
+    const writes = p.calls.filter(c => ["stepup", "execute"].includes(c[0]));
+    assert.equal(writes.length, 2, "연속 submit도 인증·실행 각1회");
+    assert.equal(writes[0][1], "restore-a");
+    assert.equal(writes[1][1], "restore-a");
+    assert.deepEqual(writes[1][2], { preview_version: 1, step_up_authorization_id: "synthetic-new-token" });
+    assert.equal(writes[1][3], '"restore:restore-a:2"');
+    assert.ok(writes[1][4].length >= 16);
+    assert.ok(p.calls.slice(p.calls.indexOf(writes[1]) + 1).some(c => c[0] === "get"));
+    assert.match(visibleText(view.container), /completed/u);
+    assert.doesNotMatch(view.container.textContent, /synthetic-password|synthetic-new-token/u);
+  } finally { await view.cleanup(); }
+});
+
+test("S44 기존복구 malformed Preview·중복·겹침·미정의 제외 사유는 본문과 쓰기를 차단한다", async () => {
+  const base = pendingRestore().preview;
+  for (const preview of [null, { ...base, version: 0 }, { ...base, version: "1" },
+    { ...base, included_object_ids: ["object-a", "object-a"] },
+    { ...base, excluded_object_ids: ["object-a"], exclusion_reasons: [["object-a", "held"]] },
+    { ...base, excluded_object_ids: ["x"], exclusion_reasons: [["x", canary]] },
+    { ...base, excluded_object_ids: ["x"], exclusion_reasons: [] },
+    { ...base, excluded_object_ids: ["x"], exclusion_reasons: [["x", "held"], ["x", "held"]] },
+    { ...base, excluded_object_ids: ["x"], exclusion_reasons: [["x", ["held"]]] },
+    { ...base, included_object_ids: ["https://private.example/path"] }]) {
+    const p = actionPort({ getRestore: async () => restoreResponse(pendingRestore({ preview })) });
+    const view = await render("?restore_request_id=restore-a", p.api);
+    try {
+      assert.match(visibleText(view.container), /확인할 수 없/u);
+      assert.doesNotMatch(visibleText(view.container), /restore-a|S42_표시금지|private.example/u);
+      assert.equal(findElements(view.container, n => n.tagName === "FORM").length, 0);
+    } finally { await view.cleanup(); }
+  }
+});
+
+test("S44 기존복구 상태·권한과 다른 primary Workspace의 서버 허용 대상을 구별한다", async () => {
+  for (const state of ["requested", "preview_ready", "authorized", "restoring", "verifying", "completed", "cancelled", "failed", "blocked"]) {
+    const p = actionPort({ getRestore: async () => restoreResponse(pendingRestore({ state })) });
+    const view = await render("?restore_request_id=restore-a", p.api);
+    try {
+      const labels = findElements(view.container, n => n.tagName === "BUTTON").map(n => n.textContent);
+      assert.equal(labels.includes("복구 실행 준비"), state === "preview_ready");
+      assert.equal(labels.includes("복구 요청 취소"), ["requested", "preview_ready", "authorized"].includes(state));
+    } finally { await view.cleanup(); }
+  }
+  for (const otherWorkspace of [false, true]) {
+    const p = actionPort({ getSession: async () => session({ recovery_operations: [], workspace_id: otherWorkspace ? "primary-other" : "workspace-a" }) });
+    const view = await render("?restore_request_id=restore-a", p.api);
+    try {
+      const labels = findElements(view.container, n => n.tagName === "BUTTON").map(n => n.textContent);
+      assert.equal(labels.includes("복구 실행 준비"), otherWorkspace);
+      assert.match(visibleText(view.container), /restore-a/u);
+    } finally { await view.cleanup(); }
+  }
+});
+
+test("S44 기존복구 잘못된 ETag는 실행·취소를 허용하지 않는다", async () => {
+  for (const etag of [null, '"restore:restore-b:2"', '"restore:restore-a:3"', '"restore:restore-a:02"']) {
+    const p = actionPort({ getRestore: async () => ({ ...restoreResponse(pendingRestore()), etag }) });
+    const view = await render("?restore_request_id=restore-a", p.api);
+    try { assert.equal(findElements(view.container, n => n.tagName === "BUTTON" && /복구 실행 준비|복구 요청 취소/u.test(n.textContent)).length, 0); }
+    finally { await view.cleanup(); }
+  }
+});
+
+test("S44 기존복구 추가 인증 실패는 Execute0·고정 오류·비밀번호 폐기다", async () => {
+  const p = actionPort({ issueRestoreStepUp: async () => { throw failure(403); } });
+  const view = await render("?restore_request_id=restore-a", p.api);
+  try {
+    await click(view, "복구 실행 준비"); await submitExecute(view);
+    assert.equal(p.calls.filter(c => c[0] === "execute").length, 0);
+    assert.match(visibleText(view.container), /권한|인증/u);
+    assert.doesNotMatch(view.container.textContent, /synthetic-password|S42_표시금지/u);
+  } finally { await view.cleanup(); }
+});
+
+test("S44 기존복구 쓰기 전 모든 주체 교체와 새 인증 뒤 세션 교체는 POST0이다", async () => {
+  for (const field of ["user_id", "tenant_id", "workspace_id", "session_id", "device_id"]) {
+    let current = session();
+    const p = actionPort({ getSession: async () => current,
+      issueRestoreStepUp: async () => { current = session({ [field]: "changed-scope" }); return "synthetic-new-token"; } });
+    const view = await render("?restore_request_id=restore-a", p.api);
+    try {
+      await click(view, "복구 실행 준비"); await submitExecute(view);
+      assert.equal(p.calls.filter(c => c[0] === "execute").length, 0);
+      assert.doesNotMatch(visibleText(view.container), /restore-a/u);
+    } finally { await view.cleanup(); }
+  }
+});
+
+test("S44 기존복구 사전 GET의 version·Preview 변경은 재인증·Execute0이다", async () => {
+  for (const changes of [{ version: 3 }, { state: "authorized" }, { preview: { ...pendingRestore().preview, version: 2 } },
+    { preview: { ...pendingRestore().preview, included_object_ids: ["different-object"] } }]) {
+    let reads = 0;
+    const p = actionPort({ getRestore: async () => restoreResponse(pendingRestore(++reads === 1 ? {} : changes)) });
+    const view = await render("?restore_request_id=restore-a", p.api);
+    try {
+      await click(view, "복구 실행 준비"); await submitExecute(view);
+      assert.equal(p.calls.filter(c => ["stepup", "execute"].includes(c[0])).length, 0);
+      assert.match(visibleText(view.container), /다시 조회/u);
+      assert.doesNotMatch(visibleText(view.container), /restore-a/u);
+    } finally { await view.cleanup(); }
+  }
+});
+
+test("S44 기존복구 Cancel은 명시 화면 확인과 허용상태·정확 ETag로 한번만 보낸다", async () => {
+  const p = actionPort(), view = await render("?restore_request_id=restore-a", p.api);
+  try {
+    await click(view, "복구 요청 취소");
+    assert.equal(p.calls.filter(c => c[0] === "cancel").length, 0);
+    assert.match(visibleText(view.container), /취소하시겠습니까/u);
+    const button = findElements(view.container, n => n.tagName === "BUTTON" && n.textContent === "취소 확정")[0];
+    assert.ok(button);
+    await view.act(async () => { button.dispatchEvent(new MinimalEvent("click")); button.dispatchEvent(new MinimalEvent("click")); });
+    const calls = p.calls.filter(c => c[0] === "cancel");
+    assert.equal(calls.length, 1); assert.equal(calls[0][1], "restore-a"); assert.equal(calls[0][2], '"restore:restore-a:2"');
+    assert.ok(calls[0][3].length >= 16);
+    assert.equal(p.calls.filter(c => c[0] === "stepup").length, 0);
+    assert.match(visibleText(view.container), /cancelled/u);
+  } finally { await view.cleanup(); }
+});
+
+test("S44 기존복구 POST 실패는 401·403·409·412·503·네트워크 모두 자동 재전송 없이 본문을 숨긴다", async () => {
+  for (const kind of ["execute", "cancel"]) for (const status of [401, 403, 409, 412, 503, null]) {
+    let writes = 0;
+    const p = actionPort({ [kind === "execute" ? "executeRestore" : "cancelRestore"]: async () => { ++writes; throw failure(status); } });
+    const view = await render("?restore_request_id=restore-a", p.api);
+    try {
+      if (kind === "execute") { await click(view, "복구 실행 준비"); await submitExecute(view); }
+      else { await click(view, "복구 요청 취소"); await click(view, "취소 확정"); }
+      await view.act(async () => { await Promise.resolve(); });
+      assert.equal(writes, 1); assert.doesNotMatch(visibleText(view.container), /restore-a/u);
+      assert.doesNotMatch(view.container.textContent, /S42_표시금지|synthetic-password|synthetic-new-token/u);
+      await click(view, "다시 조회"); assert.equal(writes, 1, "명시 GET도 POST를 자동 재시도하지 않음");
+    } finally { await view.cleanup(); }
+  }
+});
+
+test("S44 기존복구 pagehide 입력 즉시 비움·늦은 인증은 주소/API/unmount 교체 뒤 실행0이다", async () => {
+  for (const mode of ["pagehide", "target", "adapter", "unmount"]) {
+    const gate = deferred(); let signal;
+    const p = actionPort({ issueRestoreStepUp: async (_id, _password, options) => { signal = options.signal; return gate.promise; } });
+    const view = await render("?restore_request_id=restore-a", p.api);
+    try {
+      await click(view, "복구 실행 준비"); await submitExecute(view);
+      if (mode === "pagehide") await view.act(async () => view.browser.dispatchEvent(new MinimalEvent("pagehide")));
+      if (mode === "target") await view.navigate("?restore_request_id=restore-b");
+      if (mode === "adapter") await view.rerender(actionPort().api);
+      if (mode === "unmount") await view.unmount();
+      assert.equal(signal.aborted, true);
+      await view.act(async () => gate.resolve("synthetic-new-token"));
+      assert.equal(p.calls.filter(c => c[0] === "execute").length, 0);
+      assert.doesNotMatch(view.container.textContent, /synthetic-password|synthetic-new-token/u);
+    } finally { gate.resolve("synthetic-new-token"); await view.cleanup(); }
+  }
+  const p = actionPort(), view = await render("?restore_request_id=restore-a", p.api);
+  try {
+    await click(view, "복구 실행 준비"); const field = passwordField(view); field.value = "unsubmitted-password";
+    await view.act(async () => { view.browser.dispatchEvent(new MinimalEvent("pagehide")); assert.equal(field.value, ""); });
+    assert.equal(p.calls.filter(c => c[0] === "stepup").length, 0);
+  } finally { await view.cleanup(); }
+});
+
+test("S44 기존복구 Execute receipt만 completed여도 후속 GET의 실제 상태를 표시한다", async () => {
+  const p = actionPort({ executeRestore: async () => restoreResponse(restore()) });
+  const view = await render("?restore_request_id=restore-a", p.api);
+  try {
+    await click(view, "복구 실행 준비"); await submitExecute(view);
+    assert.match(visibleText(view.container), /preview_ready/u);
+    assert.doesNotMatch(visibleText(view.container), /상태completed/u);
+  } finally { await view.cleanup(); }
+});
+
+test("S44 기존복구 실제 기본 adapter의 React→HTTP 대역은 새 인증/Execute와 정확 후속 GET만 연결한다", async () => {
+  const previous = globalThis.fetch, calls = []; let current = pendingRestore();
+  globalThis.fetch = async (url, init) => {
+    calls.push([url, init]);
+    assert.equal(init.credentials, "same-origin"); assert.equal(init.cache, "no-store");
+    if (url === "/bff/api/session") return Response.json(session().payload);
+    if (url === "/bff/api/restore-requests/restore-a") return Response.json({ data: current }, { headers: { ETag: `"restore:restore-a:${current.version}"` } });
+    assert.equal(init.method, "POST"); assert.ok(init.headers["Idempotency-Key"].length >= 16);
+    if (url === "/bff/api/session/step-up") {
+      assert.deepEqual(JSON.parse(init.body), { action_group: "permanent_delete_or_restore_rollback", target_id: "restore-a", password: "synthetic-password", ttl_seconds: 300 });
+      return Response.json({ data: { step_up_authorization: "synthetic-http-token" } });
+    }
+    assert.equal(url, "/bff/api/restore-requests/restore-a/execute");
+    assert.deepEqual(JSON.parse(init.body), { preview_version: 1, step_up_authorization_id: "synthetic-http-token" });
+    assert.equal(init.headers["If-Match"], '"restore:restore-a:2"');
+    current = restore(); return Response.json({ data: current });
+  };
+  let view;
+  try {
+    view = await render("?restore_request_id=restore-a"); await click(view, "복구 실행 준비"); await submitExecute(view, 2);
+    const posts = calls.filter(([, init]) => init.method === "POST");
+    assert.deepEqual(posts.map(([url]) => url), ["/bff/api/session/step-up", "/bff/api/restore-requests/restore-a/execute"]);
+    assert.notEqual(posts[0][1].headers["Idempotency-Key"], posts[1][1].headers["Idempotency-Key"]);
+    assert.deepEqual(calls.slice(-3).map(([url]) => url), ["/bff/api/session", "/bff/api/restore-requests/restore-a", "/bff/api/session"]);
+    assert.match(visibleText(view.container), /상태completed/u);
+    assert.doesNotMatch(view.container.textContent, /synthetic-http-token|synthetic-password/u);
+  } finally { if (view) await view.cleanup(); globalThis.fetch = previous; }
+});
+
+test("S44 기존복구 Preview 목적지 변경도 같은 version이라는 이유로 쓰기하지 않는다", async () => {
+  for (const field of ["tenant_id", "workspace_id", "database_id", "bucket_id"]) {
+    let reads = 0;
+    const p = actionPort({ getRestore: async () => restoreResponse(pendingRestore(++reads === 1 ? {} : {
+      preview: { ...pendingRestore().preview, destination: { ...pendingRestore().preview.destination, [field]: "different-destination" } },
+    })) });
+    const view = await render("?restore_request_id=restore-a", p.api);
+    try {
+      await click(view, "복구 실행 준비"); await submitExecute(view);
+      assert.equal(p.calls.filter(c => ["stepup", "execute"].includes(c[0])).length, 0);
+      assert.doesNotMatch(visibleText(view.container), /restore-a|different-destination/u);
+    } finally { await view.cleanup(); }
+  }
+});
+
+test("S44 기존복구 성공 후 GET의 version 역행·세션 교체·GET 실패는 완료 본문을 남기지 않는다", async () => {
+  for (const mode of ["version", "session", "read-error"]) {
+    let sent = false;
+    const p = actionPort({
+      getSession: async () => session(sent && mode === "session" ? { session_id: "different-session" } : {}),
+      getRestore: async () => {
+        if (sent && mode === "read-error") throw failure(503);
+        return restoreResponse(sent ? restore(mode === "version" ? { version: 1 } : {}) : pendingRestore());
+      },
+      executeRestore: async (...args) => { p.calls.push(["execute", ...args]); sent = true; return restoreResponse(restore()); },
+    });
+    const view = await render("?restore_request_id=restore-a", p.api);
+    try {
+      await click(view, "복구 실행 준비"); await submitExecute(view);
+      assert.equal(p.calls.filter(c => c[0] === "execute").length, 1);
+      assert.doesNotMatch(visibleText(view.container), /restore-a|상태completed/u);
+      assert.match(visibleText(view.container), /다시 조회/u);
+    } finally { await view.cleanup(); }
+  }
+});
+
+test("S44 기존복구 늦은 POST 성공·실패는 pagehide/visibility/target/API/unmount 뒤 본문을 복원하지 않는다", async () => {
+  for (const kind of ["execute", "cancel"]) for (const mode of ["pagehide", "visibility", "target", "adapter", "unmount"]) for (const rejects of [false, true]) {
+    const gate = deferred(); let writes = 0, signal;
+    const p = actionPort({ [kind === "execute" ? "executeRestore" : "cancelRestore"]: async (...args) => {
+      ++writes; signal = args.at(-1).signal; return gate.promise;
+    } });
+    const view = await render("?restore_request_id=restore-a", p.api);
+    try {
+      if (kind === "execute") { await click(view, "복구 실행 준비"); await submitExecute(view); }
+      else { await click(view, "복구 요청 취소"); await click(view, "취소 확정"); }
+      assert.equal(writes, 1);
+      if (mode === "pagehide") await view.act(async () => view.browser.dispatchEvent(new MinimalEvent("pagehide")));
+      if (mode === "visibility") await view.act(async () => { view.dom.document.visibilityState = "hidden"; view.dom.document.dispatchEvent(new MinimalEvent("visibilitychange")); });
+      if (mode === "target") await view.navigate("?restore_request_id=restore-b");
+      if (mode === "adapter") await view.rerender(port({ getRestore: async () => { throw failure(403); } }).api);
+      if (mode === "unmount") await view.unmount();
+      assert.equal(signal.aborted, true);
+      await view.act(async () => { if (rejects) gate.reject(failure(503)); else gate.resolve(restoreResponse(restore())); });
+      assert.equal(writes, 1); assert.doesNotMatch(visibleText(view.container), /restore-a|상태completed/u);
+      assert.doesNotMatch(view.container.textContent, /synthetic-password|synthetic-new-token|S42_표시금지/u);
+    } finally { gate.resolve(restoreResponse(restore())); await view.cleanup(); }
+  }
+});
+
+test("S44 기존복구 제출 전 입력은 visibility·대상·API 교체에서 즉시 폐기한다", async () => {
+  for (const mode of ["visibility", "target", "adapter"]) {
+    const p = actionPort(), view = await render("?restore_request_id=restore-a", p.api);
+    try {
+      await click(view, "복구 실행 준비"); const field = passwordField(view); field.value = "unsubmitted-password";
+      if (mode === "visibility") await view.act(async () => { view.dom.document.visibilityState = "hidden"; view.dom.document.dispatchEvent(new MinimalEvent("visibilitychange")); });
+      if (mode === "target") await view.navigate("?restore_request_id=restore-b");
+      if (mode === "adapter") await view.rerender(actionPort().api);
+      assert.equal(field.value, ""); assert.equal(p.calls.filter(c => ["stepup", "execute", "cancel"].includes(c[0])).length, 0);
+    } finally { await view.cleanup(); }
+  }
+});
 
 test("S44 실제 기본 adapter는 홈 GET만 호출하고 목록 선택은 정확 backup GET으로 이어진다", async () => {
   const previous = globalThis.fetch, calls = [];
@@ -327,7 +733,10 @@ test("S44 홈은 정상 session 전후를 확인하고 실제 5상태·빈 백�
     assert.deepEqual(p.calls, homeCalls);
     const text = visibleText(view.container);
     for (const code of ["PROVIDER_CONFIGURATION_REQUIRED", "API_READY", "STORAGE_READY", "SYNC_PENDING", "QUEUE_ATTENTION_REQUIRED"]) assert.ok(text.includes(code));
-    assert.ok(text.includes("현재 화면은 상태·백업 조회를 지원합니다. 백업 생성·복구 실행은 아직 연결되지 않았습니다."));
+    assert.match(text, /백업 생성·새 Preview 생성은 아직 연결되지 않았습니다/u);
+    assert.match(text, /기존 저장 요청은 정확 ID 상세에서 제한형 Execute·Cancel을 사용할 수 있습니다/u);
+    assert.match(text, /독립 전체 DB 복원은 지원하지 않습니다/u);
+    assert.doesNotMatch(text, /백업 생성·복구 실행은 아직 연결되지 않았습니다/u);
     assert.match(text, /조회된 백업이 없습니다/u);
     assert.match(text, /설정 상태/u); assert.match(text, /모델.*호출.*아/u);
     assert.doesNotMatch(text, /실패\s*0\s*건/u);

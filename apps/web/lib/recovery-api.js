@@ -35,11 +35,12 @@ export async function resolveRecoverySession(adapter, initializePane = (context)
   return initializePane(context);
 }
 
-async function request(path, { method = "GET", body, headers = {} } = {}) {
+async function request(path, { method = "GET", body, headers = {}, signal } = {}) {
   const response = await fetch(path, {
     method,
     credentials: "same-origin",
     cache: "no-store",
+    signal,
     headers: body === undefined ? headers : { ...JSON_HEADERS, ...headers },
     body: body === undefined ? undefined : JSON.stringify(body)
   });
@@ -52,7 +53,25 @@ async function request(path, { method = "GET", body, headers = {} } = {}) {
   return { payload, etag: response.headers.get("etag") };
 }
 
+export async function issueRestoreStepUp(requestId, password, { idempotencyKey, signal } = {}) {
+  if (typeof requestId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(requestId)
+    || typeof password !== "string" || password.length < 12 || password.length > 1024
+    || typeof idempotencyKey !== "string" || !/^[A-Za-z0-9_-]{16,128}$/u.test(idempotencyKey)) {
+    throw sessionFailure();
+  }
+  const { payload } = await request("/bff/api/session/step-up", {
+    method: "POST", signal, headers: { "Idempotency-Key": idempotencyKey },
+    body: { action_group: "permanent_delete_or_restore_rollback", target_id: requestId, password, ttl_seconds: 300 }
+  });
+  const token = payload?.data?.step_up_authorization;
+  if (typeof token !== "string" || !token.trim() || token.length > 4096 || /[\u0000-\u0020\u007f]/u.test(token)) {
+    throw sessionFailure();
+  }
+  return token;
+}
+
 export const recoveryApi = Object.freeze({
+  issueRestoreStepUp,
   getOperationsStatus(workspaceId, { signal } = {}) {
     return getWorkspaceOperationsStatus(workspaceId, { signal, fetchImpl: async (path, init) => {
       const response = await fetch(path, init);
@@ -60,8 +79,8 @@ export const recoveryApi = Object.freeze({
       return response;
     } });
   },
-  getSession() {
-    return request("/bff/api/session");
+  getSession({ signal } = {}) {
+    return request("/bff/api/session", { signal });
   },
   listBackups(workspaceId) {
     return request(`/bff/api/backups?workspace_id=${encodeURIComponent(workspaceId)}`);
@@ -79,18 +98,18 @@ export const recoveryApi = Object.freeze({
       method: "POST", body: input, headers: { "Idempotency-Key": idempotencyKey }
     });
   },
-  getRestore(id) {
-    return request(`/bff/api/restore-requests/${encodeURIComponent(id)}`);
+  getRestore(id, { signal } = {}) {
+    return request(`/bff/api/restore-requests/${encodeURIComponent(id)}`, { signal });
   },
-  executeRestore(id, input, etag, idempotencyKey) {
+  executeRestore(id, input, etag, idempotencyKey, { signal } = {}) {
     return request(`/bff/api/restore-requests/${encodeURIComponent(id)}/execute`, {
-      method: "POST", body: input,
+      method: "POST", body: input, signal,
       headers: { "If-Match": etag, "Idempotency-Key": idempotencyKey }
     });
   },
-  cancelRestore(id, etag, idempotencyKey) {
+  cancelRestore(id, etag, idempotencyKey, { signal } = {}) {
     return request(`/bff/api/restore-requests/${encodeURIComponent(id)}/cancel`, {
-      method: "POST", headers: { "If-Match": etag, "Idempotency-Key": idempotencyKey }
+      method: "POST", signal, headers: { "If-Match": etag, "Idempotency-Key": idempotencyKey }
     });
   }
 });
