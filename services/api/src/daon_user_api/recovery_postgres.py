@@ -142,7 +142,10 @@ class PostgresRecoveryService:
         clock: Callable[[], datetime],
         fixture_prefix: str = "fixture-",
         rpo: timedelta = timedelta(minutes=15),
+        notification_inbox_enabled: bool = False,
     ) -> None:
+        if type(notification_inbox_enabled) is not bool:
+            raise ValueError("NOTIFICATION_INBOX_FLAG_INVALID")
         if not isinstance(dsn, str) or not dsn:
             raise ValueError("CLOUD_DATABASE_DSN_REQUIRED")
         if not isinstance(manifest_key, bytes) or len(manifest_key) < 32:
@@ -152,6 +155,7 @@ class PostgresRecoveryService:
         self._clock = clock
         self._fixture_prefix = fixture_prefix
         self._rpo = rpo
+        self._notification_inbox_enabled = notification_inbox_enabled
         self._pool = ConnectionPool[Mapping[str, Any]](
             conninfo=dsn,
             min_size=1,
@@ -276,7 +280,11 @@ class PostgresRecoveryService:
     def _append_audit(
         self, connection: Connection[Mapping[str, Any]], context: RecoveryContext,
         action: str, target_type: str, target_id: str,
+        *, outcome: str = "succeeded", before: Mapping[str, Any] | None = None,
+        after: Mapping[str, Any] | None = None, reason_code: str | None = None,
     ) -> str:
+        if outcome not in {"succeeded", "failed"} or reason_code not in {None, "RESTORE_PROCESSING_FAILED"}:
+            raise RecoveryError("RESOURCE_UNAVAILABLE", 503)
         row = connection.execute(
             "SELECT metadata->>'event_hash' AS event_hash FROM audit_events "
             "ORDER BY sequence DESC LIMIT 1"
@@ -292,12 +300,14 @@ class PostgresRecoveryService:
         connection.execute(
             "INSERT INTO audit_events "
             "(event_id, tenant_id, workspace_id, actor_id, action, target_type, target_id, "
-            "outcome, trace_id, policy_version, metadata, occurred_at) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,'succeeded',%s,%s,%s,%s)",
+            "outcome, trace_id, policy_version, metadata, occurred_at,before_value,after_value) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
             (
                 event_id, context.tenant_id, context.workspace_id, context.actor_id,
-                action, target_type, target_id, context.trace_id, context.policy_version,
-                Jsonb({"previous_hash": previous, "event_hash": event_hash}), occurred_at,
+                action, target_type, target_id, outcome, context.trace_id, context.policy_version,
+                Jsonb({"previous_hash": previous, "event_hash": event_hash,
+                       **({"reason_code": reason_code} if reason_code is not None else {})}), occurred_at,
+                None if before is None else Jsonb(dict(before)), None if after is None else Jsonb(dict(after)),
             ),
         )
         return event_id
@@ -433,6 +443,12 @@ class PostgresRecoveryService:
                 "WHERE backup_id=%s",
                 (now, backup_id),
             )
+            ready_event = self._append_audit(connection, context, "backup.ready", "backup", backup_id,
+                before={"state": "verifying", "version": 3}, after={"state": "ready", "version": 4})
+            if self._notification_inbox_enabled is True:
+                from .notification_recovery import enqueue_terminal_recovery_event
+                enqueue_terminal_recovery_event(connection, context=context,
+                    origin_event_id=ready_event, target_id=backup_id)
             return self._select_backup(connection, backup_id)[0]
 
     def list_backups(self, context: RecoveryContext) -> tuple[BackupView, ...]:
@@ -740,11 +756,24 @@ class PostgresRecoveryService:
             )
         except RecoveryError:
             with self._transaction(context.tenant_id, context.workspace_id, context.actor_id) as connection:
-                connection.execute(
+                failed_from = connection.execute("SELECT state,version FROM restore_requests WHERE request_id=%s FOR UPDATE",
+                    (request_id,)).fetchone()
+                changed = connection.execute(
                     "UPDATE restore_requests SET state='failed',version=version+1,updated_at=%s "
                     "WHERE request_id=%s AND state='restoring'",
                     (self._clock(), request_id),
                 )
+                if changed.rowcount == 1:
+                    if failed_from is None or failed_from["state"] != "restoring":
+                        raise RecoveryError("RESOURCE_UNAVAILABLE", 503)
+                    failed_event = self._append_audit(connection, context, "restore.failed", "restore_request", request_id,
+                        outcome="failed", before={"state": "restoring", "version": int(failed_from["version"])},
+                        after={"state": "failed", "version": int(failed_from["version"]) + 1},
+                        reason_code="RESTORE_PROCESSING_FAILED")
+                    if self._notification_inbox_enabled is True:
+                        from .notification_recovery import enqueue_terminal_recovery_event
+                        enqueue_terminal_recovery_event(connection, context=context,
+                            origin_event_id=failed_event, target_id=request_id)
             raise
         with self._transaction(context.tenant_id, context.workspace_id, context.actor_id) as connection:
             connection.execute(
@@ -778,6 +807,10 @@ class PostgresRecoveryService:
             self._record_operation(
                 connection, context, "restore-execute", idempotency_key, fingerprint, request_id
             )
+            if self._notification_inbox_enabled is True:
+                from .notification_recovery import enqueue_restore_completed_event
+                enqueue_restore_completed_event(connection, context=context,
+                    origin_event_id=audit_event_id, request_id=request_id)
             return self._select_restore(connection, request_id)
 
     def cancel_restore(

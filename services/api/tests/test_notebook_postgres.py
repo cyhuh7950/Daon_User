@@ -2262,3 +2262,86 @@ def test_actual_postgres_http_local_question_replay_revalidates_binding_before_p
             dependencies.close()
     finally:
         store.close()
+
+@pytest.mark.parametrize('selection', ('completed', 'failed', 'unknown', 'failed_source_denied'))
+def test_s42_exact_run_selector_preserves_default_and_performs_no_writes(selection):
+    """실제 저장 메서드의 정상/실패 Run 선택. 모델 호출이나 실제 브라우저 증거는 아니다."""
+    import psycopg
+    from test_notification_events import _l2b_qd_history_case, _l2b_completion_snapshot
+    prepared, old, thread = _l2b_qd_history_case()
+    scope, context = prepared.scope, prepared.context
+    notebook_context = NotebookContext(context.tenant_id, context.workspace_id, context.actor_id,
+        context.trace_id, context.policy_version)
+    store = PostgresCloudStore(scope.app, min_size=0, max_size=2, notification_inbox_enabled=True)
+    try:
+        repository = PostgresNotebookRepository(store)
+        baseline = repository.read_selected_context(notebook_context, context.notebook_id)
+        assert baseline.conversation.run_id == old.run_id
+        if selection == 'failed_source_denied':
+            with psycopg.connect(scope.admin) as connection:
+                connection.execute('INSERT INTO identity_auth_source_access '
+                    '(tenant_id,workspace_id,user_id,source_version_id,allowed,version,updated_at) '
+                    'VALUES(%s,%s,%s,%s,0,1,now())',
+                    (context.tenant_id, context.workspace_id, context.actor_id, prepared.version))
+        before = _l2b_completion_snapshot(scope)
+        selected_run = old.run_id if selection == 'completed' else (
+            's42-nonexistent-run' if selection == 'unknown' else prepared.run)
+        if selection == 'completed':
+            selected = repository.read_selected_context(notebook_context, context.notebook_id, run_id=selected_run)
+            assert selected == baseline
+            assert selected.conversation_thread_ids == (thread,)
+        else:
+            with pytest.raises(NotebookError) as failure:
+                repository.read_selected_context(notebook_context, context.notebook_id, run_id=selected_run)
+            assert (failure.value.code, failure.value.status) == (
+                ('QUESTION_FAILED', 409) if selection == 'failed' else ('NOTEBOOK_NOT_FOUND', 404))
+        assert _l2b_completion_snapshot(scope) == before
+        assert repository.read_selected_context(notebook_context, context.notebook_id).conversation.run_id == old.run_id
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize('selection', ('owner', 'shared_viewer', 'source_denied', 'wrong_notebook'))
+def test_s42_exact_job_selector_is_owner_bound_without_changing_shared_get(selection):
+    from dataclasses import replace
+    import psycopg
+    from test_notification_events import (_existing_0069_studio_case, _l2b_start_owned_studio_job,
+        _l2b_cleanup_owned_active_studio_job, _l2b_completion_snapshot, _studio_case_member)
+    from daon_user_api.studio_workspace_postgres import PostgresStudioWorkspaceRepository
+    scope = _existing_0069_studio_case()
+    context = scope.context
+    store = PostgresCloudStore(scope.app, min_size=0, max_size=2, notification_inbox_enabled=True)
+    try:
+        queue, job = _l2b_start_owned_studio_job(scope, store)
+        queue.finish(job, state='failed', error_code='STUDIO_GENERATION_FAILED')
+        notebook_context = NotebookContext(context.tenant_id, context.workspace_id, context.actor_id,
+            context.trace_id, context.policy_version)
+        notebook_id = context.notebook_id
+        if selection == 'shared_viewer':
+            peer = _studio_case_member(scope, role='viewer')
+            shared = replace(context, actor_id=peer)
+            assert PostgresStudioWorkspaceRepository(store).get_generation_job(shared, job.job_id)['job_id'] == job.job_id
+            notebook_context = replace(notebook_context, actor_id=peer)
+        elif selection == 'source_denied':
+            with psycopg.connect(scope.admin) as connection:
+                connection.execute('INSERT INTO identity_auth_source_access '
+                    '(tenant_id,workspace_id,user_id,source_version_id,allowed,version,updated_at) '
+                    'VALUES(%s,%s,%s,%s,0,1,now())', (context.tenant_id, context.workspace_id,
+                    context.actor_id, job.request_json['source_version_ids'][0]))
+        elif selection == 'wrong_notebook':
+            notebook_id = 's42-unrelated-notebook'
+        before = _l2b_completion_snapshot(scope)
+        repository = PostgresNotebookRepository(store)
+        if selection == 'owner':
+            assert repository.read_selected_context(notebook_context, notebook_id, studio_job_id=job.job_id) == (
+                repository.read_selected_context(notebook_context, notebook_id))
+        else:
+            with pytest.raises(NotebookError) as failure:
+                repository.read_selected_context(notebook_context, notebook_id, studio_job_id=job.job_id)
+            assert (failure.value.code, failure.value.status) == ('NOTEBOOK_NOT_FOUND', 404)
+        assert _l2b_completion_snapshot(scope) == before
+    finally:
+        try:
+            _l2b_cleanup_owned_active_studio_job(scope)
+        finally:
+            store.close()

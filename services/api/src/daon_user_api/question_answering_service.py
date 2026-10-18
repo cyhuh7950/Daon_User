@@ -433,12 +433,22 @@ class QuestionInputSource:
     source_id: str
     source_version_id: str
     digest_sha256: str | None = None
+    knowledge_registration_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.origin not in {"raw_source", "daon_knowledge"}:
             raise QuestionAnsweringError("QUESTION_CONTEXT_INVALID")
         if not all((self.context_item_id, self.source_id, self.source_version_id)):
             raise QuestionAnsweringError("QUESTION_CONTEXT_INVALID")
+
+
+@dataclass(frozen=True, slots=True)
+class _FinalQuestionFailure:
+    code: str
+    selection: TextModelSelection
+    authorization: Mapping[str, object]
+    sources: tuple[QuestionInputSource, ...]
+    actual_context_mode: str
 
 
 class QuestionAnsweringService:
@@ -558,6 +568,9 @@ class QuestionAnsweringService:
                         "QUESTION_RESULT_INVALID", status=500,
                     )
                 return replay
+            failed_replay = getattr(self._repository, "load_failed_for_replay", None)
+            if callable(failed_replay) and failed_replay(context, run_id, request_fingerprint):
+                raise QuestionAnsweringError("QUESTION_NEW_RUN_REQUIRED", status=409, retryable=True)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise QuestionAnsweringError(
@@ -586,10 +599,16 @@ class QuestionAnsweringService:
         chunks: dict[str, IndexedEvidenceChunk] = {}
         for item in sources:
             self._repository.load_ready_source(context, item.source_id, item.source_version_id)
-            for chunk in self._document_index.search(
-                processing_context, source_id=item.source_id,
-                source_version_id=item.source_version_id, query=question, limit=10,
-            ):
+            try:
+                evidence = self._document_index.search(
+                    processing_context, source_id=item.source_id,
+                    source_version_id=item.source_version_id, query=question, limit=10,
+                )
+            except DocumentUnderstandingError as error:
+                if error.code == 'SOURCE_NOT_FOUND' and error.status == 404:
+                    raise QuestionAnsweringError('QUESTION_SOURCE_UNAVAILABLE', status=404) from None
+                raise
+            for chunk in evidence:
                 chunks.setdefault(chunk.chunk_id, chunk)
         return tuple(sorted(
             chunks.values(),
@@ -675,14 +694,24 @@ class QuestionAnsweringService:
         context_sources: tuple[QuestionInputSource, ...] | None = None,
         request_fingerprint: str | None = None,
         replay_checked: bool = False,
+        request_payload: Mapping[str, object] | None = None,
+        idempotency_key: str | None = None,
     ) -> StoredQuestionAnswer:
+        if (request_payload is None) != (idempotency_key is None):
+            raise QuestionAnsweringError("QUESTION_CONTEXT_INVALID")
+        logical_payload = dict(request_payload) if request_payload is not None else None
+        logical_key = idempotency_key
         if request_fingerprint is None:
-            request_fingerprint = question_request_fingerprint(
-                context, run_id=run_id, idempotency_key=run_id,
-                request_payload={
+            if logical_payload is None:
+                # 기존 직접 호출의 지문 생성에 실제 사용하던 body/key만 결속한다.
+                logical_payload = {
                     "question": question.strip(), "source_id": source_id,
                     "source_version_id": source_version_id, "context_mode": context_mode,
-                },
+                }
+                logical_key = run_id
+            request_fingerprint = question_request_fingerprint(
+                context, run_id=run_id, idempotency_key=cast(str, logical_key),
+                request_payload=logical_payload,
             )
         if not replay_checked:
             replay = self.replay(
@@ -696,6 +725,7 @@ class QuestionAnsweringService:
         sources = () if general and source_id is None else self._context_sources(
             source_id or "", source_version_id or "", context_sources,
         )
+        resolved_sources = sources
         if not general:
             sources = self._ready_context_sources(context, sources)
             if not sources:
@@ -708,6 +738,39 @@ class QuestionAnsweringService:
         model_context = WorkspaceModelContext(
             context.tenant_id, context.workspace_id, context.actor_id,
         )
+        # 명시 지문만 받은 호출은 원 body/key를 추정하지 않는다. 선택 자료가 있는 general/zero-evidence는 후속 범위다.
+        final_failure: list[_FinalQuestionFailure] = []
+        raw_resources = logical_payload.get("knowledge_context") if logical_payload is not None else None
+        raw_resource_items = raw_resources.get("resources") if isinstance(raw_resources, Mapping) else None
+        raw_resources_match = (
+            isinstance(raw_resources, Mapping) and set(raw_resources) == {"mode", "resources"}
+            and raw_resources.get("mode") == "raw_only" and isinstance(raw_resource_items, list)
+            and 1 <= len(raw_resource_items) <= 8
+            and all(isinstance(item, Mapping) and set(item) == {"resource_kind", "resource_id", "version_id"}
+                and item.get("resource_kind") == "source"
+                and all(isinstance(item.get(key), str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", item[key])
+                    for key in ("resource_id", "version_id")) for item in raw_resource_items)
+            and len({(item["resource_id"], item["version_id"]) for item in raw_resource_items}) == len(raw_resource_items)
+            and not ({"source_id", "source_version_id", "context_mode"} & set(logical_payload))
+            and tuple(QuestionInputSource("raw_source", item["resource_id"], item["resource_id"], item["version_id"])
+                for item in raw_resource_items) == resolved_sources
+            and context_mode == "raw_only" and not general
+        )
+        raw_used_subset_match = (
+            raw_resources_match and bool(sources)
+            and tuple(item for item in resolved_sources if item in sources) == sources
+        )
+        capture = final_failure if (
+            logical_payload is not None and logical_key is not None
+            and logical_payload.get("context_mode", "raw_only") in ("raw_only", "general_ungrounded")
+            and (logical_payload.get("context_mode", "raw_only") == "raw_only" or general)
+            and (logical_payload.get("knowledge_context") is None or raw_resources_match)
+            and (general or sources == resolved_sources or raw_used_subset_match)
+            and (general or raw_resources_match or len(sources) == 1)
+            and (not general or source_id is None and source_version_id is None and not sources and not context_sources
+                and logical_payload.get("source_id") is None and logical_payload.get("source_version_id") is None)
+            and callable(getattr(self._repository, "persist_failed", None))
+        ) else None
         try:
             with self._model_resolver.resolve(model_context, "text_generation") as selection:
                 try:
@@ -717,6 +780,7 @@ class QuestionAnsweringService:
                         question=question, run_id=run_id,
                         approved_authorization=approved_authorization,
                         context_mode=context_mode, request_fingerprint=request_fingerprint,
+                        failure_capture=capture,
                     )
                 except QuestionAnsweringError as error:
                     if not getattr(self._model_resolver, "supports_user_credential_fallback", False) or error.code not in {
@@ -735,11 +799,28 @@ class QuestionAnsweringService:
                                 question=question, run_id=run_id,
                                 approved_authorization=approved_authorization,
                                 context_mode=context_mode, request_fingerprint=request_fingerprint,
+                                failure_capture=capture,
                             )
                     except WorkspaceModelUnavailable:
                         raise error
         except WorkspaceModelUnavailable as error:
             raise QuestionAnsweringError(error.code, status=503, retryable=error.retryable) from None
+        except QuestionAnsweringError as error:
+            # 기존 fallback 판단/성공 경로가 모두 끝난 뒤에만 한 번 저장한다.
+            persist_failed = getattr(self._repository, "persist_failed", None)
+            if final_failure and callable(persist_failed):
+                failed = final_failure[0]
+                if failed.code == error.code and not error.retryable:
+                    persist_failed(
+                        context, run_id=run_id, request_fingerprint=request_fingerprint,
+                        request_payload=logical_payload, idempotency_key=logical_key,
+                        context_sources=failed.sources, selection=failed.selection,
+                        egress_authorization=failed.authorization,
+                        question=question,
+                        actual_context_mode=failed.actual_context_mode,
+                        **({"resolved_context_sources": resolved_sources} if raw_resources_match else {}),
+                    )
+            raise
 
     def _ask_resolved(
         self, context: QuestionContext, *, selection: ResolvedModel,
@@ -748,9 +829,12 @@ class QuestionAnsweringService:
         question: str, run_id: str,
         approved_authorization: Mapping[str, str] | None,
         context_mode: str, request_fingerprint: str,
+        failure_capture: list[_FinalQuestionFailure] | None = None,
     ) -> StoredQuestionAnswer:
+        if failure_capture is not None:
+            failure_capture.clear()
         versions = tuple(dict.fromkeys(
-            item.source_version_id for item in sources if item.origin == 'raw_source'
+            item.source_version_id for item in sources
         ))
         revalidate = getattr(self._repository, 'revalidate_open_law_sources', None)
         def recheck():
@@ -797,11 +881,26 @@ class QuestionAnsweringService:
                 return self._wait_for_provider_owner(
                     context, run_id, request_fingerprint,
                 )
+            recheck()
             try:
-                recheck()
                 generated = self._adapter_registry.generate_general(prepared)
             except (ValueError, DocumentUnderstandingError) as error:
                 raw_code = error.code if isinstance(error, DocumentUnderstandingError) else str(error)
+                if (failure_capture is not None and egress_authorization.get("provider_owner") is True
+                    and source_id is None and source_version_id is None and not sources
+                    and raw_code in {"TEXT_GENERATION_RESPONSE_INVALID", "TEXT_GENERATION_GROUNDING_INVALID"}):
+                    # 보관하는 것은 운영 DTO뿐이다. ResolvedModel/credential/adapter/원예외는 capture하지 않는다.
+                    safe_selection = TextModelSelection(
+                        provider_code=selection.provider_code, base_url=selection.base_url,
+                        profile_id=selection.profile_id, deployment_id=selection.deployment_id,
+                        model_id=selection.model_id, binding_version=selection.binding_version,
+                        provider_kind=selection.provider_kind, connection_id=selection.connection_id,
+                        credential_version=selection.credential_version, catalog_version=selection.catalog_version,
+                        routing_owner=selection.routing_owner, daon_fallback_allowed=selection.daon_fallback_allowed,
+                    )
+                    failure_capture.append(_FinalQuestionFailure(
+                        raw_code,safe_selection,dict(egress_authorization),(),"general_ungrounded",
+                    ))
                 raise QuestionAnsweringError(
                     raw_code if raw_code.startswith("TEXT_") else "TEXT_GENERATION_FAILED", status=502,
                 ) from None
@@ -838,18 +937,16 @@ class QuestionAnsweringService:
                     context_mode=context_mode, context_sources=sources,
                     request_fingerprint=request_fingerprint,
                 )
-            prepared = None
-            fallback_wire = b""
-            if self._qa_media_selection(context, selection):
-                prepared = self._prepare_qa_structured_payload(context, prepare_general(
-                    selection, question, context.trace_id, self._transport,
-                ))
-                if isinstance(prepared.adapter, _QaMediaBridgeDiagnosticAdapter):
-                    fallback_wire = canonical_json_bytes(prepared.provider_payload)
-                    transformer = getattr(self._egress, "prepare_payload", None)
-                    if callable(transformer):
-                        fallback_wire = transformer(context, fallback_wire)
-                        prepared = replace(prepared, provider_payload=json.loads(fallback_wire))
+            prepared = self._prepare_qa_structured_payload(context, prepare_general(
+                selection, question, context.trace_id, self._transport,
+            ))
+            # 전송할 실제 prepared payload를 기존 변환에 통과시키고 같은 표현의 canonical bytes를 승인한다.
+            fallback_wire = canonical_json_bytes(prepared.provider_payload)
+            transformer = getattr(self._egress, "prepare_payload", None)
+            if callable(transformer):
+                transformed = transformer(context, fallback_wire)
+                prepared = replace(prepared, provider_payload=json.loads(transformed))
+                fallback_wire = canonical_json_bytes(prepared.provider_payload)
             egress_authorization = self._egress.authorize(
                 context, run_id=run_id, source_id=None, source_version_id=None,
                 selection=selection, provider_payload=fallback_wire,
@@ -857,13 +954,8 @@ class QuestionAnsweringService:
                 question=question, context_mode="general_ungrounded",
                 request_fingerprint=request_fingerprint,
             )
-            if (prepared is not None and isinstance(prepared.adapter, _QaMediaBridgeDiagnosticAdapter)
-                    and egress_authorization.get("provider_owner") is False):
+            if egress_authorization.get("provider_owner") is False:
                 return self._wait_for_provider_owner(context, run_id, request_fingerprint)
-            if prepared is None:
-                prepared = prepare_general(
-                    selection, question, context.trace_id, self._transport,
-                )
             recheck()
             generated = self._adapter_registry.generate_general(prepared)
             recheck()
@@ -950,6 +1042,22 @@ class QuestionAnsweringService:
             retryable = code in {
                 "TEXT_PROVIDER_UNAVAILABLE", "TEXT_GENERATION_PROVIDER_UNAVAILABLE",
             }
+            if (failure_capture is not None and egress_authorization.get("provider_owner") is True
+                and context_mode == "raw_only" and 1 <= len(sources) <= 8
+                and all(item.origin == "raw_source" for item in sources)
+                and raw_code in {"TEXT_GENERATION_RESPONSE_INVALID", "TEXT_GENERATION_GROUNDING_INVALID"}):
+                # credential/adapter/prepared/원예외는 보관하지 않고 운영 식별 필드만 복사한다.
+                safe_selection = TextModelSelection(
+                    provider_code=selection.provider_code, base_url=selection.base_url,
+                    profile_id=selection.profile_id, deployment_id=selection.deployment_id,
+                    model_id=selection.model_id, binding_version=selection.binding_version,
+                    provider_kind=selection.provider_kind, connection_id=selection.connection_id,
+                    credential_version=selection.credential_version, catalog_version=selection.catalog_version,
+                    routing_owner=selection.routing_owner, daon_fallback_allowed=selection.daon_fallback_allowed,
+                )
+                failure_capture.append(_FinalQuestionFailure(
+                    raw_code, safe_selection, dict(egress_authorization), sources,"raw_only",
+                ))
             raise QuestionAnsweringError(
                 code if code.startswith("TEXT_") else "TEXT_GENERATION_FAILED",
                 status=503 if retryable else 502, retryable=retryable,
@@ -968,6 +1076,12 @@ class QuestionAnsweringService:
     def replay(
         self, context: QuestionContext, *, run_id: str, request_fingerprint: str,
     ) -> StoredQuestionAnswer | None:
-        return self._repository.load_completed_for_replay(
+        completed = self._repository.load_completed_for_replay(
             context, run_id, request_fingerprint,
         )
+        if completed is not None:
+            return completed
+        failed_replay = getattr(self._repository, "load_failed_for_replay", None)
+        if callable(failed_replay) and failed_replay(context, run_id, request_fingerprint):
+            raise QuestionAnsweringError("QUESTION_NEW_RUN_REQUIRED", status=409, retryable=True)
+        return None

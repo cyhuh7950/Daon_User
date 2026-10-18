@@ -770,11 +770,15 @@ class AuthorizationService:
     def __init__(
         self, *, repository: SqliteAuthorizationRepository, audit_store: object,
         clock: Callable[[], datetime], identity_service: object | None = None,
+        notification_inbox_enabled: bool = False,
     ) -> None:
+        if type(notification_inbox_enabled) is not bool:
+            raise ValueError("NOTIFICATION_INBOX_FLAG_INVALID")
         self._repository = repository
         self._audit_store = audit_store
         self._clock = clock
         self._identity_service = identity_service
+        self._notification_inbox_enabled = notification_inbox_enabled
         self._lock = RLock()
 
     def _now(self) -> datetime:
@@ -785,7 +789,7 @@ class AuthorizationService:
         trace_id: str, policy_version: str, workspace_id: str | None,
         target_type: str, target_id: str, before: dict[str, object] | None = None,
         after: dict[str, object] | None = None, metadata: dict[str, object] | None = None,
-    ) -> None:
+    ) -> AuditEventDraft:
         draft = AuditEventDraft(
             event_id=_id("audit"),
             occurred_at=self._now(),
@@ -807,6 +811,7 @@ class AuthorizationService:
             self._audit_store.append(draft)  # type: ignore[attr-defined]
         except Exception as error:
             raise AuthorizationError("AUDIT_WRITE_FAILED", 503) from error
+        return draft
 
     def _workspace(
         self, connection: sqlite3.Connection, principal: IdentityPrincipal, workspace_id: str,
@@ -1301,13 +1306,20 @@ class AuthorizationService:
                 "UPDATE auth_workspaces SET acl_version=acl_version+1,updated_at=? WHERE tenant_id=? AND workspace_id=?",
                 (_iso(now), principal.tenant_id, workspace_id),
             )
-            self._audit(
+            draft = self._audit(
                 action="authorization.source_access.changed", outcome=AuditOutcome.SUCCEEDED,
                 principal=principal, trace_id=trace_id, policy_version=policy_version,
                 workspace_id=workspace_id, target_type="source_access", target_id=source_version_id,
                 before=None if current is None else {"allowed": bool(current["allowed"]), "version": current_version},
                 after={"allowed": allowed, "version": next_version},
             )
+            if self._notification_inbox_enabled and hasattr(connection, "_conn"):
+                from .notification_source_access import enqueue_source_access_event
+
+                enqueue_source_access_event(
+                    connection, event=draft, recipient_id=user_id,
+                    source_version_id=source_version_id, allowed=allowed, acl_version=next_version,
+                )
             return next_version
 
     def set_permission_policy(

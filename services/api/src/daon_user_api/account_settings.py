@@ -58,9 +58,12 @@ def delete_account_profile(connection, user_id):
 
 
 class AccountSettingsService:
-    def __init__(self, identity):
+    def __init__(self, identity, *, notification_inbox_enabled=False):
+        if type(notification_inbox_enabled) is not bool:
+            raise ValueError("NOTIFICATION_INBOX_FLAG_INVALID")
         self.identity = identity
         self.repository = identity._repository
+        self._notification_inbox_enabled = notification_inbox_enabled
 
     @contextmanager
     def _safe_transaction(self):
@@ -143,9 +146,13 @@ class AccountSettingsService:
         return {**json.loads(str(row["response_json"])), "replayed": True}
 
     def _record(self, connection, principal, operation, key, fingerprint, result, target, trace_id, policy_version, audit_events=None):
+        event_id = _id("audit-account")
         connection.execute("INSERT INTO account_requests(actor_id,operation,idempotency_key,fingerprint,response_json,tenant_id,target_id,event_id,trace_id,policy_version,created_at,audit_events_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (str(principal["user_id"]), operation, key, fingerprint, json.dumps(result, ensure_ascii=False, sort_keys=True),
-             str(principal["tenant_id"]), target, _id("audit-account"), trace_id, policy_version, _iso(self.identity._now()), json.dumps(audit_events or [], sort_keys=True)))
+             str(principal["tenant_id"]), target, event_id, trace_id, policy_version, _iso(self.identity._now()), json.dumps(audit_events or [], sort_keys=True)))
+        if self._notification_inbox_enabled and operation != "profile.update" and hasattr(connection, "_connection"):
+            from .notification_events import enqueue_account_event
+            enqueue_account_event(connection, self.identity, principal, request_event_id=event_id)
 
     def trust_device(self, *, access_token, device_id, idempotency_key, trace_id, policy_version):
         return self._mutate("device.trust", access_token, device_id, None, idempotency_key, trace_id, policy_version)

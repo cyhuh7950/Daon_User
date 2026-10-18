@@ -13,8 +13,10 @@ from .cloud_storage import PostgresCloudStore
 from .data_canon import canonical_json_bytes
 from .egress_policy import EffectiveEgressPolicy, EgressPolicyContext, EgressPolicyService
 from .question_answering import TextModelSelection
-from .question_answering_postgres import PostgresQuestionAnsweringRepository, QuestionContext
-from .question_answering_service import QuestionAnsweringError
+from .question_answering_postgres import (
+    PostgresQuestionAnsweringRepository, QuestionContext, QuestionRepositoryError,
+)
+from .question_answering_service import QuestionAnsweringError, question_request_fingerprint
 from .routing import CandidateDeployment, RoutingContext, route_single_model
 
 
@@ -74,6 +76,101 @@ class PostgresQuestionEgressAuthorizer:
             "routing_owner": selection.routing_owner,
             "daon_fallback_allowed": selection.daon_fallback_allowed,
         }
+
+    @staticmethod
+    def _selection_request(
+        context: QuestionContext, *, run_id: str, question: str,
+        request_fingerprint: str, request_payload: Mapping[str, object],
+        idempotency_key: str, context_sources: tuple[object, ...],
+        source_id: str | None, source_version_id: str | None,
+    ) -> dict[str, object]:
+        """원 logical body와 서버 resolved 선택을 대조한다. 질문/body/key 자체는 저장하지 않는다."""
+        if (
+            not isinstance(request_payload, Mapping)
+            or not isinstance(idempotency_key, str) or not idempotency_key
+            or not isinstance(context_sources, tuple) or len(context_sources) > 8
+            or context.notebook_id is None
+            or request_payload.get("notebook_id") != context.notebook_id
+            or set(request_payload) - {
+                "notebook_id", "question", "source_id", "source_version_id", "knowledge_context",
+            }
+        ):
+            raise QuestionAnsweringError("QUESTION_CONTEXT_INVALID", status=400)
+        logical_question = request_payload.get("question")
+        if (
+            not isinstance(logical_question, str)
+            or not (logical_question == question or (
+                logical_question == logical_question.strip() and question.strip() == logical_question
+            ))
+        ):
+            raise QuestionAnsweringError("QUESTION_CONTEXT_INVALID", status=400)
+        if question_request_fingerprint(
+            context, run_id=run_id, idempotency_key=idempotency_key, request_payload=request_payload,
+        ) != request_fingerprint:
+            raise QuestionAnsweringError("IDEMPOTENCY_KEY_REUSED", status=409)
+        knowledge = request_payload.get("knowledge_context")
+        legacy_source = request_payload.get("source_id")
+        legacy_version = request_payload.get("source_version_id")
+        if knowledge is not None:
+            if (legacy_source is not None or legacy_version is not None
+                or not isinstance(knowledge, Mapping) or set(knowledge) != {"mode", "resources"}):
+                raise QuestionAnsweringError("QUESTION_CONTEXT_INVALID", status=400)
+            mode = knowledge.get("mode")
+            original = knowledge.get("resources")
+            if not isinstance(original, list) or not 1 <= len(original) <= 8:
+                raise QuestionAnsweringError("QUESTION_CONTEXT_INVALID", status=400)
+            resources = []
+            for resource in original:
+                if not isinstance(resource, Mapping):
+                    raise QuestionAnsweringError("QUESTION_CONTEXT_INVALID", status=400)
+                kind = resource.get("resource_kind")
+                if (kind not in {"source", "knowledge_package"}
+                    or set(resource) != ({"resource_kind", "resource_id", "version_id"}
+                        if kind == "source" else {"resource_kind", "resource_id"})
+                    or any(not isinstance(value, str) or not value for value in resource.values())):
+                    raise QuestionAnsweringError("QUESTION_CONTEXT_INVALID", status=400)
+                resources.append(dict(resource))
+            packages = [item for item in resources if item["resource_kind"] == "knowledge_package"]
+            raw = [item for item in resources if item["resource_kind"] == "source"]
+            if not (
+                mode == "raw_only" and raw and not packages
+                or mode == "daon_priority" and packages
+                or mode == "mixed" and raw and packages
+            ):
+                raise QuestionAnsweringError("QUESTION_CONTEXT_INVALID", status=400)
+        else:
+            if (legacy_source is None) != (legacy_version is None):
+                raise QuestionAnsweringError("QUESTION_CONTEXT_INVALID", status=400)
+            if legacy_source is None:
+                mode, resources, packages, raw = "general_ungrounded", [], [], []
+            else:
+                if not all(isinstance(value, str) and value for value in (legacy_source, legacy_version)):
+                    raise QuestionAnsweringError("QUESTION_CONTEXT_INVALID", status=400)
+                mode = "raw_only"
+                resources = [{"resource_kind": "source", "resource_id": legacy_source, "version_id": legacy_version}]
+                packages, raw = [], resources
+        identities = [(item["resource_kind"], item["resource_id"], item.get("version_id")) for item in resources]
+        if len(set(identities)) != len(identities) or len(context_sources) != len(resources):
+            raise QuestionAnsweringError("QUESTION_CONTEXT_INVALID", status=400)
+        # runtime의 기존 resolved 순서(지식 먼저/raw 뒤)를 보존한다. 원 resources 순서는 별도로 보존한다.
+        for item, resource in zip(context_sources, packages + raw):
+            if resource["resource_kind"] == "knowledge_package":
+                matches = (getattr(item, "origin", None) == "daon_knowledge"
+                    and getattr(item, "context_item_id", None) == resource["resource_id"])
+            else:
+                matches = (getattr(item, "origin", None) == "raw_source"
+                    and getattr(item, "context_item_id", None) == resource["resource_id"]
+                    and getattr(item, "source_id", None) == resource["resource_id"]
+                    and getattr(item, "source_version_id", None) == resource["version_id"])
+            if not matches:
+                raise QuestionAnsweringError("QUESTION_CONTEXT_INVALID", status=400)
+        if ((source_id is None) != (source_version_id is None)
+            or source_id is not None and (source_id, source_version_id) not in {
+                (getattr(item, "source_id", None), getattr(item, "source_version_id", None)) for item in context_sources
+            }):
+            raise QuestionAnsweringError("QUESTION_CONTEXT_INVALID", status=400)
+        return {"schema_version": 1, "request_fingerprint": request_fingerprint,
+            "requested_mode": mode, "resources": resources}
 
     @staticmethod
     def _approval_matches(
@@ -153,6 +250,9 @@ class PostgresQuestionEgressAuthorizer:
         approved_authorization: Mapping[str, str] | None = None,
         question: str | None = None, context_mode: str | None = None,
         request_fingerprint: str | None = None,
+        request_payload: Mapping[str, object] | None = None,
+        idempotency_key: str | None = None,
+        context_sources: tuple[object, ...] | None = None,
     ) -> Mapping[str, object]:
         policy_context = EgressPolicyContext(
             context.tenant_id, context.tenant_id, context.workspace_id,
@@ -234,6 +334,13 @@ class PostgresQuestionEgressAuthorizer:
             or not isinstance(request_fingerprint, str)
         ):
             raise QuestionAnsweringError("QUESTION_RESULT_INVALID", status=400)
+        selection_request = None
+        if any(value is not None for value in (request_payload, idempotency_key, context_sources)):
+            selection_request = self._selection_request(
+                context, run_id=run_id, question=question, request_fingerprint=request_fingerprint,
+                request_payload=request_payload, idempotency_key=idempotency_key,
+                context_sources=context_sources, source_id=source_id, source_version_id=source_version_id,
+            )
         run_payload = PostgresQuestionAnsweringRepository._run_canonical_payload(
             question=question, source_id=source_id,
             source_version_id=source_version_id, context_mode=context_mode,
@@ -257,14 +364,25 @@ class PostgresQuestionEgressAuthorizer:
                             "IDEMPOTENCY_KEY_REUSED", status=409,
                         )
                     replay = connection.execute(
-                        "SELECT canonical_json->>'allowed',canonical_json->>'reason' "
-                        "FROM egress_decisions WHERE record_id=%s AND run_id=%s",
+                        "SELECT canonical_json->>'allowed',canonical_json->>'reason'"
+                        + (",canonical_json" if selection_request is not None else "")
+                        + " FROM egress_decisions WHERE record_id=%s AND run_id=%s",
                         (egress_decision_id, run_id),
                     ).fetchone()
                     if replay is None:
                         raise _FrozenRunMismatch
                     if str(replay[0]).casefold() != "true":
                         raise QuestionAnsweringError("EGRESS_POLICY_DENIED", status=403)
+                    if selection_request is not None:
+                        stored_selection = replay[2].get("access_selection")
+                        if (not isinstance(stored_selection, Mapping)
+                            or type(stored_selection.get("schema_version")) is not int):
+                            raise QuestionAnsweringError("QUESTION_NEW_RUN_REQUIRED", status=409)
+                        resolved_items = PostgresQuestionAnsweringRepository._knowledge_selections(
+                            connection, context, context_sources, write=False,
+                        )
+                        if stored_selection != {**selection_request, "resolved_items": list(resolved_items)}:
+                            raise QuestionAnsweringError("IDEMPOTENCY_KEY_REUSED", status=409)
                     return {
                         "egress_decision_id": egress_decision_id,
                         "routing_decision_id": routing_decision_id,
@@ -273,6 +391,12 @@ class PostgresQuestionEgressAuthorizer:
                         "frozen_routing_context": frozen,
                         "provider_owner": False,
                     }
+                access_selection = None
+                if allowed and selection_request is not None:
+                    resolved_items = PostgresQuestionAnsweringRepository.bind_knowledge_selections(
+                        connection, context, context_sources,
+                    )
+                    access_selection = {**selection_request, "resolved_items": list(resolved_items)}
                 conversation_id = self._id("conversation", run_id)
                 run_result_id = self._id("run-result", run_id)
                 PostgresQuestionAnsweringRepository._insert_canon(connection, context, "provider_profiles", provider_id, {
@@ -306,6 +430,7 @@ class PostgresQuestionEgressAuthorizer:
                 PostgresQuestionAnsweringRepository._insert_canon(connection, context, "egress_decisions", egress_decision_id, {
                     "run_id": run_id, "provider_profile_id": provider_id,
                     "allowed": allowed, "reason": reason, "frozen_routing_context": frozen,
+                    **({"access_selection": access_selection} if access_selection is not None else {}),
                 }, extra_columns=("run_id", "provider_profile_id"), extra_values=(run_id, provider_id))
                 PostgresQuestionAnsweringRepository._insert_canon(connection, context, "routing_decisions", routing_decision_id, {
                     "run_id": run_id, "candidate_order": [deployment_id], "reason": reason,
@@ -331,6 +456,8 @@ class PostgresQuestionEgressAuthorizer:
                         }),
                     ),
                 )
+        except QuestionRepositoryError as error:
+            raise QuestionAnsweringError(error.code, status=error.status, retryable=error.retryable) from None
         except _FrozenRunMismatch:
             self._record_retry_denial(context, run_id, effective.fingerprint)
             raise QuestionAnsweringError("QUESTION_NEW_RUN_REQUIRED", status=409)

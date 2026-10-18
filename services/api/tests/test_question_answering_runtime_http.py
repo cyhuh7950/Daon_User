@@ -349,6 +349,209 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
             return_value=identity_session_view(self.principal),
         )
 
+    def _assert_s42_original_logical_request(self, expected_body, key):
+        # 기대 body는 각 HTTP 시험의 literal이다. 서비스/지문 helper로 재조립하지 않는다.
+        import hashlib
+        import json
+        self.assertEqual(len(self.service.calls), 1)
+        context, call = self.service.calls[0]
+        self.assertEqual((context.tenant_id, context.workspace_id, context.actor_id, context.notebook_id),
+            ("tenant-001", "workspace-001", "user-001", "notebook-cp3"))
+        expected_fingerprint = "sha256:" + hashlib.sha256(json.dumps({
+            "tenant_id": "tenant-001", "workspace_id": "workspace-001", "notebook_id": "notebook-cp3",
+            "actor_id": "user-001", "run_id": call["run_id"], "idempotency_key": key,
+            "request": expected_body,
+        }, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")).hexdigest()
+        self.assertEqual(call["request_fingerprint"], expected_fingerprint)
+        self.assertEqual(len(self.service.replay_calls), 1)
+        self.assertEqual(self.service.replay_calls[0][1:], (call["run_id"], expected_fingerprint))
+        self.assertTrue(call["replay_checked"])
+        self.assertIn("request_payload", call, "QUESTION_RUNTIME_ORIGINAL_LOGICAL_BODY_NOT_FORWARDED")
+        self.assertIn("idempotency_key", call, "QUESTION_RUNTIME_ORIGINAL_KEY_NOT_FORWARDED")
+        self.assertEqual(call["request_payload"], expected_body)
+        self.assertEqual(call["idempotency_key"], key)
+        self.assertNotIn("context_mode", call["request_payload"])
+        self.assertNotIn("step_up_authorization_id", call["request_payload"])
+
+    async def test_s42_raw_http_forwards_exact_fingerprint_body_and_key_without_step_up(self):
+        """기존 ASGI/auth와 FakeQuestionService 포트 사이의 연결 시험이며 실제 Provider/PG 증거가 아니다."""
+        expected = {
+            "notebook_id": "notebook-cp3", "source_id": "source-cp3",
+            "source_version_id": "source-version-cp3", "question": "선택한 원문 근거의 검증 문장은 무엇인가요?",
+        }
+        key = "question-s42-raw-internal-0001"
+        canary = "S42_SYNTHETIC_STEP_UP_NOT_A_REAL_SECRET"
+        with self._authenticated(), self.assertLogs(level="INFO") as logs:
+            response = await self.client.post(
+                "/api/v1/workspaces/workspace-001/questions",
+                cookies={WEB_SESSION_COOKIE: "opaque-session"}, headers={"Idempotency-Key": key},
+                json={**expected, "knowledge_context": None, "step_up_authorization_id": canary},
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["data"]["answer"], "ORANGE-COMPASS-42")
+        self.assertNotIn(canary, response.text)
+        self.assertNotIn(canary, "\n".join(logs.output))
+        self.assertNotIn(canary, repr(self.service.calls))
+        self.assertEqual(self.notebooks.required[0][1:],
+            ("notebook-cp3", (("source", "source-cp3", "source-version-cp3"),)))
+        call = self.service.calls[0][1]
+        self.assertEqual((call["source_id"], call["source_version_id"], call["context_mode"], call["question"]),
+            ("source-cp3", "source-version-cp3", "raw_only", expected["question"]))
+        self._assert_s42_original_logical_request(expected, key)
+
+    async def test_s42_knowledge_http_keeps_original_package_resource_selection_in_logical_body(self):
+        """원 logical 선택 전달만 검사한다. 각 mode의 실제 실패 저장/외부 Daon 동작 증거가 아니다."""
+        cases = (
+            ("raw_only", [{"resource_kind": "source", "resource_id": "source-raw", "version_id": "version-raw"}],
+                (("raw_source", "source-raw", "source-raw", "version-raw"),)),
+            ("daon_priority", [{"resource_kind": "knowledge_package", "resource_id": "package-daon3"}],
+                (("daon_knowledge", "package-daon3", "source-package-daon3", "version-package-daon3"),)),
+            ("mixed", [{"resource_kind": "knowledge_package", "resource_id": "package-daon3"},
+                       {"resource_kind": "source", "resource_id": "source-raw", "version_id": "version-raw"}],
+                (("daon_knowledge", "package-daon3", "source-package-daon3", "version-package-daon3"),
+                 ("raw_source", "source-raw", "source-raw", "version-raw"))),
+        )
+        for mode, resources, expected_sources in cases:
+            with self.subTest(mode=mode):
+                self.service.calls.clear()
+                self.service.replay_calls.clear()
+                self.notebooks.required.clear()
+                expected = {"notebook_id": "notebook-cp3", "question": "선택한 지식과 원문을 확인해줘",
+                    "knowledge_context": {"mode": mode, "resources": resources}}
+                # package version의 명시 null도 재귀 exclude_none 대상이며 원 resource ID/순서는 보존된다.
+                wire_resources = [{**resource, "version_id": resource.get("version_id")} for resource in resources]
+                key = "question-s42-logical-" + mode + "-0001"
+                canary = "S42_SYNTHETIC_KNOWLEDGE_STEP_UP_NOT_A_REAL_SECRET"
+                with self._authenticated(), self.assertLogs(level="INFO") as logs:
+                    response = await self.client.post(
+                        "/api/v1/workspaces/workspace-001/questions",
+                        cookies={WEB_SESSION_COOKIE: "opaque-session"}, headers={"Idempotency-Key": key},
+                        json={"notebook_id": "notebook-cp3", "question": "선택한 지식과 원문을 확인해줘",
+                            "source_id": None, "source_version_id": None, "step_up_authorization_id": canary,
+                            "knowledge_context": {"mode": mode, "resources": wire_resources}},
+                    )
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertNotIn(canary, response.text)
+                self.assertNotIn(canary, "\n".join(logs.output))
+                self.assertNotIn(canary, repr(self.service.calls))
+                call = self.service.calls[0][1]
+                self.assertEqual(call["context_mode"], mode)
+                self.assertEqual(call["question"], expected["question"])
+                self.assertEqual(tuple((item.origin, item.context_item_id, item.source_id, item.source_version_id)
+                    for item in call["context_sources"]), expected_sources)
+                self.assertEqual(self.notebooks.required[0][1], "notebook-cp3")
+                self._assert_s42_original_logical_request(expected, key)
+
+    async def test_s42_knowledge_registration_metadata_reaches_internal_question_input_only(self):
+        """ASGI/포트 전달 시험이다. 실제 package 등록·PG·Provider 검증으로 계산하지 않는다."""
+        from types import SimpleNamespace
+        registration='s42-exact-registration-not-derived-from-package'
+        resolved=SimpleNamespace(package_id='package-daon3',source_id='source-package-daon3',
+            source_version_id='version-package-daon3',digest_sha256='a'*64,knowledge_registration_id=registration)
+        body={'notebook_id':'notebook-cp3','question':'선택한 지식의 원등록을 확인해줘',
+            'knowledge_context':{'mode':'mixed','resources':[
+                {'resource_kind':'knowledge_package','resource_id':'package-daon3'},
+                {'resource_kind':'source','resource_id':'source-raw','version_id':'version-raw'}]}}
+        key='s42-registration-carry-0001'
+        with self._authenticated(),patch.object(self.knowledge,'resolve_question_sources',return_value=(resolved,)) as resolve:
+            response=await self.client.post('/api/v1/workspaces/workspace-001/questions',
+                cookies={WEB_SESSION_COOKIE:'opaque-session'},headers={'Idempotency-Key':key},json=body)
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(resolve.call_count,1)
+        self.assertEqual(resolve.call_args.args[1],('package-daon3',))
+        self._assert_s42_original_logical_request(body,key)
+        sources=self.service.calls[0][1]['context_sources']
+        self.assertEqual([(item.origin,item.context_item_id,item.source_id,item.source_version_id,item.digest_sha256)
+            for item in sources],[('daon_knowledge','package-daon3','source-package-daon3','version-package-daon3','a'*64),
+                ('raw_source','source-raw','source-raw','version-raw',None)])
+        self.assertEqual(getattr(sources[0],'knowledge_registration_id',None),registration,
+            'RUNTIME_EXACT_REGISTRATION_METADATA_NOT_CARRIED')
+        self.assertIsNone(getattr(sources[1],'knowledge_registration_id',None))
+        self.assertNotIn('knowledge_registration_id',response.text)
+        self.assertNotIn(registration,response.text)
+        self.assertNotIn(registration,repr(self.service.calls[0][1]['request_payload']))
+
+    async def test_s42_internal_registration_metadata_does_not_change_five_field_authorization_fingerprint(self):
+        """metadata가 있는 내부 DTO 대역으로 실제 ASGI 지문/ETag를 검사한다. 추가인증 I/O는 대역이다."""
+        import hashlib
+        import json
+        from dataclasses import dataclass
+        from datetime import datetime,timezone
+        from types import SimpleNamespace
+        from daon_user_api.question_answering import TextModelSelection
+        from daon_user_api.question_answering_service import QuestionInputSource
+
+        @dataclass(frozen=True,slots=True)
+        class MetadataInputSource(QuestionInputSource):
+            knowledge_registration_id:str|None=None
+
+        registration='s42-internal-registration-metadata'
+        def metadata_source(*args,**kwargs):
+            # 현 DTO 확장 전에도 공통 dataclass serializer의 metadata 노출 반례를 실제 HTTP 경계에 넣는다.
+            if len(args)<6 and 'knowledge_registration_id' not in kwargs:
+                kwargs['knowledge_registration_id']=registration if args[0]=='daon_knowledge' else None
+            return MetadataInputSource(*args,**kwargs)
+
+        selection=TextModelSelection('fixture','https://provider.example.com/v1','profile-s42','deployment-s42',
+            'fixture-model',4,connection_id='connection-s42',credential_version=2,catalog_version=3)
+        wire=b'{"messages":[{"role":"user","content":"S42 synthetic authorization"}]}'
+        prepared_sources=[]
+        def prepare(context,**kwargs):
+            prepared_sources.append(kwargs['context_sources'])
+            return SimpleNamespace(selection=selection,provider_payload=wire)
+        effective=SimpleNamespace(fingerprint='s42-policy-existing-five-fields',required_approver='workspace_manager',
+            mode='allow_approved_external',allowed_provider_kinds=('external_api',),
+            allowed_destinations=('provider.example.com',),max_bytes=65536,classification='internal',
+            masking_required=True,redaction_required=True)
+        dependencies=replace(self.dependencies,egress_policy_service=SimpleNamespace(get_effective=lambda _:effective))
+        self.service.prepare_authorization=prepare
+        self.knowledge.resolve_question_sources=lambda context,package_ids:tuple(SimpleNamespace(
+            package_id=package,source_id='source-'+package,source_version_id='version-'+package,
+            digest_sha256='a'*64,knowledge_registration_id=registration) for package in package_ids)
+        cases=(
+            ('raw_only',[{'resource_kind':'source','resource_id':'source-raw','version_id':'version-raw'}],
+                [{'origin':'raw_source','context_item_id':'source-raw','source_id':'source-raw',
+                    'source_version_id':'version-raw','digest_sha256':None}]),
+            ('daon_priority',[{'resource_kind':'knowledge_package','resource_id':'package-daon3'}],
+                [{'origin':'daon_knowledge','context_item_id':'package-daon3','source_id':'source-package-daon3',
+                    'source_version_id':'version-package-daon3','digest_sha256':'a'*64}]),
+        )
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(dependencies)),
+            base_url='http://127.0.0.1') as client:
+            for mode,resources,items in cases:
+                with self.subTest(mode=mode):
+                    key='s42-auth-projection-'+mode
+                    question=' S42 기존 인증지문 유지 '
+                    body={'notebook_id':'notebook-cp3','question':question,
+                        'knowledge_context':{'mode':mode,'resources':resources},'password':'S42 synthetic not a real password'}
+                    with self._authenticated(),patch('daon_user_api.runtime.QuestionInputSource',side_effect=metadata_source),patch.object(
+                        self.identity,'issue_step_up_after_reauthentication',return_value=SimpleNamespace(
+                            authorization='s42-synthetic-step-up',expires_at=datetime(2026,10,19,tzinfo=timezone.utc))):
+                        response=await client.post('/api/v1/workspaces/workspace-001/questions/authorization',
+                            cookies={WEB_SESSION_COOKIE:'opaque-session'},headers={'Idempotency-Key':key},json=body)
+                    self.assertEqual(response.status_code,201,response.text)
+                    self.assertEqual(len(prepared_sources[-1]),1)
+                    self.assertTrue(hasattr(prepared_sources[-1][0],'knowledge_registration_id'))
+                    self.assertEqual(prepared_sources[-1][0].knowledge_registration_id,
+                        registration if mode=='daon_priority' else None)
+                    run='run-'+hashlib.sha256(f'tenant-001|workspace-001|notebook-cp3|user-001|{key}'.encode()).hexdigest()[:32]
+                    # 기존 다섯 필드는 literal이다. runtime dataclass serializer/지문 helper로 기대값을 만들지 않는다.
+                    expected={'actor_id':'user-001','tenant_id':'tenant-001','workspace_id':'workspace-001','run_id':run,
+                        'knowledge_context':{'mode':mode,'items':items},
+                        'question_fingerprint':'sha256:'+hashlib.sha256(question.strip().encode()).hexdigest(),
+                        'provider_payload_fingerprint':'sha256:'+hashlib.sha256(wire).hexdigest(),
+                        'provider_kind':'external_api','deployment_id':'deployment-s42','connection_id':'connection-s42',
+                        'credential_version':2,'default_version':4,'catalog_version':3,
+                        'effective_policy_fingerprint':'s42-policy-existing-five-fields','idempotency_key':key}
+                    fingerprint='sha256:'+hashlib.sha256(json.dumps(expected,sort_keys=True,separators=(',',':'),
+                        ensure_ascii=False,allow_nan=False).encode('utf-8')).hexdigest()
+                    self.assertEqual(response.json()['data']['run_id'],run)
+                    self.assertEqual(response.json()['data']['request_fingerprint'],fingerprint,
+                        'INTERNAL_METADATA_CHANGED_EXISTING_AUTHORIZATION_FINGERPRINT')
+                    self.assertEqual(response.headers['ETag'],f'"question-authorization:{fingerprint}"')
+                    self.assertNotIn('knowledge_registration_id',response.text)
+                    self.assertNotIn(registration,response.text)
+
     async def test_authenticated_question_returns_grounded_lineage_without_internal_url(self) -> None:
         with self._authenticated():
             response = await self.client.post(

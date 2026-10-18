@@ -42,7 +42,7 @@ function safeStatus(status) {
 
 function safeDeepLink(value) {
   if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) return null;
-  const notebook = /^\/notebooks\/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\?(?:output_version_id|source_version_id|run_id)=[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.exec(value);
+  const notebook = /^\/notebooks\/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\?(?:output_version_id|source_version_id|run_id|studio_job_id)=[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.exec(value);
   // $가 마지막 개행 앞에서 일치해도 전체 입력과 다르면 허용하지 않는다. URL 정규화도 하지 않는다.
   if (value === "/settings/account" || (notebook && notebook[0] === value)) return value;
   const first = value.split(/[/?#]/).filter(Boolean)[0];
@@ -218,8 +218,9 @@ export function NotificationInboxWorkspace({ api, mode = "notifications" }) {
           const link = safeDeepLink(item.deep_link);
           const id = item.id ?? item.request_id;
           return <article key={id} data-read={item.read_state === "read"}>
-            <div><span className="operations-badge">{item.severity ?? item.request_kind}</span><strong>{item.title ?? `${item.request_kind} · ${item.status}`}</strong></div>
+            <div><span className="operations-badge">{item.severity ?? (item.request_kind === "delivery" ? "전달 기록" : item.request_kind)}</span><strong>{item.title ?? `${item.request_kind === "delivery" ? "전달 기록" : item.request_kind} · ${item.status}`}</strong></div>
             <p>{item.summary ?? `${item.resource_type} · ${item.resource_id}`}</p>
+            {mode === "inbox" && item.request_kind === "delivery" && <small>실제 외부 송신 없음</small>}
             <small>{item.created_at ?? item.due_at ?? "기한 없음"} · Trace {item.trace_id ?? "소유 Domain Audit 연결"}</small>
             <div className="operations-actions">
               {mode === "notifications" && <button type="button" disabled={reading || readUncertain || item.read_state === "read"} onClick={() => void markRead(item)}>{item.read_state === "read" ? "읽음" : "읽음 처리"}</button>}

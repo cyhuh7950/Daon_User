@@ -33,6 +33,9 @@ class FakeConnection:
         self.extraction_payload = None
 
     def execute(self, sql, params=()):  # type: ignore[no-untyped-def]
+        if sql.startswith('SELECT NOT EXISTS (SELECT 1 FROM identity_auth_source_access'):
+            # 기존 대역에는 ACL 행이 없다. 실제 deny 판정은 격리 PG 반례에서 검증한다.
+            return Cursor((True,))
         if sql.startswith("SELECT canonical_json FROM extraction_evidence"):
             return Cursor(None if self.extraction_payload is None else (self.extraction_payload,))
         if sql.startswith("SELECT record_id,canonical_json FROM understanding_results"):

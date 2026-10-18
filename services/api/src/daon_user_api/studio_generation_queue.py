@@ -127,6 +127,10 @@ class PostgresStudioGenerationQueue:
             ).fetchone()
             if result is None:
                 raise StudioGenerationQueueError("STUDIO_JOB_LEASE_LOST", retryable=True)
+            if getattr(self._cloud_store, '_notification_inbox_enabled', False):
+                from .notification_events import enqueue_studio_job_terminal
+                # 최종 조건 UPDATE가 성공한 같은 connection에서만 원감사/의도를 저장한다.
+                enqueue_studio_job_terminal(connection, job, state=state)
 
     def get(self, context: CloudAccessContext, job_id: str) -> StudioGenerationJob:
         with self._cloud_store._transaction(CloudAccessContext(context.tenant_id, context.workspace_id, context.actor_id, "studio.read")) as connection:

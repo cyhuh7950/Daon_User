@@ -61,10 +61,14 @@ def pg_scope():
                            context=context, revision=revision, suffix=suffix)
 
 
-def seed_delivery(scope, *, pending=False, historical_case=None):
+def seed_delivery(scope, *, pending=False, historical_case=None, structured_content=None, workspace_kind='personal'):
+    from collections.abc import Mapping
     import psycopg
     from daon_user_api.studio_workspace_postgres import PostgresStudioWorkspaceRepository as Canon
     from daon_user_api.studio_approval_lifecycle import freeze_deadline
+    assert structured_content is None or isinstance(structured_content,Mapping)
+    assert workspace_kind in ('personal','organization')
+    owner_role='personal_owner' if workspace_kind=='personal' else 'organization_admin'
     ctx, suffix = scope.context, scope.suffix
     output, version = "s24-output-"+suffix, "s24-version-"+suffix
     settings, generation = "s24-settings-"+suffix, "s24-generation-"+suffix
@@ -74,8 +78,8 @@ def seed_delivery(scope, *, pending=False, historical_case=None):
         connection.execute("INSERT INTO workspaces(tenant_id,workspace_id,display_name) VALUES(%s,%s,'S24 synthetic workspace')", (ctx.tenant_id,ctx.workspace_id))
         connection.execute("INSERT INTO user_accounts(tenant_id,user_id) VALUES(%s,%s)", (ctx.tenant_id,ctx.actor_id))
         connection.execute("INSERT INTO identity_users(user_id,issuer,subject,state) VALUES(%s,'s24-fixture',%s,'active')", (ctx.actor_id,ctx.actor_id))
-        connection.execute("INSERT INTO identity_auth_workspaces VALUES(%s,%s,'personal','cloud_sync',1000,1,1,now())", (ctx.workspace_id,ctx.tenant_id))
-        connection.execute("INSERT INTO identity_auth_tenant_roles VALUES(%s,%s,'personal_owner','active',1,now())", (ctx.tenant_id,ctx.actor_id))
+        connection.execute("INSERT INTO identity_auth_workspaces VALUES(%s,%s,%s,'cloud_sync',1000,1,1,now())", (ctx.workspace_id,ctx.tenant_id,workspace_kind))
+        connection.execute("INSERT INTO identity_auth_tenant_roles VALUES(%s,%s,%s,'active',1,now())", (ctx.tenant_id,ctx.actor_id,owner_role))
         connection.execute("INSERT INTO identity_auth_tenant_policies VALUES(%s,1,now())", (ctx.tenant_id,))
         connection.execute("INSERT INTO identity_auth_workspace_policies VALUES(%s,%s,1,now())", (ctx.tenant_id,ctx.workspace_id))
         for name, value in (("tenant_id",ctx.tenant_id),("workspace_id",ctx.workspace_id),("actor_id",ctx.actor_id)):
@@ -91,7 +95,7 @@ def seed_delivery(scope, *, pending=False, historical_case=None):
         Canon._insert(connection,ctx,"generation_settings_snapshots",settings,{"output_format":"csv"})
         Canon._insert(connection,ctx,"generation_requests",generation,{},state="configuring",extra_columns=("generation_settings_snapshot_id",),extra_values=(settings,))
         Canon._insert(connection,ctx,"studio_outputs",output,{"title":"S24 synthetic comparison","output_type":"comparison_table","purpose":"S24 FK lock"},extra_columns=("generation_request_id",),extra_values=(generation,))
-        Canon._insert(connection,ctx,"output_versions",version,{"content":"S24 original immutable bytes","output_format":"csv"},state="generating",
+        Canon._insert(connection,ctx,"output_versions",version,{"content":"S24 original immutable bytes" if structured_content is None else dict(structured_content),"output_format":"csv"},state="generating",
                       extra_columns=("studio_output_id","generation_settings_snapshot_id","content_version"),extra_values=(output,settings,1))
         Canon._insert(connection,ctx,"evidence_references","s24-evidence-"+suffix,{"source_version_id":source_version,"evidence_span_id":span},
                       extra_columns=("output_version_id","source_version_id","evidence_span_id"),extra_values=(version,source_version,span))

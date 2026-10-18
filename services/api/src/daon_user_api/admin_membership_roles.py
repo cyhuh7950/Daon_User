@@ -68,11 +68,15 @@ class AdminMembershipRoleService:
         self, *, repository: SqliteAuthorizationRepository,
         system_admin_user_ids: frozenset[str], clock: Callable[[], datetime],
         audit_store: AuditEventStore | None = None,
+        notification_inbox_enabled: bool = False,
     ) -> None:
+        if type(notification_inbox_enabled) is not bool:
+            raise ValueError("NOTIFICATION_INBOX_FLAG_INVALID")
         self._repository = repository
         self._system_admin_user_ids = system_admin_user_ids
         self._clock = clock
         self._audit_store = audit_store
+        self._notification_inbox_enabled = notification_inbox_enabled
         self._audit_cursor: tuple[datetime | str, str] | None = None
         self._audit_high_watermark: tuple[datetime | str, str] | None = None
 
@@ -331,6 +335,13 @@ class AdminMembershipRoleService:
                 )
             except sqlite3.Error as error:
                 raise AuthorizationError("AUDIT_WRITE_FAILED", 503) from error
+            if changed and self._notification_inbox_enabled and hasattr(connection, "_conn"):
+                from .notification_c9_roles import enqueue_c9_role_event
+
+                enqueue_c9_role_event(
+                    connection, origin_event_id=event_id, tenant_id=tenant_id,
+                    recipient_id=user_id, workspace_id=workspace_id, manager_id=actor_id,
+                )
             return WorkspaceRoleChange(
                 tenant_id, workspace_id, user_id, role, "active", next_version,
                 acl_version, False,

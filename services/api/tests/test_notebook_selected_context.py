@@ -5,8 +5,26 @@ from copy import deepcopy
 
 import pytest
 
-from daon_user_api.notebook import NotebookContext
+from daon_user_api.notebook import NotebookContext, NotebookError
 from daon_user_api.notebook_postgres import PostgresNotebookRepository
+
+
+def test_s42_exact_selector_source_validation_error_is_safe_not_found(monkeypatch):
+    """오류 변환 단위 계약이며 실제 DB 접근 시험이 아니다."""
+    from contextlib import nullcontext
+    from daon_user_api.notification import NotificationError
+    import daon_user_api.notification_events as events
+    store = _ReadStore([], [])
+    store.responses = [[(1,)], [('completed','conversation-s42',{},'trace-s42')]]
+    monkeypatch.setattr(events, '_snapshot_read_scope', lambda connection, context:nullcontext(connection))
+    def reject(*args, **kwargs):
+        raise NotificationError('NOTIFICATION_SOURCE_INVALID', 400)
+    monkeypatch.setattr(events, '_completed_event_access', reject)
+    with pytest.raises(NotebookError) as failure:
+        PostgresNotebookRepository(store).read_selected_context(
+            NotebookContext('tenant-s42','workspace-s42','actor-s42','trace-s42','policy-s42'),
+            'notebook-s42', run_id='run-s42')
+    assert (failure.value.code,failure.value.status)==('NOTEBOOK_NOT_FOUND',404)
 
 
 class _ReadRows:

@@ -42,6 +42,22 @@ async function click(view, label, twice = false) {
   await view.act(async () => { button.dispatchEvent(new MinimalEvent("click")); if (twice) button.dispatchEvent(new MinimalEvent("click")); });
 }
 
+test("S43 전달 항목은 실제 외부 송신 성공이 아닌 전달 기록으로 표시한다", async () => {
+  const row = { ...inboxItem, request_id: "delivery-record-a", request_kind: "delivery", status: "delivered",
+    deep_link: "/notebooks/notebook-a?output_version_id=version-a" };
+  const view = await render({ list: async () => ({ ok: true, status: 200,
+    payload: { data: { items: [row], next_cursor: null }, meta: { trace_id: "trace-inbox" } } }),
+    markRead: () => { throw new Error("전달함은 읽기 전용"); } }, "inbox");
+  try {
+    assert.match(view.container.textContent, /전달 기록/u);
+    assert.match(view.container.textContent, /실제 외부 송신 없음/u);
+    const link = findElements(view.container, node => node.tagName === "A" && node.textContent === "원 요청 열기");
+    assert.equal(link.length, 1);
+    assert.equal(link[0].getAttribute("href"), "/notebooks/notebook-a?output_version_id=version-a");
+    assert.equal(buttonByText(view.container, "읽음 처리"), undefined);
+  } finally { await view.cleanup(); }
+});
+
 test("S42 실제 React는 정상 목록·미읽음·읽음 후 재조회를 보존한다", async () => {
   let read = false, reads = 0;
   const view = await render({ list: async mode => { assert.equal(mode, "notifications"); reads++; return listed([{ ...item(), read_state: read ? "read" : "unread", version: read ? 2 : 1, read_at: read ? "2026-10-17T01:00:00+00:00" : null }]); },
@@ -62,6 +78,7 @@ test("S42 승인된 원업무 링크는 실제 React에서 정확한 상대경�
     "/notebooks/notebook-001?output_version_id=version-001",
     "/notebooks/notebook-001?source_version_id=source-version-001",
     "/notebooks/notebook-001?run_id=run-001",
+    "/notebooks/notebook-001?studio_job_id=job-001",
     "/settings/account",
   ];
   const rows = links.map((deep_link, index) => ({ ...item(`target-${index}`), deep_link }));
@@ -83,6 +100,10 @@ test("S42 새 원업무 링크의 중복·오염 대상은 React에서 클릭 �
     "/notebooks/notebook-001?run_id=",
     "/notebooks/notebook-001?run_id=run-001#other",
     "/notebooks/notebook-001?run_id=run%0A001",
+    "/notebooks/notebook-001?studio_job_id=job-001&studio_job_id=job-002",
+    "/notebooks/notebook-001?studio_job_id=job-001&run_id=run-001",
+    "/notebooks/notebook-001?studio_job_id=",
+    "/notebooks/notebook-001?studio_job_id=job%0A001",
     "/notebooks/notebook-001%2Fother?run_id=run-001",
     "/notebooks/../settings?run_id=run-001",
     "/settings/account?redirect=https://evil.example",

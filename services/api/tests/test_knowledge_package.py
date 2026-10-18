@@ -44,6 +44,20 @@ class KnowledgePackageTests(unittest.TestCase):
             "tenant-1", "workspace-1", "actor-1", "trace-1", "policy-v1", "device-1"
         )
 
+    def test_s42_question_source_carries_exact_registration_id_from_reference_record(self) -> None:
+        """Reference 포트의 metadata 전달 시험이며 실제 PG/Daon 서비스 증거가 아니다."""
+        from dataclasses import replace
+        record=replace(self.repository._packages['knowledge-package-1'],
+            registered_source_id='source-knowledge-1',registered_source_version_id='version-knowledge-1')
+        self.repository.add(record)
+        resolved=self.service.resolve_question_sources(self.context,('knowledge-package-1',))
+        self.assertEqual(len(resolved),1)
+        self.assertEqual((resolved[0].package_id,resolved[0].source_id,resolved[0].source_version_id,resolved[0].digest_sha256),
+            ('knowledge-package-1','source-knowledge-1','version-knowledge-1',DIGEST))
+        self.assertEqual(getattr(resolved[0],'knowledge_registration_id',None),'registration-1',
+            'REFERENCE_EXACT_KNOWLEDGE_REGISTRATION_ID_NOT_CARRIED')
+        self.assertEqual(self.repository.grant_count,0)
+
     def test_only_registered_approved_daon_knowledge_can_be_provisioned_offline(self) -> None:
         packages = self.service.list_packages(self.context)
         self.assertEqual(len(packages), 1)

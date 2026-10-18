@@ -130,7 +130,9 @@ class StudioGenerationWorkerTests(unittest.TestCase):
         from daon_user_api import studio_generation_worker as module
         handlers={};events=[];active=threading.Event();release=threading.Event();observed=[]
         class Store:
-            def __init__(self,dsn): self.dsn=dsn
+            def __init__(self,dsn,*,notification_inbox_enabled):
+                self_test.assertIs(notification_inbox_enabled,False)
+                self.dsn=dsn
             def close(self):
                 self_test.assertFalse(active.is_set());events.append('pool.closed')
         class Queue(FakeQueue):

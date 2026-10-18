@@ -198,17 +198,31 @@ class PostgresEgressPolicyRepository:
                  idempotency_key, fingerprint, Jsonb(result),
                  datetime.now(timezone.utc) + timedelta(hours=24)),
             )
-            self._audit(connection, context, "egress_policy.activate", binding_id, "succeeded", {
+            origin_event_id = self._audit(connection, context, "egress_policy.activate", binding_id, "succeeded", {
                 "scope_type": scope_type, "policy_version_id": policy_version_id,
                 "binding_version": binding_version,
             })
+            if scope_type == "workspace" and getattr(self._store, "_notification_inbox_enabled", False) is True:
+                from .notification_egress_policy import enqueue_workspace_policy_event
+
+                enqueue_workspace_policy_event(
+                    connection, context=context, origin_event_id=origin_event_id,
+                    binding_id=binding_id, policy_version_id=policy_version_id,
+                )
+            elif scope_type == "organization" and getattr(self._store, "_notification_inbox_enabled", False) is True:
+                from .notification_egress_policy import enqueue_organization_policy_event
+
+                enqueue_organization_policy_event(
+                    connection, context=context, origin_event_id=origin_event_id,
+                    binding_id=binding_id, policy_version_id=policy_version_id,
+                )
             return stored
 
     @staticmethod
     def _audit(
         connection: Connection[tuple[Any, ...]], context: EgressPolicyContext,
         action: str, target_id: str, outcome: str, metadata: Mapping[str, Any],
-    ) -> None:
+    ) -> str:
         event_id = PostgresEgressPolicyRepository._identifier(
             "audit-egress-", context.tenant_id, context.workspace_id,
             context.actor_id, action, context.trace_id, target_id, outcome,
@@ -221,6 +235,7 @@ class PostgresEgressPolicyRepository:
              target_id, outcome, context.trace_id, context.authorization_policy_version,
              Jsonb(dict(metadata))),
         )
+        return event_id
 
     def record_denial(self, context: EgressPolicyContext, action: str, code: str) -> None:
         cloud_context = self._cloud_context(context, "egress_policy.write")

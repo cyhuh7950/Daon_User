@@ -5,7 +5,7 @@ import unittest
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 
-from daon_user_api.knowledge_package import KnowledgePackageContext
+from daon_user_api.knowledge_package import KnowledgePackageContext, KnowledgePackageError
 from daon_user_api.knowledge_package_postgres import PostgresKnowledgePackageService
 
 
@@ -33,7 +33,7 @@ class _Connection:
     def execute(self, query, parameters):
         if "sv.source_id" in query and "registered_source_version_id" in query:
             return _Result(rows=[(
-                "package-1", "source-knowledge-1", "version-knowledge-1", DIGEST,
+                "package-1", "source-knowledge-1", "version-knowledge-1", DIGEST, "registration-1",
             )])
         if "FROM knowledge_registrations" in query:
             return _Result(rows=[(
@@ -71,7 +71,60 @@ class _Content:
         return CONTENT
 
 
+class _QuestionSelectionConnection(_Connection):
+    """SQL 대역이다. 실제 PG 실행/SQL 파서/동시성 검증으로 계산하지 않는다."""
+    def __init__(self,rows):
+        super().__init__()
+        self.rows=rows
+        self.selection_queries=[]
+
+    def execute(self,query,parameters):
+        if 'sv.source_id' in query and 'registered_source_version_id' in query:
+            self.selection_queries.append((query,parameters))
+            return _Result(rows=self.rows)
+        return super().execute(query,parameters)
+
+
 class KnowledgePackagePostgresContractTests(unittest.TestCase):
+    def test_s42_question_source_uses_exact_registration_and_eligibility_in_same_query(self):
+        """첫 목록의 registration-1 대신 동일 자료 조회의 정확 registration-current를 소비해야 한다."""
+        cloud=_Cloud()
+        cloud.connection=_QuestionSelectionConnection([
+            ('package-1','source-current','version-current',DIGEST,'registration-current')])
+        service=PostgresKnowledgePackageService(cloud,_Content(),clock=lambda:NOW)
+        context=KnowledgePackageContext('tenant-1','workspace-1','actor-1','trace-1','policy-v1','device-1')
+        resolved=service.resolve_question_sources(context,('package-1',))
+        self.assertEqual(len(resolved),1)
+        self.assertEqual((resolved[0].package_id,resolved[0].source_id,resolved[0].source_version_id,resolved[0].digest_sha256),
+            ('package-1','source-current','version-current',DIGEST))
+        self.assertEqual(getattr(resolved[0],'knowledge_registration_id',None),'registration-current',
+            'SQL_SELECTION_EXACT_REGISTRATION_ID_NOT_CARRIED')
+        self.assertEqual(len(cloud.connection.selection_queries),1)
+        query,_=cloud.connection.selection_queries[0]
+        compact=''.join(query.split())
+        self.assertIn('kr.record_id',query.split('FROM',1)[0])
+        for predicate in ("JOINoutput_versionsov","kr.state='registered'","ov.state='approved'",
+            "kr.canonical_json->>'authority'='approved'",
+            "kr.canonical_json->>'producer'IN('daon2','daon2_5','daon3')",'effective_at','expires_at'):
+            with self.subTest(predicate=predicate):
+                self.assertIn(predicate,compact)
+
+    def test_s42_question_source_rejects_ambiguous_or_duplicate_aggregate_rows(self):
+        """동일 package의 다른 등록/동일 행 중복을 dict-last로 임의 선택하지 않는다. SQL 대역 시험이다."""
+        first=('package-1','source-current','version-current',DIGEST,'registration-current')
+        cases=(('different_registration',[first,('package-1','source-other','version-other',DIGEST,'registration-other')]),
+            ('duplicate_aggregate',[first,first]))
+        for case,rows in cases:
+            with self.subTest(case=case):
+                cloud=_Cloud()
+                cloud.connection=_QuestionSelectionConnection(rows)
+                service=PostgresKnowledgePackageService(cloud,_Content(),clock=lambda:NOW)
+                context=KnowledgePackageContext('tenant-1','workspace-1','actor-1','trace-1','policy-v1','device-1')
+                with self.assertRaises(KnowledgePackageError) as caught:
+                    service.resolve_question_sources(context,('package-1',))
+                self.assertEqual((caught.exception.code,caught.exception.status),('KNOWLEDGE_PACKAGE_UNAVAILABLE',404))
+                self.assertEqual(len(cloud.connection.selection_queries),1)
+
     def test_list_grant_and_read_preserve_digest_and_idempotency(self) -> None:
         service = PostgresKnowledgePackageService(_Cloud(), _Content(), clock=lambda: NOW)
         context = KnowledgePackageContext(

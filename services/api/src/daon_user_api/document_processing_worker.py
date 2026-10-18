@@ -104,6 +104,11 @@ class DocumentWorkerSettings:
     object_secure: bool
     lease_seconds: int
     poll_seconds: float
+    notification_inbox_enabled: bool = False
+
+    def __post_init__(self) -> None:
+        if type(self.notification_inbox_enabled) is not bool:
+            raise ValueError("NOTIFICATION_INBOX_FLAG_INVALID")
 
     @classmethod
     def from_env(cls) -> DocumentWorkerSettings:
@@ -117,6 +122,9 @@ class DocumentWorkerSettings:
         }
         if any(not value for value in required.values()):
             raise ValueError("DOCUMENT_WORKER_ENV_REQUIRED")
+        notification_flag = os.environ.get("DAON_NOTIFICATION_INBOX_ENABLED", "false")
+        if notification_flag not in {"true", "false"}:
+            raise ValueError("NOTIFICATION_INBOX_FLAG_INVALID")
         return cls(
             worker_id=os.environ.get("DAON_DOCUMENT_WORKER_ID", "document-worker-1"),
             database_dsn=required["database_dsn"],
@@ -128,6 +136,7 @@ class DocumentWorkerSettings:
             object_secure=os.environ.get("DAON_OBJECT_STORAGE_SECURE", "true").lower() == "true",
             lease_seconds=int(os.environ.get("DAON_DOCUMENT_WORKER_LEASE_SECONDS", "600")),
             poll_seconds=float(os.environ.get("DAON_DOCUMENT_WORKER_POLL_SECONDS", "0.5")),
+            notification_inbox_enabled=notification_flag == "true",
         )
 
 
@@ -137,7 +146,8 @@ def build_worker(settings: DocumentWorkerSettings) -> tuple[DocumentProcessingWo
         secret_key = settings.object_secret_key_file.read_text(encoding="utf-8").strip()
     except OSError:
         raise ValueError("OBJECT_SECRET_REFERENCE_UNAVAILABLE") from None
-    cloud_store = PostgresCloudStore(settings.database_dsn)
+    cloud_store = PostgresCloudStore(settings.database_dsn,
+        notification_inbox_enabled=settings.notification_inbox_enabled)
     try:
         provider_key = settings.provider_credential_key_file.read_bytes()
     except OSError:

@@ -31,6 +31,17 @@ class IndexedEvidenceChunk:
     locator_value: str | None = None
 
 
+def _source_access_allowed(connection, context, source_version_id: str) -> bool:
+    """현재 정확한 범위/사용자의 명시 deny만 거부한다. ACL 행 없음은 기존대로 허용한다."""
+    row = connection.execute(
+        'SELECT NOT EXISTS (SELECT 1 FROM identity_auth_source_access '
+        'WHERE tenant_id=%s AND workspace_id=%s AND user_id=%s '
+        'AND source_version_id=%s AND allowed=0)',
+        (context.tenant_id, context.workspace_id, context.actor_id, source_version_id),
+    ).fetchone()
+    return row is not None and bool(row[0])
+
+
 class PostgresDocumentIndex:
     def __init__(self, cloud_store: PostgresCloudStore) -> None:
         self._cloud_store = cloud_store
@@ -429,6 +440,8 @@ class PostgresDocumentIndex:
             return ()
         try:
             with self._cloud_store._transaction(self._cloud_context(context)) as connection:
+                if not _source_access_allowed(connection, context, source_version_id):
+                    raise DocumentUnderstandingError('SOURCE_NOT_FOUND', status=404)
                 row = connection.execute(
                     "SELECT canonical_json FROM index_versions WHERE source_version_id=%s "
                     "ORDER BY created_at DESC,record_id DESC LIMIT 1",

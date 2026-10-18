@@ -18,7 +18,7 @@ from psycopg.types.json import Jsonb
 from .cloud_storage import CloudAccessContext, CloudDatabaseError, PostgresCloudStore
 from .object_queue import ObjectKeyPolicy, ObjectQueueError, ObjectStorageError, ObjectStoragePort
 from .data_canon import canonical_json_bytes
-from .document_index_postgres import IndexedEvidenceChunk
+from .document_index_postgres import IndexedEvidenceChunk, _source_access_allowed
 from .document_processing import text_source_format
 from .document_understanding_adapter import DocumentUnderstandingError
 from .question_answering import GroundedTextResult, TextModelSelection
@@ -105,11 +105,182 @@ class StoredQuestionAnswer:
 
 
 class PostgresQuestionAnsweringRepository:
+    @staticmethod
+    def bind_knowledge_selections(
+        connection, context: QuestionContext, context_sources: tuple[object, ...],
+    ) -> tuple[Mapping[str, str | None], ...]:
+        """accepted owner의 같은 연결에서만 선택을 결속한다. 연결 commit/close와 원 body 변경은 하지 않는다."""
+        return PostgresQuestionAnsweringRepository._knowledge_selections(connection,context,context_sources,write=True)
+
+    @staticmethod
+    def _knowledge_selections(
+        connection, context: QuestionContext, context_sources: tuple[object, ...], *, write: bool,
+    ) -> tuple[Mapping[str, str | None], ...]:
+        """replay는 같은 검증을 읽기로만 수행한다. 원 선택을 새 등록/새 Snapshot으로 바꾸지 않는다."""
+        from .open_law_source_access import _current_auth_grant
+        from .notification_events import _snapshot_read_scope, _website_snapshot_current
+        from psycopg import Error
+        from psycopg.pq import TransactionStatus
+        if (context.notebook_id is None or not isinstance(context_sources,tuple) or len(context_sources)>8):
+            raise QuestionRepositoryError('QUESTION_CONTEXT_INVALID')
+        identity=connection.execute("SELECT 1 FROM public.identity_memberships m JOIN public.identity_users u ON u.user_id=m.user_id "
+            'JOIN public.user_accounts a ON a.tenant_id=m.tenant_id AND a.user_id=m.user_id '
+            "WHERE m.tenant_id=%s AND m.user_id=%s AND u.state='active' AND NOT EXISTS("
+            'SELECT 1 FROM public.identity_org_tenant_memberships o WHERE o.tenant_id=m.tenant_id '
+            "AND o.user_id=m.user_id AND o.state<>'active')",(context.tenant_id,context.actor_id)).fetchone()
+        if identity is None:
+            raise QuestionRepositoryError('QUESTION_SOURCE_UNAVAILABLE',status=404)
+        for prefix in ('notebook-delete','unbind-notebook'):
+            connection.execute('SELECT pg_advisory_xact_lock(hashtextextended(%s,0))',
+                (f'{prefix}|{context.tenant_id}|{context.workspace_id}|{context.notebook_id}',))
+        connection.execute('SELECT pg_advisory_xact_lock(hashtextextended(%s,0))',
+            (f'{context.tenant_id}|{context.workspace_id}|{context.notebook_id}|binding',))
+        notebook=connection.execute('SELECT 1 FROM public.notebooks n WHERE n.tenant_id=%s AND n.workspace_id=%s AND n.notebook_id=%s '
+            'AND NOT EXISTS(SELECT 1 FROM public.notebook_deletion_requests d WHERE d.tenant_id=n.tenant_id '
+            "AND d.workspace_id=n.workspace_id AND d.notebook_id=n.notebook_id AND d.state IN ('accepted','deleting','completed'))",
+            (context.tenant_id,context.workspace_id,context.notebook_id)).fetchone()
+        if notebook is None:
+            raise QuestionRepositoryError('QUESTION_SOURCE_UNAVAILABLE',status=404)
+        result=[]
+        seen=set()
+        try:
+            _current_auth_grant(context,connection,Action.QUERY)
+            _current_auth_grant(context,connection,Action.VIEW)
+            for selected in context_sources:
+                item={name:getattr(selected,name,None) for name in
+                    ('origin','context_item_id','source_id','source_version_id','digest_sha256')}
+                if (item['origin'] not in {'raw_source','daon_knowledge'}
+                    or any(not isinstance(item[name],str) or not _SAFE_ID.fullmatch(item[name])
+                        for name in ('context_item_id','source_id','source_version_id'))):
+                    raise QuestionRepositoryError('QUESTION_CONTEXT_INVALID')
+                token=(item['origin'],item['context_item_id'],item['source_version_id'])
+                if token in seen:
+                    raise QuestionRepositoryError('QUESTION_CONTEXT_INVALID')
+                seen.add(token)
+                connection.execute('SELECT pg_advisory_xact_lock(hashtextextended(%s,0))',
+                    (f"retention-source|{context.tenant_id}|{context.workspace_id}|{item['source_id']}",))
+                registration=getattr(selected,'knowledge_registration_id',None)
+                if item['origin']=='raw_source':
+                    if item['context_item_id']!=item['source_id'] or item['digest_sha256'] is not None or registration is not None:
+                        raise QuestionRepositoryError('QUESTION_CONTEXT_INVALID')
+                    bound=connection.execute('SELECT 1 FROM public.notebook_bindings WHERE tenant_id=%s AND workspace_id=%s '
+                        "AND notebook_id=%s AND binding_kind='source' AND record_id=%s AND version_id=%s",
+                        (context.tenant_id,context.workspace_id,context.notebook_id,item['source_id'],item['source_version_id'])).fetchone()
+                    if bound is None:
+                        raise QuestionRepositoryError('QUESTION_SOURCE_UNAVAILABLE',status=404)
+                else:
+                    if (not isinstance(registration,str) or not _SAFE_ID.fullmatch(registration)
+                        or not isinstance(item['digest_sha256'],str) or re.fullmatch('[0-9a-f]{64}',item['digest_sha256']) is None):
+                        raise QuestionRepositoryError('QUESTION_CONTEXT_INVALID')
+                    if write:
+                        locked=connection.execute(
+                            'SELECT public.lock_question_knowledge_selection(%s,%s,%s,%s,%s,%s)',
+                            (context.tenant_id,context.workspace_id,context.notebook_id,context.actor_id,
+                             registration,item['source_version_id'])).fetchone()
+                        if locked is None or len(locked)!=1 or type(locked[0]) is not bool:
+                            raise QuestionRepositoryError('QUESTION_DATABASE_UNAVAILABLE',status=503,retryable=True)
+                        if not locked[0]:
+                            raise QuestionRepositoryError('QUESTION_SOURCE_UNAVAILABLE',status=404)
+                        # True는 잠금 결과뿐이다. 대기 뒤에도 caller의 동적 QUERY/VIEW를 다시 판정한다.
+                        _current_auth_grant(context,connection,Action.QUERY)
+                        _current_auth_grant(context,connection,Action.VIEW)
+                    # 적격 등록 전체를 먼저 읽는다. ACL/ready 필터로 복수 등록을 단일처럼 숨기지 않는다.
+                    rows=connection.execute("""SELECT kr.record_id,sv.source_id,kr.registered_source_version_id,
+                      kr.canonical_json->>'package_digest' FROM public.knowledge_registrations kr
+                      JOIN public.output_versions ov ON ov.tenant_id=kr.tenant_id AND ov.workspace_id=kr.workspace_id AND ov.record_id=kr.output_version_id
+                      JOIN public.source_versions sv ON sv.tenant_id=kr.tenant_id AND sv.workspace_id=kr.workspace_id AND sv.record_id=kr.registered_source_version_id
+                      JOIN public.sources s ON s.tenant_id=sv.tenant_id AND s.workspace_id=sv.workspace_id AND s.record_id=sv.source_id
+                      WHERE kr.tenant_id=%s AND kr.workspace_id=%s AND kr.canonical_json->>'package_id'=%s
+                        AND kr.state='registered' AND ov.state='approved' AND kr.canonical_json->>'authority'='approved'
+                        AND kr.canonical_json->>'producer' IN ('daon2','daon2_5','daon3')
+                        AND (kr.canonical_json->>'effective_at')::timestamptz<=CURRENT_TIMESTAMP
+                        AND (kr.canonical_json->>'expires_at')::timestamptz>CURRENT_TIMESTAMP""",
+                        (context.tenant_id,context.workspace_id,item['context_item_id'])).fetchall()
+                    if rows!=[(registration,item['source_id'],item['source_version_id'],item['digest_sha256'])]:
+                        raise QuestionRepositoryError('QUESTION_SOURCE_UNAVAILABLE',status=404)
+                current=connection.execute('SELECT 1 FROM public.source_versions sv JOIN public.sources s '
+                    'ON s.tenant_id=sv.tenant_id AND s.workspace_id=sv.workspace_id AND s.record_id=sv.source_id '
+                    'WHERE sv.tenant_id=%s AND sv.workspace_id=%s AND sv.source_id=%s AND sv.record_id=%s '
+                    'AND NOT EXISTS(SELECT 1 FROM public.deletion_requests d WHERE d.tenant_id=s.tenant_id '
+                    'AND d.workspace_id=s.workspace_id AND d.source_id=s.record_id AND d.source_active=false) '
+                    'AND NOT EXISTS(SELECT 1 FROM public.notebook_source_unbindings u WHERE u.tenant_id=sv.tenant_id '
+                    'AND u.workspace_id=sv.workspace_id AND u.notebook_id=%s AND u.source_id=sv.source_id AND u.source_version_id=sv.record_id)',
+                    (context.tenant_id,context.workspace_id,item['source_id'],item['source_version_id'],context.notebook_id)).fetchone()
+                if current is None:
+                    raise QuestionRepositoryError('QUESTION_SOURCE_UNAVAILABLE',status=404)
+                # 미사용 raw 선택의 ready를 새로 강제하지 않는다. 현재 자료 권한과 특별 자료 보호는 그대로 확인한다.
+                with _snapshot_read_scope(connection,context):
+                    require_open_law_source_access(context,item['source_version_id'],connection,action=Action.QUERY)
+                PostgresQuestionAnsweringRepository._require_source_access(connection,context,item['source_version_id'])
+                if not _website_snapshot_current(connection,context,item['source_version_id']):
+                    raise QuestionRepositoryError('QUESTION_SOURCE_UNAVAILABLE',status=404)
+                snapshot_id=None
+                if registration is not None:
+                    identity_bytes=json.dumps([context.tenant_id,context.workspace_id,context.notebook_id,context.actor_id,registration,item],
+                        ensure_ascii=False,sort_keys=True,separators=(',',':'),allow_nan=False).encode('utf-8')
+                    suffix=hashlib.sha256(identity_bytes).hexdigest()[:32]
+                    scope_id='scope-knowledge-'+suffix
+                    snapshot_id='scope-snapshot-knowledge-'+suffix
+                    scope_payload={'mode':'daon_priority','source_version_ids':[item['source_version_id']],'items':[item]}
+                    for table,record,payload,columns,values in (
+                        ('knowledge_scopes',scope_id,scope_payload,(),()),
+                        ('scope_snapshots',snapshot_id,{**scope_payload,'knowledge_scope_id':scope_id},('knowledge_scope_id',),(scope_id,))):
+                        if write:
+                            PostgresQuestionAnsweringRepository._insert_canon(connection,context,table,record,payload,
+                                extra_columns=columns,extra_values=values)
+                        text,digest=PostgresQuestionAnsweringRepository._snapshot(payload)
+                        stored=connection.execute(f'SELECT aggregate_id,version,schema_version,canonical_json,canonical_text,digest_sha256,created_by'
+                            +( ',knowledge_scope_id' if table=='scope_snapshots' else '')+f' FROM public.{table} '
+                            'WHERE tenant_id=%s AND workspace_id=%s AND record_id=%s',
+                            (context.tenant_id,context.workspace_id,record)).fetchone()
+                        if stored!=(record,1,1,payload,text,digest,context.actor_id,*values):
+                            raise QuestionRepositoryError('IDEMPOTENCY_KEY_REUSED',status=409)
+                    inserted=None
+                    if write:
+                        inserted=connection.execute('INSERT INTO public.notebook_bindings '
+                            '(tenant_id,workspace_id,notebook_id,binding_kind,record_id,version_id,created_by,created_at) '
+                            "VALUES(%s,%s,%s,'knowledge_context',%s,NULL,%s,CURRENT_TIMESTAMP) ON CONFLICT DO NOTHING RETURNING 1",
+                            (context.tenant_id,context.workspace_id,context.notebook_id,snapshot_id,context.actor_id)).fetchone()
+                    bound=connection.execute('SELECT created_by,version_id FROM public.notebook_bindings WHERE tenant_id=%s '
+                        "AND workspace_id=%s AND notebook_id=%s AND binding_kind='knowledge_context' AND record_id=%s",
+                        (context.tenant_id,context.workspace_id,context.notebook_id,snapshot_id)).fetchall()
+                    if bound!=[(context.actor_id,None)]:
+                        raise QuestionRepositoryError('IDEMPOTENCY_KEY_REUSED',status=409)
+                    if inserted is not None:
+                        connection.execute('INSERT INTO public.notebook_activities '
+                            '(tenant_id,workspace_id,notebook_id,sequence,activity_kind,actor_id,occurred_at) '
+                            "SELECT %s,%s,%s,coalesce(max(sequence),0)+1,'context_bound',%s,CURRENT_TIMESTAMP FROM public.notebook_activities "
+                            'WHERE tenant_id=%s AND workspace_id=%s AND notebook_id=%s',
+                            (context.tenant_id,context.workspace_id,context.notebook_id,context.actor_id,
+                             context.tenant_id,context.workspace_id,context.notebook_id))
+                result.append({**item,'knowledge_registration_id':registration,'notebook_scope_snapshot_id':snapshot_id})
+        except OpenLawAccessError as error:
+            cause=error
+            visited=set()
+            while cause is not None and id(cause) not in visited:
+                visited.add(id(cause))
+                if isinstance(cause,Error):
+                    raise cause from None
+                cause=cause.__cause__ or cause.__context__
+            if connection.info.transaction_status==TransactionStatus.INERROR:
+                raise QuestionRepositoryError('QUESTION_DATABASE_UNAVAILABLE',status=503)
+            raise OpenLawQuestionAccessError('QUESTION_SOURCE_UNAVAILABLE',status=404) from None
+        return tuple(result)
+
+    @staticmethod
+    def _require_source_access(connection, context, source_version_id):
+        if not _source_access_allowed(connection, context, source_version_id):
+            raise QuestionRepositoryError('QUESTION_SOURCE_UNAVAILABLE', status=404)
+
     def revalidate_open_law_sources(self, context, versions):
         try:
             with self._cloud_store._transaction(self._cloud_context(context,'question.read')) as connection:
-                for version in versions:require_open_law_source_access(context,version,connection,action=Action.QUERY)
+                for version in versions:
+                    require_open_law_source_access(context,version,connection,action=Action.QUERY)
+                    self._require_source_access(connection,context,version)
         except OpenLawAccessError:raise QuestionRepositoryError('QUESTION_SOURCE_UNAVAILABLE',status=404) from None
+        except CloudDatabaseError as error:
+            raise QuestionRepositoryError('QUESTION_DATABASE_UNAVAILABLE',status=503,retryable=error.retryable) from None
 
     def __init__(self, cloud_store: PostgresCloudStore, object_storage: ObjectStoragePort, *, open_law_text_reader=None) -> None:
         self._cloud_store = cloud_store
@@ -290,7 +461,9 @@ class PostgresQuestionAnsweringRepository:
                     (source_id, source_version_id, context.notebook_id)
                     if notebook_clause else (source_id, source_version_id),
                 ).fetchone()
-                if row is not None:require_open_law_source_access(context,source_version_id,connection,action=Action.QUERY if capability=='question.read' else Action.VIEW)
+                if row is not None:
+                    require_open_law_source_access(context,source_version_id,connection,action=Action.QUERY if capability=='question.read' else Action.VIEW)
+                    self._require_source_access(connection,context,source_version_id)
         except OpenLawAccessError:
             raise OpenLawQuestionAccessError('QUESTION_SOURCE_UNAVAILABLE',status=404) from None
         except CloudDatabaseError as error:
@@ -416,6 +589,167 @@ class PostgresQuestionAnsweringRepository:
             raise QuestionRepositoryError("QUESTION_REPLAY_UNAVAILABLE", status=409)
         return result
 
+    def load_failed_for_replay(
+        self, context: QuestionContext, run_id: str, request_fingerprint: str,
+    ) -> bool:
+        """확정 failed 원장의 결속과 현재 접근을 같은 읽기 Tx에서 확인한다. 쓰기/재실행은 없다."""
+        from .open_law_source_access import _current_auth_grant
+        from .notification_events import _completed_event_access, _snapshot_read_scope
+        from .notification import NotificationError
+        from psycopg import Error
+        from psycopg.pq import TransactionStatus
+
+        if (not isinstance(run_id,str) or not _SAFE_ID.fullmatch(run_id)
+            or not isinstance(request_fingerprint,str) or not re.fullmatch(r'sha256:[0-9a-f]{64}',request_fingerprint)):
+            raise QuestionRepositoryError('QUESTION_RESULT_INVALID')
+        try:
+            with self._cloud_store._transaction(self._cloud_context(context,'question.read')) as connection:
+                run=connection.execute('SELECT state,version,created_by,trace_id,canonical_json,conversation_id '
+                    'FROM runs WHERE tenant_id=%s AND workspace_id=%s AND record_id=%s',
+                    (context.tenant_id,context.workspace_id,run_id)).fetchone()
+                if run is None:
+                    return False
+                if run[2]!=context.actor_id:
+                    raise QuestionRepositoryError('QUESTION_SOURCE_UNAVAILABLE',status=404)
+                payload=run[4]
+                if not isinstance(payload,Mapping) or not isinstance(payload.get('request_fingerprint'),str):
+                    raise QuestionRepositoryError('QUESTION_REPLAY_UNAVAILABLE',status=409)
+                if payload['request_fingerprint']!=request_fingerprint:
+                    raise QuestionRepositoryError('IDEMPOTENCY_KEY_REUSED',status=409)
+                if run[0]!='failed':
+                    return False
+                mode=payload.get('context_mode')
+                general=mode=='general_ungrounded'
+                source,version=payload.get('source_id'),payload.get('source_version_id')
+                frozen=payload.get('frozen_routing_context')
+                if (not isinstance(mode,str) or mode not in {'raw_only','general_ungrounded'} or int(run[1])<2
+                    or (general and (source is not None or version is not None
+                        or 'source_id' not in payload or 'source_version_id' not in payload))
+                    or (not general and any(not isinstance(v,str) or not _SAFE_ID.fullmatch(v) for v in (source,version)))
+                    or not isinstance(frozen,Mapping)
+                    or any(not isinstance(frozen.get(k),str) or not re.fullmatch(r'sha256:[0-9a-f]{64}',frozen[k])
+                        for k in ('fingerprint','payload_fingerprint'))
+                    or any(payload.get(k)!=frozen.get(k) for k in (
+                        'provider_kind','connection_id','provider_code','model_id','credential_version',
+                        'default_version','catalog_version','routing_owner','daon_fallback_allowed'))):
+                    raise QuestionRepositoryError('QUESTION_REPLAY_UNAVAILABLE',status=409)
+                conversation=self._opaque_id('conversation',run_id)
+                bound=connection.execute('SELECT 1 FROM conversations c JOIN notebook_bindings b '
+                    'ON b.tenant_id=c.tenant_id AND b.workspace_id=c.workspace_id AND b.record_id=c.record_id '
+                    "AND b.binding_kind='conversation_thread' WHERE c.tenant_id=%s AND c.workspace_id=%s "
+                    'AND c.record_id=%s AND c.created_by=%s AND c.trace_id=%s AND b.created_by=c.created_by '
+                    'AND b.notebook_id=%s AND c.canonical_json=%s',
+                    (context.tenant_id,context.workspace_id,conversation,context.actor_id,run[3],context.notebook_id,
+                     Jsonb({'current_run_id':run_id,'current_run_result_id':self._opaque_id('run-result',run_id)}))).fetchone()
+                if bound is None or run[5]!=conversation:
+                    raise QuestionRepositoryError('NOTEBOOK_NOT_FOUND',status=404)
+                origin=self._opaque_id('tr',run_id,'failed',str(int(run[1])-1))
+                # 원사건의 trace/policy/버전끼리 대조한다. 현재 trace/xmin을 과거 사건에 요구하지 않는다.
+                transition=connection.execute('SELECT t.policy_version FROM canon_state_transitions t '
+                    'JOIN canon_transition_attempts p ON p.tenant_id=t.tenant_id AND p.workspace_id=t.workspace_id '
+                    "AND p.entity_type='Run' AND p.record_id=t.record_id AND p.attempt_id=t.transition_id "
+                    'JOIN audit_events a ON a.tenant_id=t.tenant_id AND a.workspace_id=t.workspace_id AND a.event_id=t.transition_id '
+                    "WHERE t.tenant_id=%s AND t.workspace_id=%s AND t.entity_type='Run' AND t.record_id=%s "
+                    "AND t.transition_id=%s AND t.transition_version=%s AND t.actor_id=%s AND t.trace_id=%s "
+                    "AND t.target_state='failed' AND t.source_state IN ('accepted','planning','retrieving','generating','validating') "
+                    "AND t.reason_code='QUESTION_FAILED' AND p.actor_id=t.actor_id AND p.trace_id=t.trace_id "
+                    'AND p.policy_version=t.policy_version AND p.source_state=t.source_state '
+                    "AND p.target_state='failed' AND p.reason_code=t.reason_code AND p.safe_error_code IS NULL "
+                    "AND p.outcome='succeeded' AND p.result_state='failed' AND p.result_version=t.transition_version "
+                    'AND p.expected_version=t.transition_version-1 AND p.current_version=p.expected_version '
+                    "AND a.actor_id=t.actor_id AND a.action='canon.transition' AND a.target_type='Run' "
+                    "AND a.target_id=t.record_id AND a.outcome='succeeded' AND a.trace_id=t.trace_id AND a.policy_version=t.policy_version "
+                    "AND a.before_value=jsonb_build_object('state',t.source_state,'version',t.transition_version-1) "
+                    "AND a.after_value=jsonb_build_object('state','failed','version',t.transition_version) "
+                    "AND a.metadata=jsonb_build_object('attempt_id',t.transition_id,'reason_code','QUESTION_FAILED')",
+                    (context.tenant_id,context.workspace_id,run_id,origin,run[1],context.actor_id,run[3])).fetchone()
+                if transition is None:
+                    raise QuestionRepositoryError('QUESTION_REPLAY_UNAVAILABLE',status=409)
+                snapshot=connection.execute('SELECT rs.record_id,rs.scope_snapshot_id,rs.routing_policy_version_id,'
+                    'rs.created_by,rs.trace_id,rs.canonical_json,s.knowledge_scope_id,s.created_by,s.trace_id,'
+                    's.canonical_json,k.canonical_json FROM run_snapshots rs JOIN scope_snapshots s '
+                    'ON s.tenant_id=rs.tenant_id AND s.workspace_id=rs.workspace_id AND s.record_id=rs.scope_snapshot_id '
+                    'JOIN knowledge_scopes k ON k.tenant_id=s.tenant_id AND k.workspace_id=s.workspace_id '
+                    'AND k.record_id=s.knowledge_scope_id WHERE rs.tenant_id=%s AND rs.workspace_id=%s AND rs.run_id=%s',
+                    (context.tenant_id,context.workspace_id,run_id)).fetchone()
+                scope=snapshot[9] if snapshot is not None else None
+                items=scope.get('items') if isinstance(scope,Mapping) else None
+                if not isinstance(items,list) or (general and items) or (not general and not 1<=len(items)<=8):
+                    raise QuestionRepositoryError('QUESTION_REPLAY_UNAVAILABLE',status=409)
+                for item in items:
+                    if (not isinstance(item,Mapping) or set(item)!={'origin','context_item_id','source_id','source_version_id','digest_sha256'}
+                        or item.get('origin')!='raw_source' or item.get('context_item_id')!=item.get('source_id')
+                        or item.get('digest_sha256') is not None
+                        or any(not isinstance(item.get(k),str) or not _SAFE_ID.fullmatch(item[k]) for k in ('source_id','source_version_id'))):
+                        raise QuestionRepositoryError('QUESTION_REPLAY_UNAVAILABLE',status=409)
+                if not general and ((items[0]['source_id'],items[0]['source_version_id'])!=(source,version)
+                    or len({(item['source_id'],item['source_version_id']) for item in items})!=len(items)):
+                    raise QuestionRepositoryError('QUESTION_REPLAY_UNAVAILABLE',status=409)
+                versions=[item['source_version_id'] for item in items]
+                scope_id=self._opaque_id('scope',mode,*versions)
+                scope_payload={'mode':mode,'source_version_ids':versions,'items':items}
+                if (snapshot is None or snapshot[:2]!=(self._opaque_id('run-snapshot',run_id),self._opaque_id('scope-snapshot',run_id))
+                    or snapshot[3:5]!=(context.actor_id,run[3]) or snapshot[6:9]!=(scope_id,context.actor_id,run[3])
+                    or snapshot[9]!={'knowledge_scope_id':scope_id,**scope_payload} or snapshot[10]!=scope_payload
+                    or not isinstance(snapshot[5],Mapping)):
+                    raise QuestionRepositoryError('QUESTION_REPLAY_UNAVAILABLE',status=409)
+                saved=snapshot[5]
+                egress_id=self._opaque_id('egress',run_id,frozen['fingerprint'],frozen['payload_fingerprint'])
+                if any(saved.get(k)!=v for k,v in {
+                    'knowledge_scope_id':scope_id,'source_version_ids':versions,'authority':[] if general else ['source'],
+                    'routing_policy_version_id':snapshot[2],'egress_decision_id':egress_id,
+                    'egress_policy_fingerprint':frozen['fingerprint'],'frozen_routing_context':dict(frozen),
+                    'user_policy_version':transition[0],'organization_policy_version':transition[0],
+                    'prompt_version':'general-conversation-v1' if general else 'cp3-grounded-question-v1',
+                    'tool_version':'provider-chat-v1' if general else 'document-index-v1',
+                }.items()):
+                    raise QuestionRepositoryError('QUESTION_REPLAY_UNAVAILABLE',status=409)
+                egress=connection.execute('SELECT e.canonical_json,d.canonical_json,d.routing_policy_version_id '
+                    'FROM egress_decisions e JOIN routing_decisions d ON d.tenant_id=e.tenant_id AND d.workspace_id=e.workspace_id '
+                    'AND d.egress_decision_id=e.record_id JOIN audit_events a ON a.tenant_id=e.tenant_id '
+                    'AND a.workspace_id=e.workspace_id AND a.event_id=%s WHERE e.tenant_id=%s AND e.workspace_id=%s '
+                    'AND e.run_id=%s AND e.record_id=%s AND d.run_id=e.run_id AND d.record_id=%s '
+                    'AND e.created_by=%s AND d.created_by=e.created_by AND e.trace_id=%s AND d.trace_id=e.trace_id '
+                    "AND a.actor_id=e.created_by AND a.action='question.egress.authorize' AND a.target_type='Run' "
+                    "AND a.target_id=e.run_id AND a.outcome='succeeded' AND a.trace_id=e.trace_id AND a.policy_version=%s",
+                    (self._opaque_id('audit-egress',run_id,egress_id),context.tenant_id,context.workspace_id,run_id,
+                     egress_id,self._opaque_id('routing',run_id),context.actor_id,run[3],transition[0])).fetchone()
+                if (egress is None or not isinstance(egress[0],Mapping) or not isinstance(egress[1],Mapping)
+                    or egress[0].get('run_id')!=run_id or egress[0].get('allowed') is not True
+                    or egress[0].get('frozen_routing_context')!=frozen or egress[1].get('run_id')!=run_id
+                    or egress[1].get('routing_status')!='selected' or egress[2]!=snapshot[2]
+                    or not isinstance(egress[1].get('selected_deployment_id'),str)
+                    or snapshot[2]!=self._opaque_id('routing-policy',str(payload.get('default_version')),egress[1]['selected_deployment_id'])
+                    or saved.get('candidate_order')!=[self._opaque_id('deployment',egress[1]['selected_deployment_id'],str(payload.get('default_version')))]):
+                    raise QuestionRepositoryError('QUESTION_REPLAY_UNAVAILABLE',status=409)
+                try:
+                    _current_auth_grant(context,connection,Action.QUERY)
+                    recipient=_completed_event_access(connection,context,origin_event_id=origin,notebook_id=context.notebook_id)
+                    if recipient is None or recipient.actor_id!=context.actor_id:
+                        raise QuestionRepositoryError('QUESTION_SOURCE_UNAVAILABLE',status=404)
+                    if not general:
+                        with _snapshot_read_scope(connection,context):
+                            for selected_version in versions:
+                                require_open_law_source_access(context,selected_version,connection,action=Action.QUERY)
+                except OpenLawAccessError as error:
+                    cause=error
+                    seen=set()
+                    while cause is not None and id(cause) not in seen:
+                        seen.add(id(cause))
+                        if isinstance(cause,Error):
+                            raise cause from None
+                        cause=cause.__cause__ or cause.__context__
+                    if connection.info.transaction_status==TransactionStatus.INERROR:
+                        raise CloudDatabaseError('DATABASE_UNAVAILABLE',retryable=True) from None
+                    raise QuestionRepositoryError('QUESTION_SOURCE_UNAVAILABLE',status=404) from None
+                return True
+        except NotificationError as error:
+            if error.http_status>=500:
+                raise QuestionRepositoryError('QUESTION_DATABASE_UNAVAILABLE',status=503,retryable=True) from None
+            raise QuestionRepositoryError('QUESTION_REPLAY_UNAVAILABLE',status=409) from None
+        except CloudDatabaseError as error:
+            raise QuestionRepositoryError('QUESTION_DATABASE_UNAVAILABLE',status=503,retryable=error.retryable) from None
+
     def load_ready_source(
         self, context: QuestionContext, source_id: str, source_version_id: str,
     ) -> ReadyQuestionSource:
@@ -456,7 +790,9 @@ class PostgresQuestionAnsweringRepository:
                     (source_id, source_version_id, context.notebook_id)
                     if notebook_clause else (source_id, source_version_id),
                 ).fetchone()
-                if row is not None:require_open_law_source_access(context,source_version_id,connection,action=Action.QUERY)
+                if row is not None:
+                    require_open_law_source_access(context,source_version_id,connection,action=Action.QUERY)
+                    self._require_source_access(connection,context,source_version_id)
         except OpenLawAccessError:
             raise OpenLawQuestionAccessError('QUESTION_SOURCE_UNAVAILABLE',status=404) from None
         except CloudDatabaseError as error:
@@ -858,6 +1194,253 @@ class PostgresQuestionAnsweringRepository:
             pdf.content, "application/pdf",
         ), {"kind": "page", "value": str(pdf_page)}
 
+    def persist_failed(
+        self, context: QuestionContext, *, run_id: str, request_fingerprint: str,
+        context_sources: tuple[object, ...], selection: TextModelSelection,
+        egress_authorization: Mapping[str, object], request_payload: Mapping[str, object],
+        idempotency_key: str, question: str | None = None, actual_context_mode: str | None = None,
+        resolved_context_sources: tuple[object, ...] | None = None,
+    ) -> None:
+        """원 논리 요청의 확정 실패만 저장한다. 정상 결과/Run JSON/Provider 호출은 만들지 않는다."""
+        from .question_answering_service import question_request_fingerprint
+        from .open_law_source_access import _current_auth_grant
+        from .notification_events import _snapshot_read_scope, _website_snapshot_current
+        from .notification import NotificationError
+        from psycopg import Error
+        from psycopg.pq import TransactionStatus
+
+        if (not isinstance(run_id,str) or not _SAFE_ID.fullmatch(run_id)
+            or not isinstance(idempotency_key,str) or not _SAFE_ID.fullmatch(idempotency_key)
+            or not isinstance(request_fingerprint,str) or not re.fullmatch(r'sha256:[0-9a-f]{64}',request_fingerprint)
+            or not isinstance(request_payload,Mapping) or not isinstance(context_sources,tuple)
+            or not isinstance(egress_authorization,Mapping) or context.notebook_id is None):
+            raise QuestionRepositoryError('QUESTION_RESULT_INVALID')
+        payload=dict(request_payload)
+        if (set(payload)-{'question','source_id','source_version_id','context_mode','notebook_id','knowledge_context'}
+            or not isinstance(payload.get('question'),str) or not payload['question'].strip()):
+            raise QuestionRepositoryError('QUESTION_RESULT_INVALID')
+        actual_question=payload['question'] if question is None else question
+        # legacy 지문의 strip만 허용한다. 역방향 정규화/다른 질문은 원 선택으로 취급하지 않는다.
+        if (not isinstance(actual_question,str) or not (
+            actual_question==payload['question']
+            or payload['question']==payload['question'].strip() and actual_question.strip()==payload['question'])):
+            raise QuestionRepositoryError('QUESTION_RESULT_INVALID')
+        if (payload.get('notebook_id',context.notebook_id)!=context.notebook_id
+            or question_request_fingerprint(context,run_id=run_id,idempotency_key=idempotency_key,
+                request_payload=payload)!=request_fingerprint):
+            raise QuestionRepositoryError('IDEMPOTENCY_KEY_REUSED',status=409)
+        # 실효 mode는 내부에서 명시 전달한다. 미전달 legacy raw 호출의 원 body 해석은 유지한다.
+        mode=payload.get('context_mode','raw_only') if actual_context_mode is None else actual_context_mode
+        if not isinstance(mode,str) or mode not in {'raw_only','general_ungrounded'}:
+            raise QuestionRepositoryError('QUESTION_RESULT_INVALID')
+        source_id,source_version_id=payload.get('source_id'),payload.get('source_version_id')
+        knowledge=payload.get('knowledge_context')
+        if knowledge is not None:
+            if (mode!='raw_only' or not isinstance(knowledge,Mapping) or set(knowledge)!={'mode','resources'}
+                or knowledge.get('mode')!='raw_only' or {'source_id','source_version_id','context_mode'} & set(payload)
+                or not isinstance(knowledge.get('resources'),list) or not 1<=len(knowledge['resources'])<=8):
+                raise QuestionRepositoryError('QUESTION_RESULT_INVALID')
+            resources=[]
+            for item in knowledge['resources']:
+                if (not isinstance(item,Mapping) or set(item)!={'resource_kind','resource_id','version_id'}
+                    or item.get('resource_kind')!='source'
+                    or any(not isinstance(item.get(key),str) or not _SAFE_ID.fullmatch(item[key])
+                        for key in ('resource_id','version_id'))):
+                    raise QuestionRepositoryError('QUESTION_RESULT_INVALID')
+                resources.append((item['resource_id'],item['version_id']))
+            if len(set(resources))!=len(resources):
+                raise QuestionRepositoryError('QUESTION_RESULT_INVALID')
+            source_id,source_version_id=resources[0]
+        elif mode=='general_ungrounded':
+            if (source_id is not None or source_version_id is not None or context_sources
+                or payload.get('context_mode','raw_only') not in ('raw_only','general_ungrounded')):
+                raise QuestionRepositoryError('QUESTION_RESULT_INVALID')
+            resources=[]
+        else:
+            resources=[(source_id,source_version_id)]
+            if (payload.get('context_mode','raw_only')!='raw_only'
+                or any(not isinstance(value,str) or not _SAFE_ID.fullmatch(value) for pair in resources for value in pair)):
+                raise QuestionRepositoryError('QUESTION_RESULT_INVALID')
+        items=[{'origin':'raw_source','context_item_id':source,'source_id':source,'source_version_id':version,
+            'digest_sha256':None} for source,version in resources]
+        actual_items=[{name:getattr(item,name,None) for name in ('origin','context_item_id','source_id','source_version_id','digest_sha256')}
+            for item in context_sources]
+        if actual_items!=items and (knowledge is None or resolved_context_sources is None):
+            raise QuestionRepositoryError('QUESTION_RESULT_INVALID')
+        if resolved_context_sources is not None:
+            if not isinstance(resolved_context_sources,tuple) or [
+                {name:getattr(item,name,None) for name in ('origin','context_item_id','source_id','source_version_id','digest_sha256')}
+                for item in resolved_context_sources]!=items:
+                raise QuestionRepositoryError('QUESTION_RESULT_INVALID')
+        if knowledge is not None:
+            # 원 body/resolved는 그대로 검증하고, 실제 사용한 순서 보존 부분집합만 snapshot/primary로 삼는다.
+            if not actual_items or [item for item in items if item in actual_items]!=actual_items:
+                raise QuestionRepositoryError('QUESTION_RESULT_INVALID')
+            items=actual_items
+            resources=[(item['source_id'],item['source_version_id']) for item in items]
+            source_id,source_version_id=resources[0]
+        authorization=dict(egress_authorization)
+        frozen=authorization.get('frozen_routing_context')
+        if authorization.get('provider_owner') is not True:
+            raise QuestionRepositoryError('QUESTION_NEW_RUN_REQUIRED',status=409)
+        if (not isinstance(frozen,Mapping) or frozen.get('fingerprint')!=authorization.get('policy_fingerprint')
+            or not isinstance(authorization.get('policy_fingerprint'),str)
+            or not re.fullmatch(r'sha256:[0-9a-f]{64}',authorization['policy_fingerprint'])
+            or not isinstance(frozen.get('payload_fingerprint'),str)
+            or not re.fullmatch(r'sha256:[0-9a-f]{64}',frozen['payload_fingerprint'])):
+            raise QuestionRepositoryError('QUESTION_RESULT_INVALID')
+        egress_id=self._opaque_id('egress',run_id,str(authorization['policy_fingerprint']),frozen['payload_fingerprint'])
+        routing_id=self._opaque_id('routing',run_id)
+        routing_policy_id=self._opaque_id('routing-policy',str(selection.binding_version),selection.deployment_id)
+        if (authorization.get('egress_decision_id')!=egress_id or authorization.get('routing_decision_id')!=routing_id
+            or authorization.get('routing_policy_version_id')!=routing_policy_id):
+            raise QuestionRepositoryError('QUESTION_RESULT_INVALID')
+        expected_run=self._run_canonical_payload(question=actual_question,source_id=source_id,
+            source_version_id=source_version_id,context_mode=mode,request_fingerprint=request_fingerprint,
+            selection=selection,frozen_scope=frozen)
+        versions=[version for _,version in resources]
+        scope_id=self._opaque_id('scope',mode,*versions)
+        scope_snapshot_id=self._opaque_id('scope-snapshot',run_id)
+        run_snapshot_id=self._opaque_id('run-snapshot',run_id)
+        conversation_id=self._opaque_id('conversation',run_id)
+        try:
+            with self._cloud_store._transaction(self._cloud_context(context,'question.execute')) as connection:
+                connection.execute('SELECT pg_advisory_xact_lock(hashtextextended(%s,0))',
+                    ('question-egress|'+context.tenant_id+'|'+context.workspace_id+'|'+run_id,))
+                current=connection.execute('SELECT state,version,created_by,trace_id,canonical_json,conversation_id FROM runs '
+                    'WHERE tenant_id=%s AND workspace_id=%s AND record_id=%s FOR UPDATE',
+                    (context.tenant_id,context.workspace_id,run_id)).fetchone()
+                if (current is None or current[2]!=context.actor_id or current[3]!=context.trace_id
+                    or current[4]!=expected_run or current[5]!=conversation_id):
+                    raise QuestionRepositoryError('IDEMPOTENCY_KEY_REUSED',status=409)
+                if current[0] not in {'accepted','planning','retrieving','generating','validating'}:
+                    raise QuestionRepositoryError('QUESTION_NEW_RUN_REQUIRED',status=409)
+                stored=connection.execute('SELECT e.canonical_json,d.canonical_json,d.routing_policy_version_id,'
+                    'a.actor_id,a.outcome,a.trace_id,a.policy_version FROM egress_decisions e '
+                    'JOIN routing_decisions d ON d.tenant_id=e.tenant_id AND d.workspace_id=e.workspace_id AND d.egress_decision_id=e.record_id '
+                    'JOIN audit_events a ON a.tenant_id=e.tenant_id AND a.workspace_id=e.workspace_id '
+                    "AND a.target_id=e.run_id AND a.action='question.egress.authorize' AND a.event_id=%s "
+                    'WHERE e.tenant_id=%s AND e.workspace_id=%s AND e.run_id=%s AND e.record_id=%s AND d.record_id=%s',
+                    (self._opaque_id('audit-egress',run_id,egress_id),context.tenant_id,context.workspace_id,run_id,egress_id,routing_id)).fetchone()
+                if (stored is None or stored[0].get('allowed') is not True or stored[0].get('run_id')!=run_id
+                    or stored[0].get('frozen_routing_context')!=frozen or stored[1].get('run_id')!=run_id
+                    or stored[1].get('routing_status')!='selected' or stored[1].get('selected_deployment_id')!=selection.deployment_id
+                    or stored[2:]!=(routing_policy_id,context.actor_id,'succeeded',context.trace_id,context.policy_version)):
+                    raise QuestionRepositoryError('QUESTION_RESULT_INVALID')
+                for prefix in ('notebook-delete','unbind-notebook'):
+                    connection.execute('SELECT pg_advisory_xact_lock(hashtextextended(%s,0))',
+                        (f'{prefix}|{context.tenant_id}|{context.workspace_id}|{context.notebook_id}',))
+                identity=connection.execute('SELECT 1 FROM identity_memberships m JOIN identity_users u ON u.user_id=m.user_id '
+                    'JOIN user_accounts a ON a.tenant_id=m.tenant_id AND a.user_id=m.user_id '
+                    "WHERE m.tenant_id=%s AND m.user_id=%s AND u.state='active' "
+                    'AND NOT EXISTS(SELECT 1 FROM identity_org_tenant_memberships o WHERE o.tenant_id=m.tenant_id '
+                    "AND o.user_id=m.user_id AND o.state<>'active')",(context.tenant_id,context.actor_id)).fetchone()
+                if identity is None:
+                    raise QuestionRepositoryError('QUESTION_SOURCE_UNAVAILABLE',status=404)
+                # 빈 선택도 현재 Notebook의 존재/폐기를 확인한다. 일반 공유 Notebook을 owner 전용으로 바꾸지 않는다.
+                notebook=connection.execute('SELECT 1 FROM notebooks n WHERE n.tenant_id=%s AND n.workspace_id=%s '
+                    'AND n.notebook_id=%s AND NOT EXISTS(SELECT 1 FROM notebook_deletion_requests d '
+                    'WHERE d.tenant_id=n.tenant_id AND d.workspace_id=n.workspace_id AND d.notebook_id=n.notebook_id '
+                    "AND d.state IN ('accepted','deleting','completed'))",
+                    (context.tenant_id,context.workspace_id,context.notebook_id)).fetchone()
+                if notebook is None:
+                    raise QuestionRepositoryError('NOTEBOOK_SCOPE_MISMATCH',status=409)
+                try:
+                    _current_auth_grant(context,connection,Action.QUERY)
+                    _current_auth_grant(context,connection,Action.VIEW)
+                    for source,version in resources:
+                        connection.execute('SELECT pg_advisory_xact_lock(hashtextextended(%s,0))',
+                            (f'retention-source|{context.tenant_id}|{context.workspace_id}|{source}',))
+                        selected=connection.execute('SELECT 1 FROM notebooks n JOIN notebook_bindings b ON b.tenant_id=n.tenant_id '
+                            'AND b.workspace_id=n.workspace_id AND b.notebook_id=n.notebook_id JOIN source_versions sv '
+                            'ON sv.tenant_id=b.tenant_id AND sv.workspace_id=b.workspace_id AND sv.source_id=b.record_id AND sv.record_id=b.version_id '
+                            'JOIN sources s ON s.tenant_id=sv.tenant_id AND s.workspace_id=sv.workspace_id AND s.record_id=sv.source_id '
+                            'WHERE n.tenant_id=%s AND n.workspace_id=%s AND n.notebook_id=%s '
+                            "AND b.binding_kind='source' AND b.record_id=%s AND b.version_id=%s AND s.state='ready' "
+                            'AND NOT EXISTS(SELECT 1 FROM source_versions newer WHERE newer.tenant_id=sv.tenant_id '
+                            'AND newer.workspace_id=sv.workspace_id AND newer.source_id=sv.source_id AND newer.version>sv.version) '
+                            'AND NOT EXISTS(SELECT 1 FROM notebook_source_unbindings u WHERE u.tenant_id=b.tenant_id '
+                            'AND u.workspace_id=b.workspace_id AND u.notebook_id=b.notebook_id AND u.source_id=b.record_id AND u.source_version_id=b.version_id) '
+                            'AND NOT EXISTS(SELECT 1 FROM deletion_requests d WHERE d.tenant_id=s.tenant_id AND d.workspace_id=s.workspace_id '
+                            'AND d.source_id=s.record_id AND d.source_active=false) '
+                            'AND NOT EXISTS(SELECT 1 FROM notebook_deletion_requests d WHERE d.tenant_id=n.tenant_id '
+                            "AND d.workspace_id=n.workspace_id AND d.notebook_id=n.notebook_id AND d.state IN ('accepted','deleting','completed')) "
+                            'AND NOT EXISTS(SELECT 1 FROM identity_auth_source_access a WHERE a.tenant_id=sv.tenant_id AND a.workspace_id=sv.workspace_id '
+                            'AND a.source_version_id=sv.record_id AND a.user_id=%s AND a.allowed=0)',
+                            (context.tenant_id,context.workspace_id,context.notebook_id,source,version,context.actor_id)).fetchone()
+                        if selected is None:
+                            raise QuestionRepositoryError('NOTEBOOK_SCOPE_MISMATCH',status=409)
+                        with _snapshot_read_scope(connection,context):
+                            require_open_law_source_access(context,version,connection,action=Action.QUERY)
+                        if not _website_snapshot_current(connection,context,version):
+                            raise QuestionRepositoryError('QUESTION_SOURCE_UNAVAILABLE',status=404)
+                except OpenLawAccessError as error:
+                    cause=error
+                    seen=set()
+                    while cause is not None and id(cause) not in seen:
+                        seen.add(id(cause))
+                        if isinstance(cause,Error):
+                            raise cause from None
+                        cause=cause.__cause__ or cause.__context__
+                    if connection.info.transaction_status==TransactionStatus.INERROR:
+                        raise CloudDatabaseError('DATABASE_UNAVAILABLE',retryable=True) from None
+                    raise QuestionRepositoryError('QUESTION_SOURCE_UNAVAILABLE',status=404) from None
+                # 기존 INSERT helper의 충돌 무시를 실패 경로에서는 그대로 신뢰하지 않는다.
+                def insert_exact(table,record_id,value,*,extra_columns=(),extra_values=()):
+                    self._insert_canon(connection,context,table,record_id,value,
+                        extra_columns=extra_columns,extra_values=extra_values)
+                    columns=','.join(('canonical_json','created_by','trace_id',*extra_columns))
+                    actual=connection.execute(f'SELECT {columns} FROM {table} WHERE tenant_id=%s AND workspace_id=%s AND record_id=%s',
+                        (context.tenant_id,context.workspace_id,record_id)).fetchone()
+                    # knowledge_scopes는 같은 범위/자료의 기존 공유 불변 scope일 수 있다.
+                    exact=(actual is not None and actual[0]==dict(value) and actual[3:]==extra_values
+                        and (table=='knowledge_scopes' or actual[1:3]==(context.actor_id,context.trace_id)))
+                    if not exact:
+                        raise QuestionRepositoryError('IDEMPOTENCY_KEY_REUSED',status=409)
+                scope_payload={'source_version_ids':versions,'mode':mode,'items':items}
+                insert_exact('knowledge_scopes',scope_id,scope_payload)
+                insert_exact('scope_snapshots',scope_snapshot_id,{'knowledge_scope_id':scope_id,**scope_payload},
+                    extra_columns=('knowledge_scope_id',),extra_values=(scope_id,))
+                insert_exact('run_snapshots',run_snapshot_id,{
+                    'source_version_ids':versions,'knowledge_scope_id':scope_id,'authority':['source'] if resources else [],
+                    'weights_requested':{},'weights_effective':{},'weight_clamps':[],'ruleset_snapshot_ids':[],
+                    'routing_policy_version_id':routing_policy_id,'candidate_order':[
+                        self._opaque_id('deployment',selection.deployment_id,str(selection.binding_version))],
+                    'data_area':'workspace','data_classification':'workspace_private','egress_decision_id':egress_id,
+                    'egress_policy_fingerprint':authorization['policy_fingerprint'],'frozen_routing_context':dict(frozen),
+                    'user_policy_version':context.policy_version,'organization_policy_version':context.policy_version,
+                    'cost_limit':0,'currency':'USD',
+                    'prompt_version':'general-conversation-v1' if mode=='general_ungrounded' else 'cp3-grounded-question-v1',
+                    'tool_version':'provider-chat-v1' if mode=='general_ungrounded' else 'document-index-v1'},
+                    extra_columns=('run_id','scope_snapshot_id','routing_policy_version_id'),
+                    extra_values=(run_id,scope_snapshot_id,routing_policy_id))
+                connection.execute('WITH inserted AS (INSERT INTO notebook_bindings '
+                    '(tenant_id,workspace_id,notebook_id,binding_kind,record_id,version_id,created_by,created_at) '
+                    "VALUES(%s,%s,%s,'conversation_thread',%s,NULL,%s,now()) ON CONFLICT DO NOTHING RETURNING 1) "
+                    'INSERT INTO notebook_activities(tenant_id,workspace_id,notebook_id,sequence,activity_kind,actor_id,occurred_at) '
+                    'SELECT %s,%s,%s,coalesce((SELECT max(sequence) FROM notebook_activities WHERE tenant_id=%s '
+                    "AND workspace_id=%s AND notebook_id=%s),0)+1,'context_bound',%s,now() FROM inserted",
+                    (context.tenant_id,context.workspace_id,context.notebook_id,conversation_id,context.actor_id,
+                     context.tenant_id,context.workspace_id,context.notebook_id,context.tenant_id,context.workspace_id,
+                     context.notebook_id,context.actor_id))
+                bound=connection.execute('SELECT created_by FROM notebook_bindings WHERE tenant_id=%s AND workspace_id=%s '
+                    "AND notebook_id=%s AND binding_kind='conversation_thread' AND record_id=%s",
+                    (context.tenant_id,context.workspace_id,context.notebook_id,conversation_id)).fetchone()
+                if bound!=(context.actor_id,):
+                    raise QuestionRepositoryError('NOTEBOOK_SCOPE_MISMATCH',status=409)
+                self._transition(connection,context,run_id,int(current[1]),'failed')
+                if getattr(self._cloud_store,'_notification_inbox_enabled',False):
+                    from .notification_events import enqueue_completed_event
+                    enqueue_completed_event(connection,context,
+                        origin_event_id=self._opaque_id('tr',run_id,'failed',str(current[1])),notebook_id=context.notebook_id)
+        except QuestionRepositoryError:
+            raise
+        except NotificationError as error:
+            raise QuestionRepositoryError('QUESTION_DATABASE_UNAVAILABLE',status=503,
+                retryable=error.http_status>=500) from None
+        except CloudDatabaseError as error:
+            raise QuestionRepositoryError('QUESTION_DATABASE_UNAVAILABLE',status=503,retryable=error.retryable) from None
+
     def persist_completed(
         self, context: QuestionContext, *, run_id: str, source_id: str | None,
         source_version_id: str | None, question: str, selection: TextModelSelection,
@@ -967,6 +1550,8 @@ class PostgresQuestionAnsweringRepository:
                     *access_source_version_ids,
                 )):
                     require_open_law_source_access(context, version_id, connection, action=Action.QUERY)
+                for version_id in dict.fromkeys((*source_versions, *access_source_version_ids)):
+                    self._require_source_access(connection, context, version_id)
                 if context.notebook_id is not None:
                     for item in context_items:
                         binding_kind = (

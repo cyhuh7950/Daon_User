@@ -25,16 +25,25 @@ class StudioWorkerSettings:
     worker_id: str
     lease_seconds: int
     poll_seconds: float
+    notification_inbox_enabled: bool = False
+
+    def __post_init__(self) -> None:
+        if type(self.notification_inbox_enabled) is not bool:
+            raise ValueError("NOTIFICATION_INBOX_FLAG_INVALID")
 
     @classmethod
     def from_env(cls) -> "StudioWorkerSettings":
         dsn = os.environ.get("DAON_CLOUD_DATABASE_DSN", "").strip()
         if not dsn:
             raise ValueError("STUDIO_WORKER_DATABASE_REQUIRED")
+        notification_flag = os.environ.get("DAON_NOTIFICATION_INBOX_ENABLED", "false")
+        if notification_flag not in {"true", "false"}:
+            raise ValueError("NOTIFICATION_INBOX_FLAG_INVALID")
         return cls(
             dsn, os.environ.get("DAON_STUDIO_WORKER_ID", "studio-worker-1"),
             int(os.environ.get("DAON_STUDIO_WORKER_LEASE_SECONDS", "600")),
             float(os.environ.get("DAON_STUDIO_WORKER_POLL_SECONDS", "0.5")),
+            notification_inbox_enabled=notification_flag == "true",
         )
 
 
@@ -123,7 +132,8 @@ class StudioGenerationWorker:
 
 def main() -> None:
     settings = StudioWorkerSettings.from_env()
-    cloud_store = PostgresCloudStore(settings.database_dsn)
+    cloud_store = PostgresCloudStore(settings.database_dsn,
+        notification_inbox_enabled=settings.notification_inbox_enabled)
     queue = PostgresStudioGenerationQueue(settings.database_dsn, cloud_store)
     repository = PostgresStudioWorkspaceRepository(cloud_store)
     worker = StudioGenerationWorker(queue, repository, worker_id=settings.worker_id, lease_seconds=settings.lease_seconds,

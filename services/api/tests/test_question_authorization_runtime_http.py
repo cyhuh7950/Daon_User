@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import httpx
 
 from daon_user_api.audit import AuditEventStore
-from daon_user_api.authorization import AuthorizationService, Role, SqliteAuthorizationRepository
+from daon_user_api.authorization import Action, AuthorizationError, AuthorizationService, Role, SqliteAuthorizationRepository
 from daon_user_api.identity import DevicePlatform, PASSWORD_HASHER
 from daon_user_api.question_answering import TextModelSelection
 from daon_user_api.question_answering_postgres import StoredQuestionAnswer
@@ -239,3 +239,118 @@ class S18QuestionAuthorizationTests(unittest.IsolatedAsyncioTestCase):
         changed = await self.post(body={**BODY, "question": "새 질문"})
         self.assertEqual(changed.status_code, 409)
         self.assertEqual(self.service.calls, 1)
+
+
+class S42QuestionQueryEntryTests(unittest.IsolatedAsyncioTestCase):
+    """실제 인증·역할·ASGI 경계이며 모델/저장·egress 포트만 기존 대역이다."""
+
+    login = S18QuestionAuthorizationTests.login
+    post = S18QuestionAuthorizationTests.post
+    consumption_count = S18QuestionAuthorizationTests.consumption_count
+    asyncTearDown = S18QuestionAuthorizationTests.asyncTearDown
+
+    async def asyncSetUp(self):
+        await S18QuestionAuthorizationTests.asyncSetUp(self)
+        self.service.selection = replace(self.service.selection, provider_kind="server_internal")
+        self.port_calls = {"replay": 0, "prepare": 0, "egress": 0, "step_up": 0}
+        replay = self.service.replay
+        prepare = self.service.prepare_authorization
+        step_up = self.identity.issue_step_up_after_reauthentication
+
+        def observed_replay(*args, **kwargs):
+            self.port_calls["replay"] += 1
+            return replay(*args, **kwargs)
+
+        def observed_prepare(*args, **kwargs):
+            self.port_calls["prepare"] += 1
+            return prepare(*args, **kwargs)
+
+        def observed_egress(_context):
+            self.port_calls["egress"] += 1
+            return self.effective
+
+        def observed_step_up(*args, **kwargs):
+            self.port_calls["step_up"] += 1
+            return step_up(*args, **kwargs)
+
+        self.service.replay = observed_replay
+        self.service.prepare_authorization = observed_prepare
+        self.dependencies.egress_policy_service.get_effective = observed_egress
+        self.identity.issue_step_up_after_reauthentication = observed_step_up
+
+    def _member_principal(self, role):
+        owner = self.identity.validate_access(
+            self.credentials.access_token, trace_id=TRACE_ID, policy_version=POLICY_VERSION,
+        )
+        self.dependencies.authorization_service.set_membership(
+            principal=owner, workspace_id="workspace-s18", user_id="other-s18",
+            role=role, expected_version=0, trace_id=TRACE_ID, policy_version=POLICY_VERSION,
+        )
+        with self.dependencies.authorization_repository.transaction() as connection:
+            self.assertEqual(connection.execute(
+                "SELECT count(*) FROM auth_tenant_roles WHERE tenant_id=? AND user_id=?",
+                ("tenant-001", "other-s18"),
+            ).fetchone()[0], 0)
+        self.credentials = self.login("other-s18")
+        return self.identity.validate_access(
+            self.credentials.access_token, trace_id=TRACE_ID, policy_version=POLICY_VERSION,
+        )
+
+    def _action(self, principal, action):
+        return self.dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id="workspace-s18", action=action,
+            trace_id=TRACE_ID, policy_version=POLICY_VERSION,
+        )
+
+    async def _viewer_denied_before_question_ports(self, *, authorization):
+        principal = self._member_principal(Role.VIEWER)
+        self.assertEqual(self._action(principal, Action.VIEW).role, Role.VIEWER)
+        with self.assertRaises(AuthorizationError) as denied:
+            self._action(principal, Action.QUERY)
+        self.assertEqual((denied.exception.code, denied.exception.http_status), ("ACTION_DENIED", 403))
+
+        response = await self.post(authorization=authorization)
+        self.assertEqual(response.status_code, 403, response.text)
+        self.assertEqual(response.json()["error"]["code"], "FORBIDDEN")
+        self.assertEqual(self.service.calls, 0)
+        self.assertEqual(self.port_calls, {"replay": 0, "prepare": 0, "egress": 0, "step_up": 0})
+        self.assertEqual(self.consumption_count(), 0)
+        # 기존 EXTERNAL_LLM 거부 403을 QUERY 진입점 보호의 성공으로 오인하지 않는다.
+        events = self.dependencies.audit_store.list(
+            tenant_id="tenant-001", workspace_id="workspace-s18",
+            action="authorization.action.denied", trace_id=response.headers["X-Trace-Id"],
+        ).items
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].actor_id, "other-s18")
+        self.assertEqual(events[0].metadata["requested_action"], "query")
+
+    async def test_s42_viewer_question_post_requires_query_before_any_question_io(self):
+        await self._viewer_denied_before_question_ports(authorization=False)
+
+    async def test_s42_viewer_authorization_post_requires_query_before_any_question_io(self):
+        await self._viewer_denied_before_question_ports(authorization=True)
+
+    async def test_s42_editor_query_and_existing_internal_authorization_policy_are_preserved(self):
+        owner_token = self.credentials.access_token
+        principal = self._member_principal(Role.EDITOR)
+        self.assertEqual(self._action(principal, Action.QUERY).role, Role.EDITOR)
+        response = await self.post()
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["data"]["answer"], "격리된 응답")
+        self.assertEqual(self.service.calls, 1)
+        self.assertEqual(self.port_calls, {"replay": 1, "prepare": 1, "egress": 0, "step_up": 0})
+
+        # editor의 기존 EXTERNAL_LLM 기본 거부를 완화하여 승인 경로를 통과시키지 않는다.
+        authorization = await self.post(authorization=True, key="question-s42-editor-auth")
+        self.assertEqual(authorization.status_code, 403, authorization.text)
+        self.assertEqual(authorization.json()["error"]["code"], "FORBIDDEN")
+        self.assertEqual(self.port_calls, {"replay": 1, "prepare": 1, "egress": 0, "step_up": 0})
+
+        # 원래 허용된 개인 owner에서는 내부 모델 준비 뒤 기존 not-required 409를 보존한다.
+        owner_authorization = await self.post(
+            authorization=True, key="question-s42-owner-auth", token=owner_token,
+        )
+        self.assertEqual(owner_authorization.status_code, 409, owner_authorization.text)
+        self.assertEqual(owner_authorization.json()["error"]["code"], "QUESTION_FAILED")
+        self.assertEqual(self.port_calls, {"replay": 1, "prepare": 2, "egress": 1, "step_up": 0})
+        self.assertEqual((self.service.calls, self.consumption_count()), (1, 0))

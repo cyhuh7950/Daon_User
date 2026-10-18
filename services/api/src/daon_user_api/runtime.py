@@ -562,10 +562,13 @@ class RuntimeSettings:
     development_stage: bool | None = None
     system_admin_user_ids: frozenset[str] = frozenset({"admin"})
     organization_admin_v2_enabled: bool = False
+    notification_inbox_enabled: bool = False
 
     def __post_init__(self) -> None:
         if type(self.organization_admin_v2_enabled) is not bool:
             raise ValueError("ORGANIZATION_ADMIN_V2_FLAG_INVALID")
+        if type(self.notification_inbox_enabled) is not bool:
+            raise ValueError("NOTIFICATION_INBOX_FLAG_INVALID")
         if (
             not isinstance(self.qa_structured_ollama_workspace_id, str)
             or (self.qa_structured_ollama_workspace_id and not re.fullmatch(
@@ -649,6 +652,9 @@ class RuntimeSettings:
         organization_flag = os.environ.get("DAON_ORGANIZATION_ADMIN_V2_ENABLED", "false")
         if organization_flag not in {"true", "false"}:
             raise ValueError("ORGANIZATION_ADMIN_V2_FLAG_INVALID")
+        notification_flag = os.environ.get("DAON_NOTIFICATION_INBOX_ENABLED", "false")
+        if notification_flag not in {"true", "false"}:
+            raise ValueError("NOTIFICATION_INBOX_FLAG_INVALID")
         database = os.environ.get("DAON_API_DATABASE_PATH")
         try:
             android_clients_raw = json.loads(os.environ.get("DAON_ANDROID_AUTH_CLIENTS_JSON", "{}"))
@@ -671,6 +677,7 @@ class RuntimeSettings:
         return cls(
             profile=profile,
             organization_admin_v2_enabled=organization_flag == "true",
+            notification_inbox_enabled=notification_flag == "true",
             bind_host=os.environ.get("DAON_API_BIND_HOST", "127.0.0.1"),
             port=int(os.environ.get("DAON_API_PORT", "8000")),
             database_path=None if database is None else Path(database),
@@ -1424,6 +1431,142 @@ class ConnectorRegisterBody(BaseModel):
     name: str = Field(min_length=1, max_length=160)
 
 
+def _notification_dispatch_tick(
+    dependencies: RuntimeDependencies, *, stop: threading.Event,
+    after: tuple[str, str, str] | None = None,
+    projection_cursors: dict[tuple[str, str, str], str] | None = None,
+    limit: int = 100,
+) -> tuple[str, str, str] | None:
+    """기존 재시도 루프의 제한 배치다. 발견한 실제 scope에서 각 소비기가 현재 권한을 재검사한다.
+
+    cursor는 DB가 반환한 마지막 tuple 그대로다. 빈 page에서만 None으로 wrap하며
+    재시작도 None부터 시작한다. 이는 처리 시도 순서이지 전달 성공/60초 완료 보장이 아니다.
+    """
+    from psycopg import Error, connect
+    from psycopg.rows import tuple_row
+    from .notification import _checked_id
+
+    if type(limit) is not int or not 1 <= limit <= 100:
+        raise NotificationError('INVALID_INPUT', 400)
+    if after is not None:
+        if type(after) is not tuple or len(after) != 3:
+            raise NotificationError('INVALID_INPUT', 400)
+        for value in after:
+            _checked_id(value)
+    if projection_cursors is None:
+        projection_cursors = {}
+    elif type(projection_cursors) is not dict:
+        raise NotificationError('INVALID_INPUT', 400)
+    if stop.is_set() or dependencies.settings.notification_inbox_enabled is not True:
+        return after
+    cloud = dependencies.cloud_store
+    if cloud is None or getattr(cloud, '_notification_inbox_enabled', False) is not True:
+        return after
+    ready = cloud.readiness()  # 0069의 원 조직/알림 보호 probe를 함께 검사한다.
+    if ready.ready is not True or ready.schema_revision != '0069':
+        raise NotificationError('DATABASE_UNAVAILABLE', 503)
+    if stop.is_set():
+        return after
+    try:
+        # 함수만 호출한다. 앱에 금지된 source/audit 직접 조회나 전체 사용자 열거는 없다.
+        with connect(cloud._dsn, connect_timeout=3, autocommit=True, row_factory=tuple_row) as connection:
+            with connection.transaction():
+                connection.execute("SET LOCAL statement_timeout='5s'")
+                connection.execute("SET LOCAL lock_timeout='2s'")
+                rows = connection.execute(
+                    'SELECT * FROM public.pending_notification_dispatch_scopes(%s,%s,%s,%s)',
+                    (limit, *(after if after is not None else (None, None, None))),
+                ).fetchall()
+    except (Error, OSError):
+        # 실패를 EOF로 취급하지 않는다. 호출자는 기존 cursor를 보존하고 다음 주기에 재시도한다.
+        raise NotificationError('DATABASE_UNAVAILABLE', 503) from None
+    if len(rows) > limit or len(set(rows)) != len(rows):
+        raise NotificationError('DATABASE_RESPONSE_INVALID', 503)
+    contexts = []
+    for row in rows:
+        if type(row) is not tuple or len(row) != 3:
+            raise NotificationError('DATABASE_RESPONSE_INVALID', 503)
+        try:
+            contexts.append(CloudAccessContext(*row, 'view'))
+        except ValueError:
+            raise NotificationError('DATABASE_RESPONSE_INVALID', 503) from None
+    if stop.is_set():
+        return after
+    if not contexts:
+        return None
+    from .notification_events import (
+        materialize_pending_studio, materialize_pending_completed, materialize_pending_accounts,
+        dispatch_pending_notification_audits,
+    )
+    from .notification_identity_login import materialize_pending_identity_logins
+    from .notification_password import materialize_pending_password_changes
+    from .notification_password_reset import materialize_pending_password_resets
+    from .notification_organization import materialize_pending_organization_roles
+    from .notification_c9_roles import materialize_pending_c9_roles
+    from .notification_egress_policy import materialize_pending_workspace_policies
+    from .notification_source_access import materialize_pending_source_access
+    from .notification_recovery import materialize_pending_restore_completed
+    from .notification_studio_approval import StudioApprovalNotificationRepository
+
+    lifecycle = (dependencies.studio_approval_lifecycle_repository
+        or StudioApprovalLifecycleRepository(cloud))
+    trace_id = 'trace-notification-dispatch-' + secrets.token_hex(16)
+    cursor = after
+    for scope, context in zip(rows, contexts):
+        # 선택된 metadata는 본인 인증이 아니다. 각 실제 소비기의 현재 VIEW/Source 검사를 유지한다.
+        studio_context = StudioContext(context.tenant_id, context.workspace_id, context.actor_id,
+            trace_id, dependencies.settings.policy_version)
+        consumers = (
+            ('studio', materialize_pending_studio, studio_context),
+            ('completed', materialize_pending_completed, context),
+            ('account', materialize_pending_accounts, context),
+            ('login', materialize_pending_identity_logins, context),
+            ('password', materialize_pending_password_changes, context),
+            ('password_reset', materialize_pending_password_resets, context),
+            ('organization', materialize_pending_organization_roles, context),
+            ('c9', materialize_pending_c9_roles, context),
+            ('egress', materialize_pending_workspace_policies, context),
+            ('source_access', materialize_pending_source_access, context),
+            ('recovery', materialize_pending_restore_completed, context),
+        )
+        for kind, materialize, current in consumers:
+            if stop.is_set():
+                return cursor
+            try:
+                materialize(cloud._dsn, context=current, limit=limit)
+            except Exception:
+                # 종류별 원 transaction이 rollback한다. 오류 본문/원자료/연결정보를 로그에 넣지 않는다.
+                _runtime_logger.warning('알림 소비 배치 실패: %s', kind)
+        if stop.is_set():
+            return cursor
+        try:
+            prepared = StudioApprovalNotificationRepository(lifecycle, context=context).prepare_projections(
+                limit=limit, after=projection_cursors.get(scope), trace_id=trace_id,
+                policy_version=dependencies.settings.policy_version)
+            if (type(prepared) is not dict or type(prepared.get('eof')) is not bool
+                or type(prepared.get('scanned')) is not int or not 0 <= prepared['scanned'] <= limit
+                or (prepared['eof'] and prepared.get('next_cursor') is not None)):
+                raise NotificationError('DATABASE_RESPONSE_INVALID', 503)
+            if prepared['eof']:
+                projection_cursors.pop(scope, None)
+            else:
+                if prepared['scanned'] == 0:
+                    raise NotificationError('DATABASE_RESPONSE_INVALID', 503)
+                projection_cursors[scope] = _checked_id(prepared.get('next_cursor'))
+        except Exception:
+            # 기존 cursor를 유지한다. 현재 준비는 과거 생성/읽음 감사를 소급 합성하지 않는다.
+            _runtime_logger.warning('알림 승인 notice 준비 배치 실패')
+        if stop.is_set():
+            return cursor
+        try:
+            dispatch_pending_notification_audits(cloud._dsn, context=context,
+                audit_store=dependencies.audit_store, limit=limit, stop=stop)
+        except Exception:
+            _runtime_logger.warning('알림 중앙 감사 전달 배치 실패')
+        cursor = scope
+    return cursor
+
+
 def _trace_id(request: Request) -> str:
     traceparent = request.headers.get("traceparent", "").lower()
     matched = _TRACEPARENT.fullmatch(traceparent)
@@ -1491,6 +1634,8 @@ def _domain_error(error: IdentityError | AuthorizationError) -> tuple[int, str, 
 
 
 def _notification_domain_error(error: NotificationError) -> tuple[int, str, bool]:
+    if error.http_status >= 500:
+        return 503, "RESOURCE_UNAVAILABLE", True
     safe_codes = {
         "CURRENT_ACCESS_DENIED", "RESOURCE_UNAVAILABLE", "VERSION_CONFLICT",
         "IDEMPOTENCY_CONFLICT", "INVALID_STATE_TRANSITION", "INVALID_CURSOR",
@@ -1961,7 +2106,8 @@ def _organization_management_ready(dependencies: RuntimeDependencies) -> bool:
 
 def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     from .account_settings import AccountSettingsService
-    account_settings_service = AccountSettingsService(dependencies.identity_service)
+    account_settings_service = AccountSettingsService(dependencies.identity_service,
+        notification_inbox_enabled=dependencies.settings.notification_inbox_enabled)
     android_origin = dependencies.settings.public_gateway_url
     if android_origin is not None and urlsplit(android_origin).scheme != "https":
         android_origin = None
@@ -2000,6 +2146,40 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         audit_store=dependencies.audit_store,
         clock=lambda: datetime.now(timezone.utc),
     )
+    def notification_service_for(principal: IdentityPrincipal, trace_id: str) -> NotificationService:
+        if not dependencies.settings.notification_inbox_enabled:
+            return notification_service
+        from .notification_postgres import ScopedPostgresNotificationRepository
+        cloud = dependencies.cloud_store
+        if cloud is None or not getattr(cloud, '_notification_inbox_enabled', False):
+            raise NotificationError('DATABASE_UNAVAILABLE', 503)
+        ready = cloud.readiness()
+        if ready.ready is not True or ready.schema_revision != '0069':
+            raise NotificationError('DATABASE_UNAVAILABLE', 503)
+        try:
+            workspaces = dependencies.identity_service.notification_workspace_ids(
+                user_id=principal.user_id, tenant_id=principal.tenant_id)
+        except IdentityError as error:
+            if error.http_status >= 500:
+                raise NotificationError('DATABASE_UNAVAILABLE', 503) from None
+            raise
+        contexts = []
+        for workspace in workspaces:
+            try:
+                dependencies.authorization_service.authorize_action(principal=principal, workspace_id=workspace,
+                    action=Action.VIEW, trace_id=trace_id, policy_version=dependencies.settings.policy_version)
+            except AuthorizationError as error:
+                if error.http_status >= 500:
+                    raise NotificationError('DATABASE_UNAVAILABLE', 503) from None
+                if error.http_status not in {403,404}:
+                    raise
+                continue
+            contexts.append(CloudAccessContext(principal.tenant_id, workspace, principal.user_id, 'view'))
+        return NotificationService(repository=ScopedPostgresNotificationRepository(cloud._dsn,
+            tenant_id=principal.tenant_id, recipient_id=principal.user_id, contexts=tuple(contexts),
+            studio_approval_repository=studio_approval_lifecycle_repository),
+            authorization_service=dependencies.authorization_service, audit_store=dependencies.audit_store,
+            clock=lambda:datetime.now(timezone.utc))
     sync_service = dependencies.sync_service or SyncService(
         ReferenceSyncRepository(), ReferenceTransferPort(),
         clock=lambda: datetime.now(timezone.utc),
@@ -2249,6 +2429,8 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
 
     def admin_audit_retry_loop(stop: threading.Event, finished: Future[None]) -> None:
         service = dependencies.admin_membership_role_service
+        notification_cursor = None
+        notification_projection_cursors = {}
         try:
             while not stop.is_set():
                 if service is not None:
@@ -2269,6 +2451,13 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                     except Exception:
                         # S39 장애는 기존 감사 처리나 다음 주기를 건너뛰지 않는다.
                         pass
+                if not stop.is_set():
+                    try:
+                        notification_cursor = _notification_dispatch_tick(dependencies, stop=stop,
+                            after=notification_cursor, projection_cursors=notification_projection_cursors)
+                    except Exception:
+                        # 발견/준비 장애는 원감사 순서와 cursor를 보존하고 다음 60초 주기에 재시도한다.
+                        _runtime_logger.warning('알림 자동 처리 주기 실패')
                 stop.wait(_ADMIN_AUDIT_RETRY_INTERVAL_SECONDS)
         finally:
             finished.set_result(None)
@@ -2701,6 +2890,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             "NOTEBOOK_DELETION_NOT_FOUND", "DELETE_SHARED_DATA_BLOCKED", "RETENTION_HOLD",
             "LICENSE_NOT_CONFIGURED", "LICENSE_EXPIRED", "LICENSE_FEATURE_NOT_ALLOWED",
             "LICENSE_RESOURCE_LIMIT_REACHED", "IDEMPOTENCY_KEY_INVALID", "IDEMPOTENCY_KEY_REUSED",
+            "QUESTION_FAILED",
         }
         return _error_response(
             error.status, error.code if error.code in public_codes else "INVALID_REQUEST",
@@ -4233,6 +4423,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         sources = tuple(QuestionInputSource(
             "daon_knowledge", item.package_id, item.source_id,
             item.source_version_id, item.digest_sha256,
+            knowledge_registration_id=getattr(item,"knowledge_registration_id",None),
         ) for item in package_sources)
         for item in body.knowledge_context.resources:
             if item.resource_kind == "knowledge_package":
@@ -4262,7 +4453,9 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             "workspace_id": workspace_id, "run_id": run_id,
             "knowledge_context": {
                 "mode": context_mode,
-                "items": [_dataclass_json(item) for item in context_sources],
+                "items": [{"origin":item.origin,"context_item_id":item.context_item_id,
+                    "source_id":item.source_id,"source_version_id":item.source_version_id,
+                    "digest_sha256":item.digest_sha256} for item in context_sources],
             },
             "question_fingerprint": "sha256:" + hashlib.sha256(body.question.strip().encode()).hexdigest(),
             "provider_payload_fingerprint": "sha256:" + hashlib.sha256(payload).hexdigest(),
@@ -4378,7 +4571,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         _egress_idempotency_key(idempotency_key)
         principal = _principal(request, dependencies)
         grant = dependencies.authorization_service.authorize_action(
-            principal=principal, workspace_id=id, action=Action.VIEW,
+            principal=principal, workspace_id=id, action=Action.QUERY,
             requested_permissions=(Permission.EXTERNAL_LLM,),
             trace_id=request.state.trace_id,
             policy_version=dependencies.settings.policy_version,
@@ -4466,7 +4659,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         _egress_idempotency_key(idempotency_key)
         principal = _principal(request, dependencies)
         dependencies.authorization_service.authorize_action(
-            principal=principal, workspace_id=id, action=Action.VIEW,
+            principal=principal, workspace_id=id, action=Action.QUERY,
             trace_id=request.state.trace_id,
             policy_version=dependencies.settings.policy_version,
         )
@@ -4608,6 +4801,8 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             approved_authorization=approved_authorization,
             context_mode=context_mode, context_sources=context_sources,
             request_fingerprint=replay_fingerprint, replay_checked=True,
+            request_payload=body.model_dump(exclude={"step_up_authorization_id"}, exclude_none=True),
+            idempotency_key=idempotency_key,
         )
         return _question_result_response(
             answer, request, id, question=body.question, context_mode=context_mode,
@@ -5461,7 +5656,12 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     async def get_notebook_selected_context(
         id: str, notebook_id: str, request: Request,
     ) -> JSONResponse:
-        _require_query_keys(request, frozenset())
+        _require_query_keys(request, frozenset({'run_id', 'studio_job_id'}))
+        selectors = dict(request.query_params)
+        if (len(selectors) > 1 or len(request.query_params.multi_items()) != len(selectors)
+            or any(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,127}', value) is None
+                for value in selectors.values())):
+            raise HTTPException(status_code=400)
         principal = _principal(request, dependencies)
         dependencies.authorization_service.authorize_action(
             principal=principal, workspace_id=id, action=Action.VIEW,
@@ -5469,7 +5669,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         )
         selected = await asyncio.to_thread(
             notebook_service.read_selected_context,
-            notebook_context(principal, id, request), notebook_id,
+            notebook_context(principal, id, request), notebook_id, **selectors,
         )
         content = {
             "data": notebook_context_json(selected),
@@ -5739,7 +5939,8 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     ) -> JSONResponse:
         _require_query_keys(request, frozenset({"cursor", "limit", "filter", "search"}))
         principal = _principal(request, dependencies)
-        page = notification_service.list_notifications(
+        service = await asyncio.to_thread(notification_service_for, principal, request.state.trace_id)
+        page = await asyncio.to_thread(service.list_notifications,
             principal=principal, limit=limit, cursor=cursor,
             filters=parse_notification_filter(filter), search=search,
             trace_id=request.state.trace_id,
@@ -5760,7 +5961,8 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     async def notification_detail(notification_id: str, request: Request) -> JSONResponse:
         _require_query_keys(request, frozenset())
         principal = _principal(request, dependencies)
-        item = notification_service.get_notification(
+        service = await asyncio.to_thread(notification_service_for, principal, request.state.trace_id)
+        item = await asyncio.to_thread(service.get_notification,
             principal=principal, notification_id=notification_id,
             trace_id=request.state.trace_id,
             policy_version=dependencies.settings.policy_version,
@@ -5782,7 +5984,8 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         _require_query_keys(request, frozenset())
         _idempotency_key(idempotency_key)
         principal = _principal(request, dependencies)
-        item = notification_service.mark_read(
+        service = await asyncio.to_thread(notification_service_for, principal, request.state.trace_id)
+        item = await asyncio.to_thread(service.mark_read,
             principal=principal, notification_id=notification_id,
             expected_etag=if_match, idempotency_key=idempotency_key,
             requested_state=body.state, trace_id=request.state.trace_id,
@@ -5804,7 +6007,8 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     ) -> JSONResponse:
         _require_query_keys(request, frozenset({"cursor", "limit", "filter", "search"}))
         principal = _principal(request, dependencies)
-        page = notification_service.list_inbox(
+        service = await asyncio.to_thread(notification_service_for, principal, request.state.trace_id)
+        page = await asyncio.to_thread(service.list_inbox,
             principal=principal, limit=limit, cursor=cursor,
             filters=parse_inbox_filter(filter), search=search,
             trace_id=request.state.trace_id,
@@ -7294,7 +7498,8 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         assert settings.cloud_database_dsn is not None
         identity_repository = PostgresIdentityRepository(settings.cloud_database_dsn)
         authorization_repository = PostgresAuthorizationRepository(settings.cloud_database_dsn)
-        organization_repository = PostgresOrganizationRepository(settings.cloud_database_dsn, audit_store=audit_store)
+        organization_repository = PostgresOrganizationRepository(settings.cloud_database_dsn,
+            audit_store=audit_store, notification_inbox_enabled=settings.notification_inbox_enabled)
     else:
         identity_repository = SqliteIdentityRepository(settings.database_path)
         authorization_repository = SqliteAuthorizationRepository(settings.database_path)
@@ -7309,6 +7514,7 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         oidc_policies=(),
         clock=lambda: datetime.now(timezone.utc),
         step_up_token_key=step_up_token_key,
+        notification_inbox_enabled=settings.notification_inbox_enabled,
     )
     identity_service.ensure_initial_admin()
     admin_user_service = AdminUserService(
@@ -7323,6 +7529,7 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         system_admin_user_ids=settings.system_admin_user_ids,
         clock=lambda: datetime.now(timezone.utc),
         audit_store=audit_store,
+        notification_inbox_enabled=settings.notification_inbox_enabled,
     )
     authorization_repository.bootstrap_workspace(
         tenant_id="admin",
@@ -7339,6 +7546,7 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         audit_store=audit_store,
         clock=lambda: datetime.now(timezone.utc),
         identity_service=identity_service,
+        notification_inbox_enabled=settings.notification_inbox_enabled,
     )
     notification_service = NotificationService(
         repository=ReferenceNotificationRepository(),
@@ -7349,7 +7557,8 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
     cloud_store = (
         None
         if settings.cloud_database_dsn is None
-        else PostgresCloudStore(settings.cloud_database_dsn, organization_admin_v2_enabled=settings.organization_admin_v2_enabled)
+        else PostgresCloudStore(settings.cloud_database_dsn, organization_admin_v2_enabled=settings.organization_admin_v2_enabled,
+            notification_inbox_enabled=settings.notification_inbox_enabled)
     )
     provider_connection_service = None
     provider_health_settings_service = None
@@ -7435,6 +7644,7 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
             MinioRecoveryStorageAdapter(object_storage),
             manifest_key=manifest_key,
             clock=lambda: datetime.now(timezone.utc),
+            notification_inbox_enabled=settings.notification_inbox_enabled,
         )
     if (
         settings.cloud_database_dsn is not None

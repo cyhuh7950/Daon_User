@@ -268,7 +268,11 @@ class PostgresAuthorizationRepository(SqliteAuthorizationRepository):
 
 
 class PostgresOrganizationRepository(SqliteOrganizationRepository):
-    def __init__(self, dsn: str, *, audit_sink: Any = None, audit_store: Any = None) -> None:
+    def __init__(self, dsn: str, *, audit_sink: Any = None, audit_store: Any = None,
+                 notification_inbox_enabled: bool = False) -> None:
+        if type(notification_inbox_enabled) is not bool:
+            raise ValueError("NOTIFICATION_INBOX_FLAG_INVALID")
+        self._notification_inbox_enabled = notification_inbox_enabled
         from .organization_access import OrganizationAccessBridge
         self._dsn, self._lock, self._closed, self._audit_sink = dsn, RLock(), False, audit_sink
         self._audit_store = audit_store

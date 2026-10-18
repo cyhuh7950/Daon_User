@@ -225,6 +225,7 @@ class NotificationContractTests(unittest.IsolatedAsyncioTestCase):
             "/notebooks/notebook-001?output_version_id=version-001",
             "/notebooks/notebook-001?source_version_id=source-version-001",
             "/notebooks/notebook-001?run_id=run-001",
+            "/notebooks/notebook-001?studio_job_id=job-001",
             "/settings/account",
         )
         for index, link in enumerate(links):
@@ -251,6 +252,10 @@ class NotificationContractTests(unittest.IsolatedAsyncioTestCase):
             "/notebooks/notebook-001?run_id=",
             "/notebooks/notebook-001?run_id=run-001#other",
             "/notebooks/notebook-001?run_id=run%0A001",
+            "/notebooks/notebook-001?studio_job_id=job-001&studio_job_id=job-002",
+            "/notebooks/notebook-001?studio_job_id=job-001&run_id=run-001",
+            "/notebooks/notebook-001?studio_job_id=",
+            "/notebooks/notebook-001?studio_job_id=job%0A001",
             "/notebooks/notebook-001%2Fother?run_id=run-001",
             "/notebooks/../settings?run_id=run-001",
             "/settings/account?redirect=https://evil.example",
@@ -262,6 +267,113 @@ class NotificationContractTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(NotificationError) as rejected:
                     self.service.publish(replace(self.event, deep_link=link), candidates=(self.principal,))
                 self.assertEqual(rejected.exception.code, "UNSAFE_DEEP_LINK")
+
+    async def test_s43_authorization_database_failure_is_not_an_empty_inbox(self) -> None:
+        from unittest.mock import patch
+        from daon_user_api.authorization import AuthorizationError
+        self.service.project_request(InboxRequest(
+            request_id="s43-approval-request", request_kind="approval", status="pending",
+            tenant_id=self.session.tenant_id, workspace_id="workspace-001",
+            recipient_id=self.session.user_id, actor_id="actor-requester-001", due_at=None,
+            resource_type="output_version", resource_id="s43-output-version",
+            deep_link="/notebooks/s43-notebook?output_version_id=s43-output-version",
+        ))
+        with patch.object(self.authorization, "authorize_action",
+                          side_effect=AuthorizationError("DATABASE_UNAVAILABLE", 503)):
+            response = await self.client.get("/api/v1/inbox", headers=self.headers)
+        self.assertEqual(response.status_code, 503)
+        # 기존 공개 오류 mapper는 내부 DB 원인을 RESOURCE_UNAVAILABLE로 숨긴다.
+        # 새 공개 code를 만들지 않고 503/재시도 가능·빈 목록 아님을 검사한다.
+        self.assertEqual(response.json()["error"]["code"], "RESOURCE_UNAVAILABLE")
+        self.assertIs(response.json()["error"]["retryable"], True)
+        self.assertEqual(response.json()["error"]["details"], {})
+
+    async def test_s42_list_authorization_database_outage_is_not_empty_success(self) -> None:
+        from unittest.mock import patch
+        from daon_user_api.authorization import AuthorizationError
+
+        baseline = await self.client.get("/api/v1/notifications", headers=self.headers)
+        self.assertEqual(baseline.status_code, 200)
+        self.assertEqual(len(baseline.json()["data"]["items"]), 1)
+        self.assertEqual(baseline.json()["data"]["unread_count"], 1)
+        before = self.repository.all_notifications()
+        authorize = self.authorization.authorize_action
+        # 목록과 미읽음 개수는 각각 현재 접근을 확인한다. 두 번째 검사 실패도 부분 200이 아니다.
+        for failure_at in (1, 2):
+            with self.subTest(failure_at=failure_at):
+                calls = 0
+
+                def fail_current_access(**kwargs):
+                    nonlocal calls
+                    calls += 1
+                    if calls == failure_at:
+                        raise AuthorizationError("DATABASE_UNAVAILABLE", 503)
+                    return authorize(**kwargs)
+
+                with patch.object(self.authorization, "authorize_action", side_effect=fail_current_access):
+                    response = await self.client.get("/api/v1/notifications", headers=self.headers)
+                self.assertEqual(calls, failure_at)
+                self.assertEqual(response.status_code, 503)
+                self.assertEqual(response.json()["error"]["code"], "RESOURCE_UNAVAILABLE")
+                self.assertIs(response.json()["error"]["retryable"], True)
+                self.assertEqual(response.json()["error"]["details"], {})
+                self.assertNotIn("data", response.json())
+                self.assertEqual(self.repository.all_notifications(), before)
+        recovered = await self.client.get("/api/v1/notifications", headers=self.headers)
+        self.assertEqual(recovered.status_code, 200)
+        self.assertEqual(recovered.json()["data"], baseline.json()["data"])
+
+    async def test_s42_detail_read_and_read_replay_database_outage_preserve_state(self) -> None:
+        from unittest.mock import patch
+        from daon_user_api.authorization import AuthorizationError
+
+        baseline = await self.client.get("/api/v1/notifications", headers=self.headers)
+        self.assertEqual(baseline.status_code, 200)
+        item = baseline.json()["data"]["items"][0]
+        path = f"/api/v1/notifications/{item['id']}"
+        detail = await self.client.get(path, headers=self.headers)
+        self.assertEqual(detail.status_code, 200)
+        key = "idem-s42-db-outage-read-001"
+        headers = {**self.headers, "If-Match": detail.headers["etag"], "Idempotency-Key": key,
+                   "X-Trace-Id": "trace-s42-db-outage-read"}
+        before = self.repository.all_notifications()
+        for method in ("GET", "PATCH"):
+            with self.subTest(method=method):
+                with patch.object(self.authorization, "authorize_action",
+                                  side_effect=AuthorizationError("DATABASE_UNAVAILABLE", 503)):
+                    response = await self.client.request(method, path,
+                        headers=headers, **({"json": {"state": "read"}} if method == "PATCH" else {}))
+                self.assertEqual(response.status_code, 503)
+                self.assertEqual(response.json()["error"]["code"], "RESOURCE_UNAVAILABLE")
+                self.assertIs(response.json()["error"]["retryable"], True)
+                self.assertEqual(response.json()["error"]["details"], {})
+                self.assertNotIn("data", response.json())
+                self.assertEqual(self.repository.all_notifications(), before)
+                self.assertIsNone(self.repository.idempotency_result(key))
+                self.assertEqual(len(self.audit.list(
+                    tenant_id=self.session.tenant_id, action="notification.read").items), 0)
+
+        first = await self.client.patch(path, headers=headers, json={"state": "read"})
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.json()["data"]["read_state"], "read")
+        read_before = self.repository.all_notifications()
+        receipt_before = self.repository.idempotency_result(key)
+        self.assertIsNotNone(receipt_before)
+        with patch.object(self.authorization, "authorize_action",
+                          side_effect=AuthorizationError("DATABASE_UNAVAILABLE", 503)):
+            replay = await self.client.patch(path, headers=headers, json={"state": "read"})
+        self.assertEqual(replay.status_code, 503)
+        self.assertEqual(replay.json()["error"]["code"], "RESOURCE_UNAVAILABLE")
+        self.assertIs(replay.json()["error"]["retryable"], True)
+        self.assertEqual(replay.json()["error"]["details"], {})
+        self.assertNotIn("data", replay.json())
+        self.assertEqual(self.repository.all_notifications(), read_before)
+        self.assertEqual(self.repository.idempotency_result(key), receipt_before)
+        self.assertEqual(len(self.audit.list(
+            tenant_id=self.session.tenant_id, action="notification.read").items), 1)
+        recovered = await self.client.patch(path, headers=headers, json={"state": "read"})
+        self.assertEqual(recovered.status_code, 200)
+        self.assertEqual(recovered.json(), first.json())
 
     async def test_inbox_is_current_read_projection_without_write_route(self) -> None:
         self.service.project_request(InboxRequest(

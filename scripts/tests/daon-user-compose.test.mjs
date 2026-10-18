@@ -5,6 +5,25 @@ import { parse } from "yaml";
 
 const composeUrl = new URL("../../deploy/daon-user/compose.yaml", import.meta.url);
 
+test("S42 기존 알림 flag는 API·두 worker에만 default false로 전달된다", async () => {
+  const document = parse(await readFile(composeUrl, "utf8"));
+  const flag = "DAON_NOTIFICATION_INBOX_ENABLED";
+  const callers = new Set(["api", "document-worker", "studio-worker"]);
+  for (const [name, service] of Object.entries(document.services)) {
+    const environment = service.environment || {};
+    if (!callers.has(name)) {
+      assert.equal(Object.hasOwn(environment, flag), false, name);
+      continue;
+    }
+    assert.equal(environment[flag], "${DAON_NOTIFICATION_INBOX_ENABLED-false}", name);
+    for (const [value, expected] of [[undefined, "false"], ["false", "false"], ["true", "true"]]) {
+      const expanded = environment[flag].replace(/\$\{DAON_NOTIFICATION_INBOX_ENABLED-([^}]+)\}/u,
+        (_match, fallback) => value === undefined ? fallback : value);
+      assert.equal(expanded, expected);
+    }
+  }
+});
+
 test("S39 적용 flag는 API에만 전달하며 미설정 false·명시 true 계약을 보존한다", async () => {
   const document = parse(await readFile(composeUrl, "utf8"));
   const flag = "DAON_ORGANIZATION_ADMIN_V2_ENABLED";

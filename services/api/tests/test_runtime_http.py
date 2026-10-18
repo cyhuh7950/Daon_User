@@ -275,6 +275,254 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(unauthenticated.status_code, 401)
         self.assertEqual(context_without_auth.status_code, 401)
 
+    async def test_s42_account_notification_producer_uses_explicit_runtime_flag(self) -> None:
+        """생성자 연결 계약만 확인한다. 계정 사건/실제 PG 저장 성공 증거가 아니다."""
+        try:
+            for enabled in (False, True):
+                with self.subTest(enabled=enabled):
+                    self.dependencies.settings = replace(self.settings, notification_inbox_enabled=enabled)
+                    with patch('daon_user_api.account_settings.AccountSettingsService') as factory:
+                        create_app(self.dependencies)
+                    factory.assert_called_once_with(self.identity, notification_inbox_enabled=enabled)
+        finally:
+            self.dependencies.settings = self.settings
+
+    def test_s42_organization_notification_producer_uses_explicit_runtime_flag(self) -> None:
+        """production factory 인자 연결만 확인한다. 실제 PG/조직 역할 성공 증거가 아니다."""
+        import secrets
+        from types import SimpleNamespace
+
+        class FactoryReached(Exception):
+            pass
+
+        for enabled in (False, True):
+            settings = SimpleNamespace(database_path=self.db_path, profile='production',
+                cloud_database_dsn='postgresql://unused.invalid/unused',
+                step_up_token_key_file=SimpleNamespace(read_bytes=lambda: secrets.token_bytes(32)),
+                notification_inbox_enabled=enabled)
+            with self.subTest(enabled=enabled), \
+                patch('daon_user_api.audit.PostgresSecurityAuditStore') as audit, \
+                patch('daon_user_api.runtime.PostgresIdentityRepository'), \
+                patch('daon_user_api.runtime.PostgresAuthorizationRepository'), \
+                patch('daon_user_api.runtime.PostgresOrganizationRepository', side_effect=FactoryReached) as factory:
+                with self.assertRaises(FactoryReached):
+                    build_dependencies(settings)
+                factory.assert_called_once_with(settings.cloud_database_dsn,
+                    audit_store=audit.return_value, notification_inbox_enabled=enabled)
+
+    def test_s42_c9_role_notification_uses_explicit_runtime_flag(self) -> None:
+        """factory 인자 연결만 확인한다. 실제 역할/source 저장 검증은 별도다."""
+        import secrets
+        from types import SimpleNamespace
+
+        class FactoryReached(Exception):
+            pass
+
+        for enabled in (False, True):
+            settings = SimpleNamespace(database_path=self.db_path, profile='production',
+                cloud_database_dsn='postgresql://unused.invalid/unused',
+                step_up_token_key_file=SimpleNamespace(read_bytes=lambda: secrets.token_bytes(32)),
+                notification_inbox_enabled=enabled, system_admin_user_ids=frozenset({'s42-c9-factory-admin'}))
+            with self.subTest(enabled=enabled), \
+                patch('daon_user_api.audit.PostgresSecurityAuditStore') as audit, \
+                patch('daon_user_api.runtime.PostgresIdentityRepository'), \
+                patch('daon_user_api.runtime.PostgresAuthorizationRepository') as authorization, \
+                patch('daon_user_api.runtime.PostgresOrganizationRepository'), \
+                patch('daon_user_api.runtime.IdentityService'), \
+                patch('daon_user_api.runtime.AdminUserService'), \
+                patch('daon_user_api.runtime.AdminMembershipRoleService', side_effect=FactoryReached) as factory:
+                with self.assertRaises(FactoryReached):
+                    build_dependencies(settings)
+                self.assertEqual(set(factory.call_args.kwargs), {'repository', 'system_admin_user_ids', 'clock',
+                    'audit_store', 'notification_inbox_enabled'})
+                self.assertIs(factory.call_args.kwargs['repository'], authorization.return_value)
+                self.assertIs(factory.call_args.kwargs['audit_store'], audit.return_value)
+                self.assertIs(factory.call_args.kwargs['notification_inbox_enabled'], enabled)
+
+    def test_s42_source_access_notification_uses_explicit_runtime_flag(self) -> None:
+        """실제 생성자 인자 전달만 확인한다. DB·인증 성공 증거가 아니다."""
+        import secrets
+        from types import SimpleNamespace
+
+        class FactoryReached(Exception):
+            pass
+
+        for enabled in (False, True):
+            settings = SimpleNamespace(database_path=self.db_path, profile='production',
+                cloud_database_dsn='postgresql://unused.invalid/unused',
+                step_up_token_key_file=SimpleNamespace(read_bytes=lambda: secrets.token_bytes(32)),
+                notification_inbox_enabled=enabled, system_admin_user_ids=frozenset())
+            with self.subTest(enabled=enabled), \
+                patch('daon_user_api.audit.PostgresSecurityAuditStore') as audit, \
+                patch('daon_user_api.runtime.PostgresIdentityRepository'), \
+                patch('daon_user_api.runtime.PostgresAuthorizationRepository') as repository, \
+                patch('daon_user_api.runtime.PostgresOrganizationRepository'), \
+                patch('daon_user_api.runtime.IdentityService') as identity, \
+                patch('daon_user_api.runtime.AdminUserService'), \
+                patch('daon_user_api.runtime.AdminMembershipRoleService'), \
+                patch('daon_user_api.runtime.AuthorizationService', side_effect=FactoryReached) as factory:
+                with self.assertRaises(FactoryReached):
+                    build_dependencies(settings)
+                arguments = factory.call_args.kwargs
+                self.assertEqual(set(arguments), {'repository', 'audit_store', 'clock',
+                    'identity_service', 'notification_inbox_enabled'})
+                self.assertIs(arguments['repository'], repository.return_value)
+                self.assertIs(arguments['audit_store'], audit.return_value)
+                self.assertIs(arguments['identity_service'], identity.return_value)
+                self.assertIs(arguments['notification_inbox_enabled'], enabled)
+
+    def test_s42_identity_login_notification_uses_explicit_runtime_flag(self) -> None:
+        """생성자 flag 연결 계약만 확인한다. 실제 인증/PG 성공 증거는 별도다."""
+        import secrets
+        from types import SimpleNamespace
+
+        class FactoryReached(Exception):
+            pass
+
+        for enabled in (False, True):
+            settings = SimpleNamespace(database_path=self.db_path, profile='production',
+                cloud_database_dsn='postgresql://unused.invalid/unused',
+                step_up_token_key_file=SimpleNamespace(read_bytes=lambda: secrets.token_bytes(32)),
+                notification_inbox_enabled=enabled)
+            with self.subTest(enabled=enabled), \
+                patch('daon_user_api.audit.PostgresSecurityAuditStore') as audit, \
+                patch('daon_user_api.runtime.PostgresIdentityRepository') as identity, \
+                patch('daon_user_api.runtime.PostgresAuthorizationRepository'), \
+                patch('daon_user_api.runtime.PostgresOrganizationRepository'), \
+                patch('daon_user_api.runtime.IdentityService', side_effect=FactoryReached) as factory:
+                with self.assertRaises(FactoryReached):
+                    build_dependencies(settings)
+                factory.assert_called_once()
+                arguments = factory.call_args.kwargs
+                self.assertEqual(set(arguments), {'repository', 'audit_store', 'oidc_policies', 'clock',
+                    'step_up_token_key', 'notification_inbox_enabled'})
+                self.assertIs(arguments['repository'], identity.return_value)
+                self.assertIs(arguments['audit_store'], audit.return_value)
+                self.assertIs(arguments['notification_inbox_enabled'], enabled)
+
+    async def test_s42_notification_runtime_flag_and_scoped_repository_contract(self) -> None:
+        """실제 세션/권한 + 저장 port 대체 HTTP 계약. 실제 PG 성공은 별도 시험이다."""
+        from types import SimpleNamespace
+        from daon_user_api.cloud_storage import PostgresCloudStore
+        from daon_user_api.notification import ReferenceNotificationRepository, NotificationError
+        self.dependencies.settings = replace(self.settings, notification_inbox_enabled=True)
+        cloud=PostgresCloudStore('postgresql://unused.invalid/unused',min_size=0,max_size=1,notification_inbox_enabled=True)
+        self.dependencies.cloud_store=cloud
+        self.authorization_repository.bootstrap_workspace(tenant_id=self.web.tenant_id,workspace_id='workspace-002',
+            owner_user_id=self.web.user_id,owner_role=Role.ORGANIZATION_ADMIN,workspace_kind='organization',
+            data_area='cloud_sync',cost_limit_cents=1000,now=self.clock())
+        scopes=[]
+        class ScopedPort(ReferenceNotificationRepository):
+            transactional_audit=True
+            def __init__(current,dsn,**scope):
+                super().__init__();scopes.append(scope)
+        app=create_app(self.dependencies)
+        auth={'cookie':f'{WEB_SESSION_COOKIE}={self.web.access_token}'}
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://127.0.0.1') as client:
+            with patch.object(cloud,'readiness',return_value=SimpleNamespace(ready=True,schema_revision='0069')),\
+                patch('daon_user_api.notification_postgres.ScopedPostgresNotificationRepository',ScopedPort):
+                unauthorized=await client.get('/api/v1/notifications')
+                self.assertEqual(unauthorized.status_code,401);self.assertEqual(scopes,[])
+                listed=await client.get('/api/v1/notifications',headers=auth)
+                self.assertEqual(listed.status_code,200)
+                self.assertEqual(listed.json()['data'],{'items':[],'next_cursor':None,'unread_count':0})
+                self.assertEqual(len(scopes),1)
+                scope=scopes[0]
+                self.assertEqual((scope['tenant_id'],scope['recipient_id']),(self.web.tenant_id,self.web.user_id))
+                from daon_user_api.studio_approval_lifecycle import StudioApprovalLifecycleRepository
+                self.assertIsInstance(scope['studio_approval_repository'], StudioApprovalLifecycleRepository)
+                self.assertIs(scope['studio_approval_repository']._store, cloud, '기존 저장소/원장을 재사용한다')
+                self.assertEqual(tuple(item.workspace_id for item in scope['contexts']),('workspace-001','workspace-002'))
+                self.assertTrue(all(item.actor_id==self.web.user_id and item.tenant_id==self.web.tenant_id and item.capability=='view'
+                    for item in scope['contexts']))
+                invalid=await client.get('/api/v1/notifications?workspace_id=workspace-foreign',headers=auth)
+                self.assertEqual(invalid.status_code,400);self.assertEqual(len(scopes),1)
+                original_authorize=self.authorization.authorize_action
+                def authorize(**arguments):
+                    if arguments['workspace_id']=='workspace-002':
+                        raise AuthorizationError('ROLE_NOT_PERMITTED',403)
+                    return original_authorize(**arguments)
+                with patch.object(self.authorization,'authorize_action',side_effect=authorize):
+                    filtered=await client.get('/api/v1/notifications',headers=auth)
+                self.assertEqual(filtered.status_code,200)
+                self.assertEqual(tuple(item.workspace_id for item in scopes[-1]['contexts']),('workspace-001',))
+            with patch.object(cloud,'readiness',return_value=SimpleNamespace(ready=False,schema_revision='0068')):
+                unavailable=await client.get('/api/v1/notifications',headers=auth)
+                self.assertEqual((unavailable.status_code,unavailable.json()['error']['code'],unavailable.json()['error']['retryable']),
+                    (503,'RESOURCE_UNAVAILABLE',True),'구 DB를 Reference 빈 목록으로 바꾸지 않는다')
+            with patch.object(cloud,'readiness',return_value=SimpleNamespace(ready=True,schema_revision='0069')),\
+                patch('daon_user_api.notification_postgres.ScopedPostgresNotificationRepository',side_effect=NotificationError('DATABASE_UNAVAILABLE',503)):
+                unavailable=await client.get('/api/v1/notifications',headers=auth)
+                self.assertEqual((unavailable.status_code,unavailable.json()['error']['code']),(503,'RESOURCE_UNAVAILABLE'))
+
+    async def test_s42_notification_runtime_scope_storage_errors_have_safe_retryable_envelope(self) -> None:
+        """새 생성 경계의 5xx 변환만 확인한다. DB 오류를 대체한 HTTP 계약이다."""
+        from types import SimpleNamespace
+        from daon_user_api.cloud_storage import PostgresCloudStore
+        from daon_user_api.identity import IdentityError
+        self.dependencies.settings=replace(self.settings,notification_inbox_enabled=True)
+        cloud=PostgresCloudStore('postgresql://unused.invalid/unused',min_size=0,max_size=1,notification_inbox_enabled=True)
+        self.dependencies.cloud_store=cloud
+        app=create_app(self.dependencies)
+        auth={'cookie':f'{WEB_SESSION_COOKIE}={self.web.access_token}'}
+        cases=((self.identity,'notification_workspace_ids',IdentityError('PERSISTENCE_UNAVAILABLE',503)),
+            (self.authorization,'authorize_action',AuthorizationError('PERSISTENCE_UNAVAILABLE',503)))
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://127.0.0.1') as client:
+            for owner,method,error in cases:
+                with self.subTest(stage=method),patch.object(cloud,'readiness',return_value=SimpleNamespace(ready=True,schema_revision='0069')),\
+                    patch.object(owner,method,side_effect=error):
+                    for endpoint in ('/api/v1/notifications', '/api/v1/inbox'):
+                        response=await client.get(endpoint,headers=auth)
+                        self.assertEqual(response.status_code,503,endpoint)
+                        self.assertEqual((response.json()['error']['code'],response.json()['error']['retryable']),
+                            ('RESOURCE_UNAVAILABLE',True))
+
+    def test_s42_notification_runtime_activation_is_explicit_strict_and_default_off(self) -> None:
+        import os
+        self.assertFalse(self.settings.notification_inbox_enabled)
+        with self.assertRaisesRegex(ValueError,'NOTIFICATION_INBOX_FLAG_INVALID'):
+            replace(self.settings,notification_inbox_enabled='true')
+        with patch.dict(os.environ,{'DAON_RUNTIME_PROFILE':'test','DAON_API_DATABASE_PATH':str(self.db_path)},clear=True):
+            self.assertFalse(RuntimeSettings.from_env().notification_inbox_enabled)
+            os.environ['DAON_NOTIFICATION_INBOX_ENABLED']='true'
+            self.assertTrue(RuntimeSettings.from_env().notification_inbox_enabled)
+            os.environ['DAON_NOTIFICATION_INBOX_ENABLED']='1'
+            with self.assertRaisesRegex(ValueError,'NOTIFICATION_INBOX_FLAG_INVALID'):
+                RuntimeSettings.from_env()
+
+    async def test_s42_context_exact_selector_http_contract(self) -> None:
+        """HTTP 인자/오류 계약만 검증한다. 실제 PG 선택 검증은 별도 직접 시험이다."""
+        from daon_user_api.notebook import NotebookService, NotebookError
+        auth = {"cookie": f"{WEB_SESSION_COOKIE}={self.web.access_token}"}
+        created = await self.client.post('/api/v1/workspaces/workspace-001/notebooks',
+            headers={**auth, 'Idempotency-Key':'s42-selector-http-0001'}, json={'title':'S42 정확 선택'})
+        self.assertEqual(created.status_code, 201)
+        url = f"/api/v1/workspaces/workspace-001/notebooks/{created.json()['data']['notebook_id']}/context"
+        original = NotebookService.read_selected_context
+        received = []
+        def read(service, context, notebook_id, **selectors):
+            received.append(selectors)
+            if selectors.get('run_id') == 'run-failed':
+                raise NotebookError('QUESTION_FAILED', 409)
+            return original(service, context, notebook_id)
+        with patch.object(NotebookService, 'read_selected_context', autospec=True, side_effect=read):
+            normal = await self.client.get(url, headers=auth)
+            completed = await self.client.get(url+'?run_id=run-completed', headers=auth)
+            job = await self.client.get(url+'?studio_job_id=job-failed', headers=auth)
+            failed = await self.client.get(url+'?run_id=run-failed', headers=auth)
+            self.assertEqual((normal.status_code, completed.status_code, job.status_code), (200, 200, 200))
+            self.assertEqual(completed.json()['data'], normal.json()['data'])
+            self.assertEqual(job.json()['data'], normal.json()['data'])
+            self.assertEqual(received, [{}, {'run_id':'run-completed'}, {'studio_job_id':'job-failed'}, {'run_id':'run-failed'}])
+            error = failed.json()['error']
+            self.assertEqual((failed.status_code, error['code'], error['retryable'], error['details']),
+                (409, 'QUESTION_FAILED', False, {}))
+            for query in ('run_id=a&run_id=b', 'studio_job_id=a&studio_job_id=b',
+                'run_id=a&studio_job_id=b', 'run_id=', 'studio_job_id=', 'run_id=a&extra=b'):
+                response = await self.client.get(url+'?'+query, headers=auth)
+                self.assertEqual((response.status_code, response.json()['error']['code']), (400, 'INVALID_REQUEST'), query)
+            self.assertEqual(len(received), 4, '잘못된 선택자는 저장소까지 전달하지 않는다')
+
     async def test_connector_list_contract_returns_safe_views(self) -> None:
         auth = {"cookie": f"{WEB_SESSION_COOKIE}={self.web.access_token}"}
         response = await self.client.get("/api/v1/workspaces/workspace-001/connectors", headers=auth)

@@ -18,6 +18,268 @@ from daon_user_api.notification import NotificationError, NotificationEvent, Not
 from test_identity_support import POLICY_VERSION, TRACE_ID, create_service, native_login
 
 
+def test_s42_scoped_repository_combines_native_and_studio_notice_ports_without_copy(monkeypatch):
+    """집계·위임 구성 단위 계약이다. 실제 S24 저장/조회 성공 증거가 아니다."""
+    from types import SimpleNamespace
+    from daon_user_api.cloud_storage import CloudAccessContext
+    import daon_user_api.notification_postgres as storage
+    import daon_user_api.notification_studio_approval as approval
+    context = CloudAccessContext('scope-tenant', 'scope-one', 'scope-user', 'view')
+    options = dict(tenant_id=context.tenant_id, recipient_id=context.actor_id)
+    normal = SimpleNamespace(notification_id='normal-owned', workspace_id=context.workspace_id, resource_type='Run')
+    notice = SimpleNamespace(notification_id='approval-notice-owned', workspace_id=context.workspace_id,
+        resource_type='StudioApprovalNotice')
+    lifecycle = object()
+    calls = []
+
+    class NativePort:
+        def __init__(self, dsn, *, context):
+            self.context = context
+        def notifications_for(self, **scope):
+            return (normal,)
+        def notification_for(self, *, notification_id, **scope):
+            return normal if notification_id == normal.notification_id else None
+        def transition_read(self, **scope):
+            calls.append(('native', scope))
+            return 'native-read'
+
+    class ApprovalPort:
+        def __init__(self, repository, *, context):
+            assert repository is lifecycle
+            assert context == expected_context
+        def notifications_for(self, **scope):
+            return (notice,)
+        def notification_for(self, *, notification_id, **scope):
+            return notice if notification_id == notice.notification_id else None
+        def transition_read(self, **scope):
+            calls.append(('approval', scope))
+            return 'approval-read'
+
+    expected_context = context
+    monkeypatch.setattr(storage, 'PostgresNotificationRepository', NativePort)
+    monkeypatch.setattr(approval, 'StudioApprovalNotificationRepository', ApprovalPort)
+    repository = storage.ScopedPostgresNotificationRepository('unused-dsn', **options,
+        contexts=(context,), studio_approval_repository=lifecycle)
+    assert repository.notifications_for(**options) == (normal, notice)
+    assert repository.notification_for(**options, notification_id=notice.notification_id) is notice
+    assert repository.transition_read(**options, notification_id=normal.notification_id) == 'native-read'
+    assert repository.transition_read(**options, notification_id=notice.notification_id) == 'approval-read'
+    assert [target for target, _ in calls] == ['native', 'approval']
+    with monkeypatch.context() as patch:
+        patch.setattr(ApprovalPort, 'notifications_for', lambda *_args, **_kwargs: (normal,))
+        with pytest.raises(NotificationError, match='DATABASE_RESPONSE_INVALID'):
+            repository.notifications_for(**options)
+    with monkeypatch.context() as patch:
+        def unavailable(*_args, **_kwargs):
+            raise NotificationError('DATABASE_UNAVAILABLE', 503)
+        patch.setattr(ApprovalPort, 'notifications_for', unavailable)
+        with pytest.raises(NotificationError, match='DATABASE_UNAVAILABLE'):
+            repository.notifications_for(**options)
+
+
+def test_s42_scoped_pg_adapter_contract_rejects_foreign_context_and_never_swallows_database_error(monkeypatch):
+    """집계 port 단위 경계다. 실제 DB/Source 성공으로 계산하지 않는다."""
+    from types import SimpleNamespace
+    from daon_user_api.cloud_storage import CloudAccessContext
+    from daon_user_api.notification_postgres import PostgresNotificationRepository, ScopedPostgresNotificationRepository
+    context=CloudAccessContext('scope-tenant','scope-one','scope-user','view')
+    options={'tenant_id':'scope-tenant','recipient_id':'scope-user'}
+    for contexts in ((context,context),
+        (CloudAccessContext('foreign','scope-one','scope-user','view'),),
+        (CloudAccessContext('scope-tenant','scope-one','foreign-user','view'),),
+        (CloudAccessContext('scope-tenant','scope-one','scope-user','write'),)):
+        with pytest.raises(ValueError,match='NOTIFICATION_SCOPE_INVALID'):
+            ScopedPostgresNotificationRepository('unused-dsn',**options,contexts=contexts)
+    repository=ScopedPostgresNotificationRepository('unused-dsn',**options,
+        contexts=(context,CloudAccessContext('scope-tenant','scope-two','scope-user','view')))
+    calls=[]
+    def read(current,**scope):
+        calls.append(current.context.workspace_id)
+        if current.context.workspace_id=='scope-two':
+            raise NotificationError('DATABASE_UNAVAILABLE',503)
+        return (SimpleNamespace(notification_id='existing-first'),)
+    monkeypatch.setattr(PostgresNotificationRepository,'notifications_for',read)
+    with pytest.raises(NotificationError) as unavailable:
+        repository.notifications_for(**options)
+    assert (unavailable.value.code,unavailable.value.http_status)==('DATABASE_UNAVAILABLE',503)
+    assert calls==['scope-one','scope-two']
+
+
+def test_s42_scoped_pg_repository_reads_all_authorized_workspaces_without_global_fallback():
+    """실제 Doc 원사건 두 개·같은 사용자/tenant의 서로 다른 Workspace를 사용한다."""
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from uuid import uuid4
+    import psycopg
+    from daon_user_api.cloud_storage import CloudAccessContext, PostgresCloudStore
+    from daon_user_api.notebook import NotebookContext
+    from daon_user_api.notebook_postgres import PostgresNotebookRepository
+    from test_notification_events import (_existing_0069_studio_case, _pending_l2b_completed,
+        _l2_current_read_request, _l2b_completion_snapshot)
+    from daon_user_api.notification_events import materialize_pending_completed
+    from daon_user_api.notification_postgres import PostgresNotificationRepository
+    scope = _existing_0069_studio_case(workspace_kind='organization')
+    context = scope.context
+    suffix = uuid4().hex
+    second_id = 's42-notification-ws-'+suffix
+    second_context = replace(context, workspace_id=second_id)
+    store = PostgresCloudStore(scope.app, min_size=0, max_size=2)
+    try:
+        store.seed_scope(CloudAccessContext(context.tenant_id,second_id,context.actor_id,'source.create'))
+        with psycopg.connect(scope.admin) as connection:
+            connection.execute("INSERT INTO identity_auth_workspaces VALUES(%s,%s,'organization','cloud_sync',1000,1,1,now())",
+                (second_id,context.tenant_id))
+        notebook,_=PostgresNotebookRepository(store).create(NotebookContext(context.tenant_id,second_id,context.actor_id,
+            context.trace_id,context.policy_version),title='S42 알림 두 번째 Workspace',description=None,
+            idempotency_key='s42-second-'+suffix,request_fingerprint='d'*64,now=datetime.now(timezone.utc))
+        with psycopg.connect(scope.admin) as connection:
+            assert connection.execute('SELECT activity_kind,actor_id FROM notebook_activities '
+                'WHERE tenant_id=%s AND workspace_id=%s AND notebook_id=%s ORDER BY sequence',
+                (context.tenant_id,second_id,notebook.notebook_id)).fetchall()==[('created',context.actor_id)]
+    finally:
+        store.close()
+    second_context = replace(second_context, notebook_id=notebook.notebook_id)
+    second = SimpleNamespace(admin=scope.admin,app=scope.app,context=second_context,suffix=suffix,revision='0069',
+        expected_notebook_activity_prefix=(('created',context.actor_id),))
+    # 두 원사건을 먼저 확정한다. 기존 helper의 tenant 전체 알림0 준비 단언을 약화하지 않는다.
+    scope = _pending_l2b_completed('document',scope=scope)
+    second = _pending_l2b_completed('document',scope=second)
+    originals=[]
+    for current_scope in (scope,second):
+        current=current_scope.context
+        assert materialize_pending_completed(scope.app,context=current,limit=100)==1
+        native=PostgresNotificationRepository(scope.app,context=CloudAccessContext(current.tenant_id,current.workspace_id,current.actor_id,'view'))
+        items=native.notifications_for(tenant_id=current.tenant_id,recipient_id=current.actor_id)
+        assert len(items)==1 and items[0].read_at is None and items[0].version==1
+        current_scope.current_source_version=current_scope.completed_source_version
+        originals.append(items[0])
+    first_item,second_item=originals
+    # 실제 준비와 원사건 검증이 끝난 뒤 새 집계 adapter를 요구한다.
+    from daon_user_api.notification_postgres import ScopedPostgresNotificationRepository
+    contexts = tuple(CloudAccessContext(context.tenant_id,workspace,context.actor_id,'view')
+        for workspace in (context.workspace_id,second_id))
+    repository = ScopedPostgresNotificationRepository(scope.app,tenant_id=context.tenant_id,
+        recipient_id=context.actor_id,contexts=contexts)
+    params={'tenant_id':context.tenant_id,'recipient_id':context.actor_id}
+    before=_l2b_completion_snapshot(scope)
+    items=repository.notifications_for(**params)
+    assert {item.notification_id for item in items}=={first_item.notification_id,second_item.notification_id}
+    assert repository.notification_for(**params,notification_id=first_item.notification_id)==first_item
+    assert repository.notification_for(**params,notification_id=second_item.notification_id)==second_item
+    assert _l2b_completion_snapshot(scope)==before
+    assert repository.decode_cursor(repository.encode_cursor(second_item.notification_id))==second_item.notification_id
+    changed=_l2_current_read_request(second,repository,second_item)
+    assert changed.notification.read_at is not None and changed.notification.workspace_id==second_id
+    assert repository.notification_for(**params,notification_id=first_item.notification_id).read_at is None
+    with psycopg.connect(scope.admin) as connection:
+        connection.execute('INSERT INTO identity_auth_source_access '
+            '(tenant_id,workspace_id,user_id,source_version_id,allowed,version,updated_at) '
+            'VALUES(%s,%s,%s,%s,0,1,now())',(context.tenant_id,context.workspace_id,context.actor_id,scope.current_source_version))
+    assert [item.notification_id for item in repository.notifications_for(**params)]==[second_item.notification_id]
+    assert repository.notification_for(**params,notification_id=first_item.notification_id) is None
+    with pytest.raises(NotificationError) as foreign:
+        repository.notifications_for(tenant_id='s42-foreign',recipient_id=context.actor_id)
+    assert (foreign.value.code,foreign.value.http_status)==('RESOURCE_UNAVAILABLE',404)
+    empty=ScopedPostgresNotificationRepository(scope.app,tenant_id=context.tenant_id,recipient_id='admin',contexts=())
+    assert empty.notifications_for(tenant_id=context.tenant_id,recipient_id='admin')==()
+
+
+def test_s42_runtime_actual_postgres_session_notification_read_and_current_source_denial():
+    """실제 PG 세션/권한·원업무·HTTP. OIDC claims는 합성 port이며 실 Provider/브라우저 시험은 아니다."""
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from uuid import uuid4
+    import psycopg
+    from psycopg.conninfo import make_conninfo,conninfo_to_dict
+    from fastapi.testclient import TestClient
+    from daon_user_api.identity import IdentityService,ClientKind,DevicePlatform
+    from daon_user_api.identity_postgres import PostgresIdentityRepository
+    from daon_user_api.postgres_adapters import PostgresAuthorizationRepository
+    from daon_user_api.cloud_storage import PostgresCloudStore,CloudAccessContext
+    from daon_user_api.notebook import NotebookContext
+    from daon_user_api.notebook_postgres import PostgresNotebookRepository
+    from daon_user_api.studio_workspace import StudioContext
+    from daon_user_api.runtime import RuntimeSettings,RuntimeDependencies,create_app,WEB_SESSION_COOKIE
+    from test_identity_support import FakeVerifiedOidcProvider,policy
+    from test_notification_events import _PrivateDsn,_pending_l2b_completed
+    from daon_user_api.notification_events import materialize_pending_completed
+    dsn=os.environ.get('DAON_NOTIFICATION_TEST_DSN')
+    if not dsn:pytest.skip('S42 소유 격리 PG DSN 미제공')
+    assert conninfo_to_dict(dsn).get('dbname')=='daon_user_s42_qa_20261017_l2'
+    admin=_PrivateDsn(dsn);app=_PrivateDsn(make_conninfo(dsn,options='-c role=daon_app'))
+    suffix=uuid4().hex
+    tenant,workspace='s42-http-tenant-'+suffix,'s42-http-ws-'+suffix
+    trace='s42-http-trace-'+suffix
+    identity_repository=PostgresIdentityRepository(app)
+    authorization_repository=PostgresAuthorizationRepository(app)
+    audit=AuditEventStore();clock=lambda:datetime.now(timezone.utc)
+    identity=IdentityService(repository=identity_repository,audit_store=audit,
+        oidc_policies=(replace(policy(ClientKind.WEB),tenant_id=tenant),),clock=clock)
+    cloud=PostgresCloudStore(app,min_size=0,max_size=2,notification_inbox_enabled=True)
+    session=None;dependencies=None;client=None
+    try:
+        start=identity.begin_oidc_login(issuer='https://login.example.com',client_id='daon-web',audience='daon-user-api',
+            redirect_uri='https://app.example.com/auth/callback',client_kind=ClientKind.WEB,tenant_id=tenant,
+            trace_id=trace,policy_version=POLICY_VERSION)
+        provider=FakeVerifiedOidcProvider(subject='s42-http-subject-'+suffix);provider.expected_nonce=start.nonce
+        session=identity.complete_oidc_login(state=start.state,authorization_code=provider.authorization_code,
+            code_verifier=start.code_verifier,client_id='daon-web',redirect_uri='https://app.example.com/auth/callback',
+            provider=provider,platform=DevicePlatform.WEB,trace_id=trace,policy_version=POLICY_VERSION)
+        cloud.seed_scope(CloudAccessContext(tenant,workspace,session.user_id,'source.create'))
+        authorization_repository.bootstrap_workspace(tenant_id=tenant,workspace_id=workspace,owner_user_id=session.user_id,
+            owner_role=Role.ORGANIZATION_ADMIN,workspace_kind='organization',data_area='cloud_sync',cost_limit_cents=1000,now=clock())
+        notebook,_=PostgresNotebookRepository(cloud).create(NotebookContext(tenant,workspace,session.user_id,trace,POLICY_VERSION),
+            title='S42 실제 PG HTTP 합성 QA',description=None,idempotency_key='s42-http-notebook-'+suffix,
+            request_fingerprint='e'*64,now=clock())
+        context=StudioContext(tenant,workspace,session.user_id,trace,POLICY_VERSION,notebook.notebook_id)
+        scope=SimpleNamespace(admin=admin,app=app,context=context,suffix=suffix,revision='0069',
+            expected_notebook_activity_prefix=(('created',session.user_id),))
+        scope=_pending_l2b_completed('document',scope=scope)
+        assert materialize_pending_completed(app,context=context,limit=100)==1
+        dependencies=RuntimeDependencies(settings=RuntimeSettings(profile='test',bind_host='127.0.0.1',port=8000,
+            cloud_database_dsn=app,policy_version=POLICY_VERSION,development_stage=True,notification_inbox_enabled=True),
+            identity_service=identity,authorization_service=AuthorizationService(
+                repository=authorization_repository,audit_store=audit,clock=clock,identity_service=identity),
+            audit_store=audit,identity_repository=identity_repository,authorization_repository=authorization_repository,cloud_store=cloud)
+        # lifespan을 시작하지 않아 다른 QA 사용자의 pending dispatcher/원장에 접근하지 않는다.
+        client=TestClient(create_app(dependencies),base_url='http://127.0.0.1')
+        auth={'cookie':f'{WEB_SESSION_COOKIE}={session.access_token}'}
+        listed=client.get('/api/v1/notifications',headers=auth)
+        assert listed.status_code==200
+        assert listed.json()['data']['unread_count']==1 and len(listed.json()['data']['items'])==1
+        item=listed.json()['data']['items'][0];notification_id=item['id']
+        assert (item['workspace_id'],item['recipient_id'])==(workspace,session.user_id)
+        detail=client.get('/api/v1/notifications/'+notification_id,headers=auth)
+        assert detail.status_code==200 and detail.json()['data']==item
+        headers={**auth,'If-Match':detail.headers['etag'],'Idempotency-Key':'s42-http-read-'+suffix}
+        read=client.patch('/api/v1/notifications/'+notification_id,headers=headers,json={'state':'read'})
+        assert read.status_code==200 and read.json()['data']['version']==2
+        assert read.json()['data']['read_at'] is not None
+        repeated=client.patch('/api/v1/notifications/'+notification_id,headers=headers,json={'state':'read'})
+        assert repeated.status_code==200 and repeated.json()['data']==read.json()['data']
+        assert client.get('/api/v1/notifications',headers=auth).json()['data']['unread_count']==0
+        with psycopg.connect(admin) as connection:
+            assert connection.execute('SELECT action,count(*) FROM notification_audit_outbox WHERE tenant_id=%s GROUP BY action ORDER BY action',
+                (tenant,)).fetchall()==[('notification.created',1),('notification.read',1)]
+            connection.execute('INSERT INTO identity_auth_source_access '
+                '(tenant_id,workspace_id,user_id,source_version_id,allowed,version,updated_at) '
+                'VALUES(%s,%s,%s,%s,0,1,now())',(tenant,workspace,session.user_id,scope.completed_source_version))
+        hidden=client.get('/api/v1/notifications',headers=auth)
+        assert hidden.status_code==200 and hidden.json()['data']=={'items':[],'next_cursor':None,'unread_count':0}
+        assert client.get('/api/v1/notifications/'+notification_id,headers=auth).status_code==404
+        assert client.patch('/api/v1/notifications/'+notification_id,headers=headers,json={'state':'read'}).status_code==404
+        with psycopg.connect(admin) as connection:
+            assert connection.execute('SELECT action,count(*) FROM notification_audit_outbox WHERE tenant_id=%s GROUP BY action ORDER BY action',
+                (tenant,)).fetchall()==[('notification.created',1),('notification.read',1)]
+    finally:
+        if client is not None:client.close()
+        if session is not None:
+            identity.revoke_current_web_session(access_token=session.access_token,trace_id=trace,policy_version=POLICY_VERSION)
+        if dependencies is not None:dependencies.close()
+        else:
+            cloud.close();authorization_repository.close();identity_repository.close()
+
+
 def test_notification_service_uses_current_recipient_scope_before_loading(tmp_path):
     """전역 목록을 읽은 뒤 Python에서 거르는 구현은 지속 저장에 사용하지 않는다."""
     class ScopedRepository(ReferenceNotificationRepository):
@@ -110,24 +372,214 @@ def _migration():
     return module
 
 
+def test_sg_guard_empty_0068_full_upgrade_downgrade_upgrade():
+    """별도 main 소유 빈 DB에서만 전체 후보를 적용한다. 기존 L2 DB/전역 역할/자료 삭제는 없다."""
+    import psycopg
+    from psycopg.conninfo import conninfo_to_dict
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from sqlalchemy import create_engine
+    from sqlalchemy.exc import DBAPIError
+    from daon_user_api.notification_postgres import notification_storage_is_protected
+    from test_notification_events import _PrivateDsn
+
+    dsn=_PrivateDsn(os.environ.get('DAON_NOTIFICATION_GUARD_TEST_DSN') or '')
+    if not dsn:
+        pytest.skip('DAON_NOTIFICATION_GUARD_TEST_DSN 미제공: 실제 빈 DB migration 미실행')
+    expected_db='daon_user_s42_qa_20261018_sg_empty'
+    expected_marker='S42 SG terminal guard disposable empty migration QA 2026-10-18 main owned; remove after guard verification'
+    if conninfo_to_dict(dsn).get('dbname')!=expected_db:
+        pytest.fail('승인된 SG 빈 전용 DB가 아님',pytrace=False)
+
+    def shared_roles(connection):
+        return connection.execute("SELECT (SELECT md5(string_agg(row_to_json(r)::text,',' ORDER BY rolname)) FROM pg_roles r),"
+            "(SELECT md5(coalesce(string_agg(row_to_json(m)::text,',' ORDER BY roleid,member),'')) FROM pg_auth_members m)").fetchone()
+
+    def job_protection(connection):
+        return connection.execute("SELECT relowner::regrole::text,relrowsecurity,relforcerowsecurity,"
+            "has_table_privilege('daon_app',oid,'SELECT'),has_table_privilege('daon_app',oid,'INSERT'),"
+            "has_table_privilege('daon_app',oid,'UPDATE'),has_table_privilege('daon_app',oid,'DELETE'),"
+            "has_table_privilege('daon_app',oid,'TRUNCATE') FROM pg_class WHERE oid='public.studio_generation_jobs'::regclass").fetchone()
+
+    with psycopg.connect(dsn) as connection:
+        assert connection.execute("SELECT current_database(),shobj_description(oid,'pg_database') FROM pg_database WHERE datname=current_database()").fetchone()==(expected_db,expected_marker)
+        assert connection.execute('SELECT version_num FROM alembic_version').fetchall()==[('0068',)]
+        assert connection.execute('SELECT count(*) FROM canon_transition_rules').fetchone()==(84,)
+        for table in ('user_accounts','notifications','studio_generation_jobs'):
+            assert connection.execute('SELECT count(*) FROM '+table).fetchone()==(0,)
+        roles_before=shared_roles(connection)
+        jobs_before=job_protection(connection)
+        assert jobs_before[0]=='daon_app'
+        # claim/purge 등 기존 함수를 수정하지 않았음을 소유권·본문·ACL까지 대조한다.
+        old_functions=connection.execute("SELECT p.oid,md5(p.prosrc),p.proowner,p.proacl::text FROM pg_proc p "
+            "WHERE p.pronamespace='public'::regnamespace AND p.prosrc LIKE '%studio_generation_jobs%' ORDER BY p.oid").fetchall()
+
+    engine=create_engine('postgresql+psycopg://',creator=lambda:psycopg.connect(dsn))
+    migration=_migration()
+    def migrate(direction):
+        with engine.begin() as connection:
+            with Operations.context(MigrationContext.configure(connection)):
+                getattr(migration,direction)()
+                revision='0069' if direction=='upgrade' else '0068'
+                connection.exec_driver_sql('UPDATE alembic_version SET version_num=%s',(revision,))
+    try:
+        migrate('upgrade')
+        with psycopg.connect(dsn) as connection:
+            assert notification_storage_is_protected(connection)
+            assert job_protection(connection)==('daon_notebook_delete',*jobs_before[1:3],True,True,True,False,False)
+            assert connection.execute("SELECT has_table_privilege('daon_notebook_delete','public.studio_generation_jobs','DELETE'),"
+                "pg_has_role('daon_app','daon_notebook_delete','MEMBER')").fetchone()==(True,False)
+        # Job이 한 행이라도 있으면 down은 보호를 제거하지 않고 forward recovery를 요구한다.
+        with engine.connect() as connection:
+            transaction=connection.begin()
+            try:
+                connection.exec_driver_sql("INSERT INTO tenants(tenant_id,display_name) VALUES('s42-sg-empty','SG 빈 migration 합성 범위')")
+                connection.exec_driver_sql("INSERT INTO workspaces(tenant_id,workspace_id,display_name) VALUES('s42-sg-empty','s42-sg-empty','SG 빈 migration 합성 Workspace')")
+                connection.exec_driver_sql("INSERT INTO user_accounts(tenant_id,user_id) VALUES('s42-sg-empty','s42-sg-empty')")
+                connection.exec_driver_sql("INSERT INTO studio_generation_jobs(tenant_id,workspace_id,job_id,actor_id,trace_id,policy_version,idempotency_key,request_json,state) "
+                    "VALUES('s42-sg-empty','s42-sg-empty','s42-sg-empty','s42-sg-empty','s42-sg-empty','s42-sg-empty','s42-sg-empty','{}','queued')")
+                with pytest.raises(DBAPIError) as caught:
+                    with connection.begin_nested():
+                        with Operations.context(MigrationContext.configure(connection)):
+                            migration.downgrade()
+                assert caught.value.orig.sqlstate=='55000'
+                assert connection.exec_driver_sql("SELECT state,version,attempt FROM studio_generation_jobs WHERE job_id='s42-sg-empty'").fetchall()==[('queued',1,0)]
+            finally:
+                transaction.rollback()
+        migrate('downgrade')
+        with psycopg.connect(dsn) as connection:
+            assert job_protection(connection)==jobs_before
+            assert connection.execute("SELECT to_regprocedure('public.guard_studio_generation_job()'),to_regclass('public.notification_details')").fetchone()==(None,None)
+            assert shared_roles(connection)==roles_before
+        migrate('upgrade')
+        with psycopg.connect(dsn) as connection:
+            assert notification_storage_is_protected(connection)
+            assert connection.execute('SELECT version_num FROM alembic_version').fetchall()==[('0069',)]
+            for table in ('user_accounts','notifications','studio_generation_jobs'):
+                assert connection.execute('SELECT count(*) FROM '+table).fetchone()==(0,)
+            assert shared_roles(connection)==roles_before
+            assert connection.execute("SELECT p.oid,md5(p.prosrc),p.proowner,p.proacl::text FROM pg_proc p "
+                "WHERE p.oid=ANY(%s::oid[]) ORDER BY p.oid",([row[0] for row in old_functions],)).fetchall()==old_functions
+    finally:
+        engine.dispose()
+
+
+def test_password_event_without_workspace_still_blocks_data_downgrade():
+    """빈 migration 시험 뒤의 전용 DB만 사용한다. 사건만 있어도 유자료 down을 거부한다."""
+    import secrets
+    from datetime import datetime, timezone
+    from uuid import uuid4
+    import psycopg
+    from psycopg.conninfo import conninfo_to_dict, make_conninfo
+    from sqlalchemy import create_engine
+    from sqlalchemy.exc import DBAPIError
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from daon_user_api.audit import PostgresSecurityAuditStore
+    from daon_user_api.identity import IdentityService, DevicePlatform, PASSWORD_HASHER
+    from daon_user_api.identity_postgres import PostgresIdentityRepository
+    from test_account_notification_events import _PrivateValue
+    from test_notification_events import _PrivateDsn
+
+    __tracebackhide__ = True
+    configured = os.environ.get('DAON_NOTIFICATION_GUARD_TEST_DSN')
+    if not configured:
+        pytest.skip('DAON_NOTIFICATION_GUARD_TEST_DSN 미제공: 실제 PG 미실행')
+    dsn = _PrivateDsn(configured)
+    assert conninfo_to_dict(dsn).get('dbname') == 'daon_user_s42_qa_20261018_sg_empty'
+    marker = 'S42 SG terminal guard disposable empty migration QA 2026-10-18 main owned; remove after guard verification'
+    with psycopg.connect(dsn) as connection:
+        assert connection.execute("SELECT shobj_description(oid,'pg_database'),"
+            '(SELECT version_num FROM alembic_version) FROM pg_database WHERE datname=current_database()'
+        ).fetchone() == (marker, '0069')
+        for table in ('notification_details', 'notification_source_outbox', 'notification_audit_outbox',
+            'studio_generation_jobs', 'identity_password_change_events'):
+            assert connection.execute('SELECT count(*) FROM public.' + table).fetchone() == (0,)
+    actor = 's42-empty-p1-' + uuid4().hex
+    app = _PrivateDsn(make_conninfo(dsn, options='-c role=daon_app'))
+    password = _PrivateValue('S42!' + secrets.token_urlsafe(24))
+    replacement = _PrivateValue('S42!' + secrets.token_urlsafe(24))
+    identity_repository = PostgresIdentityRepository(app)
+    central = PostgresSecurityAuditStore(app, min_size=0, max_size=1)
+    engine = create_engine('postgresql+psycopg://', creator=lambda: psycopg.connect(dsn))
+    try:
+        clock = lambda: datetime.now(timezone.utc)
+        with identity_repository.transaction() as connection:
+            identity_repository._ensure_tenant(connection, actor)
+            connection.execute('INSERT INTO users(user_id,issuer,subject,login_id,email,password_digest,email_verified_at,'
+                'password_change_required,state) VALUES(?,?,?,?,?,?,?,?,?)',
+                (actor, 'local', actor, actor, actor + '@example.test', PASSWORD_HASHER.hash(password),
+                    clock().isoformat(), False, 'active'))
+            connection.execute('INSERT INTO memberships(tenant_id,user_id,role) VALUES(?,?,?)',
+                (actor, actor, 'personal_owner'))
+        with psycopg.connect(dsn) as connection:
+            connection.execute("INSERT INTO public.tenants(tenant_id,display_name) VALUES(%s,'S42 no-Workspace QA')", (actor,))
+        identity = IdentityService(repository=identity_repository, audit_store=central, oidc_policies=(),
+            clock=clock, dispatch_pending_audits=False)
+        credentials = identity.local_login(login_id=actor, password=password, platform=DevicePlatform.WEB,
+            trace_id='s42-empty-p1-login', policy_version='runtime-policy-v1')
+        identity._notification_inbox_enabled = True
+        identity.change_current_password(access_token=credentials.access_token, current_password=password,
+            new_password=replacement, trace_id='s42-empty-p1-change', policy_version='runtime-policy-v1')
+        with psycopg.connect(dsn) as connection:
+            for table in ('notification_details', 'notification_source_outbox', 'notification_audit_outbox', 'studio_generation_jobs'):
+                assert connection.execute('SELECT count(*) FROM public.' + table).fetchone() == (0,)
+            assert connection.execute('SELECT count(*) FROM public.identity_password_change_events').fetchone() == (1,)
+        with pytest.raises(DBAPIError) as caught:
+            with engine.begin() as connection:
+                with Operations.context(MigrationContext.configure(connection)):
+                    _migration().downgrade()
+        assert caught.value.orig.sqlstate == '55000'
+        with psycopg.connect(dsn) as connection:
+            assert connection.execute('SELECT count(*) FROM public.identity_password_change_events').fetchone() == (1,)
+            assert connection.execute('SELECT version_num FROM alembic_version').fetchone() == ('0069',)
+    finally:
+        engine.dispose()
+        central.close()
+        identity_repository.close()
+
+
 def test_0069_migration_executes_fixed_sql_without_external_bind_parameters():
     """SQLAlchemy의 :name 해석으로 고정 SQL 의미가 바뀌는 회귀를 잡는다."""
     from sqlalchemy import text
     module = _migration()
-    calls = []
+    raw_calls, down_calls, bind_calls, option_calls = [], [], [], []
+    source = Path(module.__file__).with_suffix('.sql')
     original = module.op
+
+    class Connection:
+        def execution_options(self, *args, **kwargs):
+            assert args == () and kwargs == {'no_parameters': True}
+            option_calls.append(kwargs)
+            return self
+
+        def exec_driver_sql(self, sql, *args, **kwargs):
+            assert args == () and kwargs == {}
+            assert type(sql) is str and sql.encode('utf-8') == source.read_bytes()
+            raw_calls.append(sql)
+
+    connection = Connection()
+
     class Operations:
-        def execute(self, sql):
+        def get_bind(self, *args, **kwargs):
+            assert args == () and kwargs == {}
+            bind_calls.append(True)
+            return connection
+
+        def execute(self, sql, *args, **kwargs):
+            assert args == () and kwargs == {}
             compiled = text(sql).compile()
             assert compiled.params == {}
-            calls.append(sql)
+            down_calls.append(sql)
     try:
         module.op = Operations()
         module.upgrade()
-        assert len(calls) == 1
-        assert calls[0] == Path(module.__file__).with_suffix('.sql').read_text(encoding='utf-8')
+        assert bind_calls == [True] and option_calls == [{'no_parameters': True}]
+        assert len(raw_calls) == 1 and down_calls == []
+        assert raw_calls[0] == source.read_bytes().decode('utf-8')
         module.downgrade()
-        assert len(calls) == 2
+        assert len(raw_calls) == 1 and len(down_calls) == 1
+        assert bind_calls == [True] and option_calls == [{'no_parameters': True}]
     finally:
         module.op = original
 

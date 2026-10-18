@@ -170,7 +170,10 @@ def _new_id(prefix: str) -> str:
 class SqliteOrganizationRepository:
     """Transactional, restart-safe repository used by unit and local tests."""
 
-    def __init__(self, path: str | Path, *, audit_sink: Callable[[OrganizationAuditRecord], None] | None = None, audit_store: Any = None) -> None:
+    def __init__(self, path: str | Path, *, audit_sink: Callable[[OrganizationAuditRecord], None] | None = None, audit_store: Any = None, notification_inbox_enabled: bool = False) -> None:
+        if type(notification_inbox_enabled) is not bool:
+            raise ValueError("NOTIFICATION_INBOX_FLAG_INVALID")
+        self._notification_inbox_enabled = notification_inbox_enabled
         from .organization_access import OrganizationAccessBridge
         self._path = Path(path)
         self._lock = RLock()
@@ -425,6 +428,18 @@ class SqliteOrganizationRepository:
             raise OrganizationWorkflowError("AUDIT_INTENT_INVALID") from error
         connection.execute("INSERT INTO organization_operation_outbox(actor_id,operation,idempotency_key,tenant_id,target_id,request_fingerprint,response_json,event_id,audit_json,trace_id,policy_version,created_at,delivered_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,NULL)",
             (actor_id, operation, key, tenant_id, target_id, fingerprint, json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False), event_id, audit_json, trace_id, policy_version, _iso(now)))
+        if (getattr(self, "_notification_inbox_enabled", False) is True
+                and operation in {"organization.member.role", "organization.member.state"}
+                and (operation != "organization.member.state" or (
+                    value["join_workspace_id"] is not None and audit["before"] != audit["after"]))
+                and hasattr(connection, "_conn")):
+            from .notification import NotificationError
+            from .notification_events import enqueue_organization_role_event
+            try:
+                enqueue_organization_role_event(connection, origin_event_id=event_id, tenant_id=tenant_id,
+                    recipient_id=target_id, workspace_id=value["join_workspace_id"])
+            except NotificationError:
+                raise OrganizationWorkflowError("PERSISTENCE_UNAVAILABLE", 503) from None
 
     def execute_management_operation(self, *, operation, actor_id, tenant_id, target_id, payload, idempotency_key, request_fingerprint, trace_id, policy_version) -> OrganizationOperationResult:
         if operation not in _MANAGEMENT_ACTIONS or not isinstance(payload, dict):

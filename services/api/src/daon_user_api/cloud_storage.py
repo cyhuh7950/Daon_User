@@ -128,6 +128,8 @@ class PostgresCloudStore:
                     connection.execute("SELECT set_config('app.workspace_id', %s, true)", (context.workspace_id,))
                     connection.execute("SELECT set_config('app.actor_id', %s, true)", (context.actor_id,))
                     connection.execute("SELECT set_config('app.capability', %s, true)", (context.capability,))
+                    connection.execute("SELECT set_config('app.notification_inbox_enabled', %s, true)",
+                        ('true' if getattr(self, '_notification_inbox_enabled', False) else 'false',))
                     yield connection
         except CloudDatabaseError:
             raise

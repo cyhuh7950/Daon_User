@@ -314,7 +314,7 @@ def _safe_deep_link(value: object, native_routes: frozenset[str]) -> str:
     if not isinstance(value, str) or len(value) > 512 or value != value.strip():
         raise NotificationError("UNSAFE_DEEP_LINK")
     if value == "/settings/account" or re.fullmatch(
-        r"/notebooks/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\?(?:output_version_id|source_version_id|run_id)=[A-Za-z0-9][A-Za-z0-9._:-]{0,127}",
+        r"/notebooks/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\?(?:output_version_id|source_version_id|run_id|studio_job_id)=[A-Za-z0-9][A-Za-z0-9._:-]{0,127}",
         value,
     ):
         return value
@@ -359,6 +359,8 @@ class NotificationService:
                 trace_id=trace_id, policy_version=policy_version,
             )
         except AuthorizationError as error:
+            if error.http_status >= 500:
+                raise NotificationError("DATABASE_UNAVAILABLE", 503) from None
             status = 404 if error.http_status == 404 else 403
             code = "RESOURCE_UNAVAILABLE" if status == 404 else "CURRENT_ACCESS_DENIED"
             raise NotificationError(code, status) from None
@@ -565,7 +567,9 @@ class NotificationService:
                     principal, item.workspace_id, trace_id, policy_version,
                     action=_REQUEST_ACTIONS[item.request_kind],
                 )
-            except NotificationError:
+            except NotificationError as error:
+                if error.http_status >= 500:
+                    raise
                 continue
             _safe_deep_link(item.deep_link, self._native_routes)
             items.append(item)
