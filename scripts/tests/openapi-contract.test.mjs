@@ -18,6 +18,30 @@ async function loadContract() {
   return JSON.parse(await readFile(contractPath, "utf8"));
 }
 
+test("R1-C exact lineage preflight and three create branches reject contract mutations",async()=>{
+  const doc=await loadContract(),s=doc.components.schemas;
+  assert.ok(doc.paths["/api/v1/backups/selection-previews"]?.post);
+  assert.equal(s.BackupCreateRequest.oneOf.length,3);
+  assert.equal(s.LineageSelectionPreview.required.length,9);
+  assert.doesNotThrow(()=>validateOpenApiDocument(doc));
+  for(const mutate of [
+    d=>delete d.paths["/api/v1/backups/selection-previews"],
+    d=>d.components.schemas.LineageSelectionPreviewRequest.additionalProperties=true,
+    d=>d.components.schemas.LineageSelectionPreviewRequest.required.pop(),
+    d=>d.components.schemas.LineageSelectionPreviewRequest.properties.source_version_ids.uniqueItems=false,
+    d=>d.components.schemas.LineageSelectionPreviewRequest.properties.notebook_id.maxLength=256,
+    d=>d.components.schemas.LineageBackupCreateRequest.required.pop(),
+    d=>d.components.schemas.LineageBackupCreateRequest.properties.unknown={type:"string"},
+    d=>d.components.schemas.LineageClosureConsent.properties.include_prior_versions.const=false,
+    d=>d.components.schemas.LineageClosureConsent.additionalProperties=true,
+    d=>delete d.components.schemas.LineageClosureConsent.properties.closure_fingerprint.pattern,
+    d=>d.components.schemas.LineageSelectionPreview.properties.total_bytes.maximum++,
+    d=>d.components.schemas.LineageSelectionPreview.properties.raw_path={type:"string"},
+    d=>d.components.schemas.LineageSelectionPreview.required.pop(),
+    d=>d.components.schemas.BackupCreateRequest.oneOf.pop(),
+  ]) {const bad=structuredClone(doc);mutate(bad);assert.throws(()=>validateOpenApiDocument(bad));}
+});
+
 test("L3 조직 exact 조회·Workspace·역할·폐기 version·여섯 원 세션 헤더는 계약 변조를 거부한다", async () => {
   const document = await loadContract();
   const invitationPath = "/api/v1/organization/tenants/{tenant_id}/invitations";
@@ -328,7 +352,7 @@ test("Knowledge Package 세 경계와 versioned Sync item은 exact 계약이다"
   assert.equal(outputSettings.properties.version_save_mode.const, "append_only");
   assert.deepEqual(document.components.schemas.OutputVersionSettingsRequest.required, ["default_formats", "expected_version"]);
   const operationsSchema = document.components.schemas.OperationsStatus;
-  assert.deepEqual(operationsSchema.required, ["workspace_id", "overall_status", "checked_at", "components"]);
+  assert.deepEqual(operationsSchema.required, ["workspace_id", "overall_status", "checked_at", "components", "observations"]);
   assert.deepEqual(operationsSchema.properties.components.items.required, ["component_id", "status", "safe_code", "pending_count", "recovery_action"]);
   assert.deepEqual(Object.keys(document.paths["/api/v1/workspaces/{id}/knowledge-packages/{package_id}/offline-copies"]), ["post"]);
   assert.deepEqual(

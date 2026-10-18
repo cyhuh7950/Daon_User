@@ -122,6 +122,7 @@ export const REQUIRED_PATHS = Object.freeze([
   "/api/v1/sources/{id}/legal-holds",
   "/api/v1/legal-holds/{id}/release",
   "/api/v1/backups",
+  "/api/v1/backups/selection-previews",
   "/api/v1/backups/{id}",
   "/api/v1/backups/{id}/restore-previews",
   "/api/v1/restore-requests/{id}",
@@ -487,6 +488,37 @@ function validateAuditContract(document) {
   if (listSchema?.properties?.items?.items?.$ref !== "#/components/schemas/AuditEvent") {
     fail("AuditEventPage must contain AuditEvent items");
   }
+}
+
+function validateLineageContract(document) {
+  const schemas=document.components.schemas;
+  const check=(value,reason)=>{if(!value)fail(`R1-C lineage ${reason}`);};
+  const same=(actual,expected)=>canonicalizeDocument(actual)===canonicalizeDocument(expected);
+  const id=(maximum)=>({type:"string",minLength:1,maxLength:maximum,pattern:`^[A-Za-z0-9][A-Za-z0-9._:-]{0,${maximum-1}}(?![\\s\\S])`});
+  const ids=(maximum,minimum=0)=>({type:"array",minItems:minimum,maxItems:100,uniqueItems:true,items:id(maximum)});
+  const exact=(name,properties)=>check(same(schemas[name],{type:"object",additionalProperties:false,required:Object.keys(properties),properties}),`${name} exact shape`);
+  const preview={workspace_id:id(128),notebook_id:id(128),source_version_ids:ids(128,1),lineage_mode:{type:"string",const:"exact"}};
+  exact("LineageSelectionPreviewRequest",preview);
+  exact("LineageClosureConsent",{include_prior_versions:{type:"boolean",const:true},closure_fingerprint:{type:"string",pattern:"^[0-9a-f]{64}$"}});
+  exact("LineageBackupCreateRequest",{...preview,trigger:{type:"string",enum:["manual"]},closure_consent:{$ref:"#/components/schemas/LineageClosureConsent"}});
+  exact("LineageSelectionPreview",{
+    root_source_version_ids:ids(128,1),dependency_source_version_ids:ids(256),dependency_source_ids:ids(256),
+    source_version_count:{type:"integer",minimum:1,maximum:100},source_count:{type:"integer",minimum:1,maximum:100},
+    unique_object_count:{type:"integer",minimum:1,maximum:100},total_bytes:{type:"integer",minimum:0,maximum:536870912},
+    metadata_bytes:{type:"integer",minimum:1,maximum:33554432},closure_fingerprint:{type:"string",pattern:"^[0-9a-f]{64}$"}
+  });
+  exact("LineageSelectionPreviewEnvelope",{data:{$ref:"#/components/schemas/LineageSelectionPreview"},meta:{
+    type:"object",additionalProperties:false,required:["trace_id"],properties:{trace_id:{$ref:"#/components/schemas/OpaqueId"}}
+  }});
+  check(same(schemas.BackupCreateRequest,{oneOf:["BackupLegacyCreateRequest","BackupSelectionCreateRequest","LineageBackupCreateRequest"].map(name=>({$ref:`#/components/schemas/${name}`}))}),"three disjoint create branches");
+  const path=document.paths["/api/v1/backups/selection-previews"],op=path?.post;
+  check(same(Object.keys(path??{}),["post"])&&op.operationId==="previewLineageSelection","exact read POST");
+  check(op.requestBody?.required===true&&requestSchema(document,op)===schemas.LineageSelectionPreviewRequest,"required exact request");
+  check(same(op.parameters,[]),"preflight has no caller scope headers/query or idempotency write contract");
+  check(op.responses?.["200"]?.$ref==="#/components/responses/LineageSelectionPreviewResponse","exact response");
+  const response=document.components.responses.LineageSelectionPreviewResponse;
+  check(response?.content?.["application/json"]?.schema?.$ref==="#/components/schemas/LineageSelectionPreviewEnvelope","exact envelope");
+  check(Boolean(op.responses?.["413"])&&Boolean(op.responses?.["503"]),"limits and unavailable responses");
 }
 
 function validateIdentityContract(document) {
@@ -968,6 +1000,7 @@ export function validateOpenApiDocument(document) {
       const refs = parameterRefs(operation);
       if (apiPath.includes("{id}") && !refs.has("#/components/parameters/ResourceId")) fail(`${operationId} missing opaque ResourceId`);
       const idempotencyExemptPosts = new Set([
+        "/api/v1/backups/selection-previews",
         "/api/v1/workspaces/{id}/connectors/mcp-open-law-go-kr/law-search",
         "/api/v1/workspaces/{id}/connectors/mcp-open-law-go-kr/law-preview",
         "/api/v1/auth/native/login",
@@ -1017,6 +1050,7 @@ export function validateOpenApiDocument(document) {
   validateTypedErrorDetails(document);
   validateAuditContract(document);
   validateIdentityContract(document);
+  validateLineageContract(document);
   validateAuthorizationContract(document);
   validateLicenseContract(document);
 

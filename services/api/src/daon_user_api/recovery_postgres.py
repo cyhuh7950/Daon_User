@@ -44,6 +44,11 @@ from daon_user_api.recovery import (
 from daon_user_api.recovery_capture import (
     CaptureScope, METADATA_COLUMNS, decode_manifest, encode_manifest, validate_metadata,
 )
+from daon_user_api.recovery_lineage import resolve_lineage_selection
+from daon_user_api.recovery_lineage_capture import (
+    LineageCaptureScope, decode_manifest as decode_lineage_manifest, encode_manifest as encode_lineage_manifest,
+    _Object as LineageObjectInput,
+)
 
 
 UTC = timezone.utc
@@ -163,6 +168,10 @@ class PostgresBackupSelectionResolver:
     def resolve(self, context, selection, *, idempotency_key=None):
         with self._read(context) as (connection, revision):
             return self._resolve(connection, context, selection, revision, idempotency_key)
+
+    def resolve_lineage(self, context, selection):
+        with self._read(context) as (connection, _):
+            return resolve_lineage_selection(context, selection, connection)
 
     def capture_metadata(self, context, resolved, *, trigger="manual"):
         """하나의 SELECT snapshot에서 허용 관계만 읽는다. 전체 DB/이전 Version 조회는 없다."""
@@ -381,6 +390,7 @@ class PostgresRecoveryService:
         rpo: timedelta = timedelta(minutes=15),
         notification_inbox_enabled: bool = False,
         capture_store=None,
+        lineage_capture_store=None,
     ) -> None:
         if type(notification_inbox_enabled) is not bool:
             raise ValueError("NOTIFICATION_INBOX_FLAG_INVALID")
@@ -393,6 +403,7 @@ class PostgresRecoveryService:
         self._manifest_master_key = manifest_key
         # root/key version은 승인된 주입 port만 소비한다. runtime 기본 구성은 여전히 미준비다.
         self._capture_store = capture_store
+        self._lineage_capture_store = lineage_capture_store
         self._clock = clock
         self._fixture_prefix = fixture_prefix
         self._rpo = rpo
@@ -489,9 +500,10 @@ class PostgresRecoveryService:
 
     def _decode_objects(self, envelope: bytes) -> tuple[BackupObjectInput, ...]:
         try:
-            if bytes(envelope).startswith(b"DRM2"):
-                _, receipt = self._decode_capture_manifest(bytes(envelope))
-                return tuple(BackupObjectInput(row["object_id"], row["plaintext_digest"], row["byte_size"])
+            if bytes(envelope).startswith((b"DRM2", b"DRM3")):
+                scope, receipt = self._decode_capture_manifest(bytes(envelope))
+                object_type = LineageObjectInput if isinstance(scope, LineageCaptureScope) else BackupObjectInput
+                return tuple(object_type(row["object_id"], row["plaintext_digest"], row["byte_size"])
                              for row in receipt["objects"])
             values = json.loads(_open(self._key, bytes(envelope)))
             return tuple(BackupObjectInput(**item) for item in values)
@@ -499,10 +511,12 @@ class PostgresRecoveryService:
             raise RecoveryError("BACKUP_MANIFEST_INVALID", 409) from None
 
     def _decode_capture_manifest(self, envelope):
-        if self._capture_store is None:
+        lineage = bytes(envelope).startswith(b"DRM3")
+        store = getattr(self, "_lineage_capture_store", None) if lineage else self._capture_store
+        if store is None:
             raise RecoveryError("RESOURCE_UNAVAILABLE", 503)
-        return decode_manifest(envelope, master_key=self._manifest_master_key,
-            key_version=self._capture_store.key_version, key_reference=self._capture_store.key_reference)
+        return (decode_lineage_manifest if lineage else decode_manifest)(envelope, master_key=self._manifest_master_key,
+            key_version=store.key_version, key_reference=store.key_reference)
 
     def _capture_identity(self, tenant_id, workspace_id, actor_id, idempotency_key):
         return hmac.digest(self._key, canonical_json_bytes({"tenant_id": tenant_id,
@@ -513,14 +527,20 @@ class PostgresRecoveryService:
             envelope = bytes(row["encrypted_inventory"])
             scope, receipt = self._decode_capture_manifest(envelope)
             token = self._capture_identity(row["tenant_id"], row["workspace_id"], row["actor_id"], row["idempotency_key"])
-            objects = tuple(BackupObjectInput(item["object_id"], item["plaintext_digest"], item["byte_size"])
+            lineage = isinstance(scope, LineageCaptureScope)
+            if lineage and (row.get("manifest_version") != 3 or scope.actor_id != row["actor_id"]):
+                raise RecoveryError("BACKUP_MANIFEST_INVALID", 409)
+            if not lineage and row.get("manifest_version", 2) != 2:
+                raise RecoveryError("BACKUP_MANIFEST_INVALID", 409)
+            object_type = LineageObjectInput if lineage else BackupObjectInput
+            objects = tuple(object_type(item["object_id"], item["plaintext_digest"], item["byte_size"])
                 for item in receipt["objects"])
             if (row["backup_id"] != "backup-" + token or scope.capture_id != "capture-" + token
                     or (requested_backup_id is not None and row["backup_id"] != requested_backup_id)
                     or hashlib.sha256(envelope).hexdigest() != row["manifest_digest"]
                     or len(objects) != row["object_count"] or len({item.object_id for item in objects}) != len(objects)
                     or (scope.tenant_id, scope.workspace_id, scope.schema_revision, scope.retention_watermark,
-                        scope.policy_version, scope.selection_fingerprint) !=
+                        scope.policy_version, scope.closure_fingerprint if lineage else scope.selection_fingerprint) !=
                        (row["tenant_id"], row["workspace_id"], row["schema_revision"], row["retention_watermark"],
                         row["policy_version"], row["request_fingerprint"])):
                 raise RecoveryError("BACKUP_MANIFEST_INVALID", 409)
@@ -528,7 +548,7 @@ class PostgresRecoveryService:
         except (KeyError, TypeError, ValueError):
             raise RecoveryError("BACKUP_MANIFEST_INVALID", 409) from None
 
-    def _require_independent_capture(self, connection, context, backup_id, *, execute=False, preview=False):
+    def _require_independent_capture(self, connection, context, backup_id, *, execute=False, preview=False, manifest_version=None):
         row = connection.execute(
             "SELECT b.*,m.manifest_version,m.manifest_digest,m.encrypted_inventory,m.object_count "
             "FROM backup_records b JOIN backup_manifests m USING(tenant_id,workspace_id,backup_id) "
@@ -536,14 +556,16 @@ class PostgresRecoveryService:
         if row is None:
             raise RecoveryError("BACKUP_UNAVAILABLE", 404)
         envelope = bytes(row["encrypted_inventory"])
-        if row["manifest_version"] != 2 or not envelope.startswith(b"DRM2"):
+        if ((row["manifest_version"], envelope[:4]) not in {(2, b"DRM2"), (3, b"DRM3")}
+                or manifest_version is not None and row["manifest_version"] != manifest_version):
             raise RecoveryError("BACKUP_NOT_READY", 409)
         scope, receipt, _ = self._capture_from_row(row, requested_backup_id=backup_id)
         if (scope.tenant_id, scope.workspace_id) != (context.tenant_id, context.workspace_id):
             raise RecoveryError("BACKUP_UNAVAILABLE", 404)
         if row["state"] != "ready":
             raise RecoveryError("BACKUP_NOT_READY", 409)
-        self._capture_store.verify(scope, expected_receipt=receipt)
+        store = self._lineage_capture_store if isinstance(scope, LineageCaptureScope) else self._capture_store
+        store.verify(scope, expected_receipt=receipt)
         if execute or preview:
             # L2-A file/metadata 복호화는 L3 DB materialization/계보/RLS 검증이 아니다.
             raise RecoveryError("RESOURCE_UNAVAILABLE", 503, retryable=False)
@@ -611,7 +633,7 @@ class PostgresRecoveryService:
         self, row: Mapping[str, Any]
     ) -> tuple[BackupView, tuple[BackupObjectInput, ...]]:
         envelope = bytes(row["encrypted_inventory"])
-        if envelope.startswith(b"DRM2"):
+        if envelope.startswith((b"DRM2", b"DRM3")):
             _, _, objects = self._capture_from_row(row)
         else:
             objects = self._decode_objects(envelope)
@@ -628,7 +650,7 @@ class PostgresRecoveryService:
         self, connection: Connection[Mapping[str, Any]], backup_id: str
     ) -> tuple[BackupView, tuple[BackupObjectInput, ...]]:
         row = connection.execute(
-            "SELECT b.*, m.manifest_digest, m.encrypted_inventory, m.object_count "
+            "SELECT b.*, m.manifest_version, m.manifest_digest, m.encrypted_inventory, m.object_count "
             "FROM backup_records b JOIN backup_manifests m USING (tenant_id,workspace_id,backup_id) "
             "WHERE b.backup_id=%s ORDER BY m.manifest_version DESC LIMIT 1",
             (backup_id,),
@@ -713,7 +735,7 @@ class PostgresRecoveryService:
                     "WHERE actor_id=%s AND idempotency_key=%s", (context.actor_id, idempotency_key)).fetchone()
                 if replay is not None:
                     resolved.require_replay(str(replay["request_fingerprint"]))
-                    self._require_independent_capture(connection, context, str(replay["backup_id"]))
+                    self._require_independent_capture(connection, context, str(replay["backup_id"]), manifest_version=2)
                     replay_view = self._select_backup(connection, str(replay["backup_id"]))[0]
                     final, final_metadata = recheck()
                     resolved.require_replay(final.fingerprint)
@@ -780,11 +802,87 @@ class PostgresRecoveryService:
             # 재시도/삭제는 하지 않는다. DB가 확정됐는지는 정확 원장 재조회로만 결정한다.
             raise RecoveryError("RESOURCE_UNAVAILABLE", 503, retryable=False) from None
 
+    def create_lineage_backup(self, context, selection, *, idempotency_key, recheck, trigger="manual"):
+        """동의한 exact v3만 확정한다. 별도 auth tx와 commit의 원자 직렬화는 보장하지 않는다."""
+        self._require_admin(context); _safe(idempotency_key)
+        store = getattr(self, "_lineage_capture_store", None)
+        if store is None: raise RecoveryError("RESOURCE_UNAVAILABLE", 503, retryable=False)
+        if trigger != "manual" or not callable(recheck): raise RecoveryError("RECOVERY_INPUT_INVALID", 400)
+        token = self._capture_identity(context.tenant_id, context.workspace_id, context.actor_id, idempotency_key)
+        scope = LineageCaptureScope.from_selection(context, selection, capture_id="capture-" + token)
+        backup_id, owner_id = "backup-" + token, secrets.token_hex(16)
+        lock_number = int.from_bytes(bytes.fromhex(token[:16]), signed=True)
+        created_new = ledger_started = False
+        def current_selection():
+            current = recheck()
+            selection.require_consent(current.fingerprint, True)
+            if current._encoded != selection._encoded: raise RecoveryError("BACKUP_MANIFEST_INVALID", 409)
+            return current
+        try:
+            with self._transaction(context.tenant_id, context.workspace_id, context.actor_id) as connection:
+                connection.execute("SELECT pg_advisory_xact_lock(%s)", (lock_number,))
+                current_selection()
+                replay = connection.execute("SELECT backup_id, request_fingerprint FROM backup_records WHERE actor_id=%s AND idempotency_key=%s",
+                    (context.actor_id, idempotency_key)).fetchone()
+                if replay is not None:
+                    selection.require_consent(str(replay["request_fingerprint"]), True)
+                    self._require_independent_capture(connection, context, str(replay["backup_id"]), manifest_version=3)
+                    view = self._select_backup(connection, str(replay["backup_id"]))[0]
+                    current_selection()
+                    return view
+                # 동결된 v3 포트의 보호 root/file port만 읽는다. 손상을 부재로 해석하지 않는다.
+                with store._root():
+                    exists = store._fs.exists(store.root / ("lineage-v3-" + scope.capture_id))
+                if exists:
+                    receipt = store.verify(scope).receipt
+                    if receipt["metadata_digest"] != hashlib.sha256(selection._encoded).hexdigest():
+                        raise RecoveryError("IDEMPOTENCY_KEY_REUSED", 409)
+                else:
+                    created_new = True
+                    receipt = store.capture(scope, selection, lambda item: self._storage.open_source(context, item),
+                        closure_fingerprint=selection.fingerprint, include_prior_versions=True, recheck=current_selection, owner_id=owner_id)
+                store.verify(scope, expected_receipt=receipt)
+                encrypted = encode_lineage_manifest(scope, receipt, master_key=self._manifest_master_key,
+                    key_version=store.key_version, key_reference=store.key_reference)
+                current_selection()  # 긴 bytes 검증/암호화 뒤, 원장 쓰기 직전 현재 세션/접근/metadata
+                now = self._clock(); ledger_started = True
+                audit_id = self._append_audit(connection, context, "backup.requested", "backup", backup_id)
+                connection.execute("INSERT INTO backup_record_locator (tenant_id,backup_id,workspace_id,created_at) VALUES (%s,%s,%s,%s)",
+                    (context.tenant_id, backup_id, context.workspace_id, now))
+                connection.execute("INSERT INTO backup_records "
+                    "(tenant_id,workspace_id,backup_id,actor_id,trigger_type,state,version,schema_revision,retention_watermark,policy_version,trace_id,audit_event_id,idempotency_key,request_fingerprint,created_at) "
+                    "VALUES (%s,%s,%s,%s,%s,'queued',1,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (context.tenant_id,context.workspace_id,backup_id,context.actor_id,trigger,selection.schema_revision,
+                     selection.retention_watermark,context.policy_version,context.trace_id,audit_id,idempotency_key,selection.fingerprint,now))
+                connection.execute("INSERT INTO backup_manifests "
+                    "(tenant_id,workspace_id,backup_id,manifest_version,manifest_digest,encrypted_inventory,object_count,created_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (context.tenant_id,context.workspace_id,backup_id,3,hashlib.sha256(encrypted).hexdigest(),encrypted,receipt["object_count"],now))
+                for state in ("capturing", "verifying"):
+                    connection.execute("UPDATE backup_records SET state=%s,version=version+1 WHERE backup_id=%s", (state,backup_id))
+                connection.execute("UPDATE backup_records SET state='ready',version=version+1,verified_at=%s WHERE backup_id=%s", (now,backup_id))
+                ready = self._append_audit(connection,context,"backup.ready","backup",backup_id,
+                    before={"state":"verifying","version":3},after={"state":"ready","version":4})
+                if self._notification_inbox_enabled is True:
+                    from .notification_recovery import enqueue_terminal_recovery_event
+                    enqueue_terminal_recovery_event(connection,context=context,origin_event_id=ready,target_id=backup_id)
+                return self._select_backup(connection, backup_id)[0]
+        except RecoveryError as error:
+            if created_new and not ledger_started and error.status in {400,401,403,404,409,413}:
+                @contextmanager
+                def reference_guard():
+                    with self._transaction(context.tenant_id,context.workspace_id,context.actor_id) as check:
+                        check.execute("SELECT pg_advisory_xact_lock(%s)",(lock_number,))
+                        yield check.execute("SELECT backup_id, request_fingerprint FROM backup_records WHERE actor_id=%s AND idempotency_key=%s",
+                            (context.actor_id,idempotency_key)).fetchone()
+                store.discard_unreferenced(scope,owner_id=owner_id,reference_guard=reference_guard)
+            raise
+        except OSError: raise RecoveryError("RESOURCE_UNAVAILABLE",503,retryable=False) from None
+
     def list_backups(self, context: RecoveryContext) -> tuple[BackupView, ...]:
         self._require_admin(context)
         with self._transaction(context.tenant_id, context.workspace_id, context.actor_id) as connection:
             rows = connection.execute(
-                "SELECT b.*,m.manifest_digest,m.encrypted_inventory,m.object_count "
+                "SELECT b.*,m.manifest_version,m.manifest_digest,m.encrypted_inventory,m.object_count "
                 "FROM backup_records b JOIN backup_manifests m USING (tenant_id,workspace_id,backup_id) "
                 "ORDER BY b.created_at DESC"
             ).fetchall()

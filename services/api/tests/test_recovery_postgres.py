@@ -6,6 +6,8 @@ import os
 import secrets
 import shutil
 import unittest
+import copy
+import tempfile
 from dataclasses import replace
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -33,6 +35,114 @@ from daon_user_api.recovery_postgres import (
     MinioRecoveryStorageAdapter,
     PostgresRecoveryService,
 )
+
+
+class RecoveryLineageConsumerTests(unittest.TestCase):
+    """SQL commit 포트만 대역이다. v3 파일/AEAD/source bytes는 실제로 실행한다."""
+    def setUp(self):
+        from test_recovery_lineage import Ledger, recanonical
+        from daon_user_api.recovery_lineage_capture import FileLineageCaptureStore
+        parent = Path(os.environ.get("TMP", ""))
+        self.assertIn(parent, {Path("D:/tmp/daon-user-s44-d1-eoul2-20261019"), Path("D:/tmp/daon-user-s44-d1-main-20261019")})
+        self.tmp = tempfile.TemporaryDirectory(prefix="r1c-", dir=parent); self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name); archive = self.root / "archive"; archive.mkdir()
+        self.ledger = Ledger(); self.context = self.ledger.context
+        self.content = {"object-a": b"prior-source" * 20, "object-b": b"root-source" * 40}
+        for row in self.ledger.tables["object_records"]:
+            raw = self.content[row["object_id"]]; row.update(byte_size=len(raw), digest_sha256=hashlib.sha256(raw).hexdigest())
+            (self.root / row["object_id"]).write_bytes(raw)
+        for row in self.ledger.tables["source_versions"]:
+            obj = next(x for x in self.ledger.tables["object_records"] if x["object_id"] == row["object_id"])
+            recanonical(row, dict(object_id=obj["object_id"], byte_size=obj["byte_size"], content_digest_sha256=obj["digest_sha256"]))
+        self.selection = self.ledger.resolve(); self.key = secrets.token_bytes(32)
+        service = self.service = object.__new__(PostgresRecoveryService)
+        service._key = hashlib.sha256(self.key).digest(); service._manifest_master_key = self.key
+        service._capture_store = None; service._notification_inbox_enabled = False
+        service._lineage_capture_store = FileLineageCaptureStore(archive, master_key=self.key, key_version="v3-test", key_reference="memory-only")
+        service._clock = lambda: datetime.now(timezone.utc)
+        self.opened, self.sql, self.committed, self.mode = [], [], {}, None
+        def source(context, item):
+            self.assertEqual(context, self.context); self.opened.append(item.object_id)
+            return (self.root / item.object_id).open("rb")
+        service._storage = SimpleNamespace(open_source=source)
+        @contextmanager
+        def transaction(tenant, workspace, actor):
+            self.assertEqual((tenant, workspace, actor), (self.context.tenant_id,self.context.workspace_id,self.context.actor_id))
+            working = copy.deepcopy(self.committed)
+            class Connection:
+                def execute(inner, sql, params=()):
+                    self.sql.append((sql, params)); row = None; rows = []
+                    if sql.startswith("SELECT backup_id, request_fingerprint"):
+                        row = next((r for r in working.values() if r.get("actor_id") == params[0] and r.get("idempotency_key") == params[1]), None)
+                    elif sql.startswith("INSERT INTO backup_records"):
+                        working[params[2]] = dict(tenant_id=params[0],workspace_id=params[1],backup_id=params[2],actor_id=params[3],trigger_type=params[4],
+                            schema_revision=params[5],retention_watermark=params[6],policy_version=params[7],trace_id=params[8],idempotency_key=params[10],request_fingerprint=params[11],
+                            created_at=params[12],verified_at=None,state="queued",version=1)
+                    elif sql.startswith("INSERT INTO backup_manifests"):
+                        working[params[2]].update(manifest_version=params[3],manifest_digest=params[4],encrypted_inventory=params[5],object_count=params[6])
+                    elif sql.startswith("UPDATE backup_records"):
+                        if "state='ready'" in sql:
+                            working[params[1]].update(state="ready",verified_at=params[0]); working[params[1]]["version"]+=1
+                        else: working[params[1]]["state"]=params[0]; working[params[1]]["version"]+=1
+                    elif sql.startswith("SELECT b.*"):
+                        rows = list(working.values()) if not params else [r for r in working.values() if r["backup_id"] == params[0]]
+                        row = rows[0] if rows else None
+                    elif sql.startswith("SELECT metadata->>"): row = None
+                    return SimpleNamespace(fetchone=lambda: row, fetchall=lambda: rows)
+            yield Connection()
+            if self.mode == "rollback": raise RecoveryError("RESOURCE_UNAVAILABLE", 503)
+            self.committed.clear(); self.committed.update(working)
+            if self.mode == "response-lost": raise RecoveryError("RESOURCE_UNAVAILABLE", 503)
+        service._transaction = transaction
+
+    def create(self, **kwargs):
+        return self.service.create_lineage_backup(self.context, self.selection, idempotency_key="lineage-request",
+            recheck=self.ledger.resolve, **kwargs)
+
+    def test_r1c_v3_capture_manifest_list_get_restart_replay_and_kind_conflict(self):
+        method = getattr(self.service, "create_lineage_backup", None)
+        self.assertTrue(callable(method), "실제 v3 보존/원장 consumer 필요")
+        view = self.create()
+        self.assertEqual((view.state,view.object_count), ("ready",2))
+        row = self.committed[view.backup_id]
+        self.assertEqual(row["manifest_version"],3); self.assertTrue(bytes(row["encrypted_inventory"]).startswith(b"DRM3"))
+        self.assertEqual(self.service.get_backup(self.context,view.backup_id),view)
+        self.assertEqual(self.service.list_backups(self.context),(view,))
+        for identity in self.content: (self.root/identity).unlink()
+        self.assertEqual(self.create(),view)
+        self.assertEqual(self.opened,["object-a","object-b"])
+        inserts=[sql for sql,_ in self.sql if sql.startswith("INSERT INTO backup_records")]
+        self.assertEqual(len(inserts),1)
+        with self.assertRaises(RecoveryError): self.service._capture_from_row({**row,"manifest_version":2})
+        self.ledger.tables["notebook_metadata_versions"][0]["title"]="current metadata changed"
+        self.selection=self.ledger.resolve()
+        with self.assertRaises(RecoveryError) as caught: self.create()
+        self.assertEqual(caught.exception.status,409)
+        with self.assertRaises(RecoveryError) as caught:
+            with self.service._transaction(self.context.tenant_id,self.context.workspace_id,self.context.actor_id) as conn:
+                self.service._require_independent_capture(conn,self.context,view.backup_id,preview=True)
+        self.assertEqual(caught.exception.status,503)
+
+    def test_r1c_final_revocation_and_commit_uncertainty_preserve_exact_artifact(self):
+        self.assertTrue(callable(getattr(self.service,"create_lineage_backup",None)))
+        store=self.service._lineage_capture_store; original=store.verify; revoked=[]
+        def verify(*args,**kwargs):
+            value=original(*args,**kwargs); revoked.append(True); return value
+        def recheck():
+            if revoked: raise RecoveryError("CURRENT_ACCESS_DENIED",403)
+            return self.ledger.resolve()
+        with patch.object(store,"verify",side_effect=verify), self.assertRaises(RecoveryError) as caught:
+            self.service.create_lineage_backup(self.context,self.selection,idempotency_key="revoked-request",recheck=recheck)
+        self.assertEqual(caught.exception.status,403); self.assertEqual(self.committed,{})
+        folder=next(p for p in store.root.iterdir() if p.is_dir())
+        self.assertEqual({p.name for p in folder.iterdir()},{"owner.bin"})
+        self.mode="response-lost"
+        with self.assertRaises(RecoveryError) as caught: self.create()
+        self.assertEqual(caught.exception.status,503); self.assertEqual(len(self.committed),1)
+        opened=list(self.opened); self.mode=None
+        from daon_user_api.recovery_lineage_capture import FileLineageCaptureStore
+        self.service._lineage_capture_store=FileLineageCaptureStore(store.root,master_key=self.key,key_version="v3-test",key_reference="memory-only")
+        self.assertEqual(self.create().state,"ready"); self.assertEqual(self.opened,opened)
 
 
 def _environment_or_file(name: str) -> str | None:
@@ -65,6 +175,32 @@ CONFIGURED = all((DSN, ENDPOINT, BUCKET, ACCESS_KEY, SECRET_KEY, MANIFEST_KEY))
 
 
 class RecoverySelectionResolverTests(unittest.TestCase):
+    def test_r1c_lineage_adapter_consumes_real_resolver_and_current_acl_workflow(self):
+        from test_recovery_lineage import Ledger
+        ledger=Ledger(); controls=[]
+        class Read:
+            info=ledger.info
+            def execute(inner,sql,params=()):
+                if sql=="SET LOCAL ROLE daon_app":
+                    controls.append(sql); return SimpleNamespace(fetchone=lambda:None)
+                return ledger.execute(sql,params)
+        @contextmanager
+        def transaction(context):
+            self.assertEqual((context.tenant_id,context.workspace_id,context.actor_id,context.capability),
+                (ledger.context.tenant_id,ledger.context.workspace_id,ledger.context.actor_id,"recovery"))
+            yield Read()
+        resolver=recovery_postgres.PostgresBackupSelectionResolver(SimpleNamespace(readiness=lambda:SimpleNamespace(ready=True,schema_revision="0069"),_transaction=transaction))
+        resolved=resolver.resolve_lineage(ledger.context,ledger.selection)
+        self.assertEqual(resolved.source_version_count,2)
+        self.assertEqual(controls,["SET LOCAL ROLE daon_app"])
+        ledger.revoked.add("prior-version")
+        with self.assertRaises(RecoveryError) as caught: resolver.resolve_lineage(ledger.context,ledger.selection)
+        self.assertEqual(caught.exception.status,404)
+        ledger.revoked.clear(); ledger.auth.auth_role="organization_admin"; ledger.workflow_state="suspended"
+        with self.assertRaises(RecoveryError) as caught: resolver.resolve_lineage(ledger.context,ledger.selection)
+        self.assertEqual(caught.exception.status,403)
+        self.assertFalse(any(sql.startswith(("INSERT","UPDATE","DELETE")) for sql,_ in ledger.log))
+
     """실제 resolver의 SQL 읽기 포트만 대역. PG/RLS·capture 성공 증거가 아니다."""
     def test_l2_inventory_only_durable_create_refuses_before_storage_or_database(self):
         from daon_user_api.recovery import RecoveryError

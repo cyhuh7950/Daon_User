@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[3]
 MIGRATION = ROOT / "services" / "api" / "migrations" / "versions" / "0006_backup_restore_recovery.py"
 OPENAPI = ROOT / "packages" / "contracts" / "openapi" / "v1" / "openapi.json"
 PATHS = {
+    "/api/v1/backups/selection-previews": {"post"},
     "/api/v1/backups": {"get", "post"},
     "/api/v1/backups/{id}": {"get"},
     "/api/v1/backups/{id}/restore-previews": {"post"},
@@ -57,7 +58,7 @@ class RecoveryContractTests(unittest.TestCase):
     def test_l1_static_contract_has_exact_disjoint_one_of_and_selection_bounds(self) -> None:
         document = json.loads(OPENAPI.read_text(encoding="utf-8"))
         schema = document["components"]["schemas"]["BackupCreateRequest"]
-        self.assertEqual(len(schema["oneOf"]), 2)
+        self.assertEqual(len(schema["oneOf"]), 3)
         branches = [document["components"]["schemas"][item["$ref"].rsplit("/", 1)[1]] for item in schema["oneOf"]]
         selected = next(branch for branch in branches if "source_version_ids" in branch["properties"])
         self.assertFalse(selected["additionalProperties"])
@@ -92,7 +93,7 @@ class RecoveryContractTests(unittest.TestCase):
             source.index("SELECT set_config('app.tenant_id'"),
         )
 
-    def test_openapi_exposes_exact_seven_operations_and_write_guards(self) -> None:
+    def test_openapi_exposes_exact_eight_operations_and_write_guards(self) -> None:
         document = json.loads(OPENAPI.read_text(encoding="utf-8"))
         actual = {
             path: set(document["paths"][path])
@@ -101,7 +102,7 @@ class RecoveryContractTests(unittest.TestCase):
             or path.startswith("/api/v1/restore-requests")
         }
         self.assertEqual(actual, PATHS)
-        self.assertEqual(sum(len(methods) for methods in PATHS.values()), 7)
+        self.assertEqual(sum(len(methods) for methods in PATHS.values()), 8)
         for path, methods in PATHS.items():
             for method in methods:
                 operation = document["paths"][path][method]
@@ -110,7 +111,7 @@ class RecoveryContractTests(unittest.TestCase):
                     document["components"]["parameters"][item["$ref"].rsplit("/", 1)[1]]["name"]
                     for item in operation.get("parameters", [])
                 }
-                if method == "post":
+                if method == "post" and path != "/api/v1/backups/selection-previews":
                     self.assertIn("Idempotency-Key", parameters)
                 if path.endswith("/execute") or path.endswith("/cancel"):
                     self.assertIn("If-Match", parameters)
@@ -119,6 +120,7 @@ class RecoveryContractTests(unittest.TestCase):
         document = json.loads(OPENAPI.read_text(encoding="utf-8"))
         public_codes = set(document["components"]["schemas"]["SafeErrorCode"]["enum"])
         expected = {
+            "BACKUP_CAPTURE_CLEANUP_UNCERTAIN": "RESOURCE_UNAVAILABLE",
             "BACKUP_MANIFEST_INVALID": "INVALID_REQUEST",
             "BACKUP_UNAVAILABLE": "RESOURCE_UNAVAILABLE",
             "CURRENT_ACCESS_DENIED": "CURRENT_ACCESS_DENIED",

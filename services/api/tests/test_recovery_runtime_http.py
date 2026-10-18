@@ -36,6 +36,165 @@ from test_identity_support import (
 
 
 class RecoveryRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
+    async def test_r1c_late_real_auth_exceptions_preserve_mapping_and_cleanup_uncertainty(self):
+        import hashlib
+        import io
+        import secrets
+        from types import SimpleNamespace
+        from test_recovery_lineage import Ledger, RowCursor, recanonical
+        from daon_user_api import runtime
+        from daon_user_api.authorization import AuthorizationError
+        from daon_user_api.identity import IdentityError
+        from daon_user_api.recovery import RecoveryContext
+        from daon_user_api.recovery_lineage import resolve_lineage_selection
+        from daon_user_api.recovery_lineage_capture import FileLineageCaptureStore, LineageCaptureScope
+        from daon_user_api.recovery_postgres import PostgresRecoveryService
+        ctx=RecoveryContext(self.credentials.tenant_id,self.workspace_id,self.credentials.user_id,"trace-late",POLICY_VERSION,True,
+            session_id=self.credentials.session_id,device_id=self.credentials.device_id)
+        ledger=Ledger();ledger.context=ctx;ledger.auth.auth_role="organization_admin"
+        content={"object-a":b"prior synthetic bytes","object-b":b"root synthetic bytes"}
+        for rows in ledger.tables.values():
+            for row in rows: row.update(tenant_id=ctx.tenant_id,workspace_id=ctx.workspace_id)
+        for row in ledger.tables["object_records"]:
+            raw=content[row["object_id"]];row.update(byte_size=len(raw),digest_sha256=hashlib.sha256(raw).hexdigest())
+        for row in ledger.tables["source_versions"]:
+            obj=next(x for x in ledger.tables["object_records"] if x["object_id"]==row["object_id"])
+            recanonical(row,dict(object_id=obj["object_id"],byte_size=obj["byte_size"],content_digest_sha256=obj["digest_sha256"]))
+        class Reader:
+            info=ledger.info
+            def execute(inner,sql,params=()):
+                if "current_setting('app.actor_id'" in sql: return RowCursor([(ctx.actor_id,"")])
+                return ledger.execute(sql,params)
+        def resolve(context,selection): return resolve_lineage_selection(context,selection,Reader())
+        selection=resolve(ctx,ledger.selection)
+        body=dict(workspace_id=self.workspace_id,notebook_id="notebook-a",source_version_ids=["root-version"],lineage_mode="exact",
+            trigger="manual",closure_consent=dict(include_prior_versions=True,closure_fingerprint=selection.fingerprint))
+        original_principal=runtime._principal; original_authorize=self.authorization.authorize_action
+        for mode,status,code in (("missing",401,"AUTHENTICATION_REQUIRED"),("expired",401,"AUTHENTICATION_REQUIRED"),
+                ("denied",403,"FORBIDDEN"),("scope",403,"CURRENT_ACCESS_DENIED"),("uncertain",503,"RESOURCE_UNAVAILABLE")):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory(prefix="r1c-late-auth-") as directory:
+                root=Path(directory); store=FileLineageCaptureStore(root,master_key=secrets.token_bytes(32),key_version="test-key",key_reference="memory-only")
+                armed=[];actual_types=[];sources=[]
+                original_verify=store._verify_data; original_unlink=store._fs.unlink
+                def verified(*args,**kwargs):
+                    result=original_verify(*args,**kwargs);armed.append(True);return result
+                def principal(request,dependencies):
+                    if armed and mode=="expired":
+                        error=IdentityError("ACCESS_EXPIRED",401);actual_types.append(type(error));raise error
+                    value=original_principal(request,dependencies)
+                    return replace(value,session_id="changed-during-capture") if armed and mode=="scope" else value
+                def authorize(*args,**kwargs):
+                    if armed and mode in {"denied","uncertain"}:
+                        error=AuthorizationError("ACTION_DENIED",403);actual_types.append(type(error));raise error
+                    return original_authorize(*args,**kwargs)
+                def unlink(path):
+                    if mode=="uncertain" and path.name=="data.bin": raise OSError("SYNTHETIC_CLEANUP_DETAIL")
+                    return original_unlink(path)
+                service=object.__new__(PostgresRecoveryService)
+                def capture(context,actual,**kwargs):
+                    scope=LineageCaptureScope.from_selection(context,actual,capture_id="late-auth")
+                    def source(ref): sources.append(ref.object_id);return io.BytesIO(content[ref.object_id])
+                    store.capture(scope,actual,source,closure_fingerprint=actual.fingerprint,include_prior_versions=True,
+                        recheck=kwargs["recheck"],owner_id="writer-owned")
+                    self.fail("late denial must not return ready")
+                service.create_lineage_backup=capture
+                deps=replace(self.dependencies,cloud_store=SimpleNamespace(),recovery_service=service)
+                resolver=SimpleNamespace(resolve_lineage=resolve)
+                with patch.object(runtime,"PostgresBackupSelectionResolver",return_value=resolver),patch.object(runtime,"_principal",side_effect=principal), \
+                        patch.object(self.authorization,"authorize_action",side_effect=authorize),patch.object(store,"_verify_data",side_effect=verified), \
+                        patch.object(store._fs,"unlink",side_effect=unlink):
+                    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(deps)),base_url="https://app.example.com",
+                        cookies={} if mode=="missing" else {WEB_SESSION_COOKIE:self.credentials.access_token}) as client:
+                        result=await client.post("/api/v1/backups",json=body,headers={"Idempotency-Key":"r1c-late-auth"})
+                self.assertEqual((result.status_code,result.json()["error"]["code"]),(status,code))
+                self.assertNotIn("SYNTHETIC_CLEANUP_DETAIL",result.text)
+                self.assertFalse(result.json()["error"]["retryable"])
+                folder=root/"lineage-v3-late-auth"
+                if mode=="missing": self.assertEqual(sources,[]);self.assertFalse(folder.exists())
+                else:
+                    self.assertTrue(armed);self.assertEqual(sources,["object-a","object-b"])
+                    self.assertFalse((folder/"receipt.bin").exists())
+                    self.assertEqual((root/"lineage-v3.lock").exists(),mode=="uncertain")
+                    self.assertEqual((folder/"data.bin").exists(),mode=="uncertain")
+                if mode=="expired": self.assertEqual(actual_types,[IdentityError])
+                if mode in {"denied","uncertain"}: self.assertEqual(actual_types,[AuthorizationError])
+                self.assertEqual(self.recovery._repository.backups,{})
+
+    async def test_r1c_preflight_exact_projection_and_session_recheck_no_business_write(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from test_recovery_lineage import Ledger
+        from daon_user_api import runtime
+        selection = Ledger().resolve()
+        expected = {"root_source_version_ids", "dependency_source_version_ids", "dependency_source_ids", "source_version_count",
+            "source_count", "unique_object_count", "total_bytes", "metadata_bytes", "closure_fingerprint"}
+        body = dict(workspace_id=self.workspace_id, notebook_id="notebook-a", source_version_ids=["root-version"], lineage_mode="exact")
+        for mode in ("normal", "session", "device"):
+            resolver = SimpleNamespace(resolve_lineage=Mock(return_value=selection))
+            deps = replace(self.dependencies, cloud_store=SimpleNamespace())
+            original, calls = runtime._principal, []
+            def principal(request, dependencies):
+                value = original(request, dependencies); calls.append(True)
+                if mode != "normal" and len(calls) > 1:
+                    return replace(value, **{mode + "_id": "changed"})
+                return value
+            with patch.object(runtime, "PostgresBackupSelectionResolver", return_value=resolver), patch.object(runtime, "_principal", side_effect=principal):
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(deps)), base_url="https://app.example.com",
+                    cookies={WEB_SESSION_COOKIE: self.credentials.access_token}) as client:
+                    result = await client.post("/api/v1/backups/selection-previews", json=body)
+            self.assertEqual(result.status_code, 200 if mode == "normal" else 403)
+            if mode == "normal":
+                self.assertEqual(set(result.json()["data"]), expected)
+                self.assertEqual(result.json()["data"]["closure_fingerprint"], selection.fingerprint)
+                self.assertIn("etag", result.headers)
+                context, actual = resolver.resolve_lineage.call_args.args
+                self.assertEqual((context.tenant_id, context.workspace_id, context.actor_id),
+                    (self.credentials.tenant_id, self.workspace_id, self.credentials.user_id))
+                self.assertEqual(actual.source_version_ids, ("root-version",))
+            self.assertEqual(self.recovery._repository.backups, {})
+
+    async def test_r1c_create_consumes_consent_and_rechecks_without_fake_ready(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from test_recovery_lineage import Ledger
+        from daon_user_api import runtime
+        from daon_user_api.recovery import RecoveryError
+        from daon_user_api.recovery_postgres import PostgresRecoveryService
+        selection = Ledger().resolve()
+        body = dict(workspace_id=self.workspace_id, notebook_id="notebook-a", source_version_ids=["root-version"],
+            lineage_mode="exact", trigger="manual", closure_consent=dict(include_prior_versions=True, closure_fingerprint=selection.fingerprint))
+        service = object.__new__(PostgresRecoveryService)
+        def capture(context, actual, **kwargs):
+            self.assertEqual(actual, selection)
+            self.assertEqual(kwargs["recheck"](), selection)
+            raise RecoveryError("RESOURCE_UNAVAILABLE", 503)
+        service.create_lineage_backup = Mock(side_effect=capture)
+        resolver = SimpleNamespace(resolve_lineage=Mock(return_value=selection))
+        deps = replace(self.dependencies, recovery_service=service, cloud_store=SimpleNamespace())
+        with patch.object(runtime, "PostgresBackupSelectionResolver", return_value=resolver):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(deps)), base_url="https://app.example.com",
+                cookies={WEB_SESSION_COOKIE: self.credentials.access_token}) as client:
+                result = await client.post("/api/v1/backups", json=body, headers={"Idempotency-Key": "r1c-explicit-create"})
+                self.assertEqual(result.status_code, 503)
+                self.assertEqual(service.create_lineage_backup.call_count, 1)
+                result = await client.post("/api/v1/backups", json={**body, "closure_consent": {"include_prior_versions": True, "closure_fingerprint": "f"*64}},
+                    headers={"Idempotency-Key": "r1c-wrong-consent"})
+                self.assertEqual(result.status_code, 409)
+                self.assertEqual(service.create_lineage_backup.call_count, 1)
+        original=runtime._principal
+        for field in ("session_id","device_id","user_id"):
+            checks=[];service.create_lineage_backup.reset_mock()
+            def current(request,dependencies):
+                value=original(request,dependencies);checks.append(True)
+                return replace(value,**{field:"changed"}) if len(checks)>=4 else value
+            with patch.object(runtime,"PostgresBackupSelectionResolver",return_value=resolver),patch.object(runtime,"_principal",side_effect=current):
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(deps)),base_url="https://app.example.com",
+                    cookies={WEB_SESSION_COOKIE:self.credentials.access_token}) as client:
+                    result=await client.post("/api/v1/backups",json=body,headers={"Idempotency-Key":"r1c-late-session"})
+            self.assertEqual(result.status_code,403)
+            self.assertEqual(service.create_lineage_backup.call_count,1)
+        self.assertEqual(self.recovery._repository.backups, {})
+
     async def test_m1_observations_preserve_auth_failure_and_recheck_session(self):
         from types import SimpleNamespace
         from daon_user_api import runtime

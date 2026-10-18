@@ -13,6 +13,26 @@ import {
   parsePublicGatewayOrigin,
 } from "../../apps/web/lib/bff-api-proxy.js";
 
+test("R1-C exact preflight literal precedes generic backup id in web and native", async () => {
+  const { createNativeBffProxy } = await import("../../apps/web/lib/bff-api-proxy.js");
+  const body = JSON.stringify({workspace_id:"workspace-a",notebook_id:"notebook-a",source_version_ids:["version-a"],lineage_mode:"exact"});
+  for (const native of [false,true]) {
+    const calls=[];
+    const proxy=(native?createNativeBffProxy:createBffProxy)({baseUrl:new URL("https://api.example.com"),fetchImpl:async(url,init)=>{
+      calls.push({url:String(url),body:Buffer.from(init.body).toString(),headers:init.headers});return Response.json({data:{}});
+    }});
+    const headers=native?{Authorization:"Bearer opaque-native-credential","content-type":"application/json"}:{Origin:"https://app.example.com","content-type":"application/json"};
+    const url="https://app.example.com/"+(native?"api/v1/":"bff/api/")+"backups/selection-previews";
+    const segments=["backups","selection-previews"];
+    assert.equal((await proxy(new Request(url,{method:"POST",headers,body}),segments)).status,200);
+    assert.equal(calls.length,1);assert.equal(calls[0].url,"https://api.example.com/api/v1/backups/selection-previews");
+    assert.equal(calls[0].body,body);
+    assert.equal((await proxy(new Request(url,{headers}),segments)).status,405);
+    assert.equal((await proxy(new Request(url+"?actor_id=other",{method:"POST",headers,body}),segments)).status,native?404:400);
+    assert.equal(calls.length,1);
+  }
+});
+
 test('S24 lifecycle BFF routes preserve only exact notebook body conditional and idempotency headers',async()=>{
   const calls=[]; const proxy=createBffProxy({baseUrl:new URL('https://api.example.com'),fetchImpl:async(url,init)=>{
     calls.push({url:String(url),init}); return Response.json({data:{},meta:{}});

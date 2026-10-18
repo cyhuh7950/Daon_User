@@ -10,6 +10,51 @@ from daon_user_api.runtime import RuntimeSettings, build_dependencies, create_ap
 
 
 class RecoveryRuntimeContractTests(unittest.TestCase):
+    def test_r1c_existing_configuration_injects_both_purposes_and_default_off(self):
+        from dataclasses import replace
+        from unittest.mock import patch
+        import secrets
+        from daon_user_api import runtime
+        with tempfile.TemporaryDirectory(prefix="r1c-di-") as directory:
+            root=Path(directory); manifest_path=root/"existing-protected-key-ref"
+            settings=replace(RuntimeSettings.for_test(database_path=root/"runtime.sqlite3",policy_version="policy-a"),
+                cloud_database_dsn="dbname=never_connect",recovery_manifest_key_file=manifest_path,
+                recovery_capture_root=root,recovery_capture_key_version="v3-test",recovery_capture_key_reference="DAON_RECOVERY_MANIFEST_KEY_FILE")
+            memory_key=secrets.token_bytes(32)
+            with patch.object(Path,"read_bytes",return_value=memory_key):
+                service=runtime._build_recovery_service(settings,SimpleNamespace())
+                try:
+                    self.assertEqual(service._capture_store.root,root)
+                    self.assertEqual(service._lineage_capture_store.root,root)
+                    self.assertEqual(service._lineage_capture_store.key_version,"v3-test")
+                    self.assertTrue(service._pool.closed)
+                finally: service.close()
+                default=runtime._build_recovery_service(replace(settings,recovery_capture_root=None,recovery_capture_key_version=None,recovery_capture_key_reference=None),SimpleNamespace())
+                try:
+                    self.assertIsNone(default._capture_store);self.assertIsNone(default._lineage_capture_store)
+                    self.assertTrue(default._pool.closed)
+                finally: default.close()
+            self.assertFalse(manifest_path.exists(),"시험 key 파일 생성0")
+
+    def test_r1c_exact_preflight_and_lineage_create_inputs(self):
+        from daon_user_api import runtime
+        preflight = dict(workspace_id="workspace-a", notebook_id="notebook-a", source_version_ids=["version-a"], lineage_mode="exact")
+        cls = getattr(runtime, "LineageSelectionPreviewBody", None)
+        self.assertIsNotNone(cls, "exact4 사전 확인 DTO 필요")
+        self.assertEqual(cls.model_validate(preflight).model_dump(), preflight)
+        consent = dict(include_prior_versions=True, closure_fingerprint="a" * 64)
+        create = {**preflight, "trigger": "manual", "closure_consent": consent}
+        self.assertEqual(runtime.BackupCreateBody.model_validate(create).model_dump(), create)
+        for change in ({"trigger": "automatic"}, {"schema_revision": "forged"}, {"objects": []},
+                {"closure_consent": {**consent, "include_prior_versions": False}},
+                {"closure_consent": {**consent, "extra": True}}, {"closure_consent": {**consent, "closure_fingerprint": "x"}},
+                {"source_version_ids": ["v", "v"]}, {"source_version_ids": ["x" * 129]}, {"lineage_mode": "loose"}):
+            with self.subTest(change=next(iter(change))), self.assertRaises(ValueError):
+                runtime.BackupCreateBody.model_validate({**create, **change})
+        for change in ({"trigger": "manual"}, {"closure_consent": consent}, {"source_version_ids": []},
+                {"source_version_ids": ["v"] * 101}, {"source_version_ids": [1]}, {"workspace_id": "../bad"}):
+            with self.subTest(preflight=next(iter(change))), self.assertRaises(ValueError): cls.model_validate({**preflight, **change})
+
     def test_l1_legacy_workspace_shape_has_no_notebook_and_exposes_multinotebook_resolver_gap(self) -> None:
         from daon_user_api.recovery import BackupObjectInput, RecoveryContext, RecoveryError
         from daon_user_api.recovery_postgres import PostgresBackupSelectionResolver
@@ -67,7 +112,7 @@ class RecoveryRuntimeContractTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 BackupCreateBody.model_validate({**body, **extra})
         schema = BackupCreateBody.model_json_schema()
-        self.assertEqual(len(schema["oneOf"]), 2)
+        self.assertEqual(len(schema["oneOf"]), 3)
         self.assertNotIn("anyOf", schema)
 
     def test_runtime_registers_exact_approved_cloud_recovery_paths(self) -> None:
@@ -81,6 +126,7 @@ class RecoveryRuntimeContractTests(unittest.TestCase):
             finally:
                 dependencies.close()
         expected = {
+            "/api/v1/backups/selection-previews": {"post"},
             "/api/v1/backups": {"post", "get"},
             "/api/v1/backups/{id}": {"get"},
             "/api/v1/backups/{id}/restore-previews": {"post"},

@@ -166,6 +166,7 @@ from .recovery import (
 )
 from .recovery_postgres import MinioRecoveryStorageAdapter, PostgresBackupSelectionResolver, PostgresRecoveryService
 from .recovery_capture import FileCaptureStore
+from .recovery_lineage_capture import FileLineageCaptureStore
 from .provider_settings import (
     PostgresProviderSettingsRepository,
     ProviderSettingsContext,
@@ -1294,11 +1295,42 @@ class SelectionBackupCreateBody(BaseModel):
         return self
 
 
+class LineageSelectionPreviewBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    workspace_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+    notebook_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+    source_version_ids: list[Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")]] = Field(
+        min_length=1, max_length=100, json_schema_extra={"uniqueItems": True})
+    lineage_mode: Literal["exact"]
+
+    @model_validator(mode="after")
+    def unique_selection(self):
+        if len(set(self.source_version_ids)) != len(self.source_version_ids): raise ValueError("RECOVERY_INPUT_INVALID")
+        return self
+
+
+class LineageClosureConsentBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    include_prior_versions: Literal[True]
+    closure_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="before")
+    @classmethod
+    def explicit_true(cls, value):
+        if not isinstance(value, dict) or value.get("include_prior_versions") is not True: raise ValueError("RECOVERY_INPUT_INVALID")
+        return value
+
+
+class LineageBackupCreateBody(LineageSelectionPreviewBody):
+    trigger: Literal["manual"]
+    closure_consent: LineageClosureConsentBody
+
+
 def _backup_one_of(schema: dict[str, Any]) -> None:
     schema["oneOf"] = schema.pop("anyOf")
 
 
-class BackupCreateBody(RootModel[LegacyBackupCreateBody | SelectionBackupCreateBody]):
+class BackupCreateBody(RootModel[LegacyBackupCreateBody | SelectionBackupCreateBody | LineageBackupCreateBody]):
     model_config = ConfigDict(json_schema_extra=_backup_one_of)
 
 
@@ -1703,6 +1735,7 @@ def _retention_public_error_code(code: str) -> str:
 
 
 _RECOVERY_PUBLIC_CODES = {
+    "BACKUP_CAPTURE_CLEANUP_UNCERTAIN": "RESOURCE_UNAVAILABLE",
     "CURRENT_ACCESS_DENIED": "CURRENT_ACCESS_DENIED",
     "STEP_UP_REQUIRED": "STEP_UP_REQUIRED",
     "BACKUP_UNAVAILABLE": "RESOURCE_UNAVAILABLE",
@@ -1711,6 +1744,13 @@ _RECOVERY_PUBLIC_CODES = {
     "FIXTURE_ONLY_RESTORE_REQUIRED": "CURRENT_ACCESS_DENIED",
     "IN_PLACE_RESTORE_FORBIDDEN": "CURRENT_ACCESS_DENIED",
 }
+
+
+class _LineageRecheckAuthError(RecoveryError):
+    """FileStore의 안전 정리까지만 RecoveryError로 운반하고 원 인증 handler로 돌려준다."""
+    def __init__(self, original: IdentityError | AuthorizationError):
+        super().__init__("CURRENT_ACCESS_DENIED", original.http_status)
+        self.original = original
 
 
 def _recovery_public_error_code(code: str) -> str:
@@ -7353,6 +7393,31 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         response.headers["ETag"] = etag
         return response
 
+    @app.post("/api/v1/backups/selection-previews")
+    async def preview_lineage_selection(body: LineageSelectionPreviewBody, request: Request) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(principal=principal, workspace_id=body.workspace_id,
+            action=Action.POLICY_MANAGE, trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version)
+        if dependencies.cloud_store is None: raise RecoveryError("RESOURCE_UNAVAILABLE", 503)
+        context = _recovery_context(principal, body.workspace_id, request, dependencies)
+        selection = PostgresBackupSelectionResolver(dependencies.cloud_store).resolve_lineage(
+            context, BackupSelectionInput(body.notebook_id, tuple(body.source_version_ids)))
+        current = _principal(request, dependencies)
+        if (current.tenant_id, current.user_id, current.session_id, current.device_id) != (
+                principal.tenant_id, principal.user_id, principal.session_id, principal.device_id):
+            raise RecoveryError("CURRENT_ACCESS_DENIED", 403)
+        dependencies.authorization_service.authorize_action(principal=current, workspace_id=body.workspace_id,
+            action=Action.POLICY_MANAGE, trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version)
+        return _json_with_etag({"data": {
+            "root_source_version_ids": list(selection.root_source_version_ids),
+            "dependency_source_version_ids": list(selection.dependency_source_version_ids),
+            "dependency_source_ids": list(selection.dependency_source_ids),
+            "source_version_count": selection.source_version_count, "source_count": selection.source_count,
+            "unique_object_count": selection.unique_object_count, "total_bytes": selection.total_bytes,
+            "metadata_bytes": selection.metadata_bytes, "closure_fingerprint": selection.fingerprint,
+        }, "meta": {"trace_id": request.state.trace_id}}, selection.fingerprint)
+
     @app.post("/api/v1/backups", status_code=201)
     async def create_backup(
         body: BackupCreateBody, request: Request,
@@ -7368,9 +7433,36 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             policy_version=dependencies.settings.policy_version,
         )
         context = _recovery_context(principal, body.workspace_id, request, dependencies)
+        def check_principal():
+            current = _principal(request, dependencies)
+            if (current.tenant_id, current.user_id, current.session_id, current.device_id) != (
+                    principal.tenant_id, principal.user_id, principal.session_id, principal.device_id):
+                raise RecoveryError("CURRENT_ACCESS_DENIED", 403)
+            dependencies.authorization_service.authorize_action(principal=current, workspace_id=body.workspace_id,
+                action=Action.POLICY_MANAGE, trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version)
         # Reference service는 명시 주입된 역사적 domain/HTTP 대역에서만 소비한다.
         # 실제 runtime의 신규/legacy는 metadata 확인 이후에도 capture port가 없으면 생성하지 않는다.
-        if isinstance(body, SelectionBackupCreateBody) or not isinstance(recovery_service, RecoveryService):
+        if isinstance(body, LineageBackupCreateBody):
+            if dependencies.cloud_store is None: raise RecoveryError("RESOURCE_UNAVAILABLE", 503)
+            resolver = PostgresBackupSelectionResolver(dependencies.cloud_store)
+            def recheck_lineage():
+                try:
+                    check_principal()
+                    selection = resolver.resolve_lineage(context, BackupSelectionInput(body.notebook_id, tuple(body.source_version_ids)))
+                    selection.require_consent(body.closure_consent.closure_fingerprint, body.closure_consent.include_prior_versions)
+                    check_principal()
+                    return selection
+                except (IdentityError, AuthorizationError) as error:
+                    raise _LineageRecheckAuthError(error) from None
+            try:
+                selection = recheck_lineage()
+                if not isinstance(recovery_service, PostgresRecoveryService): raise RecoveryError("RESOURCE_UNAVAILABLE", 503)
+                view = recovery_service.create_lineage_backup(context, selection, idempotency_key=idempotency_key,
+                    recheck=recheck_lineage, trigger=body.trigger)
+            except _LineageRecheckAuthError as error:
+                # cleanup 불확정은 별도 503이므로 이 분기에 들어오지 않는다.
+                raise error.original from None
+        elif isinstance(body, SelectionBackupCreateBody) or not isinstance(recovery_service, RecoveryService):
             if dependencies.cloud_store is None:
                 raise RecoveryError("RESOURCE_UNAVAILABLE", 503)
             resolver = PostgresBackupSelectionResolver(dependencies.cloud_store)
@@ -7382,14 +7474,6 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                     retention_watermark=body.retention_watermark,
                     objects=tuple(BackupObjectInput(**item.model_dump()) for item in body.objects),
                     idempotency_key=idempotency_key, trigger=body.trigger)
-            def check_principal():
-                current = _principal(request, dependencies)
-                if (current.tenant_id, current.user_id, current.session_id, current.device_id) != (
-                        principal.tenant_id, principal.user_id, principal.session_id, principal.device_id):
-                    raise RecoveryError("CURRENT_ACCESS_DENIED", 403)
-                dependencies.authorization_service.authorize_action(
-                    principal=current, workspace_id=body.workspace_id, action=Action.POLICY_MANAGE,
-                    trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version)
             def recheck():
                 check_principal()
                 current = resolve_selection()
@@ -7582,17 +7666,20 @@ def _build_recovery_service(settings: RuntimeSettings, object_storage):
         manifest_key = settings.recovery_manifest_key_file.read_bytes()
     except OSError:
         raise ValueError("RECOVERY_MANIFEST_KEY_REFERENCE_UNAVAILABLE") from None
-    capture_store = None
+    capture_store = lineage_capture_store = None
     if settings.recovery_capture_root is not None:
         try:
             # 기존 root만 사용한다. mkdir/기본 경로 추정/새 key 파일/비밀 fallback은 없다.
             capture_store = FileCaptureStore(settings.recovery_capture_root, master_key=manifest_key,
                 key_version=settings.recovery_capture_key_version, key_reference=settings.recovery_capture_key_reference)
+            lineage_capture_store = FileLineageCaptureStore(settings.recovery_capture_root, master_key=manifest_key,
+                key_version=settings.recovery_capture_key_version, key_reference=settings.recovery_capture_key_reference)
         except (RecoveryError, OSError):
             raise ValueError("RECOVERY_CAPTURE_STORE_UNAVAILABLE") from None
     return PostgresRecoveryService(settings.cloud_database_dsn, MinioRecoveryStorageAdapter(object_storage),
         manifest_key=manifest_key, clock=lambda: datetime.now(timezone.utc),
-        notification_inbox_enabled=settings.notification_inbox_enabled, capture_store=capture_store)
+        notification_inbox_enabled=settings.notification_inbox_enabled, capture_store=capture_store,
+        lineage_capture_store=lineage_capture_store)
 
 
 def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
