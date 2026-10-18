@@ -36,6 +36,43 @@ from test_identity_support import (
 
 
 class RecoveryRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
+    async def test_l2_selection_passes_exact_resolver_metadata_and_rechecks_session_before_capture_commit(self) -> None:
+        """ASGI 포트 연결 시험. 실제 capture/PG/ready 성공을 대체하지 않는다."""
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from daon_user_api import runtime
+        from daon_user_api.recovery import BackupObjectInput, BackupSelectionInput, RecoveryError, _ResolvedBackupSelection
+        from daon_user_api.recovery_postgres import PostgresRecoveryService
+        resolved = _ResolvedBackupSelection(BackupSelectionInput("notebook-a", ("version-a",)),
+            "schema-a", "watermark-a", (BackupObjectInput("a" * 32, "a" * 64, 7),), "a" * 64)
+        metadata = {"synthetic-port-only": True}
+        for changed in (False, True):
+            service = object.__new__(PostgresRecoveryService)
+            reached = []
+            def capture(context, actual, relations, **kwargs):
+                self.assertEqual((actual, relations), (resolved, metadata))
+                current, final = kwargs["recheck"]()
+                self.assertEqual((current, final), (resolved, metadata))
+                reached.append(True)
+                raise RecoveryError("RESOURCE_UNAVAILABLE", 503)  # 실제 파일 port는 이 HTTP 시험에 주입하지 않는다.
+            service.create_selected_backup = Mock(side_effect=capture)
+            resolver = SimpleNamespace(resolve=Mock(return_value=resolved), capture_metadata=Mock(return_value=metadata))
+            dependencies = replace(self.dependencies, recovery_service=service, cloud_store=SimpleNamespace())
+            original = runtime._principal
+            calls = []
+            def principal(request, deps):
+                current = original(request, deps)
+                calls.append(True)
+                return replace(current, session_id="changed-session") if changed and len(calls) > 1 else current
+            with patch.object(runtime, "PostgresBackupSelectionResolver", return_value=resolver), patch.object(runtime, "_principal", side_effect=principal):
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(dependencies)),
+                    base_url="https://app.example.com", cookies={WEB_SESSION_COOKIE: self.credentials.access_token}) as client:
+                    result = await client.post("/api/v1/backups", headers={"Idempotency-Key": "l2-callback"},
+                        json={"workspace_id": self.workspace_id, "notebook_id": "notebook-a", "trigger": "manual", "source_version_ids": ["version-a"]})
+            self.assertEqual(service.create_selected_backup.call_count, 1)
+            self.assertEqual(result.status_code, 403 if changed else 503)
+            self.assertEqual(len(reached), 0 if changed else 1)
+
     async def test_l1_durable_runtime_legacy_without_capture_is_503_not_reference_ready(self) -> None:
         from daon_user_api.recovery import UnavailableRecoveryService
         unavailable = UnavailableRecoveryService()

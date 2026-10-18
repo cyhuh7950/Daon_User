@@ -18,6 +18,19 @@ NOW = datetime(2026, 7, 31, 5, 0, tzinfo=UTC)
 
 
 class RecoveryDomainTests(unittest.TestCase):
+    def test_l2_parent_canon_id_256_preserved_without_expanding_selection_ids(self):
+        from daon_user_api.recovery import BackupSelectionInput, _resolved_backup_metadata
+        selected = BackupSelectionInput("notebook-a", ("version-a",))
+        item = BackupObjectInput("object-a", "a" * 64, 7)
+        receipt = _resolved_backup_metadata(self.context, selected, "schema-a", "watermark-a",
+            (("version-a", "s" * 256, item, "b" * 64),))
+        self.assertEqual(receipt.selection.source_version_ids, ("version-a",))
+        for parent in ("s" * 257, "unsafe/path", None):
+            with self.assertRaises(RecoveryError):
+                _resolved_backup_metadata(self.context, selected, "schema-a", "watermark-a",
+                    (("version-a", parent, item, "b" * 64),))
+        with self.assertRaises(RecoveryError): BackupSelectionInput("notebook-a", ("v" * 256,))
+
     def test_l1_selection_is_safe_bounded_unique_and_order_independent(self) -> None:
         from daon_user_api import recovery
         selection_type = getattr(recovery, "BackupSelectionInput", None)

@@ -13,6 +13,7 @@ from typing import Callable
 
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+_CANON_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -27,6 +28,13 @@ class RecoveryError(RuntimeError):
 def _safe(value: object) -> str:
     if not isinstance(value, str) or not _SAFE_ID.fullmatch(value):
         raise RecoveryError("RECOVERY_INPUT_INVALID", 400)
+    return value
+
+
+def _safe_canon_id(value: object) -> str:
+    """내부 정본의 Parent/aggregate/provenance만. 공개 선택 ID128과 구분한다."""
+    if not isinstance(value, str) or not _CANON_ID.fullmatch(value):
+        raise RecoveryError("BACKUP_MANIFEST_INVALID", 409)
     return value
 
 
@@ -128,7 +136,7 @@ def _resolved_backup_metadata(context: RecoveryContext, selection: BackupSelecti
     objects: dict[str, BackupObjectInput] = {}
     canonical_bindings = []
     for version_id, source_id, item, canonical_digest in ordered:
-        _safe(source_id)
+        _safe_canon_id(source_id)
         if not isinstance(canonical_digest, str) or not _SHA256.fullmatch(canonical_digest):
             raise RecoveryError("BACKUP_MANIFEST_INVALID", 409)
         if item.object_id in objects and objects[item.object_id] != item:

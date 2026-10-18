@@ -165,6 +165,7 @@ from .recovery import (
     RestoreDestination, UnavailableRecoveryService,
 )
 from .recovery_postgres import MinioRecoveryStorageAdapter, PostgresBackupSelectionResolver, PostgresRecoveryService
+from .recovery_capture import FileCaptureStore
 from .provider_settings import (
     PostgresProviderSettingsRepository,
     ProviderSettingsContext,
@@ -542,6 +543,9 @@ class RuntimeSettings:
     object_access_key_file: Path | None = None
     object_secret_key_file: Path | None = None
     recovery_manifest_key_file: Path | None = None
+    recovery_capture_root: Path | None = None
+    recovery_capture_key_version: str | None = None
+    recovery_capture_key_reference: str | None = None
     step_up_token_key_file: Path | None = None
     provider_credential_key_file: Path | None = None
     license_public_keys_file: Path | None = None
@@ -565,6 +569,16 @@ class RuntimeSettings:
     notification_inbox_enabled: bool = False
 
     def __post_init__(self) -> None:
+        capture = (self.recovery_capture_root, self.recovery_capture_key_version, self.recovery_capture_key_reference)
+        if any(value is not None for value in capture):
+            if (not all(value is not None for value in capture)
+                    or not isinstance(self.recovery_capture_root, Path) or not self.recovery_capture_root.is_absolute()
+                    or self.recovery_capture_root == Path(self.recovery_capture_root.anchor)
+                    or not isinstance(self.recovery_capture_key_version, str)
+                    or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", self.recovery_capture_key_version) is None
+                    or self.recovery_capture_key_reference != "DAON_RECOVERY_MANIFEST_KEY_FILE"
+                    or self.recovery_manifest_key_file is None):
+                raise ValueError("RECOVERY_CAPTURE_CONFIGURATION_INVALID")
         if type(self.organization_admin_v2_enabled) is not bool:
             raise ValueError("ORGANIZATION_ADMIN_V2_FLAG_INVALID")
         if type(self.notification_inbox_enabled) is not bool:
@@ -703,6 +717,10 @@ class RuntimeSettings:
                 if os.environ.get("DAON_RECOVERY_MANIFEST_KEY_FILE") is None
                 else Path(os.environ["DAON_RECOVERY_MANIFEST_KEY_FILE"])
             ),
+            recovery_capture_root=(None if os.environ.get("DAON_RECOVERY_CAPTURE_ROOT") is None
+                else Path(os.environ["DAON_RECOVERY_CAPTURE_ROOT"])),
+            recovery_capture_key_version=os.environ.get("DAON_RECOVERY_CAPTURE_KEY_VERSION"),
+            recovery_capture_key_reference=os.environ.get("DAON_RECOVERY_CAPTURE_KEY_REFERENCE"),
             object_storage_secure=os.environ.get("DAON_OBJECT_STORAGE_SECURE", "true").lower() == "true",
             object_storage_provision_bucket=(
                 os.environ.get("DAON_OBJECT_STORAGE_PROVISION_BUCKET", "false").lower() == "true"
@@ -7339,29 +7357,42 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             if dependencies.cloud_store is None:
                 raise RecoveryError("RESOURCE_UNAVAILABLE", 503)
             resolver = PostgresBackupSelectionResolver(dependencies.cloud_store)
-            if isinstance(body, SelectionBackupCreateBody):
-                resolver.resolve(context, BackupSelectionInput(body.notebook_id, tuple(body.source_version_ids)),
-                    idempotency_key=idempotency_key)
-            else:
-                resolver.resolve_legacy(context, schema_revision=body.schema_revision,
+            def resolve_selection():
+                if isinstance(body, SelectionBackupCreateBody):
+                    return resolver.resolve(context, BackupSelectionInput(body.notebook_id, tuple(body.source_version_ids)),
+                        idempotency_key=idempotency_key)
+                return resolver.resolve_legacy(context, schema_revision=body.schema_revision,
                     retention_watermark=body.retention_watermark,
                     objects=tuple(BackupObjectInput(**item.model_dump()) for item in body.objects),
                     idempotency_key=idempotency_key, trigger=body.trigger)
-            current_principal = _principal(request, dependencies)
-            if (current_principal.tenant_id, current_principal.user_id, current_principal.session_id, current_principal.device_id) != (
-                    principal.tenant_id, principal.user_id, principal.session_id, principal.device_id):
-                raise RecoveryError("CURRENT_ACCESS_DENIED", 403)
-            dependencies.authorization_service.authorize_action(
-                principal=current_principal, workspace_id=body.workspace_id, action=Action.POLICY_MANAGE,
-                trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version)
-            raise RecoveryError("RESOURCE_UNAVAILABLE", 503, retryable=False)
-        view = recovery_service.create_backup(
-            context,
-            trigger=body.trigger, schema_revision=body.schema_revision,
-            retention_watermark=body.retention_watermark,
-            objects=tuple(BackupObjectInput(**item.model_dump()) for item in body.objects),
-            idempotency_key=idempotency_key,
-        )
+            def check_principal():
+                current = _principal(request, dependencies)
+                if (current.tenant_id, current.user_id, current.session_id, current.device_id) != (
+                        principal.tenant_id, principal.user_id, principal.session_id, principal.device_id):
+                    raise RecoveryError("CURRENT_ACCESS_DENIED", 403)
+                dependencies.authorization_service.authorize_action(
+                    principal=current, workspace_id=body.workspace_id, action=Action.POLICY_MANAGE,
+                    trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version)
+            def recheck():
+                check_principal()
+                current = resolve_selection()
+                current_metadata = resolver.capture_metadata(context, current, trigger=body.trigger)
+                check_principal()
+                return current, current_metadata
+            resolved = resolve_selection()
+            if not isinstance(recovery_service, PostgresRecoveryService):
+                raise RecoveryError("RESOURCE_UNAVAILABLE", 503, retryable=False)
+            metadata = resolver.capture_metadata(context, resolved, trigger=body.trigger)
+            view = recovery_service.create_selected_backup(context, resolved, metadata,
+                idempotency_key=idempotency_key, recheck=recheck, trigger=body.trigger)
+        else:
+            view = recovery_service.create_backup(
+                context,
+                trigger=body.trigger, schema_revision=body.schema_revision,
+                retention_watermark=body.retention_watermark,
+                objects=tuple(BackupObjectInput(**item.model_dump()) for item in body.objects),
+                idempotency_key=idempotency_key,
+            )
         response = JSONResponse(
             {"data": _dataclass_json(view), "meta": {"trace_id": request.state.trace_id}},
             status_code=201,
@@ -7525,6 +7556,28 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     return app
 
 
+def _build_recovery_service(settings: RuntimeSettings, object_storage):
+    if settings.cloud_database_dsn is None or object_storage is None or settings.recovery_manifest_key_file is None:
+        if settings.recovery_capture_root is not None:
+            raise ValueError("RECOVERY_CAPTURE_DEPENDENCY_REQUIRED")
+        return UnavailableRecoveryService()
+    try:
+        manifest_key = settings.recovery_manifest_key_file.read_bytes()
+    except OSError:
+        raise ValueError("RECOVERY_MANIFEST_KEY_REFERENCE_UNAVAILABLE") from None
+    capture_store = None
+    if settings.recovery_capture_root is not None:
+        try:
+            # 기존 root만 사용한다. mkdir/기본 경로 추정/새 key 파일/비밀 fallback은 없다.
+            capture_store = FileCaptureStore(settings.recovery_capture_root, master_key=manifest_key,
+                key_version=settings.recovery_capture_key_version, key_reference=settings.recovery_capture_key_reference)
+        except (RecoveryError, OSError):
+            raise ValueError("RECOVERY_CAPTURE_STORE_UNAVAILABLE") from None
+    return PostgresRecoveryService(settings.cloud_database_dsn, MinioRecoveryStorageAdapter(object_storage),
+        manifest_key=manifest_key, clock=lambda: datetime.now(timezone.utc),
+        notification_inbox_enabled=settings.notification_inbox_enabled, capture_store=capture_store)
+
+
 def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
     if settings.database_path is None:
         raise ValueError("DAON_API_DATABASE_PATH_REQUIRED")
@@ -7676,24 +7729,7 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         sync_service = PostgresSyncService(
             cloud_store, transfer_port, clock=lambda: datetime.now(timezone.utc)
         )
-    if (
-        settings.cloud_database_dsn is None
-        or object_storage is None
-        or settings.recovery_manifest_key_file is None
-    ):
-        recovery_service = UnavailableRecoveryService()
-    else:
-        try:
-            manifest_key = settings.recovery_manifest_key_file.read_bytes()
-        except OSError:
-            raise ValueError("RECOVERY_MANIFEST_KEY_REFERENCE_UNAVAILABLE") from None
-        recovery_service = PostgresRecoveryService(
-            settings.cloud_database_dsn,
-            MinioRecoveryStorageAdapter(object_storage),
-            manifest_key=manifest_key,
-            clock=lambda: datetime.now(timezone.utc),
-            notification_inbox_enabled=settings.notification_inbox_enabled,
-        )
+    recovery_service = _build_recovery_service(settings, object_storage)
     if (
         settings.cloud_database_dsn is not None
         and object_storage is not None

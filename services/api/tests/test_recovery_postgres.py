@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import os
 import secrets
+import shutil
 import unittest
 from dataclasses import replace
 from contextlib import contextmanager
@@ -21,9 +23,11 @@ from daon_user_api.object_queue import (
     DurableObjectWorker,
     MinioObjectStorageAdapter,
     ObjectQueueCoordinator,
+    ObjectKeyPolicy,
     PostgresObjectQueueStore,
 )
-from daon_user_api.recovery import BackupObjectInput, RecoveryContext, RestoreDestination
+from daon_user_api.recovery import BackupObjectInput, BackupSelectionInput, RecoveryContext, RecoveryError, RestoreDestination
+from daon_user_api.recovery_capture import FileCaptureStore, decode_manifest
 from daon_user_api.runtime import RuntimeSettings, build_dependencies
 from daon_user_api.recovery_postgres import (
     MinioRecoveryStorageAdapter,
@@ -62,6 +66,115 @@ CONFIGURED = all((DSN, ENDPOINT, BUCKET, ACCESS_KEY, SECRET_KEY, MANIFEST_KEY))
 
 class RecoverySelectionResolverTests(unittest.TestCase):
     """실제 resolver의 SQL 읽기 포트만 대역. PG/RLS·capture 성공 증거가 아니다."""
+    def test_l2_inventory_only_durable_create_refuses_before_storage_or_database(self):
+        from daon_user_api.recovery import RecoveryError
+        service = object.__new__(PostgresRecoveryService)
+        service._storage = SimpleNamespace(verify_source=lambda *args: self.fail("inventory-only source read forbidden"))
+        service._transaction = lambda *args: self.fail("inventory-only ledger write forbidden")
+        with self.assertRaises(RecoveryError) as caught:
+            service.create_backup(RecoveryContext("tenant-a", "workspace-a", "actor-a", "trace-a", "policy-a", True),
+                trigger="manual", schema_revision="schema-a", retention_watermark="watermark-a",
+                objects=(BackupObjectInput("object-a", "a" * 64, 7),), idempotency_key="legacy-create")
+        self.assertEqual((caught.exception.status, caught.exception.retryable), (503, False))
+
+    def test_l2_stream_port_uses_scoped_key_and_always_releases_response(self):
+        import io
+        response = io.BytesIO(b"synthetic source")
+        released = []
+        response.release_conn = lambda: released.append(True)
+        keys = []
+        class Client:
+            def get_object(self, bucket, key):
+                self_bucket = bucket
+                keys.append((self_bucket, key))
+                return response
+        adapter = MinioRecoveryStorageAdapter(SimpleNamespace(_client=Client(), _bucket="existing-bucket"))
+        context = RecoveryContext("tenant-a", "workspace-a", "actor-a", "trace-a", "policy-a", True)
+        with adapter.open_source(context, BackupObjectInput("a" * 32, "a" * 64, 16)) as stream:
+            self.assertEqual(stream.read(4), b"synt")
+        self.assertTrue(response.closed)
+        self.assertEqual(released, [True])
+        self.assertEqual(keys, [("existing-bucket", "tenant-a/workspace-a/source/" + "a" * 32)])
+        class BrokenClose:
+            def close(self): raise RuntimeError("synthetic close failure")
+            def release_conn(self): released.append(True)
+        adapter._storage._client.get_object = lambda *args: BrokenClose()
+        from daon_user_api.recovery import RecoveryError
+        with self.assertRaises(RecoveryError):
+            with adapter.open_source(context, BackupObjectInput("a" * 32, "a" * 64, 16)): pass
+        self.assertEqual(released, [True, True])
+
+    def test_l2_v1_get_decode_preserved_but_old_execute_and_preview_replay_cannot_bypass(self):
+        service = object.__new__(PostgresRecoveryService)
+        service._key = hashlib.sha256(secrets.token_bytes(32)).digest()
+        service._capture_store = None
+        item = BackupObjectInput("object-a", "a" * 64, 7)
+        old = service._encode_objects((item,))
+        self.assertEqual(service._decode_objects(old), (item,))
+        queries = []
+        class Connection:
+            def execute(self, sql, params=()):
+                queries.append(sql)
+                return SimpleNamespace(fetchone=lambda: {"manifest_version": 1, "encrypted_inventory": old})
+        @contextmanager
+        def transaction(*args): yield Connection()
+        context = RecoveryContext("tenant-a", "workspace-a", "actor-a", "trace-a", "policy-a", True)
+        service._transaction = transaction
+        request = SimpleNamespace(backup_id="backup-old")
+        with patch.object(service, "_select_restore", return_value=request), \
+             patch.object(service, "_operation_replay", return_value="restore-old") as replay:
+            from daon_user_api.recovery import RecoveryError
+            with self.assertRaises(RecoveryError) as caught:
+                service.execute_restore(context, "restore-old", expected_version=2, preview_version=1,
+                    idempotency_key="old-successful-key", step_up_verified=True)
+            self.assertEqual(caught.exception.status, 409)
+            self.assertEqual(replay.call_count, 0)
+        queries.clear()
+        with patch.object(service, "_select_restore", return_value=request):
+            with self.assertRaises(RecoveryError) as caught:
+                service.create_restore_preview(context, "backup-old", destination=RestoreDestination(
+                    "fixture-tenant-b", "fixture-workspace-b", "fixture-database-b", "fixture-bucket-b"),
+                    idempotency_key="old-preview-key", step_up_verified=True)
+            self.assertEqual(caught.exception.status, 409)
+        self.assertFalse(any(sql.startswith(("INSERT", "UPDATE", "DELETE")) for sql in queries))
+
+    def test_l2_v2_inventory_decode_and_missing_materializer_refuse_execute(self):
+        from daon_user_api.recovery_capture import CaptureScope, encode_manifest
+        from daon_user_api.recovery import RecoveryError
+        key = secrets.token_bytes(32)
+        service = object.__new__(PostgresRecoveryService)
+        service._key = hashlib.sha256(key).digest()
+        token = service._capture_identity("tenant-a", "workspace-a", "actor-a", "synthetic-key")
+        scope = CaptureScope("capture-" + token, "tenant-a", "workspace-a", "notebook-a", ("version-a",),
+            "a" * 64, "schema-a", "policy-a", "watermark-a")
+        receipt = {**scope.binding(), "key_version": "key-v1", "key_reference": "existing-manifest-key",
+            "objects": [{"object_id": "object-a", "plaintext_digest": "a" * 64, "byte_size": 7}]}
+        envelope = encode_manifest(scope, receipt, master_key=key, key_version="key-v1", key_reference="existing-manifest-key")
+        service._manifest_master_key = key
+        service._capture_store = SimpleNamespace(key_version="key-v1", key_reference="existing-manifest-key", verify=lambda *args, **kwargs: None)
+        self.assertEqual(service._decode_objects(envelope), (BackupObjectInput("object-a", "a" * 64, 7),))
+        now = datetime.now(timezone.utc)
+        row = {"encrypted_inventory": envelope, "manifest_digest": hashlib.sha256(envelope).hexdigest(),
+            "backup_id": "backup-" + token, "actor_id": "actor-a", "idempotency_key": "synthetic-key",
+            "manifest_version": 2, "tenant_id": "tenant-a", "workspace_id": "workspace-a", "state": "ready",
+            "version": 4, "trigger_type": "manual", "created_at": now, "verified_at": now, "schema_revision": "schema-a",
+            "retention_watermark": "watermark-a", "policy_version": "policy-a", "request_fingerprint": "a" * 64, "object_count": 1}
+        service._backup_from_row(row)
+        for key, value in (("tenant_id", "other-tenant"), ("request_fingerprint", "f" * 64),
+                           ("manifest_digest", "f" * 64), ("object_count", 2)):
+            with self.assertRaises(RecoveryError): service._backup_from_row({**row, key: value})
+        @contextmanager
+        def transaction(*args):
+            yield SimpleNamespace(execute=lambda *args: SimpleNamespace(fetchone=lambda: row))
+        service._transaction = transaction
+        with patch.object(service, "_select_restore", return_value=SimpleNamespace(backup_id="backup-" + token)), \
+             patch.object(service, "_operation_replay", return_value="restore-old") as replay:
+            with self.assertRaises(RecoveryError) as caught:
+                service.execute_restore(RecoveryContext("tenant-a", "workspace-a", "actor-a", "trace-a", "policy-a", True),
+                    "restore-v2", expected_version=2, preview_version=1, idempotency_key="v2-execute", step_up_verified=True)
+            self.assertEqual(caught.exception.status, 503)
+            self.assertEqual(replay.call_count, 0)
+
     def test_l1_legacy_counts_only_current_candidates_and_never_hides_database_failure(self) -> None:
         from daon_user_api.recovery import BackupSelectionInput, RecoveryError
         ctx = RecoveryContext("tenant-a", "workspace-a", "actor-a", "trace-a", "policy-a", True)
@@ -369,12 +482,54 @@ class RecoverySelectionPostgresIntegrationTests(unittest.TestCase):
 
 @unittest.skipUnless(CONFIGURED, "R1-M5-07 PostgreSQL/MinIO integration environment required")
 class PostgresRecoveryIntegrationTests(unittest.TestCase):
+    """실제 PG/MinIO + 로컬 보호 파일. 원본은 합성 namespace뿐이다.
+
+    DB는 main이 만든 정확 전용 DB에만 쓴다. append-only 원장은 main이 DB째 회수한다.
+    L2-A bytes 복호화는 L3 materialization/restore.completed 증거가 아니다.
+    """
+    def _connect(self):
+        try:
+            connection = psycopg.connect(_SelectionPrivateDsn(DSN), connect_timeout=3)
+            if connection.execute("SELECT current_database()").fetchone()[0] != "daon_user_s44_l2a_qa_20261018":
+                connection.close()
+                raise AssertionError("S44_L2A_DEDICATED_DATABASE_REQUIRED")
+            return connection
+        except psycopg.Error:
+            raise AssertionError("S44_L2A_ISOLATED_DATABASE_CONNECTION_FAILED") from None
+
+    def _scope(self, connection):
+        for key, value in (("tenant_id", self.tenant_id), ("workspace_id", self.workspace_id),
+                           ("actor_id", self.actor_id), ("notebook_id", self.notebook)):
+            connection.execute("SELECT set_config(%s,%s,true)", ("app." + key, value))
+
     def setUp(self) -> None:
         assert DSN and ENDPOINT and BUCKET and ACCESS_KEY and SECRET_KEY and MANIFEST_KEY
+        # 어떤 DML/Object 쓰기보다 먼저 독립 DB 경계를 검사한다.
+        with self._connect():
+            pass
+        self.file_root = Path(os.environ.get("DAON_RECOVERY_CAPTURE_TEST_ROOT", "D:/tmp/daon-user-s44-l2a-eoul2-20261018"))
+        if not self.file_root.is_absolute() or self.file_root.name not in {
+                "daon-user-s44-l2a-eoul2-20261018", "daon-user-s44-l2a-main-20261018"}:
+            raise AssertionError("S44_EXACT_TEST_ROOT_REQUIRED")
+        if os.name == "nt" and self.file_root.parent != Path("D:/tmp"):
+            raise AssertionError("S44_EXACT_TEST_ROOT_REQUIRED")
+        if self.file_root.exists() or self.file_root.is_symlink():
+            raise AssertionError("S44_TEST_ROOT_MUST_BE_NEW")
+        for parent in (self.file_root.parent, *self.file_root.parent.parents):
+            if parent.is_symlink() or getattr(parent.lstat(), "st_file_attributes", 0) & 0x400:
+                raise AssertionError("S44_TEST_ROOT_LINK_FORBIDDEN")
+        self.file_root.mkdir()
+        self.addCleanup(self._cleanup_files)
+        self.archive = self.file_root / "archive"
+        self.archive.mkdir()
         suffix = secrets.token_hex(6)
+        self.suffix = suffix
         self.tenant_id = f"fixture-tenant-{suffix}"
         self.workspace_id = f"fixture-workspace-{suffix}"
         self.actor_id = f"actor-{suffix}"
+        self.notebook = f"notebook-{suffix}"
+        self.version_id = f"version-{suffix}"
+        self.source_id = f"source-{suffix}"
         self.object_id = secrets.token_hex(16)
         self.content = f"R1-M5-07-C02:{suffix}".encode()
         self.digest = hashlib.sha256(self.content).hexdigest()
@@ -383,11 +538,14 @@ class PostgresRecoveryIntegrationTests(unittest.TestCase):
             self.workspace_id,
             self.actor_id,
             f"trace-{suffix}",
-            "policy-c02",
+            "runtime-policy-v1",
             organization_admin=True,
+            session_id=f"session-{suffix}", device_id=f"device-{suffix}",
         )
         self.cloud = PostgresCloudStore(DSN)
+        self.addCleanup(self.cloud.close)
         self.queue = PostgresObjectQueueStore(DSN)
+        self.addCleanup(self.queue.close)
         self.object_storage = MinioObjectStorageAdapter(
             endpoint=ENDPOINT,
             bucket=BUCKET,
@@ -395,10 +553,14 @@ class PostgresRecoveryIntegrationTests(unittest.TestCase):
             secret_key=SECRET_KEY,
             secure=False,
         )
+        self.object_keys = set()
+        self.addCleanup(self._cleanup_objects)
         scope = CloudAccessContext(
             self.tenant_id, self.workspace_id, self.actor_id, "object.write"
         )
         self.cloud.seed_scope(scope)
+        self.object_keys.update((ObjectKeyPolicy().final_key(scope, "source", self.object_id),
+                                 ObjectKeyPolicy().staging_key(scope, "source", self.object_id)))
         coordinator = ObjectQueueCoordinator(
             self.queue, self.object_storage, id_factory=lambda: self.object_id
         )
@@ -414,22 +576,180 @@ class PostgresRecoveryIntegrationTests(unittest.TestCase):
         completed = worker.run_once(scope, now=datetime.now(timezone.utc))
         self.assertIsNotNone(completed)
         self.assertEqual(completed.state, "completed")
-        self.storage = MinioRecoveryStorageAdapter(self.object_storage)
+        self.opens, self.bytes_read = [], [0]
+        test = self
+        class ObservedMinioStorage(MinioRecoveryStorageAdapter):
+            @contextmanager
+            def open_source(self, context, item):
+                test.opens.append(item.object_id)
+                with super().open_source(context, item) as response:
+                    class ReadProbe:
+                        def read(self, count):
+                            value = response.read(count)
+                            test.bytes_read[0] += len(value)
+                            return value
+                    yield ReadProbe()
+            def verify_source(self, *args):
+                raise AssertionError("V2_MUST_STREAM_NOT_WHOLE_SOURCE_GET")
+        self.storage = ObservedMinioStorage(self.object_storage)
+        self.capture_store = FileCaptureStore(self.archive, master_key=MANIFEST_KEY,
+            key_version="integration-v2", key_reference="DAON_RECOVERY_MANIFEST_KEY_FILE")
+        from daon_user_api.studio_workspace_postgres import PostgresStudioWorkspaceRepository as Canon
+        with self._connect() as connection:
+            ctx = self.context
+            connection.execute("INSERT INTO identity_users(user_id,issuer,subject,state) VALUES(%s,'s44-l2a',%s,'active')", (ctx.actor_id, ctx.actor_id))
+            connection.execute("INSERT INTO identity_tenants(tenant_id) VALUES(%s)", (ctx.tenant_id,))
+            connection.execute("INSERT INTO identity_memberships(tenant_id,user_id,role) VALUES(%s,%s,'organization_admin')", (ctx.tenant_id, ctx.actor_id))
+            connection.execute("INSERT INTO identity_auth_workspaces VALUES(%s,%s,'organization','cloud_sync',1000,1,1,now())", (ctx.workspace_id, ctx.tenant_id))
+            connection.execute("INSERT INTO identity_auth_tenant_roles VALUES(%s,%s,'organization_admin','active',1,now())", (ctx.tenant_id, ctx.actor_id))
+            connection.execute("INSERT INTO identity_auth_tenant_policies VALUES(%s,1,now())", (ctx.tenant_id,))
+            connection.execute("INSERT INTO identity_auth_workspace_policies VALUES(%s,%s,1,now())", (ctx.tenant_id, ctx.workspace_id))
+            self._scope(connection)
+            connection.execute("INSERT INTO notebooks(tenant_id,workspace_id,notebook_id,created_by,created_at) VALUES(%s,%s,%s,%s,now())",
+                (ctx.tenant_id, ctx.workspace_id, self.notebook, ctx.actor_id))
+            connection.execute("INSERT INTO notebook_metadata_versions(tenant_id,workspace_id,notebook_id,version,title,is_current,updated_by,updated_at) VALUES(%s,%s,%s,1,'S44 synthetic source',true,%s,now())",
+                (ctx.tenant_id, ctx.workspace_id, self.notebook, ctx.actor_id))
+            Canon._insert(connection, ctx, "sources", self.source_id, {"filename": "S44-synthetic.txt"}, state="registered")
+            Canon._insert(connection, ctx, "source_versions", self.version_id,
+                {"object_id": self.object_id, "content_digest_sha256": self.digest, "byte_size": len(self.content)},
+                extra_columns=("source_id", "object_id"), extra_values=(self.source_id, self.object_id))
+            connection.execute("INSERT INTO notebook_bindings(tenant_id,workspace_id,notebook_id,binding_kind,record_id,version_id,created_by,created_at) VALUES(%s,%s,%s,'source',%s,%s,%s,now())",
+                (ctx.tenant_id, ctx.workspace_id, self.notebook, self.source_id, self.version_id, ctx.actor_id))
+        self.resolver = recovery_postgres.PostgresBackupSelectionResolver(self.cloud)
+        self.selection = BackupSelectionInput(self.notebook, (self.version_id,))
 
-    def tearDown(self) -> None:
-        self.queue.close()
-        self.cloud.close()
+    def _cleanup_objects(self):
+        # 이 시험이 제출한 정확 합성 key만 회수한다. bucket/DB 전체 삭제는 main 소유다.
+        for key in sorted(self.object_keys):
+            self.object_storage.delete(key)
+
+    def _cleanup_files(self):
+        if self.file_root.resolve() != self.file_root or self.file_root.is_symlink():
+            raise AssertionError("S44_TEST_CLEANUP_BOUNDARY_INVALID")
+        shutil.rmtree(self.file_root)
+        self.assertFalse(self.file_root.exists())
 
     def _service(self) -> PostgresRecoveryService:
         assert DSN and MANIFEST_KEY
-        return PostgresRecoveryService(
+        service = PostgresRecoveryService(
             DSN,
             self.storage,
             manifest_key=MANIFEST_KEY,
             clock=lambda: datetime.now(timezone.utc),
+            capture_store=self.capture_store,
         )
+        self.addCleanup(service.close)
+        return service
+
+    def _create_selected(self, service, key):
+        def current():
+            resolved = self.resolver.resolve(self.context, self.selection, idempotency_key=key)
+            return resolved, self.resolver.capture_metadata(self.context, resolved)
+        resolved, metadata = current()
+        return service.create_selected_backup(self.context, resolved, metadata,
+            idempotency_key=key, recheck=current)
+
+    def test_v2_capture_survives_source_removal_restart_but_materializer_is_unavailable(self) -> None:
+        first = self._service()
+        backup = self._create_selected(first, f"backup-{self.object_id}")
+        self.assertEqual(backup.state, "ready")
+        self.assertEqual(self.opens, [self.object_id])
+        self.assertEqual(self.bytes_read[0], len(self.content))
+        with self._connect() as connection:
+            self._scope(connection)
+            manifest = connection.execute("SELECT manifest_version,encrypted_inventory FROM backup_manifests WHERE backup_id=%s", (backup.backup_id,)).fetchone()
+        self.assertEqual(manifest[0], 2)
+        scope, receipt = decode_manifest(bytes(manifest[1]), master_key=MANIFEST_KEY,
+            key_version="integration-v2", key_reference="DAON_RECOVERY_MANIFEST_KEY_FILE")
+        self.object_storage.delete(ObjectKeyPolicy().final_key(self.context, "source", self.object_id))
+        first.close()
+        self.capture_store = FileCaptureStore(self.archive, master_key=MANIFEST_KEY,
+            key_version="integration-v2", key_reference="DAON_RECOVERY_MANIFEST_KEY_FILE")
+        restarted = self._service()
+        persisted = restarted.get_backup(self.context, backup.backup_id)
+        self.assertEqual(persisted.manifest_digest, backup.manifest_digest)
+        result = self.capture_store.restore(scope, self.file_root / "restored", expected_receipt=receipt)
+        self.assertEqual(result[self.object_id].read_bytes(), self.content)
+        self.assertEqual(self.capture_store.verify(scope).metadata["source_versions"][0]["record_id"], self.version_id)
+        # 등록 target/materializer가 없는 L2-A에서 preview_ready/completed를 만들지 않는다.
+        with self.assertRaises(RecoveryError) as caught:
+            restarted.create_restore_preview(self.context, backup.backup_id, destination=RestoreDestination(
+                f"fixture-target-tenant-{self.object_id[:8]}",
+                f"fixture-target-workspace-{self.object_id[:8]}",
+                f"fixture-target-database-{self.object_id[:8]}",
+                f"fixture-target-bucket-{self.object_id[:8]}",
+            ), idempotency_key=f"preview-{self.object_id}", step_up_verified=True)
+        self.assertEqual(caught.exception.status, 503)
+        self.assertEqual(self.opens, [self.object_id], "원본 부재 이후에는 보존본만 읽어야 한다")
+        with self._connect() as connection:
+            self._scope(connection)
+            self.assertEqual(connection.execute("SELECT count(*) FROM restore_requests WHERE tenant_id=%s AND workspace_id=%s",
+                (self.tenant_id, self.workspace_id)).fetchone()[0], 0)
+
+        wrong_workspace = RecoveryContext(
+            self.tenant_id,
+            f"wrong-{self.workspace_id}",
+            self.actor_id,
+            self.context.trace_id,
+            self.context.policy_version,
+            organization_admin=True,
+        )
+        with self.assertRaisesRegex(Exception, "BACKUP_UNAVAILABLE"):
+            restarted.get_backup(wrong_workspace, backup.backup_id)
+        with self.assertRaisesRegex(Exception, "BACKUP_UNAVAILABLE"):
+            restarted.locate_backup_workspace(
+                f"wrong-{self.tenant_id}", backup.backup_id
+            )
+        restarted.close()
+
+    def test_real_minio_missing_and_corrupt_reads_never_create_ready(self) -> None:
+        service = self._service()
+        key = ObjectKeyPolicy().final_key(self.context, "source", self.object_id)
+        self.object_storage.delete(key)
+        with self.assertRaises(RecoveryError):
+            self._create_selected(service, f"missing-{self.object_id}")
+        self.assertEqual(self.opens, [self.object_id], "입구 503가 아니라 실제 MinIO open 시도여야 한다")
+        self.assertEqual(self.bytes_read[0], 0)
+        corrupt = b"x" * len(self.content)
+        self.object_storage._client.put_object(BUCKET, key, io.BytesIO(corrupt), len(corrupt), content_type="application/octet-stream")
+        with self.assertRaises(RecoveryError):
+            self._create_selected(service, f"corrupt-{self.object_id}")
+        self.assertEqual(self.opens, [self.object_id, self.object_id])
+        self.assertEqual(self.bytes_read[0], len(corrupt), "손상 bytes를 실제 읽은 뒤 거부해야 한다")
+        with self._connect() as connection:
+            self._scope(connection)
+            self.assertEqual(connection.execute("SELECT count(*) FROM backup_records WHERE tenant_id=%s AND workspace_id=%s",
+                (self.tenant_id, self.workspace_id)).fetchone()[0], 0)
+        self.assertEqual(list(self.archive.glob("*/receipt.bin")), [])
+
+    def test_historical_v1_get_is_preserved_but_independent_preview_is_409(self):
+        service = self._service()
+        backup_id = "historical-v1-" + self.suffix
+        envelope = service._encode_objects((BackupObjectInput(self.object_id, self.digest, len(self.content)),))
+        # 과거 원장을 명시 seed한다. create_backup/v2 capture 성공을 가장하지 않는다.
+        with service._transaction(self.tenant_id, self.workspace_id, self.actor_id) as connection:
+            now = datetime.now(timezone.utc)
+            revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
+            audit = service._append_audit(connection, self.context, "backup.requested", "backup", backup_id)
+            connection.execute("INSERT INTO backup_record_locator(tenant_id,backup_id,workspace_id,created_at) VALUES(%s,%s,%s,%s)",
+                (self.tenant_id, backup_id, self.workspace_id, now))
+            connection.execute("INSERT INTO backup_records(tenant_id,workspace_id,backup_id,actor_id,trigger_type,state,version,schema_revision,retention_watermark,policy_version,trace_id,audit_event_id,idempotency_key,request_fingerprint,created_at) VALUES(%s,%s,%s,%s,'manual','queued',1,%s,'historical-watermark',%s,%s,%s,%s,%s,%s)",
+                (self.tenant_id, self.workspace_id, backup_id, self.actor_id, revision, self.context.policy_version, self.context.trace_id, audit, backup_id, "a" * 64, now))
+            connection.execute("INSERT INTO backup_manifests(tenant_id,workspace_id,backup_id,manifest_version,manifest_digest,encrypted_inventory,object_count,created_at) VALUES(%s,%s,%s,1,%s,%s,1,%s)",
+                (self.tenant_id, self.workspace_id, backup_id, hashlib.sha256(envelope).hexdigest(), envelope, now))
+            for state in ("capturing", "verifying", "ready"):
+                connection.execute("UPDATE backup_records SET state=%s,version=version+1,verified_at=%s WHERE backup_id=%s", (state, now, backup_id))
+        self.assertEqual(service.get_backup(self.context, backup_id).state, "ready")
+        with self.assertRaises(RecoveryError) as caught:
+            service.create_restore_preview(self.context, backup_id,
+                destination=RestoreDestination("fixture-tenant", "fixture-workspace", "fixture-db", "fixture-bucket"),
+                idempotency_key="historical-preview-" + self.suffix, step_up_verified=True)
+        self.assertEqual(caught.exception.status, 409)
+        self.assertEqual(self.opens, [])
 
     def test_backup_and_restore_survive_service_restart_and_touch_real_stores(self) -> None:
+        # 원업무 L3 합격 기준 보존: 현재 v1 준비 입구/실 materializer가 없어 NOT RUN이다.
+        # 이 시험을 409/503 기대나 fake v2로 바꾸어 녹색화하지 않는다.
         first = self._service()
         backup = first.create_backup(
             self.context,
@@ -441,7 +761,6 @@ class PostgresRecoveryIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(backup.state, "ready")
         first.close()
-
         restarted = self._service()
         persisted = restarted.get_backup(self.context, backup.backup_id)
         self.assertEqual(persisted.manifest_digest, backup.manifest_digest)
@@ -466,72 +785,18 @@ class PostgresRecoveryIntegrationTests(unittest.TestCase):
             step_up_verified=True,
         )
         self.assertEqual(restored.state, "completed")
-        self.assertEqual(
-            self.storage.read_fixture(restored.preview.destination, self.object_id),
-            self.content,
-        )
-        with psycopg.connect(DSN) as connection:
-            connection.execute(
-                "SELECT set_config('app.tenant_id', %s, true)",
-                (restored.preview.destination.tenant_id,),
-            )
-            connection.execute(
-                "SELECT set_config('app.workspace_id', %s, true)",
-                (restored.preview.destination.workspace_id,),
-            )
-            target = connection.execute(
-                "SELECT digest_sha256,byte_size,status FROM object_records WHERE object_id=%s",
-                (self.object_id,),
-            ).fetchone()
+        self.assertEqual(self.storage.read_fixture(restored.preview.destination, self.object_id), self.content)
+        with self._connect() as connection:
+            connection.execute("SELECT set_config('app.tenant_id', %s, true)", (restored.preview.destination.tenant_id,))
+            connection.execute("SELECT set_config('app.workspace_id', %s, true)", (restored.preview.destination.workspace_id,))
+            target = connection.execute("SELECT digest_sha256,byte_size,status FROM object_records WHERE object_id=%s", (self.object_id,)).fetchone()
         self.assertEqual(target, (self.digest, len(self.content), "completed"))
-
-        wrong_workspace = RecoveryContext(
-            self.tenant_id,
-            f"wrong-{self.workspace_id}",
-            self.actor_id,
-            self.context.trace_id,
-            self.context.policy_version,
-            organization_admin=True,
-        )
+        wrong_workspace = replace(self.context, workspace_id=f"wrong-{self.workspace_id}")
         with self.assertRaisesRegex(Exception, "BACKUP_UNAVAILABLE"):
             restarted.get_backup(wrong_workspace, backup.backup_id)
         with self.assertRaisesRegex(Exception, "BACKUP_UNAVAILABLE"):
-            restarted.locate_backup_workspace(
-                f"wrong-{self.tenant_id}", backup.backup_id
-            )
+            restarted.locate_backup_workspace(f"wrong-{self.tenant_id}", backup.backup_id)
         restarted.close()
-
-    def test_missing_and_corrupt_source_objects_fail_closed(self) -> None:
-        service = self._service()
-        try:
-            with self.assertRaisesRegex(Exception, "RESOURCE_UNAVAILABLE"):
-                service.create_backup(
-                    self.context,
-                    trigger="manual",
-                    schema_revision="0006",
-                    retention_watermark="watermark-c02",
-                    objects=(
-                        BackupObjectInput(
-                            secrets.token_hex(16), self.digest, len(self.content)
-                        ),
-                    ),
-                    idempotency_key=f"missing-{self.object_id}",
-                )
-            with self.assertRaisesRegex(Exception, "RESOURCE_UNAVAILABLE"):
-                service.create_backup(
-                    self.context,
-                    trigger="manual",
-                    schema_revision="0006",
-                    retention_watermark="watermark-c02",
-                    objects=(
-                        BackupObjectInput(
-                            self.object_id, "0" * 64, len(self.content)
-                        ),
-                    ),
-                    idempotency_key=f"corrupt-{self.object_id}",
-                )
-        finally:
-            service.close()
 
 
 class RecoveryRuntimeFailCloseTests(unittest.TestCase):
