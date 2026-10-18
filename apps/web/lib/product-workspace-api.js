@@ -479,6 +479,26 @@ export async function listWorkspaceKnowledgePackages(
   return payload.data.items;
 }
 
+const OPERATIONS_METRICS = Object.freeze(["document_pending", "document_retry_wait", "document_leased", "document_dead_letter",
+  "object_pending", "object_retry_wait", "object_leased", "object_dead_letter", "object_oldest_pending_seconds",
+  "source_waiting_model", "index_records_current", "source_storage_bytes", "reported_prompt_tokens", "reported_completion_tokens",
+  "reported_total_tokens", "attempts_without_reported_usage"]);
+const OBSERVATION_CODES = { measured: "METRIC_RECORDED", partial: "METRIC_PARTIAL", not_collected: "METRIC_NOT_COLLECTED", unavailable: "METRIC_UNAVAILABLE" };
+function observationTime(value) {
+  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/u.test(value)
+    && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 19) === value.slice(0, 19);
+}
+function validObservations(rows) {
+  return Array.isArray(rows) && rows.length === 16 && rows.every((row, index) =>
+    exact(row, ["metric_id", "state", "value", "unit", "observed_at", "coverage", "safe_code"])
+    && row.metric_id === OPERATIONS_METRICS[index] && typeof row.state === "string" && Object.hasOwn(OBSERVATION_CODES, row.state)
+    && row.safe_code === OBSERVATION_CODES[row.state]
+    && row.unit === (index === 8 ? "seconds" : index === 11 ? "bytes" : index >= 12 && index <= 14 ? "tokens" : "count")
+    && row.coverage === (index < 9 ? "workspace_operational_counts" : "actor_accessible_records")
+    && (["not_collected", "unavailable"].includes(row.state) ? row.value === null && row.observed_at === null
+      : Number.isSafeInteger(row.value) && row.value >= 0 && observationTime(row.observed_at)));
+}
+
 export async function getWorkspaceOperationsStatus(
   workspaceId, { fetchImpl = fetch, signal } = {},
 ) {
@@ -498,7 +518,7 @@ export async function getWorkspaceOperationsStatus(
   const data = payload?.data;
   const components = data?.components;
   const valid = exact(payload, ["data", "meta"])
-    && exact(data, ["workspace_id", "overall_status", "checked_at", "components"])
+    && exact(data, ["workspace_id", "overall_status", "checked_at", "components", "observations"])
     && data.workspace_id === workspace
     && new Set(["ready", "warning", "error"]).has(data.overall_status)
     && typeof data.checked_at === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/u.test(data.checked_at)
@@ -509,7 +529,7 @@ export async function getWorkspaceOperationsStatus(
       && typeof item.safe_code === "string" && /^[A-Z][A-Z0-9_]{2,63}$/u.test(item.safe_code)
       && Number.isSafeInteger(item.pending_count) && item.pending_count >= 0
       && new Set(["none", "open_llm_settings", "open_sync_settings", "refresh_status"]).has(item.recovery_action))
-    && validMeta(payload.meta, workspace);
+    && validObservations(data.observations) && validMeta(payload.meta, workspace);
   if (!valid) throw new Error("OPERATIONS_STATUS_RESPONSE_INVALID");
   return data;
 }

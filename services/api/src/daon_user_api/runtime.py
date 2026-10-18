@@ -6900,7 +6900,8 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             )
             view = await asyncio.to_thread(
                 operations_status_service.read,
-                OperationsStatusContext(principal.tenant_id, id, principal.user_id),
+                OperationsStatusContext(principal.tenant_id, id, principal.user_id,
+                    request.state.trace_id, dependencies.settings.policy_version),
                 active_providers=sum(
                     1 for item in snapshot.profiles
                     if item.active and item.credential_configured
@@ -6915,8 +6916,24 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             )
         except OperationsStatusError:
             raise
+        except (IdentityError, AuthorizationError, NotificationError, HTTPException):
+            raise
         except Exception:
             raise OperationsStatusError() from None
+        current = _principal(request, dependencies)
+        if (current.tenant_id, current.user_id, current.session_id, current.device_id) != (
+                principal.tenant_id, principal.user_id, principal.session_id, principal.device_id):
+            raise AuthorizationError("CURRENT_ACCESS_DENIED", 403)
+        # 기존 VIEW 판정의 읽기만 재사용한다. authorize_action을 반복해 감사 쓰기를 늘리지 않는다.
+        with dependencies.authorization_service._repository.transaction() as connection:
+            workspace = connection.execute("SELECT * FROM auth_workspaces WHERE tenant_id=? AND workspace_id=?",
+                (current.tenant_id, id)).fetchone()
+            if workspace is None: raise AuthorizationError("CURRENT_ACCESS_DENIED", 403)
+            dependencies.authorization_service._assert_organization_active(connection, current, workspace)
+            binding = dependencies.authorization_service._role_binding(connection, current, workspace)
+            if dependencies.authorization_service._action_grant(connection, principal=current, workspace=workspace,
+                    binding=binding, action=Action.VIEW, requested_permissions=()) is None:
+                raise AuthorizationError("CURRENT_ACCESS_DENIED", 403)
         return _json_with_etag({
             "data": _dataclass_json(view),
             "meta": {"trace_id": request.state.trace_id, "workspace_id": id},

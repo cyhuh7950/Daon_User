@@ -105,6 +105,15 @@ function projectedTarget(response, target, tenantId) {
 
 const COMPONENT_NAMES = { provider: "Provider 설정", api: "API", storage: "DB·Object Storage", sync: "동기화", queue: "작업 Queue" };
 const STATUS_NAMES = { ready: "준비", warning: "주의", error: "오류" };
+const OBSERVATION_NAMES = {
+  document_pending: "문서 처리 대기", document_retry_wait: "문서 재시도 대기", document_leased: "문서 lease", document_dead_letter: "문서 처리 실패 대기",
+  object_pending: "Object 대기", object_retry_wait: "Object 재시도 대기", object_leased: "Object lease", object_dead_letter: "Object 실패 대기",
+  object_oldest_pending_seconds: "Object 가장 오래된 대기", source_waiting_model: "모델 대기 Source", index_records_current: "현재 결속 Index 기록",
+  source_storage_bytes: "접근 가능한 원본 Object 저장량", reported_prompt_tokens: "보고된 Prompt Token", reported_completion_tokens: "보고된 Completion Token",
+  reported_total_tokens: "보고된 Total Token", attempts_without_reported_usage: "usage 누락/불완전 attempt",
+};
+const OBSERVATION_STATES = { measured: "기록 확인", partial: "부분 기록", not_collected: "미수집", unavailable: "조회 불가" };
+const OBSERVATION_UNITS = { count: "건", bytes: "bytes", tokens: "tokens", seconds: "초" };
 const errorState = error => error?.status === 401 ? "unauthenticated" : error?.status === 403 ? "forbidden"
   : error?.status === 404 ? "notFound" : "unavailable";
 
@@ -449,11 +458,21 @@ export function RecoveryOperationsWorkspace({ api = recoveryApi } = {}) {
             }} />
           <h2>현재 Workspace 운영 상태</h2>
           {loaded.home.status ? <>
-            <p>전체 상태: {STATUS_NAMES[loaded.home.status.overall_status]} · 확인 시각: {loaded.home.status.checked_at}</p>
+            <p>기존 5종 상태: {STATUS_NAMES[loaded.home.status.overall_status]} · 확인 시각: {loaded.home.status.checked_at}</p>
             <ul>{loaded.home.status.components.map(item => <li key={item.component_id}>
               {COMPONENT_NAMES[item.component_id]} · {STATUS_NAMES[item.status]} · {item.safe_code} · 대기 {item.pending_count}건
             </li>)}</ul>
             <p>Provider는 설정 상태이며 모델 실제 호출 결과가 아닙니다. 대기 건수는 실패 건수가 아닙니다.</p>
+            <h3>기존 기록 운영 관측 16종</h3>
+            <dl aria-label="기존 기록 운영 관측 16종">{Object.entries(OBSERVATION_NAMES).map(([id, label]) => {
+              const row = loaded.home.status.observations?.find(item => item.metric_id === id);
+              const state = row && Object.hasOwn(OBSERVATION_STATES, row.state) ? row.state : "unavailable";
+              const measured = ["measured", "partial"].includes(state) && Number.isSafeInteger(row?.value) && row.value >= 0;
+              return <div key={id} data-metric-id={id}><dt>{label}</dt><dd>{OBSERVATION_STATES[state]} · {measured ? `${row.value} ${OBSERVATION_UNITS[row.unit] ?? ""}` : "값 미확인"}
+                {measured && serverTimestamp(row.observed_at) ? ` · ${row.observed_at}` : ""}</dd></div>;
+            })}</dl>
+            <p>자료·Token은 본인의 현재 접근 가능한 기록만 집계합니다. Queue는 기존 Workspace 운영 집계입니다. Token 누락은 0으로 계산하지 않으며 기간 전체 사용량이 아닙니다.</p>
+            <p>실제 비용·Worker heartbeat·Node/모델 용량·차단·Update/Rollback 등의 미수집·미연결 범위는 남아 있습니다. lease와 Index 기록 수는 실제 생존이나 Build 진행률이 아닙니다.</p>
           </> : <p role="status">운영 상태: {MESSAGES[loaded.home.statusError]}</p>}
           <h2>백업 목록</h2>
           {loaded.home.items === null ? <p role="status">백업 목록: {MESSAGES[loaded.home.backupsError]}</p>

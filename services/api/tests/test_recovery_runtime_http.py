@@ -36,6 +36,42 @@ from test_identity_support import (
 
 
 class RecoveryRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
+    async def test_m1_observations_preserve_auth_failure_and_recheck_session(self):
+        from types import SimpleNamespace
+        from daon_user_api import runtime
+        from daon_user_api.operations_status import OperationsStatusService, OperationsCounts, unknown_observations
+        from daon_user_api.authorization import AuthorizationError
+        from daon_user_api.identity import IdentityError
+        from daon_user_api.notification import NotificationError
+        for mode, expected in (("read", 200), ("auth401", 401), ("auth403", 403),
+                ("notification403", 403), ("notification-contract", 503), ("changed", 403)):
+            class Repository:
+                def read_counts(inner, context): return OperationsCounts(0, 0, 0)
+                def read_observations(inner, context):
+                    self.assertEqual(context.trace_id, "trace-m1-current-request")
+                    self.assertEqual(context.policy_version, self.dependencies.settings.policy_version)
+                    if mode == "auth401": raise IdentityError("EXPIRED_SESSION", 401)
+                    if mode == "auth403": raise AuthorizationError("ACTION_DENIED", 403)
+                    if mode == "notification403": raise NotificationError("ACCESS_DENIED", 403)
+                    if mode == "notification-contract": raise NotificationError("DATABASE_RESPONSE_INVALID", 503)
+                    return unknown_observations()
+            deps = replace(self.dependencies, operations_status_service=OperationsStatusService(Repository()))
+            original, calls = runtime._principal, []
+            def principal(request, dependencies):
+                value = original(request, dependencies); calls.append(True)
+                return replace(value, session_id="changed-session") if mode == "changed" and len(calls) > 1 else value
+            with patch.object(runtime, "_principal", side_effect=principal):
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(deps)), base_url="https://app.example.com",
+                    cookies={WEB_SESSION_COOKIE: self.credentials.access_token}) as client:
+                    result = await client.get(f"/api/v1/workspaces/{self.workspace_id}/operations/status",
+                        headers={"x-trace-id": "trace-m1-current-request"})
+            self.assertEqual(result.status_code, expected, mode)
+            # 기존 Notification handler는 내부 DB 오류를 RESOURCE_UNAVAILABLE로 안전 투영한다.
+            if mode == "notification-contract": self.assertEqual(result.json()["error"]["code"], "RESOURCE_UNAVAILABLE")
+            if expected == 200:
+                self.assertEqual(len(result.json()["data"]["observations"]), 16)
+                self.assertEqual(len(result.json()["data"]["components"]), 5)
+
     async def test_l2_selection_passes_exact_resolver_metadata_and_rechecks_session_before_capture_commit(self) -> None:
         """ASGI 포트 연결 시험. 실제 capture/PG/ready 성공을 대체하지 않는다."""
         from types import SimpleNamespace

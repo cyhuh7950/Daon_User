@@ -8534,13 +8534,62 @@
           "meta": { "type": "object", "additionalProperties": true }
         }
       },
+      "OperationsObservation": {
+        "type": "object", "additionalProperties": false,
+        "required": ["metric_id", "state", "value", "unit", "observed_at", "coverage", "safe_code"],
+        "properties": {
+          "metric_id": { "type": "string" },
+          "state": { "type": "string", "enum": ["measured", "partial", "not_collected", "unavailable"] },
+          "value": { "type": ["integer", "null"], "minimum": 0, "maximum": 9007199254740991 },
+          "unit": { "type": "string", "enum": ["count", "bytes", "tokens", "seconds"] },
+          "observed_at": { "type": ["string", "null"], "format": "date-time", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$" },
+          "coverage": { "type": "string", "enum": ["actor_accessible_records", "workspace_operational_counts"] },
+          "safe_code": { "type": "string", "enum": ["METRIC_RECORDED", "METRIC_PARTIAL", "METRIC_NOT_COLLECTED", "METRIC_UNAVAILABLE"] }
+        },
+        "allOf": [
+          { "oneOf": [
+            { "properties": { "metric_id": { "enum": ["document_pending", "document_retry_wait", "document_leased", "document_dead_letter", "object_pending", "object_retry_wait", "object_leased", "object_dead_letter"] }, "unit": { "const": "count" }, "coverage": { "const": "workspace_operational_counts" } } },
+            { "properties": { "metric_id": { "const": "object_oldest_pending_seconds" }, "unit": { "const": "seconds" }, "coverage": { "const": "workspace_operational_counts" } } },
+            { "properties": { "metric_id": { "enum": ["source_waiting_model", "index_records_current", "attempts_without_reported_usage"] }, "unit": { "const": "count" }, "coverage": { "const": "actor_accessible_records" } } },
+            { "properties": { "metric_id": { "const": "source_storage_bytes" }, "unit": { "const": "bytes" }, "coverage": { "const": "actor_accessible_records" } } },
+            { "properties": { "metric_id": { "enum": ["reported_prompt_tokens", "reported_completion_tokens", "reported_total_tokens"] }, "unit": { "const": "tokens" }, "coverage": { "const": "actor_accessible_records" } } }
+          ] },
+          { "oneOf": [
+            { "properties": { "state": { "const": "measured" }, "safe_code": { "const": "METRIC_RECORDED" }, "value": { "type": "integer" }, "observed_at": { "type": "string" } } },
+            { "properties": { "state": { "const": "partial" }, "safe_code": { "const": "METRIC_PARTIAL" }, "value": { "type": "integer" }, "observed_at": { "type": "string" } } },
+            { "properties": { "state": { "const": "not_collected" }, "safe_code": { "const": "METRIC_NOT_COLLECTED" }, "value": { "type": "null" }, "observed_at": { "type": "null" } } },
+            { "properties": { "state": { "const": "unavailable" }, "safe_code": { "const": "METRIC_UNAVAILABLE" }, "value": { "type": "null" }, "observed_at": { "type": "null" } } }
+          ] }
+        ]
+      },
       "OperationsStatus": {
         "type": "object", "additionalProperties": false,
-        "required": ["workspace_id", "overall_status", "checked_at", "components"],
+        "required": ["workspace_id", "overall_status", "checked_at", "components", "observations"],
         "properties": {
           "workspace_id": { "$ref": "#/components/schemas/OpaqueId" },
           "overall_status": { "type": "string", "enum": ["ready", "warning", "error"] },
           "checked_at": { "type": "string", "format": "date-time" },
+          "observations": {
+            "type": "array", "minItems": 16, "maxItems": 16, "items": false,
+            "prefixItems": [
+              { "allOf": [{ "$ref": "#/components/schemas/OperationsObservation" }, { "properties": { "metric_id": { "const": "document_pending" } } }] },
+              { "allOf": [{ "$ref": "#/components/schemas/OperationsObservation" }, { "properties": { "metric_id": { "const": "document_retry_wait" } } }] },
+              { "allOf": [{ "$ref": "#/components/schemas/OperationsObservation" }, { "properties": { "metric_id": { "const": "document_leased" } } }] },
+              { "allOf": [{ "$ref": "#/components/schemas/OperationsObservation" }, { "properties": { "metric_id": { "const": "document_dead_letter" } } }] },
+              { "allOf": [{ "$ref": "#/components/schemas/OperationsObservation" }, { "properties": { "metric_id": { "const": "object_pending" } } }] },
+              { "allOf": [{ "$ref": "#/components/schemas/OperationsObservation" }, { "properties": { "metric_id": { "const": "object_retry_wait" } } }] },
+              { "allOf": [{ "$ref": "#/components/schemas/OperationsObservation" }, { "properties": { "metric_id": { "const": "object_leased" } } }] },
+              { "allOf": [{ "$ref": "#/components/schemas/OperationsObservation" }, { "properties": { "metric_id": { "const": "object_dead_letter" } } }] },
+              { "allOf": [{ "$ref": "#/components/schemas/OperationsObservation" }, { "properties": { "metric_id": { "const": "object_oldest_pending_seconds" } } }] },
+              { "allOf": [{ "$ref": "#/components/schemas/OperationsObservation" }, { "properties": { "metric_id": { "const": "source_waiting_model" } } }] },
+              { "allOf": [{ "$ref": "#/components/schemas/OperationsObservation" }, { "properties": { "metric_id": { "const": "index_records_current" } } }] },
+              { "allOf": [{ "$ref": "#/components/schemas/OperationsObservation" }, { "properties": { "metric_id": { "const": "source_storage_bytes" } } }] },
+              { "allOf": [{ "$ref": "#/components/schemas/OperationsObservation" }, { "properties": { "metric_id": { "const": "reported_prompt_tokens" } } }] },
+              { "allOf": [{ "$ref": "#/components/schemas/OperationsObservation" }, { "properties": { "metric_id": { "const": "reported_completion_tokens" } } }] },
+              { "allOf": [{ "$ref": "#/components/schemas/OperationsObservation" }, { "properties": { "metric_id": { "const": "reported_total_tokens" } } }] },
+              { "allOf": [{ "$ref": "#/components/schemas/OperationsObservation" }, { "properties": { "metric_id": { "const": "attempts_without_reported_usage" } } }] }
+            ]
+          },
           "components": {
             "type": "array", "minItems": 5, "maxItems": 5,
             "items": {

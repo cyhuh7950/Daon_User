@@ -152,7 +152,9 @@ const operations = () => ({ workspace_id: "workspace-a", overall_status: "warnin
     { component_id: "storage", status: "ready", safe_code: "STORAGE_READY", pending_count: 0, recovery_action: "none" },
     { component_id: "sync", status: "warning", safe_code: "SYNC_PENDING", pending_count: 1, recovery_action: "open_sync_settings" },
     { component_id: "queue", status: "warning", safe_code: "QUEUE_ATTENTION_REQUIRED", pending_count: 0, recovery_action: "refresh_status" },
-  ] });
+  ], observations: ["document_pending", "document_retry_wait", "document_leased", "document_dead_letter", "object_pending", "object_retry_wait", "object_leased", "object_dead_letter", "object_oldest_pending_seconds", "source_waiting_model", "index_records_current", "source_storage_bytes", "reported_prompt_tokens", "reported_completion_tokens", "reported_total_tokens", "attempts_without_reported_usage"].map((metric_id, index) => ({ metric_id,
+    state: "not_collected", value: null, unit: index === 8 ? "seconds" : index === 11 ? "bytes" : index >= 12 && index <= 14 ? "tokens" : "count",
+    observed_at: null, coverage: index < 9 ? "workspace_operational_counts" : "actor_accessible_records", safe_code: "METRIC_NOT_COLLECTED" })) });
 function homePort(overrides = {}) {
   const p = port();
   p.api.getOperationsStatus = async workspace => { p.calls.push(["status", workspace]); return operations(); };
@@ -756,6 +758,22 @@ test("S44 기존복구 제출 전 입력은 visibility·대상·API 교체에서
       assert.equal(field.value, ""); assert.equal(p.calls.filter(c => ["stepup", "execute", "cancel"].includes(c[0])).length, 0);
     } finally { await view.cleanup(); }
   }
+});
+
+test("M1 운영 홈은 16관측의 partial/null과 남은 미수집 범위를 구분한다", async () => {
+  const data = operations();
+  data.observations[12] = { ...data.observations[12], state: "partial", value: 7, observed_at: "2026-10-19T00:00:00Z", safe_code: "METRIC_PARTIAL" };
+  const p = homePort({ getOperationsStatus: async () => data });
+  const view = await render("", p.api);
+  try {
+    const text = visibleText(view.container);
+    assert.match(text, /기존 5종 상태/u);
+    assert.match(text, /보고된 Prompt Token.*부분 기록.*7/u);
+    assert.match(text, /보고된 Total Token.*미수집/u);
+    assert.match(text, /실제 비용.*heartbeat.*용량.*미수집/u);
+    assert.equal(findElements(view.container, node => node.getAttribute?.("data-metric-id")).length, 16);
+    assert.doesNotMatch(text, /S42_표시금지/u);
+  } finally { await view.cleanup(); }
 });
 
 test("S44 실제 기본 adapter는 홈 GET만 호출하고 목록 선택은 정확 backup GET으로 이어진다", async () => {

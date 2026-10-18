@@ -4,9 +4,63 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Protocol
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+OBSERVATION_IDS = (
+    "document_pending", "document_retry_wait", "document_leased", "document_dead_letter",
+    "object_pending", "object_retry_wait", "object_leased", "object_dead_letter", "object_oldest_pending_seconds",
+    "source_waiting_model", "index_records_current", "source_storage_bytes", "reported_prompt_tokens",
+    "reported_completion_tokens", "reported_total_tokens", "attempts_without_reported_usage",
+)
+OBSERVATION_STATES = {"measured": "METRIC_RECORDED", "partial": "METRIC_PARTIAL",
+    "not_collected": "METRIC_NOT_COLLECTED", "unavailable": "METRIC_UNAVAILABLE"}
+
+
+def observation_scope(metric_id):
+    if metric_id not in OBSERVATION_IDS: raise ValueError("OPERATIONS_OBSERVATION_INVALID")
+    unit = "seconds" if metric_id == "object_oldest_pending_seconds" else "bytes" if metric_id == "source_storage_bytes" else "tokens" if metric_id.startswith("reported_") else "count"
+    coverage = "workspace_operational_counts" if OBSERVATION_IDS.index(metric_id) < 9 else "actor_accessible_records"
+    return unit, coverage
+
+
+@dataclass(frozen=True, slots=True)
+class OperationsObservation:
+    metric_id: str
+    state: str
+    value: int | None
+    unit: str
+    observed_at: str | None
+    coverage: str
+    safe_code: str
+
+    def __post_init__(self):
+        if (not isinstance(self.state, str) or (self.unit, self.coverage) != observation_scope(self.metric_id)
+                or self.state not in OBSERVATION_STATES or self.safe_code != OBSERVATION_STATES[self.state]):
+            raise ValueError("OPERATIONS_OBSERVATION_INVALID")
+        if self.state in {"not_collected", "unavailable"}:
+            if self.value is not None or self.observed_at is not None: raise ValueError("OPERATIONS_OBSERVATION_INVALID")
+        else:
+            if type(self.value) is not int or not 0 <= self.value <= 9007199254740991:
+                raise ValueError("OPERATIONS_OBSERVATION_INVALID")
+            try:
+                if (not isinstance(self.observed_at, str) or re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z", self.observed_at) is None
+                        or datetime.fromisoformat(self.observed_at.replace("Z", "+00:00")).utcoffset() != timezone.utc.utcoffset(None)):
+                    raise ValueError()
+            except (ValueError, TypeError): raise ValueError("OPERATIONS_OBSERVATION_INVALID") from None
+
+
+def unknown_observations(state="not_collected", ids=OBSERVATION_IDS):
+    return tuple(OperationsObservation(metric_id, state, None, observation_scope(metric_id)[0], None,
+        observation_scope(metric_id)[1], OBSERVATION_STATES[state]) for metric_id in ids)
+
+
+def validate_observations(rows):
+    if (not isinstance(rows, tuple) or len(rows) != 16 or not all(isinstance(row, OperationsObservation) for row in rows)
+            or tuple(row.metric_id for row in rows) != OBSERVATION_IDS): raise ValueError("OPERATIONS_OBSERVATIONS_INVALID")
+    for row in rows: row.__post_init__()
+    return rows
 
 
 @dataclass(frozen=True, slots=True)
@@ -14,9 +68,14 @@ class OperationsStatusContext:
     tenant_id: str
     workspace_id: str
     actor_id: str
+    trace_id: str | None = None
+    policy_version: str | None = None
 
     def __post_init__(self) -> None:
         if any(not isinstance(value, str) or not _SAFE_ID.fullmatch(value) for value in (self.tenant_id, self.workspace_id, self.actor_id)):
+            raise ValueError("OPERATIONS_STATUS_CONTEXT_INVALID")
+        if any(value is not None and (not isinstance(value, str) or not _SAFE_ID.fullmatch(value))
+                for value in (self.trace_id, self.policy_version)):
             raise ValueError("OPERATIONS_STATUS_CONTEXT_INVALID")
 
 
@@ -46,6 +105,7 @@ class OperationsStatusView:
     overall_status: str
     checked_at: str
     components: tuple[OperationsComponent, ...]
+    observations: tuple[OperationsObservation, ...] = ()
 
 
 class OperationsStatusRepository(Protocol):
@@ -72,4 +132,9 @@ class OperationsStatusService:
             OperationsComponent("queue", "warning" if counts.queue_pending or counts.queue_failed else "ready", "QUEUE_ATTENTION_REQUIRED" if counts.queue_pending or counts.queue_failed else "QUEUE_READY", counts.queue_pending, "refresh_status" if counts.queue_pending or counts.queue_failed else "none"),
         )
         overall = "error" if any(item.status == "error" for item in components) else "warning" if any(item.status == "warning" for item in components) else "ready"
-        return OperationsStatusView(context.workspace_id, overall, checked_at, components)
+        reader = getattr(self._repository, "read_observations", None)
+        try:
+            observations = validate_observations(reader(context)) if reader is not None else unknown_observations()
+        except ValueError:
+            observations = unknown_observations("unavailable")
+        return OperationsStatusView(context.workspace_id, overall, checked_at, components, observations)

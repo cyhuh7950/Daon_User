@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import psycopg
 import pytest
@@ -12,6 +15,195 @@ from daon_user_api.operations_status import (
     OperationsStatusService,
 )
 from daon_user_api.operations_status_postgres import PostgresOperationsStatusRepository
+
+
+@contextmanager
+def _observation_case(*, sources=None, attempts=None, failed=None):
+    from daon_user_api import operations_status as domain, operations_status_postgres as pg
+    assert hasattr(domain, "OperationsObservation"), "M1 exact observation DTO 필요"
+    context = OperationsStatusContext("tenant-1", "workspace-operations", "actor-1", "trace-observation-test", "policy-test")
+    source = ("tenant-1", "workspace-operations", "notebook-a", "actor-1", "source-a", "waiting_model", "version-a", "object-a", 17, "completed", "index-a")
+    sources = [source] if sources is None else sources
+    attempts = [] if attempts is None else attempts
+    log = []
+    class Connection:
+        def execute(self, sql, parameters=()):
+            log.append((sql, parameters))
+            if failed and failed in sql:
+                from daon_user_api.cloud_storage import CloudDatabaseError
+                raise CloudDatabaseError("DATABASE_UNAVAILABLE", retryable=False)
+            if "FROM document_processing_jobs" in sql: rows = [(1, 2, 3, 4)]
+            elif "FROM durable_jobs" in sql: rows = [(5, 6, 7, 8, 9.8)]
+            elif "JOIN runs r" in sql: rows = attempts
+            else: rows = sources
+            return SimpleNamespace(fetchone=lambda: rows[0] if rows else None, fetchall=lambda: list(rows))
+    class Store:
+        @contextmanager
+        def _transaction(self, scope):
+            assert (scope.tenant_id, scope.workspace_id, scope.actor_id) == ("tenant-1", "workspace-operations", "actor-1")
+            yield Connection()
+    with patch.object(pg, "_source_access_allowed", side_effect=lambda conn, ctx, version: version != "revoked"), \
+         patch.object(pg, "_special_source_access_allowed", side_effect=lambda conn, ctx, version: version != "law-denied"):
+        yield pg.PostgresOperationsStatusRepository(Store()), context, log
+
+
+def test_operations_observations_are_exact_and_null_is_not_zero():
+    with _observation_case() as (repository, context, _):
+        rows = repository.read_observations(context)
+    assert len(rows) == len({row.metric_id for row in rows}) == 16
+    assert rows[8].value == 9 and rows[8].unit == "seconds"
+    assert rows[12].state == "not_collected" and rows[12].value is None and rows[12].observed_at is None
+    from daon_user_api.operations_status import OperationsObservation
+    for value in (True, -1, float("nan")):
+        with pytest.raises(ValueError):
+            OperationsObservation("reported_total_tokens", "measured", value, "tokens", "2026-10-19T00:00:00Z", "actor_accessible_records", "METRIC_RECORDED")
+    with pytest.raises(ValueError):
+        OperationsObservation("document_pending", "not_collected", 0, "count", None, "workspace_operational_counts", "METRIC_NOT_COLLECTED")
+    with pytest.raises(ValueError):
+        OperationsObservation("reported_total_tokens", ["measured"], 7, "tokens", "2026-10-19T00:00:00Z", "actor_accessible_records", "METRIC_RECORDED")
+    with pytest.raises(ValueError):
+        OperationsObservation("reported_total_tokens", "measured", 7, "tokens", "2026-10-19T00:00:00+00:00", "actor_accessible_records", "METRIC_RECORDED")
+
+
+def test_reported_usage_missing_bool_negative_or_duplicate_attempts():
+    common = ("tenant-1", "workspace-operations", "notebook-a", "actor-1", "run-a", "actor-1", ["version-a"])
+    rows = [(*common, "attempt-a", {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7})] * 2
+    rows += [(*common, "attempt-b", {"prompt_tokens": True, "completion_tokens": -1}), (*common, "attempt-c", {})]
+    with _observation_case(attempts=rows) as (repository, context, _):
+        metrics = {row.metric_id: row for row in repository.read_observations(context)}
+    assert metrics["reported_prompt_tokens"].value == 3
+    assert metrics["reported_completion_tokens"].value == 4
+    assert metrics["reported_total_tokens"].value == 7
+    assert metrics["reported_total_tokens"].state == "partial"
+    assert metrics["attempts_without_reported_usage"].value == 2
+
+
+def test_source_storage_deduplicates_only_accessible_objects():
+    prefix = ("tenant-1", "workspace-operations", "notebook-a", "actor-1")
+    rows = [(*prefix, "source-a", "waiting_model", "version-a", "object-a", 17, "completed", "index-a"),
+        (*prefix, "source-b", "ready", "version-b", "object-a", 17, "completed", "index-b"),
+        (*prefix, "source-c", "ready", "revoked", "object-private", 999, "completed", "index-private")]
+    with _observation_case(sources=rows) as (repository, context, _):
+        metrics = {row.metric_id: row for row in repository.read_observations(context)}
+    assert metrics["source_storage_bytes"].value == 17
+    assert metrics["index_records_current"].value == 2
+    assert metrics["source_waiting_model"].value == 1
+
+
+def test_private_notebook_other_actor_and_revoked_source_not_aggregated():
+    prefix = ("tenant-1", "workspace-operations", "notebook-private", "other-actor")
+    private = (*prefix, "source-secret", "waiting_model", "version-private", "object-private", 999, "completed", "index-private")
+    denied = ("tenant-1", "workspace-operations", "notebook-a", "actor-1", "source-law", "ready", "law-denied", "object-law", 777, "completed", "index-law")
+    attempts = [("tenant-1", "workspace-operations", "notebook-private", "other-actor", "run-private", "other-actor", ["version-private"], "attempt-private", {"total_tokens": 999})]
+    with _observation_case(sources=[private, denied], attempts=attempts) as (repository, context, log):
+        rows = {row.metric_id: row for row in repository.read_observations(context)}
+    assert rows["source_storage_bytes"].value == 0
+    assert rows["reported_total_tokens"].value is None
+    assert rows["attempts_without_reported_usage"].value == 0
+    source_query = next(sql for sql, _ in log if "JOIN source_versions" in sql)
+    assert "n.created_by=%s" in source_query and "notebook_source_unbindings" in source_query
+    assert "notebook_deletion_requests" in source_query and "source_active=false" in source_query
+    assert all(not sql.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE")) for sql, _ in log)
+    # raw Source ACL만 정상이어도 조회 중 Notebook 결속이 사라지면 이전 집계를 내보내지 않는다.
+    changing = [("tenant-1", "workspace-operations", "notebook-a", "actor-1", "source-a", "ready", "version-a", "object-a", 17, "completed", "index-a")]
+    checks = []
+    def withdraw(connection, scope, version):
+        checks.append(version)
+        if len(checks) == 2: changing.clear()
+        return True
+    with _observation_case(sources=changing) as (repository, context, _):
+        with patch("daon_user_api.operations_status_postgres._source_access_allowed", side_effect=withdraw):
+            result = repository.read_observations(context)
+    assert result[11].state == "unavailable" and result[11].value is None
+    class DisappearingRuns(list):
+        def __iter__(self):
+            copy = self.copy(); self.clear(); return iter(copy)
+    general = DisappearingRuns([("tenant-1", "workspace-operations", "notebook-a", "actor-1", "run-a", "actor-1", [], "attempt-a", {"total_tokens": 123})])
+    with _observation_case(sources=[], attempts=general) as (repository, context, _):
+        result = repository.read_observations(context)
+    assert result[14].state == "unavailable" and result[14].value is None
+
+
+def test_unknown_metrics_do_not_change_five_component_health():
+    from daon_user_api import operations_status as domain
+    assert hasattr(domain, "OperationsObservation"), "M1 exact observation DTO 필요"
+    class BadRepository(Repository):
+        def read_observations(self, context): return (SimpleNamespace(metric_id="unapproved_metric"),)
+    view = OperationsStatusService(BadRepository()).read(OperationsStatusContext("tenant-1", "workspace-operations", "actor-1"),
+        active_providers=1, selected_deployments=1, api_ready=True, database_ready=True, object_storage_ready=True,
+        checked_at="2026-10-19T00:00:00Z")
+    assert view.overall_status == "warning" and len(view.components) == 5
+    assert len(view.observations) == 16 and all(row.state == "unavailable" for row in view.observations)
+    assert all(row.metric_id != "unapproved_metric" for row in view.observations)
+
+
+def test_metric_database_failure_is_distinct_from_auth_failure():
+    with _observation_case(failed="FROM durable_jobs") as (repository, context, _):
+        rows = repository.read_observations(context)
+    assert all(row.state == "unavailable" and row.value is None for row in rows[4:9])
+    assert rows[0].state == "measured" and rows[9].state == "measured"
+    from daon_user_api.authorization import AuthorizationError
+    with _observation_case() as (repository, context, _):
+        with patch("daon_user_api.operations_status_postgres._source_access_allowed", side_effect=AuthorizationError("ACCESS_DENIED", 403)):
+            with pytest.raises(AuthorizationError): repository.read_observations(context)
+
+
+def test_special_source_database_failure_only_isolates_actor_observations():
+    from daon_user_api.notification import NotificationError
+    with _observation_case() as (repository, context, _):
+        with patch("daon_user_api.operations_status_postgres._special_source_access_allowed",
+                side_effect=NotificationError("DATABASE_UNAVAILABLE", 503)):
+            rows = repository.read_observations(context)
+            class WithCurrentObservations(Repository):
+                def read_observations(self, scope): return repository.read_observations(scope)
+            options = dict(active_providers=1, selected_deployments=1, api_ready=True, database_ready=True,
+                object_storage_ready=True, checked_at="2026-10-19T00:00:00Z")
+            before = OperationsStatusService(Repository()).read(context, **options)
+            after = OperationsStatusService(WithCurrentObservations()).read(context, **options)
+            assert after.components == before.components and after.overall_status == before.overall_status
+        assert all(row.state == "measured" and row.value is not None for row in rows[:9])
+        assert all(row.state == "unavailable" and row.value is None and row.observed_at is None for row in rows[9:])
+        # 같은 종류여도 인증/계약 오류나 다른 HTTP 상태를 개인관측 미수집으로 숨기지 않는다.
+        for code, status in (("ACCESS_DENIED", 403), ("DATABASE_RESPONSE_INVALID", 503), ("DATABASE_UNAVAILABLE", 403)):
+            with patch("daon_user_api.operations_status_postgres._special_source_access_allowed",
+                    side_effect=NotificationError(code, status)):
+                with pytest.raises(NotificationError): repository.read_observations(context)
+
+
+def test_law_observations_use_real_access_helper_and_current_trace_policy(monkeypatch):
+    from psycopg.pq import TransactionStatus
+    from test_open_law_source_runtime import Connection as LawConnection
+    marker = {"origin_kind": "mcp_open_law", "connector_id": "mcp-open-law-go-kr", "snapshot_id": "snapshot-law"}
+    law = LawConnection(marker)
+    law.info = SimpleNamespace(transaction_status=TransactionStatus.INTRANS)
+    source = ("tenant-1", "workspace-operations", "notebook-a", "actor-1", "source-law", "ready", "version-law", "object-law", 23, "completed", "index-law")
+    log = []
+    class Connection:
+        info = law.info
+        def execute(self, sql, parameters=()):
+            log.append((sql, parameters))
+            if "FROM document_processing_jobs" in sql: rows = [(1, 2, 3, 4)]
+            elif "FROM durable_jobs" in sql: rows = [(5, 6, 7, 8, 9)]
+            elif "SELECT DISTINCT n.tenant_id" in sql: rows = [] if "JOIN runs r" in sql else [source]
+            elif "current_setting('app.actor_id'" in sql: rows = [("actor-1", "")]
+            elif sql.startswith("SELECT canonical_json FROM public.source_versions"): rows = [(marker,)]
+            elif sql.startswith("SELECT NOT EXISTS (SELECT 1 FROM identity_auth_source_access"): rows = [(True,)]
+            else: return law.execute(sql, parameters)
+            return SimpleNamespace(fetchone=lambda: rows[0] if rows else None, fetchall=lambda: rows)
+    class Store:
+        @contextmanager
+        def _transaction(self, scope): yield Connection()
+    context = OperationsStatusContext("tenant-1", "workspace-operations", "actor-1",
+        "trace-current-request", "policy-current-runtime")
+    monkeypatch.setenv("DAON_OPEN_LAW_ENABLED", "true")
+    monkeypatch.setenv("DAON_OPEN_LAW_QA_WORKSPACE_ID", "workspace-operations")
+    # policy/법령/SourceACL helper를 mock하지 않는다. SQL port만 합성 현재 원장을 반환한다.
+    metrics = {row.metric_id: row for row in PostgresOperationsStatusRepository(Store()).read_observations(context)}
+    assert metrics["source_storage_bytes"].value == 23
+    assert metrics["index_records_current"].value == 1
+    assert sum(sql.startswith("SELECT w.snapshot_id FROM open_law_source_snapshots") for sql, _ in law.queries) == 2
+    policy_queries = [params for sql, params in law.queries if sql.startswith("SELECT binding.tenant_id")]
+    assert len(policy_queries) == 4  # 최초/최종 각각 조직+Workspace 실제 정책 읽기
 
 
 class Repository:
