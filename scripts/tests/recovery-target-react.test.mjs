@@ -76,7 +76,7 @@ async function loadComponent() {
   const priorNodeEnv = process.env.NODE_ENV;
   try {
     const { build } = await import("vite");
-    await build({ configFile: false, logLevel: "silent", root, build: { outDir: output, emptyOutDir: false,
+    await build({ configFile: false, logLevel: "silent", root, cacheDir: path.join(output, "cache"), build: { outDir: output, emptyOutDir: false,
       lib: { entry: path.join(root, "apps/web/app/operations/recovery-workspace.jsx"), formats: ["es"], fileName: "recovery-target" },
       rollupOptions: { external: ["react", "react-dom", "react-dom/client"],
         output: { paths: id => pathToFileURL(require.resolve(id)).href } } } });
@@ -87,7 +87,13 @@ async function loadComponent() {
     if (priorNodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = priorNodeEnv;
   }
 }
-after(async () => { if (output) await rm(output, { recursive: true, force: true }); });
+after(async () => {
+  if (output) {
+    assert.equal(path.dirname(path.resolve(output)), path.resolve(tmpdir()));
+    assert.ok(path.basename(output).startsWith("daon-s42-recovery-target-react-"));
+    await rm(output, { recursive: true, force: true });
+  }
+});
 
 async function render(search = "", api) {
   const dom = installMinimalDom(), browser = dom.document.defaultView;
@@ -139,13 +145,193 @@ async function render(search = "", api) {
     }); } };
 }
 
-test("S42 복구 선택 query가 없으면 기존 placeholder와 무호출을 보존한다", async () => {
-  const p = port(), view = await render("", p.api);
+const operations = () => ({ workspace_id: "workspace-a", overall_status: "warning", checked_at: "2026-10-18T00:00:00Z",
+  components: [
+    { component_id: "provider", status: "warning", safe_code: "PROVIDER_CONFIGURATION_REQUIRED", pending_count: 0, recovery_action: "open_llm_settings" },
+    { component_id: "api", status: "ready", safe_code: "API_READY", pending_count: 0, recovery_action: "none" },
+    { component_id: "storage", status: "ready", safe_code: "STORAGE_READY", pending_count: 0, recovery_action: "none" },
+    { component_id: "sync", status: "warning", safe_code: "SYNC_PENDING", pending_count: 1, recovery_action: "open_sync_settings" },
+    { component_id: "queue", status: "warning", safe_code: "QUEUE_ATTENTION_REQUIRED", pending_count: 0, recovery_action: "refresh_status" },
+  ] });
+function homePort(overrides = {}) {
+  const p = port();
+  p.api.getOperationsStatus = async workspace => { p.calls.push(["status", workspace]); return operations(); };
+  p.api.listBackups = async workspace => { p.calls.push(["list", workspace]); return response([]); };
+  Object.assign(p.api, overrides);
+  return p;
+}
+const homeCalls = [["session"], ["status", "workspace-a"], ["list", "workspace-a"], ["session"]];
+async function click(view, label) {
+  const node = findElements(view.container, n => n.tagName === "BUTTON" && n.textContent === label)[0];
+  assert.ok(node, label);
+  await view.act(async () => node.dispatchEvent(new MinimalEvent("click")));
+}
+
+test("S44 실제 기본 adapter는 홈 GET만 호출하고 목록 선택은 정확 backup GET으로 이어진다", async () => {
+  const previous = globalThis.fetch, calls = [];
+  globalThis.fetch = async (url, init) => {
+    calls.push([url, init.method, init.credentials, init.cache]);
+    if (url === "/bff/api/session") return Response.json(session().payload);
+    if (url === "/bff/api/workspaces/workspace-a/operations/status") return Response.json({ data: operations(), meta: { trace_id: "trace-ops", workspace_id: "workspace-a" } });
+    if (url === "/bff/api/backups?workspace_id=workspace-a") return Response.json(response([backup({ raw_text: canary })]).payload);
+    assert.equal(url, "/bff/api/backups/backup-a");
+    return Response.json(response(backup()).payload);
+  };
+  let view;
+  try {
+    view = await render("");
+    assert.deepEqual(calls.map(c => c[0]), ["/bff/api/session", "/bff/api/workspaces/workspace-a/operations/status", "/bff/api/backups?workspace_id=workspace-a", "/bff/api/session"]);
+    const link = findElements(view.container, n => n.tagName === "A" && n.getAttribute("href") === "?backup_id=backup-a")[0];
+    assert.ok(link, "실제 목록의 정확 백업 링크");
+    await view.navigate(link.getAttribute("href"));
+    assert.deepEqual(calls.slice(4).map(c => c[0]), ["/bff/api/session", "/bff/api/backups/backup-a", "/bff/api/session"]);
+    for (const call of calls) assert.deepEqual(call.slice(1), ["GET", "same-origin", "no-store"]);
+    assert.match(visibleText(view.container), /backup-a/u); noMutations(view);
+  } finally { if (view) await view.cleanup(); globalThis.fetch = previous; }
+});
+
+test("S44 홈 상태·목록의 독립 장애를 빈 목록 성공으로 바꾸지 않고 명시 재시도한다", async () => {
+  for (const part of ["status", "list"]) {
+    let rejected = true;
+    const p = homePort();
+    if (part === "status") p.api.getOperationsStatus = async () => { if (rejected) throw failure(503); return operations(); };
+    else p.api.listBackups = async () => { if (rejected) throw failure(403); return response([]); };
+    const view = await render("", p.api);
+    try {
+      const text = visibleText(view.container);
+      assert.match(text, part === "status" ? /확인할 수 없/u : /권한/u);
+      if (part === "status") assert.match(text, /조회된 백업이 없습니다/u);
+      else { assert.match(text, /API_READY/u); assert.doesNotMatch(text, /조회된 백업이 없습니다/u); }
+      rejected = false; await click(view, "다시 조회");
+      assert.match(visibleText(view.container), /API_READY/u);
+      assert.match(visibleText(view.container), /조회된 백업이 없습니다/u);
+      noMutations(view, p.writes);
+    } finally { await view.cleanup(); }
+  }
+});
+
+test("S44 추가 회귀: status 또는 list의 401은 양쪽 본문과 백업 링크를 모두 차단한다", async () => {
+  for (const part of ["status", "list"]) {
+    const p = homePort();
+    p.api.getOperationsStatus = async workspace => {
+      p.calls.push(["status", workspace]);
+      if (part === "status") throw failure(401, "ACCESS_INVALID");
+      return operations();
+    };
+    p.api.listBackups = async workspace => {
+      p.calls.push(["list", workspace]);
+      if (part === "list") throw failure(401, "ACCESS_INVALID");
+      return response([backup()]);
+    };
+    const view = await render("", p.api);
+    try {
+      assert.deepEqual(p.calls, homeCalls);
+      assert.match(visibleText(view.container), /로그인/u);
+      assert.doesNotMatch(visibleText(view.container), /API_READY|PROVIDER_CONFIGURATION_REQUIRED|backup-a|현재 Workspace 운영 상태|백업 목록/u);
+      assert.equal(findElements(view.container, node => node.tagName === "A").length, 0);
+      noMutations(view, p.writes);
+    } finally { await view.cleanup(); }
+  }
+});
+
+test("S44 추가 회귀: 중복 backup ID는 목록 전체를 거부하고 독립 상태만 유지한다", async () => {
+  const p = homePort({ listBackups: async workspace => {
+    p.calls.push(["list", workspace]); return response([backup(), backup()]);
+  } });
+  const view = await render("", p.api);
+  try {
+    assert.deepEqual(p.calls, homeCalls);
+    assert.match(visibleText(view.container), /API_READY/u);
+    assert.match(visibleText(view.container), /백업 목록:.*확인할 수 없/u);
+    assert.doesNotMatch(visibleText(view.container), /backup-a|조회된 백업이 없습니다/u);
+    assert.equal(findElements(view.container, node => node.tagName === "A").length, 0);
+    noMutations(view, p.writes);
+  } finally { await view.cleanup(); }
+});
+
+test("S44 추가 회귀: hash-only 주소는 session·status·list GET 없이 거부한다", async () => {
+  const p = homePort(), view = await render("#fragment", p.api);
+  try {
+    assert.match(visibleText(view.container), /올바른 복구 대상 주소가 아닙니다/u);
+    assert.deepEqual(p.calls, []);
+    assert.equal(findElements(view.container, node => node.tagName === "A").length, 0);
+    noMutations(view, p.writes);
+  } finally { await view.cleanup(); }
+});
+
+test("S44 홈은 잘못된 session에서 GET0·조회 전후 모든 scope 교체에서 본문0이다", async () => {
+  for (const changes of [{ workspace_id: null }, { user_id: "" }, { session_id: null }]) {
+    const p = homePort({ getSession: async () => { p.calls.push(["session"]); return session(changes); } });
+    const view = await render("", p.api);
+    try { assert.deepEqual(p.calls, [["session"]]); assert.match(visibleText(view.container), /확인할 수 없/u); noMutations(view, p.writes); }
+    finally { await view.cleanup(); }
+  }
+  for (const changes of [{ workspace_id: "workspace-b" }, { user_id: "reader-b" }, { tenant_id: "tenant-b" }, { session_id: "session-b" }]) {
+    let count = 0;
+    const p = homePort({ getSession: async () => ++count === 1 ? session() : session(changes) });
+    const view = await render("", p.api);
+    try { assert.match(visibleText(view.container), /권한/u); assert.doesNotMatch(visibleText(view.container), /API_READY|조회된 백업/u); noMutations(view, p.writes); }
+    finally { await view.cleanup(); }
+  }
+});
+
+test("S44 홈 목록의 다른 범위·malformed 응답을 버리고 전체 상태를 합성하지 않는다", async () => {
+  for (const data of [null, {}, [backup({ tenant_id: "tenant-b" })], [backup({ workspace_id: "workspace-b" })], [backup({ backup_id: canary, version: 0 })]]) {
+    const p = homePort({ listBackups: async () => response(data) }), view = await render("", p.api);
+    try {
+      assert.match(visibleText(view.container), /API_READY/u);
+      assert.match(visibleText(view.container), /확인할 수 없/u);
+      assert.doesNotMatch(view.container.textContent, /backup-a|tenant-b|workspace-b|S42_표시금지/u);
+      assert.doesNotMatch(visibleText(view.container), /조회된 백업이 없습니다/u); noMutations(view, p.writes);
+    } finally { await view.cleanup(); }
+  }
+});
+
+test("S44 홈의 늦은 응답은 target 이동·pagehide·adapter 교체·unmount 뒤 복원되지 않는다", async () => {
+  for (const mode of ["target", "pagehide", "adapter", "unmount"]) {
+    const late = deferred(), p = homePort({ listBackups: () => late.promise }), view = await render("", p.api);
+    try {
+      if (mode === "target") await view.navigate("?restore_request_id=restore-a");
+      if (mode === "pagehide") await view.act(async () => view.browser.dispatchEvent(new MinimalEvent("pagehide")));
+      if (mode === "adapter") await view.rerender(homePort().api);
+      if (mode === "unmount") await view.unmount();
+      await view.act(async () => late.resolve(response([backup()])));
+      assert.doesNotMatch(visibleText(view.container), /backup-a/u);
+      if (mode === "target") assert.match(visibleText(view.container), /restore-a/u);
+      if (mode === "adapter") assert.match(visibleText(view.container), /조회된 백업이 없습니다/u);
+      noMutations(view, p.writes);
+    } finally { late.resolve(response([])); await view.cleanup(); }
+  }
+});
+
+test("S44 홈 표시도 pagehide·focus 직후 숨기고 session 재확인 전 되살리지 않는다", async () => {
+  const gate = deferred(); let count = 0;
+  const p = homePort({ getSession: () => ++count <= 2 ? session() : gate.promise }), view = await render("", p.api);
+  try {
+    assert.match(visibleText(view.container), /API_READY/u);
+    await view.act(async () => {
+      view.browser.dispatchEvent(new MinimalEvent("pagehide"));
+      assert.doesNotMatch(visibleText(view.container), /API_READY/u);
+      view.browser.dispatchEvent(new MinimalEvent("focus"));
+      assert.doesNotMatch(visibleText(view.container), /API_READY/u);
+    });
+    await view.act(async () => gate.resolve(session({ workspace_id: null })));
+    assert.doesNotMatch(visibleText(view.container), /API_READY/u); noMutations(view, p.writes);
+  } finally { gate.resolve(session()); await view.cleanup(); }
+});
+
+test("S44 홈은 정상 session 전후를 확인하고 실제 5상태·빈 백업 목록을 표시한다", async () => {
+  const p = homePort(), view = await render("", p.api);
   try {
     assert.match(view.container.textContent, /운영 상태·복구/u);
-    assert.match(view.container.textContent, /RESOURCE_UNAVAILABLE/u);
-    assert.match(view.container.textContent, /실제 관리자 운영 기능은 후속 Stage C 권한·연결 Gate 완료 후 제공됩니다\./u);
-    assert.deepEqual(p.calls, []); noMutations(view, p.writes);
+    assert.deepEqual(p.calls, homeCalls);
+    const text = visibleText(view.container);
+    for (const code of ["PROVIDER_CONFIGURATION_REQUIRED", "API_READY", "STORAGE_READY", "SYNC_PENDING", "QUEUE_ATTENTION_REQUIRED"]) assert.ok(text.includes(code));
+    assert.ok(text.includes("현재 화면은 상태·백업 조회를 지원합니다. 백업 생성·복구 실행은 아직 연결되지 않았습니다."));
+    assert.match(text, /조회된 백업이 없습니다/u);
+    assert.match(text, /설정 상태/u); assert.match(text, /모델.*호출.*아/u);
+    assert.doesNotMatch(text, /실패\s*0\s*건/u);
+    noMutations(view, p.writes);
   } finally { await view.cleanup(); }
 });
 

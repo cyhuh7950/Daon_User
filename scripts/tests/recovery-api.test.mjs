@@ -5,6 +5,41 @@ import test from "node:test";
 import { createBffProxy } from "../../apps/web/lib/bff-api-proxy.js";
 import { parseRecoverySessionContext, recoveryApi, resolveRecoverySession } from "../../apps/web/lib/recovery-api.js";
 
+test("S44 상태 조회는 기존 엄격한 5component helper와 same-origin GET을 사용한다", async () => {
+  const previous = globalThis.fetch, calls = [];
+  const data = { workspace_id: "workspace-a", overall_status: "ready", checked_at: "2026-10-18T00:00:00Z",
+    components: ["provider", "api", "storage", "sync", "queue"].map(component_id => ({ component_id, status: "ready", safe_code: "COMPONENT_READY", pending_count: 0, recovery_action: "none" })) };
+  const controller = new AbortController();
+  let value = data;
+  try {
+    globalThis.fetch = async (url, init) => { calls.push([url, init]); return Response.json({ data: value, meta: { workspace_id: "workspace-a", trace_id: "trace-status" } }); };
+    assert.deepEqual(await recoveryApi.getOperationsStatus("workspace-a", { signal: controller.signal }), data);
+    assert.equal(calls[0][0], "/bff/api/workspaces/workspace-a/operations/status");
+    assert.equal(calls[0][1].signal, controller.signal);
+    assert.deepEqual([calls[0][1].method, calls[0][1].credentials, calls[0][1].cache], ["GET", "same-origin", "no-store"]);
+    for (value of [{ ...data, workspace_id: "workspace-b" }, { ...data, components: data.components.slice(1) },
+      { ...data, components: data.components.map(c => ({ ...c, pending_count: -1 })) }]) {
+      await assert.rejects(recoveryApi.getOperationsStatus("workspace-a"), /OPERATIONS_STATUS_RESPONSE_INVALID/u);
+    }
+  } finally { globalThis.fetch = previous; }
+});
+
+test("S44 상태 거부는 실제 HTTP status만 보존하고 목록 GET도 캐시를 사용하지 않는다", async () => {
+  const previous = globalThis.fetch;
+  try {
+    for (const status of [401, 403, 503]) {
+      globalThis.fetch = async () => Response.json({ error: { code: "RESOURCE_UNAVAILABLE" } }, { status });
+      await assert.rejects(recoveryApi.getOperationsStatus("workspace-a"), e => e.status === status && e.code === "RESOURCE_UNAVAILABLE");
+    }
+    globalThis.fetch = async (url, init) => {
+      assert.equal(url, "/bff/api/backups?workspace_id=workspace-a");
+      assert.deepEqual([init.method, init.credentials, init.cache], ["GET", "same-origin", "no-store"]);
+      return Response.json({ data: [] });
+    };
+    assert.deepEqual((await recoveryApi.listBackups("workspace-a")).payload.data, []);
+  } finally { globalThis.fetch = previous; }
+});
+
 for (const status of [404, 503]) {
   test(`정확 복구 조회는 같은 오류 코드의 실제 HTTP ${status}를 보존한다`, async () => {
     const previous = globalThis.fetch;

@@ -1,4 +1,14 @@
+import { getWorkspaceOperationsStatus } from "./product-workspace-api.js";
+
 const JSON_HEADERS = Object.freeze({ "Content-Type": "application/json" });
+
+function requestError(response, payload) {
+  const error = new Error(payload?.error?.code ?? "RESOURCE_UNAVAILABLE");
+  error.code = payload?.error?.code ?? "RESOURCE_UNAVAILABLE";
+  error.status = response.status;
+  error.traceId = payload?.error?.trace_id ?? response.headers.get("x-trace-id");
+  return error;
+}
 
 function sessionFailure() {
   const error = new Error("RESOURCE_UNAVAILABLE");
@@ -37,16 +47,19 @@ async function request(path, { method = "GET", body, headers = {} } = {}) {
     error: { code: "RESOURCE_UNAVAILABLE", trace_id: response.headers.get("x-trace-id") }
   }));
   if (!response.ok) {
-    const error = new Error(payload?.error?.code ?? "RESOURCE_UNAVAILABLE");
-    error.code = payload?.error?.code ?? "RESOURCE_UNAVAILABLE";
-    error.status = response.status;
-    error.traceId = payload?.error?.trace_id ?? response.headers.get("x-trace-id");
-    throw error;
+    throw requestError(response, payload);
   }
   return { payload, etag: response.headers.get("etag") };
 }
 
 export const recoveryApi = Object.freeze({
+  getOperationsStatus(workspaceId, { signal } = {}) {
+    return getWorkspaceOperationsStatus(workspaceId, { signal, fetchImpl: async (path, init) => {
+      const response = await fetch(path, init);
+      if (!response.ok) throw requestError(response, await response.json().catch(() => null));
+      return response;
+    } });
+  },
   getSession() {
     return request("/bff/api/session");
   },
