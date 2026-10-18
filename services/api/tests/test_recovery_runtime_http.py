@@ -36,6 +36,52 @@ from test_identity_support import (
 
 
 class RecoveryRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
+    async def test_r4_execute_body_preview_snapshot_race_never_rebinds_old_authorization(self):
+        """실제 Identity token/소비/ASGI. 재인증은 별도 직접 node, 업무 port만 대역."""
+        import hashlib
+        from datetime import timedelta
+        from daon_user_api.recovery import RegisteredRestorePreviewView,RestoreRequestView,RecoveryError
+        from daon_user_api.recovery_postgres import PostgresRecoveryService
+        for mode in ("future-body","changed-after-consume"):
+            with self.subTest(mode=mode):
+                now=self.clock();writes=[];consumes=[]
+                first=RegisteredRestorePreviewView("selected_source_lineage",1,now,now+timedelta(minutes=10),
+                    dict(destination_id="destination-a",version=1,display_name="격리",expires_at=(now+timedelta(hours=1)).isoformat()),
+                    "a"*64,"b"*64,1,0,dict(purged=0,held=0,tombstoned=0))
+                latest=[first];service=object.__new__(PostgresRecoveryService)
+                service.locate_restore_workspace=lambda *args:self.workspace_id
+                def read(context,identity):
+                    snapshot=RestoreRequestView("request-race","backup-a",context.tenant_id,context.workspace_id,"preview_ready",2,
+                        latest[0],("requested","preview_ready"),None)
+                    if mode=="future-body":latest[0]=replace(first,version=2)
+                    return snapshot
+                service.get_restore_request=read
+                def execute(context,identity,**kwargs):
+                    kwargs["recheck"]()
+                    if kwargs["preview_version"]!=latest[0].version:raise RecoveryError("RESTORE_VERSION_CONFLICT",409)
+                    writes.append(kwargs["preview_version"])
+                    return replace(read(context,identity),state="completed",version=6)
+                service.execute_registered_restore=execute
+                token=self._step_up("request-race",registered_preview=first)
+                actual=self.identity.consume_step_up
+                def consume(**kwargs):
+                    consumes.append(True);result=actual(**kwargs)
+                    if mode=="changed-after-consume":latest[0]=replace(first,version=2)
+                    return result
+                with patch.object(self.identity,"consume_step_up",side_effect=consume):
+                    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(replace(self.dependencies,recovery_service=service))),
+                            base_url="https://app.example.com",cookies={WEB_SESSION_COOKIE:self.credentials.access_token}) as client:
+                        response=await client.post("/api/v1/restore-requests/request-race/execute",json=dict(
+                            preview_version=2 if mode=="future-body" else 1,step_up_authorization_id=token),
+                            headers={"If-Match":'"restore:request-race:2"',"Idempotency-Key":"snapshot-race-"+mode})
+                connection=self.identity_repository._connect()
+                try:used=connection.execute("SELECT used_at FROM step_up_authorizations WHERE authorization_digest=?",
+                    (hashlib.sha256(token.encode()).hexdigest(),)).fetchone()[0]
+                finally:connection.close()
+                self.assertEqual((response.status_code,writes),(409,[]))
+                self.assertEqual(consumes,[] if mode=="future-body" else [True])
+                self.assertEqual(used is None,mode=="future-body")
+
     async def test_r4_new_preview_rejects_unused_execute_step_up_issued_before_confirmation(self):
         """실제 Identity/재인증·ASGI/SQLite. recovery 업무쓰기 포트만 대역, 실PG 아님."""
         import secrets

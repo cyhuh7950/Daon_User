@@ -7691,6 +7691,8 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         expected_version=_recovery_expected_version(if_match,id)
         from .recovery import RegisteredRestorePreviewView
         current_view=recovery_service.get_restore_request(context,id)
+        if isinstance(current_view.preview,RegisteredRestorePreviewView) and body.preview_version!=current_view.preview.version:
+            raise RecoveryError("RESTORE_VERSION_CONFLICT",409)
         target_id=_registered_restore_execute_step_up_target(current_view) if isinstance(current_view.preview,RegisteredRestorePreviewView) else id
         dependencies.identity_service.consume_step_up(
             step_up_authorization=body.step_up_authorization_id,
