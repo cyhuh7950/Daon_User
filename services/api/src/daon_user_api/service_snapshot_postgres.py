@@ -96,7 +96,7 @@ class _TimedReadConnection:
 
 class PostgresSnapshotPort:
     def __init__(self, config, *, connect=None, spawn=subprocess.Popen, validate_protected=None,
-                 object_opener=None, runtime_inventory=(), runtime_opener=None, runtime_verifier=None):
+                 object_opener=None, runtime_inventory=(), runtime_opener=None, runtime_verifier=None, streams=None):
         if not isinstance(config, FixedPgSource): raise SnapshotError()
         self.config = config
         self._connect = connect or self._connect_service
@@ -104,6 +104,12 @@ class PostgresSnapshotPort:
         self._validate_protected = validate_protected or self._protected_files
         self._objects, self._runtime_open = object_opener, runtime_opener
         self._runtime_inventory, self._runtime_verifier = runtime_inventory, runtime_verifier
+        if streams is not None:
+            from .service_snapshot_streams import FixedSnapshotStreams
+            if (not isinstance(streams, FixedSnapshotStreams) or object_opener is not None or runtime_opener is not None
+                    or streams.source_instance_ref not in {None, config.source_instance_ref}
+                    or any(item.ref not in runtime_inventory for item in streams.runtime_files)): raise SnapshotError()
+        self._streams = streams
         self._active = None
         self._child = None
         self._cancel = threading.Event()
@@ -402,12 +408,22 @@ class PostgresSnapshotPort:
     @contextmanager
     def open_object(self, ref):
         self._check()
+        if self._streams is not None:
+            if ref not in self._active.object_inventory: raise SnapshotError("SNAPSHOT_OBJECT_PORT_UNAVAILABLE")
+            with self._streams.open_object(ref, deadline=self._deadline,
+                    cancelled=lambda: self._cancel.is_set() or self._external_cancel()) as response: yield response
+            return
         if self._objects is None or ref not in self._active.object_inventory: raise SnapshotError("SNAPSHOT_OBJECT_PORT_UNAVAILABLE")
         with self._objects(ref) as response: yield response
 
     @contextmanager
     def open_runtime(self, ref):
         self._check()
+        if self._streams is not None:
+            if ref not in self._active.runtime_inventory or ref.mode != "bytes": raise SnapshotError("SNAPSHOT_RUNTIME_UNPROVEN")
+            with self._streams.open_runtime(ref, deadline=self._deadline,
+                    cancelled=lambda: self._cancel.is_set() or self._external_cancel()) as response: yield response
+            return
         if self._runtime_open is None or ref not in self._active.runtime_inventory or ref.mode != "bytes": raise SnapshotError("SNAPSHOT_RUNTIME_UNPROVEN")
         with self._runtime_open(ref) as response: yield response
 

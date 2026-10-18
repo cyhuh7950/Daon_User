@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import io
+import time
 import unittest
 from contextlib import contextmanager
 from dataclasses import replace
@@ -269,6 +270,280 @@ class ServiceSnapshotPostgresTests(unittest.TestCase):
         self.port._validate_protected = protected
         with self.port.open_snapshot(self.spec): pass
         self.assertEqual(self.log[-2:], [("CLOSE", ()), ("DESCRIPTORS_CLOSED", ())])
+
+    def test_b2_explicit_concrete_port_binds_exact_inventory_and_cancel(self):
+        import struct
+        from daon_user_api.service_snapshot_streams import FixedRuntimeFile
+        io_port = BoundedWorkerIO(b"D" + struct.pack(">I", 3) + b"abcE\0\0\0\0")
+        factory, ref, _ = ServiceSnapshotConcreteStreamsTests().factory(io_port)
+        runtime = SnapshotRuntimeRef("runtime-a", "bytes", hashlib.sha256(b"abc").hexdigest(), 3)
+        factory.runtime_files = (FixedRuntimeFile(runtime, Path("D:/not-created/runtime.bin")),)
+        self.objects = [(ref.tenant_id, ref.workspace_id, ref.area, ref.object_id, ref.state,
+            ref.digest, ref.byte_size, "tenant-a/workspace-a/source/" + ref.object_id)]
+        port = self.m.PostgresSnapshotPort(self.config, connect=self.port._connect, spawn=self.port._spawn,
+            validate_protected=self.port._validate_protected, runtime_inventory=(runtime,), streams=factory)
+        with port.open_snapshot(self.spec) as lease:
+            with self.assertRaises(SnapshotError):
+                with port.open_object(replace(ref, workspace_id="workspace-foreign")): pass
+            with self.assertRaises(SnapshotError):
+                with port.open_runtime(replace(runtime, digest="f" * 64)): pass
+            self.assertEqual(io_port.started, 0)
+            with port.open_object(lease.object_inventory[0]) as reader:
+                self.assertEqual(reader.read_bounded(3, deadline=2., cancelled=lambda: False), b"abc")
+                self.assertEqual(reader.read_bounded(3, deadline=2., cancelled=lambda: False), b"")
+            io_port.payload.extend(b"D\0\0\0\x03abcE\0\0\0\0")
+            with port.open_runtime(runtime) as reader:
+                self.assertEqual(reader.read_bounded(3, deadline=2., cancelled=lambda: False), b"abc")
+                port.cancel_owned()
+                with self.assertRaises(SnapshotError) as caught:
+                    reader.read_bounded(3, deadline=2., cancelled=lambda: False)
+                self.assertEqual(caught.exception.code, "SNAPSHOT_CANCELLED")
+        self.assertEqual(io_port.started, 2)
+        with self.assertRaises(SnapshotError):
+            with port.open_runtime(runtime): pass
+
+
+class BoundedWorkerIO:
+    """Windows에서도 주입하는 OS/child 대역. 실제 fork/IPC/Linux 실행 증거가 아니다."""
+    def __init__(self, payload=b"", *, stalled=False, immortal=False, status=0, fragment=3):
+        self.payload, self.stalled, self.immortal = bytearray(payload), stalled, immortal
+        self.status, self.fragment, self.now, self.events, self.started = status, fragment, 0., [], 0
+        self.stopped, self.closed = False, False
+    def supported(self): return True
+    def start(self, work):
+        self.started += 1; self.events.append(("start", work)); return 41001, 42
+    def readable(self, fd, timeout):
+        self.now += min(timeout, .02)
+        return not self.stalled
+    def receive(self, fd, maximum):
+        if self.stalled: raise BlockingIOError()
+        count = min(maximum, self.fragment, len(self.payload))
+        value = bytes(self.payload[:count]); del self.payload[:count]; return value
+    def poll(self, pid):
+        self.events.append(("poll", pid))
+        return (not self.immortal and (self.stopped or (not self.stalled and not self.payload)), self.status)
+    def terminate(self, pid): self.events.append(("terminate", pid)); self.stopped = True
+    def kill(self, pid): self.events.append(("kill", pid)); self.stopped = True
+    def close(self, fd): self.events.append(("close", fd)); self.closed = True
+    def pause(self, duration): self.now += duration
+
+
+class ServiceSnapshotConcreteStreamsTests(unittest.TestCase):
+    def module(self):
+        self.assertIsNotNone(importlib.util.find_spec("daon_user_api.service_snapshot_streams"), "B2 concrete worker/reader 미구현")
+        from daon_user_api import service_snapshot_streams
+        return service_snapshot_streams
+
+    def factory(self, io_port):
+        import secrets
+        from daon_user_api.object_queue import MinioObjectStorageAdapter
+        module = self.module()
+        # 설치 SDK 생성자만 사용한다. 자격은 메모리 합성·외부 연결0이다.
+        storage = MinioObjectStorageAdapter(endpoint="snapshot.invalid:9000", bucket="synthetic-bucket",
+            access_key=secrets.token_hex(12), secret_key=secrets.token_hex(24), secure=True)
+        factory = module.FixedSnapshotStreams.from_storage(storage, source_instance_ref="source-ref", region="us-east-1",
+            runtime_files=(), _io=io_port, _clock=lambda: io_port.now)
+        from daon_user_api.service_snapshot import SnapshotObjectRef
+        ref = SnapshotObjectRef("tenant-a", "workspace-a", "source", "a" * 32, "completed", hashlib.sha256(b"abc").hexdigest(), 3)
+        return factory, ref, storage
+
+    def test_b2_concrete_frames_normal_bytes_and_fixed_key_binding(self):
+        self.module()
+        import struct
+        io_port = BoundedWorkerIO(b"D" + struct.pack(">I", 3) + b"abc" + b"E\0\0\0\0")
+        factory, ref, _ = self.factory(io_port)
+        with factory.open_object(ref, deadline=3., cancelled=lambda: False) as reader:
+            self.assertEqual(reader.read_bounded(2, deadline=2., cancelled=lambda: False), b"ab")
+            self.assertEqual(reader.read_bounded(2, deadline=2., cancelled=lambda: False), b"c")
+            self.assertEqual(reader.read_bounded(2, deadline=2., cancelled=lambda: False), b"")
+        self.assertTrue(io_port.closed)
+        work = io_port.events[0][1]
+        self.assertEqual(work.key, "tenant-a/workspace-a/source/" + "a" * 32)
+        self.assertEqual(io_port.started, 1)
+        self.assertFalse(any(action in {"terminate", "kill"} for action, _ in io_port.events))
+
+    def test_b2_concrete_parent_deadline_cancel_and_uncertain_reap(self):
+        self.module()
+        for mode in ("blocked-open", "blocked-read", "dns", "slow-drip", "cancel", "uncertain"):
+            io_port = BoundedWorkerIO(stalled=True, immortal=mode == "uncertain")
+            factory, ref, _ = self.factory(io_port)
+            with self.assertRaises(SnapshotError) as caught:
+                with factory.open_object(ref, deadline=.05, cancelled=lambda: False) as reader:
+                    reader.read_bounded(4096, deadline=.05, cancelled=lambda: mode == "cancel")
+            self.assertEqual(caught.exception.code, "SNAPSHOT_WORKER_CLEANUP_UNCERTAIN" if mode == "uncertain" else
+                "SNAPSHOT_CANCELLED" if mode == "cancel" else "SNAPSHOT_TIMEOUT")
+            if io_port.started:
+                self.assertTrue(io_port.closed)
+                self.assertTrue(all(pid == 41001 for action, pid in io_port.events if action in {"terminate", "kill"}))
+                self.assertTrue(any(action == "terminate" for action, _ in io_port.events))
+            self.assertLess(io_port.now, 2.)
+            if mode == "uncertain":
+                with self.assertRaises(SnapshotError):
+                    with factory.open_object(ref, deadline=2., cancelled=lambda: False): pass
+
+    def test_b2_concrete_frame_cap_truncation_error_and_trailing_data(self):
+        self.module()
+        import struct
+        for raw in (b"D" + struct.pack(">I", 65536), b"D\0\0\0\x03a", b"X\0\0\0\0",
+                b"E\0\0\0\0private", b"D\0\0\0\0", b"Z\0\0\0\0"):
+            io_port = BoundedWorkerIO(raw)
+            factory, ref, _ = self.factory(io_port)
+            with self.assertRaises(SnapshotError) as caught:
+                with factory.open_object(ref, deadline=5., cancelled=lambda: False) as reader:
+                    while reader.read_bounded(65536, deadline=5., cancelled=lambda: False): pass
+            self.assertNotIn("private", str(caught.exception))
+            self.assertTrue(io_port.closed)
+
+    def test_b2_concrete_missing_runtime_foreign_ref_and_windows_refuse_before_start(self):
+        module = self.module()
+        io_port = BoundedWorkerIO()
+        factory, ref, _ = self.factory(io_port)
+        with self.assertRaises(SnapshotError):
+            with factory.open_runtime(SnapshotRuntimeRef("missing", "bytes", "a" * 64, 3), deadline=2., cancelled=lambda: False): pass
+        with self.assertRaises(SnapshotError):
+            with factory.open_object(replace(ref, tenant_id="../foreign"), deadline=2., cancelled=lambda: False): pass
+        self.assertEqual(io_port.started, 0)
+        from unittest.mock import patch
+        with patch.object(module.sys, "platform", "win32"):
+            native = module.FixedSnapshotStreams(runtime_files=())
+            with self.assertRaises(SnapshotError) as caught:
+                with native.open_runtime(SnapshotRuntimeRef("missing", "bytes", "a" * 64, 3), deadline=2., cancelled=lambda: False): pass
+            self.assertEqual(caught.exception.code, "SNAPSHOT_STREAM_PLATFORM_UNSUPPORTED")
+
+    def test_b2_guarded_http_rejects_error_redirect_without_body_or_shared_pool_changes(self):
+        module = self.module()
+        from unittest.mock import patch
+        from urllib3 import PoolManager
+        from urllib3.response import HTTPResponse
+        for status in (301, 307, 403, 404, 500, 206):
+            io_port = BoundedWorkerIO(); factory, ref, shared = self.factory(io_port)
+            original_http = shared._client._http
+            closed, read = [], []
+            response = HTTPResponse(status=status, preload_content=False)
+            response.read = lambda *a, **k: read.append(True)
+            response.close = lambda: closed.append("closed")
+            response.release_conn = lambda: closed.append("released")
+            with patch.object(PoolManager, "urlopen", return_value=response):
+                with self.assertRaises(SnapshotError):
+                    with module._minio_chunks(factory._object_work(ref, time.monotonic() + 2.)) as chunks: list(chunks)
+            self.assertEqual(read, [])
+            self.assertEqual(closed, ["closed", "released"])
+            self.assertIs(shared._client._http, original_http)
+
+    def test_b2_guarded_http_success_uses_read1_no_decode_fixed_get_and_region(self):
+        module = self.module()
+        from unittest.mock import patch
+        from urllib3 import PoolManager
+        from urllib3.response import HTTPResponse
+        io_port = BoundedWorkerIO(); factory, ref, shared = self.factory(io_port)
+        calls, reads = [], []
+        response = HTTPResponse(status=200, preload_content=False)
+        parts = iter((b"a", b"bc", b""))
+        def read1(maximum, *, decode_content):
+            reads.append((maximum, decode_content)); return next(parts)
+        response.read1 = read1
+        def exchange(pool, method, url, **kwargs):
+            calls.append((method, url, kwargs)); return response
+        with patch.object(PoolManager, "urlopen", new=exchange):
+            with module._minio_chunks(factory._object_work(ref, time.monotonic() + 2.)) as chunks:
+                self.assertEqual(b"".join(chunks), b"abc")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "GET")
+        self.assertNotIn("location", calls[0][1])
+        self.assertTrue(calls[0][1].endswith("/synthetic-bucket/tenant-a/workspace-a/source/" + "a" * 32))
+        for name in ("redirect", "retries", "preload_content", "decode_content"): self.assertIs(calls[0][2][name], False)
+        self.assertTrue(all(0 < maximum <= 65531 and decode is False for maximum, decode in reads))
+
+    def test_b2_runtime_pinned_file_port_and_exact_ref_before_worker(self):
+        module = self.module()
+        from unittest.mock import patch
+        ref = SnapshotRuntimeRef("runtime-a", "bytes", hashlib.sha256(b"abc").hexdigest(), 3)
+        path = Path("D:/not-created/runtime.bin")
+        events = []
+        class Files:
+            @contextmanager
+            def pin(inner, parent):
+                events.append(("pin", parent)); yield
+                events.append(("unpin", parent))
+            @contextmanager
+            def file(inner, requested):
+                events.append(("open", requested))
+                stream = io.BytesIO(b"abc"); stream.fileno = lambda: 51
+                try: yield stream
+                finally: stream.close(); events.append(("closed", requested))
+        work = module._RuntimeWork(module.FixedRuntimeFile(ref, path), time.monotonic() + 2)
+        with patch.object(module, "_PosixFiles", Files), patch.object(module.os, "fstat", return_value=SimpleNamespace(st_size=3)):
+            with module._runtime_chunks(work) as chunks: self.assertEqual(b"".join(chunks), b"abc")
+        self.assertEqual(events, [("pin", path.parent), ("open", path), ("closed", path), ("unpin", path.parent)])
+        # 실제 POSIX link 검사가 아닌 보호 file port의 거부 전파 시험이다.
+        with patch.object(module, "_PosixFiles", side_effect=SnapshotError("SNAPSHOT_LINK_UNSAFE")):
+            with self.assertRaises(SnapshotError):
+                with module._runtime_chunks(work): pass
+        io_port = BoundedWorkerIO()
+        factory = module.FixedSnapshotStreams(runtime_files=(work.file,), _io=io_port, _clock=lambda: io_port.now)
+        for changed in (replace(ref, ref_id="missing"), replace(ref, byte_size=4), replace(ref, digest="b" * 64)):
+            with self.assertRaises(SnapshotError):
+                with factory.open_runtime(changed, deadline=2., cancelled=lambda: False): pass
+        self.assertEqual(io_port.started, 0)
+
+    def test_b2_worker_closes_inherited_fds_and_bounds_every_frame(self):
+        module = self.module()
+        from unittest.mock import patch
+        closed, writes = [], []
+        with patch.object(module.os, "listdir", return_value=["0", "1", "2", "17", "42"]), patch.object(module.os, "close", side_effect=closed.append):
+            module._close_inherited_fds({42})
+        self.assertEqual(closed, [0, 1, 2, 17])
+        def write(fd, frame):
+            self.assertEqual(fd, 42); self.assertLessEqual(len(frame), 65536)
+            count = min(7, len(frame)); writes.append(bytes(frame[:count])); return count
+        with patch.object(module.os, "write", side_effect=write):
+            module._send(42, b"D", b"a" * module.PAYLOAD)
+            with self.assertRaises(SnapshotError): module._send(42, b"D", b"a" * (module.PAYLOAD + 1))
+        self.assertEqual(len(b"".join(writes)), 65536)
+        factory, ref, _ = self.factory(BoundedWorkerIO())
+        work = factory._object_work(ref, time.monotonic() + 2.)
+        events = []
+        class ChildExit(BaseException): pass
+        @contextmanager
+        def source(job):
+            self.assertEqual(job, work); events.append("open")
+            try: yield iter((b"abc",))
+            finally: events.append("source-close")
+        def exit_child(code): events.append(("exit", code)); raise ChildExit()
+        with patch.object(module, "_close_inherited_fds", side_effect=lambda keep: events.append(("fds", keep))), \
+                patch.object(module, "_minio_chunks", source), patch.object(module, "_send", side_effect=lambda fd, kind, data=b"": events.append((kind, data))), \
+                patch.object(module.os, "set_blocking", side_effect=lambda fd, value: events.append(("blocking", value))), \
+                patch.object(module.os, "close", side_effect=lambda fd: events.append(("close", fd))), patch.object(module.os, "_exit", side_effect=exit_child):
+            with self.assertRaises(ChildExit): module._worker(work, 42)
+        self.assertEqual(events, [("fds", {42}), ("blocking", True), "open", (b"D", b"abc"),
+            "source-close", (b"E", b""), ("close", 42), ("exit", 0)])
+
+    def test_b2_parent_partial_frames_slow_drip_and_single_owned_execution(self):
+        module = self.module()
+        # 지연 시작/partial header/partial payload 모두 부모 absolute deadline을 공유한다.
+        for payload, fragment in ((b"", 1), (b"D\0", 1), (b"D\0\0\0\x03a", 1), (b"D\0\0\0\x03abcE\0\0\0\0", 1)):
+            io_port = BoundedWorkerIO(payload, fragment=fragment)
+            factory, ref, _ = self.factory(io_port)
+            with self.assertRaises(SnapshotError):
+                with factory.open_object(ref, deadline=.04, cancelled=lambda: False) as reader:
+                    while reader.read_bounded(3, deadline=.04, cancelled=lambda: False): pass
+            self.assertTrue(io_port.closed)
+            self.assertLess(io_port.now, 1.)
+        io_port = BoundedWorkerIO(b"E\0\0\0\0")
+        factory, ref, _ = self.factory(io_port)
+        with factory.open_object(ref, deadline=1., cancelled=lambda: False) as reader:
+            with self.assertRaises(SnapshotError) as caught:
+                with factory.open_object(ref, deadline=1., cancelled=lambda: False): pass
+            self.assertEqual(caught.exception.code, "SNAPSHOT_BUSY")
+            self.assertEqual(reader.read_bounded(1, deadline=1., cancelled=lambda: False), b"")
+        self.assertEqual(io_port.started, 1)
+        for status in (1, -9):
+            io_port = BoundedWorkerIO(b"E\0\0\0\0", status=status)
+            factory, ref, _ = self.factory(io_port)
+            with self.assertRaises(SnapshotError):
+                with factory.open_object(ref, deadline=1., cancelled=lambda: False) as reader:
+                    reader.read_bounded(1, deadline=1., cancelled=lambda: False)
+            self.assertFalse(any(event in {"terminate", "kill"} for event, _ in io_port.events))
 
 
 if __name__ == "__main__": unittest.main()

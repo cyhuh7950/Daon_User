@@ -279,6 +279,7 @@ class ServiceSnapshotExecutor:
             if self._clock() - started >= spec.limits.duration_seconds: raise SnapshotError("SNAPSHOT_TIMEOUT")
         folder, lock = self.root / capture_id, self.root / "service-snapshot.lock"
         owner, created, locked = secrets.token_bytes(32), False, False
+        cleanup_uncertain = False
         try:
             with self._pinned():
                 # 같은 root의 프로세스 간에도 create-new만 허용한다. stale lock은 자동 탈취하지 않는다.
@@ -343,14 +344,15 @@ class ServiceSnapshotExecutor:
                     check()
                     self._files.rename(folder / "receipt.pending", folder / "receipt.bin")
                     return receipt
-        except SnapshotError:
+        except SnapshotError as error:
+            cleanup_uncertain = error.code.endswith("CLEANUP_UNCERTAIN")
             raise
         except Exception:
             raise SnapshotError("SNAPSHOT_SOURCE_UNAVAILABLE") from None
         finally:
             try:
-                if created: self._cleanup_partial(spec, capture_id, folder, owner)
-                if locked:
+                if created and not cleanup_uncertain: self._cleanup_partial(spec, capture_id, folder, owner)
+                if locked and not cleanup_uncertain:
                     with self._pinned():
                         if self._read(lock, 4096) == owner: self._files.unlink(lock)
             finally:

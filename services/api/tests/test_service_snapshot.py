@@ -308,5 +308,87 @@ class ServiceSnapshotTests(unittest.TestCase):
         self.assertEqual({thread.ident for thread in threading.enumerate()}, before)
         self.assertFalse((self.root / "bounded-cancel" / "receipt.bin").exists())
 
+    def test_b2_worker_cleanup_uncertain_preserves_artifact_and_single_execution_lock(self):
+        from unittest.mock import patch
+        original = self.ports.open_object
+        @contextmanager
+        def uncertain(ref):
+            with original(ref) as stream: yield stream
+            raise self.m.SnapshotError("SNAPSHOT_WORKER_CLEANUP_UNCERTAIN")
+        with patch.object(self.ports, "open_object", side_effect=uncertain):
+            with self.assertRaises(self.m.SnapshotError) as caught: self.capture()
+        self.assertEqual(caught.exception.code, "SNAPSHOT_WORKER_CLEANUP_UNCERTAIN")
+        self.assertTrue((self.root / "capture-a" / "data.bin").exists())
+        self.assertTrue((self.root / "service-snapshot.lock").exists())
+        self.assertFalse((self.root / "capture-a" / "receipt.bin").exists())
+        preserved = (self.root / "capture-a" / "data.bin").read_bytes()
+        with self.assertRaises(self.m.SnapshotError): self.capture()
+        self.assertEqual((self.root / "capture-a" / "data.bin").read_bytes(), preserved)
+        with self.assertRaises(self.m.SnapshotError): self.executor.verify(self.spec, "capture-a")
+
+    def test_b2_concrete_runtime_frames_are_verified_by_executor_hash_and_size(self):
+        import struct
+        import time
+        from unittest.mock import patch
+        from daon_user_api.service_snapshot_streams import FixedRuntimeFile, FixedSnapshotStreams
+        class ProcessDouble:
+            def __init__(inner, data):
+                inner.payload = bytearray(b"D" + struct.pack(">I", len(data)) + data + b"E\0\0\0\0")
+                inner.started, inner.closed = 0, False
+            def supported(inner): return True
+            def start(inner, work): inner.started += 1; return 41001, 42
+            def readable(inner, fd, timeout): return True
+            def receive(inner, fd, count):
+                value = bytes(inner.payload[:count]); del inner.payload[:count]; return value
+            def poll(inner, pid): return not inner.payload, 0
+            def terminate(inner, pid): inner.payload.clear()
+            def kill(inner, pid): inner.payload.clear()
+            def close(inner, fd): inner.closed = True
+            def pause(inner, duration): pass
+        for suffix, data in (("normal", self.runtime_bytes), ("corrupt", b"x" * len(self.runtime_bytes)),
+                ("truncated", self.runtime_bytes[:-1])):
+            process = ProcessDouble(data)
+            factory = FixedSnapshotStreams(runtime_files=(FixedRuntimeFile(self.runtime[0], self.original / "runtime"),), _io=process)
+            @contextmanager
+            def concrete(ref):
+                with factory.open_runtime(ref, deadline=time.monotonic() + 3., cancelled=lambda: False) as reader: yield reader
+            with patch.object(self.ports, "open_runtime", side_effect=concrete):
+                if suffix == "normal":
+                    receipt = self.executor.capture(self.spec, capture_id="concrete-" + suffix, cancelled=lambda: False)
+                    self.assertEqual(self.executor.verify(self.spec, "concrete-" + suffix), receipt)
+                else:
+                    with self.assertRaises(self.m.SnapshotError):
+                        self.executor.capture(self.spec, capture_id="concrete-" + suffix, cancelled=lambda: False)
+                    self.assertFalse((self.root / ("concrete-" + suffix) / "receipt.bin").exists())
+                    self.assertFalse((self.root / "service-snapshot.lock").exists())
+            self.assertEqual(process.started, 1)
+            self.assertTrue(process.closed)
+
+    @unittest.skipUnless(os.name == "posix" and __import__("sys").platform.startswith("linux"),
+        "Linux fork/NOFOLLOW 실제 실행 전용: Windows 대역 PASS와 구분")
+    def test_b2_linux_native_fixed_runtime_child_reaped_and_link_refused(self):
+        import time
+        from daon_user_api.service_snapshot_streams import FixedRuntimeFile, FixedSnapshotStreams
+        ref = self.runtime[0]
+        factory = FixedSnapshotStreams(runtime_files=(FixedRuntimeFile(ref, self.original / "runtime"),))
+        for _ in range(2):
+            with factory.open_runtime(ref, deadline=time.monotonic() + 3., cancelled=lambda: False) as reader:
+                received = bytearray()
+                while part := reader.read_bounded(4096, deadline=time.monotonic() + 2., cancelled=lambda: False):
+                    received.extend(part)
+                self.assertEqual(bytes(received), self.runtime_bytes)
+                self.assertTrue(reader.exited)
+                self.assertEqual(reader.status, 0)
+            self.assertTrue(reader.closed)
+        linked = self.original / "linked-runtime"
+        os.link(self.original / "runtime", linked)
+        try:
+            with self.assertRaises(self.m.SnapshotError):
+                with factory.open_runtime(ref, deadline=time.monotonic() + 2., cancelled=lambda: False) as reader:
+                    reader.read_bounded(4096, deadline=time.monotonic() + 2., cancelled=lambda: False)
+            self.assertTrue(reader.exited)
+            self.assertTrue(reader.closed)
+        finally: linked.unlink()
+
 
 if __name__ == "__main__": unittest.main()
