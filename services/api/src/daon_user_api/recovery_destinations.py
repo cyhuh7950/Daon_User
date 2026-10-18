@@ -51,6 +51,8 @@ _ENTRY_FIELDS = frozenset(("destination_id", "version", "display_name", "capture
     "database_ref", "bucket_ref", "physical_receipt_digest", "owner_operation_id", "created_at", "expires_at",
     "application_enabled", "outbound_enabled"))
 _STUDIO_DEFAULTS=("workspace_policies","knowledge_scopes","weight_profiles","ruleset_references","ruleset_version_snapshots","ruleset_bindings")
+# 0036_authorization_postgres_tables.py INSERT(1,1). SQLite의 schema3과 별개다.
+_POSTGRES_AUTHORIZATION_SCHEMA_VERSION=1
 
 
 def _reject(status=409):
@@ -348,7 +350,6 @@ class PostgresMinioPhysicalProbe(TrustedPhysicalProbe):
     @staticmethod
     def _empty_database(connection,foundation):
         from .data_canon import _TRANSITIONS
-        from .authorization import AUTHORIZATION_SCHEMA_VERSION
         namespaces=[row[0] for row in connection.execute("SELECT nspname FROM pg_catalog.pg_namespace "
             "WHERE nspname NOT IN ('pg_catalog','information_schema') AND nspname !~ '^pg_(toast|temp)'")]
         if namespaces!=["public"]: raise _reject(503)
@@ -357,7 +358,7 @@ class PostgresMinioPhysicalProbe(TrustedPhysicalProbe):
             "AND c.relkind IN ('r','p','f','m','v') ORDER BY c.relname LIMIT 513"))
         if len(relations)>512 or any(row[0]!="public" or row[2] not in {"r","p"} for row in relations): raise _reject(503)
         names={row[1] for row in relations}
-        if not {"alembic_version","canon_transition_rules",*_STUDIO_DEFAULTS}<=names: raise _reject(503)
+        if not {"alembic_version","canon_transition_rules","identity_auth_schema_metadata",*_STUDIO_DEFAULTS}<=names: raise _reject(503)
         PostgresMinioPhysicalProbe._studio_protection(connection,foundation)
         # 업무 nonempty와 보호된 기본행 훼손을 구분한다. fresh=False 소비자도
         # 무결성 실패를 nonempty 정상 재진입으로 해석할 수 없어야 한다.
@@ -381,7 +382,7 @@ class PostgresMinioPhysicalProbe(TrustedPhysicalProbe):
                 if rows!=expected: empty=False
             elif name=="identity_auth_schema_metadata":
                 rows=list(connection.execute("SELECT singleton,schema_version FROM public.identity_auth_schema_metadata LIMIT 2"))
-                if rows not in ([],[(1,AUTHORIZATION_SCHEMA_VERSION)]): empty=False
+                if rows!=[(1,_POSTGRES_AUTHORIZATION_SCHEMA_VERSION)] or any(type(value) is not int for value in rows[0]): raise _reject(503)
             elif name in foundation_keys:
                 keys=foundation_keys[name]
                 predicate=pgsql.SQL(" AND ").join(pgsql.SQL("{} IS NOT DISTINCT FROM %s").format(pgsql.Identifier(k)) for k in keys)

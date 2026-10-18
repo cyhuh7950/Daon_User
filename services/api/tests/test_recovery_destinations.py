@@ -355,6 +355,24 @@ class ConcretePhysicalProbeTests(unittest.TestCase):
         self.target.workspace_created=NOW.astimezone(timezone(timedelta(hours=9)))
         self.assertTrue(self.probe.observe(self.request).database_empty,"같은 instant의 timestamp zone 표시는 의미를 바꾸지 않음")
 
+    def test_postgres0036_auth_metadata_exact_one_not_sqlite_version(self):
+        # 0036 PG INSERT(1,1). SQLite schema3을 PG 정상값으로 쓰지 않는다.
+        self.target.auth_metadata=[(1,1)]
+        self.assertTrue(self.probe.observe(self.request).database_empty)
+        self.target.auth_metadata=[]
+        with self.assertRaises(RecoveryError):self.probe.observe(self.request)
+        for rows in ([(1,3)],[(1,0)],[(2,1)],[(1,1),(1,1)],[(1,None)],[(True,1)]):
+            with self.subTest(rows=rows):
+                self.target.auth_metadata=rows
+                with self.assertRaises(RecoveryError):self.probe.observe(self.request)
+
+    def test_postgres0036_missing_metadata_table_or_row_refuses_observation(self):
+        for mode in ("row","table"):
+            with self.subTest(missing=mode):
+                self.target.auth_metadata=[] if mode=="row" else [(1,1)]
+                self.target.omit_auth_metadata=mode=="table"
+                with self.assertRaises(RecoveryError):self.probe.observe(self.request)
+
     def test_column_acl_null_empty_and_explicit_grants_use_safe_catalog_expression(self):
         # SQL 포트 대역. 실제 PG22023/대안식 증거는 MAIN의 실PG 실행과 구분한다.
         for label,acl in (("null",None),("empty",[]),("grant",[["daon_app","daon_app","UPDATE",False]])):
@@ -488,7 +506,7 @@ class ConcretePhysicalProbeTests(unittest.TestCase):
                 self.target.foreign_relation=change=="relation"
                 self.instances["target-a"]=replace(self.instances["target-a"],application_enabled=change=="enabled")
                 probe=self.api.PostgresMinioPhysicalProbe(self.instances,clock=lambda:NOW,_pool_factory=self.http.pool)
-                if change in {"global-denied","relation","enabled"}:
+                if change in {"global-denied","relation","enabled","authmetadata"}:
                     with self.assertRaises(RecoveryError): probe.observe(self.request)
                 else: self.assertFalse(probe.observe(self.request).database_empty)
 
@@ -545,7 +563,6 @@ class PhysicalSqlDouble:
     def transaction(self): yield
     def execute(self,statement,params=()):
         from daon_user_api.data_canon import _TRANSITIONS
-        from daon_user_api.authorization import AUTHORIZATION_SCHEMA_VERSION
         sql=statement if isinstance(statement,str) else statement.as_string()
         if sql.startswith("SET TRANSACTION"):
             self.case.assertIn("READ ONLY",sql); return ProbeCursor([])
@@ -571,6 +588,7 @@ class PhysicalSqlDouble:
             names=("alembic_version","canon_transition_rules","identity_auth_schema_metadata","tenants","workspaces","user_accounts",
                 "memberships","identity_auth_tenant_roles","sources","source_versions","object_records","unknown_business")
             if self.studio_rows is not None: names=(*names,*self.studio_rows)
+            if getattr(self,"omit_auth_metadata",False):names=tuple(n for n in names if n!="identity_auth_schema_metadata")
             return ProbeCursor([("public",n,"f" if self.foreign_relation and n=="unknown_business" else "r") for n in names])
         if "FROM public.alembic_version" in sql:
             return ProbeCursor([("0069" if self.bad_static=="revision" else "0070",)])
@@ -578,7 +596,7 @@ class PhysicalSqlDouble:
             rows=sorted((entity,*edge) for entity,edges in _TRANSITIONS.items() for edge in edges)
             return ProbeCursor(rows[:-1] if self.bad_static=="rules" else rows)
         if "FROM public.identity_auth_schema_metadata" in sql:
-            return ProbeCursor([(1,0 if self.bad_static=="authmetadata" else AUTHORIZATION_SCHEMA_VERSION)])
+            return ProbeCursor(getattr(self,"auth_metadata",[(1,0 if self.bad_static=="authmetadata" else 1)]))
         if self.global_denied: raise PermissionError("secret-canary")
         if sql.startswith("SELECT created_at FROM public.workspaces"):
             self.case.assertEqual(params,("tenant-a","workspace-a")); return ProbeCursor([(self.workspace_created,)])
