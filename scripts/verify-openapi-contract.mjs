@@ -125,6 +125,7 @@ export const REQUIRED_PATHS = Object.freeze([
   "/api/v1/backups/selection-previews",
   "/api/v1/backups/{id}",
   "/api/v1/backups/{id}/restore-previews",
+  "/api/v1/backups/{id}/restore-destinations",
   "/api/v1/restore-requests/{id}",
   "/api/v1/restore-requests/{id}/execute",
   "/api/v1/restore-requests/{id}/cancel"
@@ -519,6 +520,42 @@ function validateLineageContract(document) {
   const response=document.components.responses.LineageSelectionPreviewResponse;
   check(response?.content?.["application/json"]?.schema?.$ref==="#/components/schemas/LineageSelectionPreviewEnvelope","exact envelope");
   check(Boolean(op.responses?.["413"])&&Boolean(op.responses?.["503"]),"limits and unavailable responses");
+}
+
+function validateRegisteredRestoreContract(document){
+  const schemas=document.components.schemas;
+  const check=(condition,why)=>{if(!condition)fail(`R4 registered restore ${why}`);};
+  const same=(a,b)=>canonicalizeDocument(a)===canonicalizeDocument(b);
+  const id={type:"string",minLength:1,maxLength:128,pattern:"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}(?![\\s\\S])"};
+  const token={type:"string",minLength:1,maxLength:512,writeOnly:true};
+  const time={type:"string",format:"date-time"},digest={type:"string",pattern:"^[0-9a-f]{64}$"};
+  const exact=(name,properties)=>check(same(schemas[name],{type:"object",additionalProperties:false,required:Object.keys(properties),properties}),`${name} exact`);
+  const ref=name=>({$ref:`#/components/schemas/${name}`});
+  const count=minimum=>({type:"integer",minimum,maximum:100});
+  exact("LegacyRestorePreviewRequest",{destination:ref("RestoreDestination"),step_up_authorization_id:token});
+  exact("RegisteredRestorePreviewRequest",{workspace_id:id,destination_id:id,destination_version:{type:"integer",minimum:1,maximum:2147483647},step_up_authorization_id:token});
+  exact("RestoreExecuteRequest",{preview_version:{type:"integer",minimum:1},step_up_authorization_id:token});
+  check(same(schemas.RestorePreviewRequest,{oneOf:[ref("LegacyRestorePreviewRequest"),ref("RegisteredRestorePreviewRequest")]}),"disjoint preview bodies");
+  exact("RegisteredDestinationSummary",{destination_id:id,version:{type:"integer",minimum:1,maximum:2147483647},display_name:{type:"string",minLength:1,maxLength:80},expires_at:time});
+  exact("RegisteredDestinationsEnvelope",{data:{type:"array",maxItems:1000,items:ref("RegisteredDestinationSummary")},meta:ref("OrganizationMeta")});
+  exact("LegacyRestorePreview",{version:{type:"integer",minimum:1},included_object_ids:{type:"array",uniqueItems:true,items:ref("OpaqueId")},
+    excluded_object_ids:{type:"array",uniqueItems:true,items:ref("OpaqueId")},exclusion_reasons:{type:"array",items:{type:"array",minItems:2,maxItems:2,
+      prefixItems:[ref("OpaqueId"),{type:"string",enum:["purged","held","tombstoned"]}]}},destination:ref("RestoreDestination"),created_at:time});
+  exact("RegisteredRestorePreview",{kind:{type:"string",const:"selected_source_lineage"},version:{type:"integer",minimum:1},created_at:time,expires_at:time,
+    destination:ref("RegisteredDestinationSummary"),source_manifest_digest:digest,closure_fingerprint:digest,included_root_count:count(1),excluded_root_count:count(0),
+    exclusion_counts:{type:"object",additionalProperties:false,required:["purged","held","tombstoned"],properties:{purged:count(0),held:count(0),tombstoned:count(0)}}});
+  const states=["requested","preview_ready","authorized","restoring","verifying","completed","failed","cancelled"];
+  exact("RestoreRequestView",{request_id:ref("OpaqueId"),backup_id:ref("OpaqueId"),tenant_id:ref("OpaqueId"),workspace_id:ref("OpaqueId"),state:{type:"string",enum:states},
+    version:{type:"integer",minimum:1},preview:{oneOf:[ref("LegacyRestorePreview"),ref("RegisteredRestorePreview")]},transitions:{type:"array",items:{type:"string",enum:states}},
+    verification_digest:{oneOf:[digest,{type:"null"}]}});
+  exact("RestoreEnvelope",{data:ref("RestoreRequestView"),meta:ref("OrganizationMeta")});
+  const path=document.paths["/api/v1/backups/{id}/restore-destinations"],op=path?.get;
+  check(same(Object.keys(path??{}),["get"])&&op?.operationId==="listRestoreDestinations","exact GET literal");
+  check(same(op.parameters,[{$ref:"#/components/parameters/ResourceId"}]),"no caller registry query/body");
+  check(!op.requestBody&&op.responses?.["200"]?.$ref==="#/components/responses/RegisteredDestinationsResponse"&&Boolean(op.responses["503"]),"destination response/off");
+  check(document.components.responses.RegisteredDestinationsResponse?.content?.["application/json"]?.schema?.$ref==="#/components/schemas/RegisteredDestinationsEnvelope","safe4 envelope");
+  check(document.components.responses.RestoreResponse?.content?.["application/json"]?.schema?.$ref==="#/components/schemas/RestoreEnvelope","closed restore response");
+  check(requestSchema(document,document.paths["/api/v1/backups/{id}/restore-previews"].post)===schemas.RestorePreviewRequest,"preview request binding");
 }
 
 function validateIdentityContract(document) {
@@ -1051,6 +1088,7 @@ export function validateOpenApiDocument(document) {
   validateAuditContract(document);
   validateIdentityContract(document);
   validateLineageContract(document);
+  validateRegisteredRestoreContract(document);
   validateAuthorizationContract(document);
   validateLicenseContract(document);
 

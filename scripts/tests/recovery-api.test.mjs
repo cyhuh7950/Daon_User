@@ -5,6 +5,58 @@ import test from "node:test";
 import { createBffProxy } from "../../apps/web/lib/bff-api-proxy.js";
 import { parseRecoverySessionContext, recoveryApi, resolveRecoverySession } from "../../apps/web/lib/recovery-api.js";
 
+test("R4 v3 사전확인과 명시동의 exact6만 same-origin 전송하고 혼합/무동의는 fetch0", async () => {
+  assert.equal(typeof recoveryApi.previewBackupSelection, "function");
+  assert.equal(typeof recoveryApi.createLineageBackup, "function");
+  const previous = globalThis.fetch, calls = [], controller = new AbortController();
+  globalThis.fetch = async (url, init) => { calls.push([url, init]); return Response.json({ data: {} }); };
+  try {
+    const preflight = { workspace_id: "workspace-a", notebook_id: "notebook-a", source_version_ids: ["version-b", "version-a"], lineage_mode: "exact" };
+    await recoveryApi.previewBackupSelection(preflight, { signal: controller.signal });
+    const create = { ...preflight, trigger: "manual", closure_consent: { include_prior_versions: true, closure_fingerprint: "a".repeat(64) } };
+    await recoveryApi.createLineageBackup(create, "r4-lineage-create-key", { signal: controller.signal });
+    assert.deepEqual(calls.map(([url]) => url), ["/bff/api/backups/selection-previews", "/bff/api/backups"]);
+    assert.deepEqual(JSON.parse(calls[0][1].body), { ...preflight, source_version_ids: ["version-a", "version-b"] });
+    assert.deepEqual(JSON.parse(calls[1][1].body), { ...create, source_version_ids: ["version-a", "version-b"] });
+    for (const [, init] of calls) assert.deepEqual([init.credentials, init.cache, init.signal], ["same-origin", "no-store", controller.signal]);
+    for (const change of [{ closure_consent: { ...create.closure_consent, include_prior_versions: false } },
+      { closure_consent: { ...create.closure_consent, extra: true } }, { closure_consent: { include_prior_versions: true, closure_fingerprint: "bad" } },
+      { objects: [] }, { source_version_ids: ["version-a", "version-a"] }, { lineage_mode: "loose" }]) {
+      await assert.rejects(async () => recoveryApi.createLineageBackup({ ...create, ...change }, "r4-lineage-create-key"));
+    }
+    assert.equal(calls.length, 2);
+  } finally { globalThis.fetch = previous; }
+});
+
+test("R4 등록목적지 GET와 Preview exact4는 abort/backup대상 token/멱등을 보존한다", async () => {
+  assert.equal(typeof recoveryApi.getRestoreDestinations, "function");
+  assert.equal(typeof recoveryApi.previewRegisteredRestore, "function");
+  const previous = globalThis.fetch, calls = [], controller = new AbortController();
+  globalThis.fetch = async (url, init) => { calls.push([url, init]); return Response.json({ data: [] }); };
+  try {
+    await recoveryApi.getRestoreDestinations("backup-a", { signal: controller.signal });
+    const input = { workspace_id: "workspace-a", destination_id: "destination-a", destination_version: 1, step_up_authorization_id: "preview-token" };
+    await recoveryApi.previewRegisteredRestore("backup-a", input, "r4-preview-idem-key", { signal: controller.signal });
+    assert.deepEqual(calls.map(([url]) => url), ["/bff/api/backups/backup-a/restore-destinations", "/bff/api/backups/backup-a/restore-previews"]);
+    assert.deepEqual(JSON.parse(calls[1][1].body), input);
+    assert.equal(calls[1][1].headers["Idempotency-Key"], "r4-preview-idem-key");
+    for (const [, init] of calls) assert.deepEqual([init.credentials, init.cache, init.signal], ["same-origin", "no-store", controller.signal]);
+    for (const change of [{ destination_version: true }, { destination_version: 0 }, { source_actor: "forged" }, { destination: {} }, { step_up_authorization_id: "" }, {step_up_authorization_id:"x".repeat(513)}]) {
+      await assert.rejects(async () => recoveryApi.previewRegisteredRestore("backup-a", { ...input, ...change }, "r4-preview-idem-key"));
+    }
+    assert.equal(calls.length, 2);
+  } finally { globalThis.fetch = previous; }
+});
+
+test("R4 backup exact GET forwards abort without changing legacy call signature",async()=>{
+  const previous=globalThis.fetch,controller=new AbortController();let observed;
+  globalThis.fetch=async(url,init)=>{observed=[url,init];return Response.json({data:{}});};
+  try{
+    await recoveryApi.getBackup("backup-a",{signal:controller.signal});
+    assert.equal(observed[0],"/bff/api/backups/backup-a");assert.equal(observed[1].signal,controller.signal);
+  }finally{globalThis.fetch=previous;}
+});
+
 test("S44 L1 Web은 기존 Notebook/context를 읽고 새 정확4필드만 same-origin POST한다", async () => {
   const previous = globalThis.fetch, calls = [], controller = new AbortController();
   globalThis.fetch = async (url, init) => {
@@ -113,7 +165,10 @@ test("S44 기존복구 정확 GET·Execute·Cancel의 optional AbortSignal과 �
 test("S44 상태 조회는 기존 엄격한 5component helper와 same-origin GET을 사용한다", async () => {
   const previous = globalThis.fetch, calls = [];
   const data = { workspace_id: "workspace-a", overall_status: "ready", checked_at: "2026-10-18T00:00:00Z",
-    components: ["provider", "api", "storage", "sync", "queue"].map(component_id => ({ component_id, status: "ready", safe_code: "COMPONENT_READY", pending_count: 0, recovery_action: "none" })) };
+    components: ["provider", "api", "storage", "sync", "queue"].map(component_id => ({ component_id, status: "ready", safe_code: "COMPONENT_READY", pending_count: 0, recovery_action: "none" })),
+    observations: ["document_pending", "document_retry_wait", "document_leased", "document_dead_letter", "object_pending", "object_retry_wait", "object_leased", "object_dead_letter", "object_oldest_pending_seconds", "source_waiting_model", "index_records_current", "source_storage_bytes", "reported_prompt_tokens", "reported_completion_tokens", "reported_total_tokens", "attempts_without_reported_usage"]
+      .map((metric_id,index)=>({metric_id,state:"not_collected",value:null,unit:index===8?"seconds":index===11?"bytes":index>=12&&index<=14?"tokens":"count",
+        observed_at:null,coverage:index<9?"workspace_operational_counts":"actor_accessible_records",safe_code:"METRIC_NOT_COLLECTED"})) };
   const controller = new AbortController();
   let value = data;
   try {

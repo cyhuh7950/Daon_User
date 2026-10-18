@@ -13,6 +13,25 @@ import {
   parsePublicGatewayOrigin,
 } from "../../apps/web/lib/bff-api-proxy.js";
 
+test("R4 registered destination GET literal is exact in web and native",async()=>{
+  const {createNativeBffProxy}=await import("../../apps/web/lib/bff-api-proxy.js");
+  for(const native of [false,true]){
+    const calls=[];
+    const proxy=(native?createNativeBffProxy:createBffProxy)({baseUrl:new URL("https://api.example.com"),fetchImpl:async(url,init)=>{
+      calls.push({url:String(url),method:init.method});return Response.json({data:[]});
+    }});
+    const headers=native?{Authorization:"Bearer opaque-native-credential"}:{};
+    const root="https://app.example.com/"+(native?"api/v1/":"bff/api/")+"backups/backup-a/restore-destinations";
+    const parts=["backups","backup-a","restore-destinations"];
+    assert.equal((await proxy(new Request(root,{headers}),parts)).status,200);
+    assert.equal(calls[0].url,"https://api.example.com/api/v1/backups/backup-a/restore-destinations");
+    assert.equal((await proxy(new Request(root+"?destination_id=forged",{headers}),parts)).status,native?404:400);
+    assert.equal((await proxy(new Request(root,{method:"POST",headers:{...headers,Origin:"https://app.example.com","Content-Type":"application/json"},body:"{}"}),parts)).status,405);
+    assert.equal((await proxy(new Request(root+"/extra",{headers}),[...parts,"extra"])).status,404);
+    assert.equal(calls.length,1);
+  }
+});
+
 test("R1-C exact preflight literal precedes generic backup id in web and native", async () => {
   const { createNativeBffProxy } = await import("../../apps/web/lib/bff-api-proxy.js");
   const body = JSON.stringify({workspace_id:"workspace-a",notebook_id:"notebook-a",source_version_ids:["version-a"],lineage_mode:"exact"});

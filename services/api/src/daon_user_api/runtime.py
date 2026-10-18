@@ -547,6 +547,7 @@ class RuntimeSettings:
     recovery_capture_root: Path | None = None
     recovery_capture_key_version: str | None = None
     recovery_capture_key_reference: str | None = None
+    recovery_restore_config_file: Path | None = field(default=None,repr=False)
     step_up_token_key_file: Path | None = None
     provider_credential_key_file: Path | None = None
     license_public_keys_file: Path | None = None
@@ -570,6 +571,10 @@ class RuntimeSettings:
     notification_inbox_enabled: bool = False
 
     def __post_init__(self) -> None:
+        if self.recovery_restore_config_file is not None and (
+            not isinstance(self.recovery_restore_config_file,Path) or not self.recovery_restore_config_file.is_absolute()
+            or ".." in self.recovery_restore_config_file.parts):
+            raise ValueError("REGISTERED_RESTORE_CONFIG_INVALID")
         capture = (self.recovery_capture_root, self.recovery_capture_key_version, self.recovery_capture_key_reference)
         if any(value is not None for value in capture):
             if (not all(value is not None for value in capture)
@@ -722,6 +727,8 @@ class RuntimeSettings:
                 else Path(os.environ["DAON_RECOVERY_CAPTURE_ROOT"])),
             recovery_capture_key_version=os.environ.get("DAON_RECOVERY_CAPTURE_KEY_VERSION"),
             recovery_capture_key_reference=os.environ.get("DAON_RECOVERY_CAPTURE_KEY_REFERENCE"),
+            recovery_restore_config_file=(None if os.environ.get("DAON_RECOVERY_RESTORE_CONFIG_FILE") is None
+                else Path(os.environ["DAON_RECOVERY_RESTORE_CONFIG_FILE"])),
             object_storage_secure=os.environ.get("DAON_OBJECT_STORAGE_SECURE", "true").lower() == "true",
             object_storage_provision_bucket=(
                 os.environ.get("DAON_OBJECT_STORAGE_PROVISION_BUCKET", "false").lower() == "true"
@@ -1342,10 +1349,22 @@ class RestoreDestinationBody(BaseModel):
     bucket_id: str
 
 
-class RestorePreviewBody(BaseModel):
+class LegacyRestorePreviewBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     destination: RestoreDestinationBody
     step_up_authorization_id: str
+
+
+class RegisteredRestorePreviewBody(BaseModel):
+    model_config = ConfigDict(extra="forbid",strict=True)
+    workspace_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+    destination_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+    destination_version: int = Field(gt=0,le=2147483647)
+    step_up_authorization_id: str = Field(min_length=1,max_length=512)
+
+
+class RestorePreviewBody(RootModel[LegacyRestorePreviewBody | RegisteredRestorePreviewBody]):
+    model_config = ConfigDict(json_schema_extra=_backup_one_of)
 
 
 class RestoreExecuteBody(BaseModel):
@@ -5923,8 +5942,31 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         _require_query_keys(request, frozenset())
         _egress_idempotency_key(idempotency_key)
         access_token, _ = _credential(request)
+        if body.target_id.startswith("rrexec-v1:"):
+            raise IdentityError("INVALID_INPUT",400)
+        target_id=body.target_id
+        if body.action_group=="permanent_delete_or_restore_rollback" and isinstance(recovery_service,PostgresRecoveryService):
+            principal=_principal(request,dependencies)
+            try:workspace_id=recovery_service.locate_restore_workspace(principal.tenant_id,body.target_id)
+            except RecoveryError as error:
+                if (error.code,error.status)!=("RESTORE_REQUEST_UNAVAILABLE",404):raise
+            else:
+                def current():
+                    value=_principal(request,dependencies)
+                    if (value.tenant_id,value.user_id,value.session_id,value.device_id)!=(principal.tenant_id,principal.user_id,principal.session_id,principal.device_id):
+                        raise RecoveryError("CURRENT_ACCESS_DENIED",403)
+                    dependencies.authorization_service.authorize_action(principal=value,workspace_id=workspace_id,action=Action.POLICY_MANAGE,
+                        trace_id=request.state.trace_id,policy_version=dependencies.settings.policy_version)
+                current()
+                context=_recovery_context(principal,workspace_id,request,dependencies)
+                view=recovery_service.get_restore_request(context,body.target_id)
+                from .recovery import RegisteredRestorePreviewView
+                if isinstance(view.preview,RegisteredRestorePreviewView):
+                    view=await _recovery_heavy(recovery_service.registered_restore_step_up_preview,context,body.target_id,recheck=current)
+                    current()
+                    target_id=_registered_restore_execute_step_up_target(view)
         grant = dependencies.identity_service.issue_step_up_after_reauthentication(
-            access_token=access_token, action_group=body.action_group, target_id=body.target_id,
+            access_token=access_token, action_group=body.action_group, target_id=target_id,
             password=body.password,
             policy_version=dependencies.settings.policy_version, trace_id=request.state.trace_id,
             ttl_seconds=body.ttl_seconds, idempotency_key=idempotency_key,
@@ -7401,7 +7443,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             action=Action.POLICY_MANAGE, trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version)
         if dependencies.cloud_store is None: raise RecoveryError("RESOURCE_UNAVAILABLE", 503)
         context = _recovery_context(principal, body.workspace_id, request, dependencies)
-        selection = PostgresBackupSelectionResolver(dependencies.cloud_store).resolve_lineage(
+        selection = await _recovery_heavy(PostgresBackupSelectionResolver(dependencies.cloud_store).resolve_lineage,
             context, BackupSelectionInput(body.notebook_id, tuple(body.source_version_ids)))
         current = _principal(request, dependencies)
         if (current.tenant_id, current.user_id, current.session_id, current.device_id) != (
@@ -7455,9 +7497,9 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 except (IdentityError, AuthorizationError) as error:
                     raise _LineageRecheckAuthError(error) from None
             try:
-                selection = recheck_lineage()
+                selection = await _recovery_heavy(recheck_lineage)
                 if not isinstance(recovery_service, PostgresRecoveryService): raise RecoveryError("RESOURCE_UNAVAILABLE", 503)
-                view = recovery_service.create_lineage_backup(context, selection, idempotency_key=idempotency_key,
+                view = await _recovery_heavy(recovery_service.create_lineage_backup,context, selection, idempotency_key=idempotency_key,
                     recheck=recheck_lineage, trigger=body.trigger)
             except _LineageRecheckAuthError as error:
                 # cleanup 불확정은 별도 503이므로 이 분기에 들어오지 않는다.
@@ -7480,11 +7522,11 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 current_metadata = resolver.capture_metadata(context, current, trigger=body.trigger)
                 check_principal()
                 return current, current_metadata
-            resolved = resolve_selection()
+            resolved = await _recovery_heavy(resolve_selection)
             if not isinstance(recovery_service, PostgresRecoveryService):
                 raise RecoveryError("RESOURCE_UNAVAILABLE", 503, retryable=False)
-            metadata = resolver.capture_metadata(context, resolved, trigger=body.trigger)
-            view = recovery_service.create_selected_backup(context, resolved, metadata,
+            metadata = await _recovery_heavy(resolver.capture_metadata,context, resolved, trigger=body.trigger)
+            view = await _recovery_heavy(recovery_service.create_selected_backup,context, resolved, metadata,
                 idempotency_key=idempotency_key, recheck=recheck, trigger=body.trigger)
         else:
             view = recovery_service.create_backup(
@@ -7538,16 +7580,42 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         response.headers["ETag"] = view.etag
         return response
 
+    @app.get("/api/v1/backups/{id}/restore-destinations")
+    async def get_restore_destinations(id: str,request: Request) -> JSONResponse:
+        _require_query_keys(request,frozenset())
+        principal=_principal(request,dependencies)
+        workspace_id=recovery_service.locate_backup_workspace(principal.tenant_id,id)
+        dependencies.authorization_service.authorize_action(principal=principal,workspace_id=workspace_id,
+            action=Action.POLICY_MANAGE,trace_id=request.state.trace_id,policy_version=dependencies.settings.policy_version)
+        context=_recovery_context(principal,workspace_id,request,dependencies)
+        def current():
+            value=_principal(request,dependencies)
+            if (value.tenant_id,value.user_id,value.session_id,value.device_id)!=(principal.tenant_id,principal.user_id,principal.session_id,principal.device_id):
+                raise RecoveryError("CURRENT_ACCESS_DENIED",403)
+            dependencies.authorization_service.authorize_action(principal=value,workspace_id=workspace_id,
+                action=Action.POLICY_MANAGE,trace_id=request.state.trace_id,policy_version=dependencies.settings.policy_version)
+        if not isinstance(recovery_service,PostgresRecoveryService): raise RecoveryError("RESOURCE_UNAVAILABLE",503)
+        values=await _recovery_heavy(recovery_service.list_restore_destinations,context,id,recheck=current)
+        current()
+        # 보안용 서버 refs/물리 영수증/원문은 등록 요약 DTO에도 반사하지 않는다.
+        fields=("destination_id","version","display_name","expires_at")
+        result=[{key:value[key] for key in fields} for value in values]
+        return _json_with_etag({"data":result,"meta":{"trace_id":request.state.trace_id}},
+            hashlib.sha256(json.dumps(result,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode()).hexdigest())
+
     @app.post("/api/v1/backups/{id}/restore-previews", status_code=201)
     async def create_restore_preview(
         id: str, body: RestorePreviewBody, request: Request,
         idempotency_key: str = Header(alias="Idempotency-Key"),
     ) -> JSONResponse:
+        body=body.root
         _require_query_keys(request, frozenset())
         _idempotency_key(idempotency_key)
         access_token, _ = _credential(request)
         principal = _principal(request, dependencies)
         workspace_id = recovery_service.locate_backup_workspace(principal.tenant_id, id)
+        if isinstance(body,RegisteredRestorePreviewBody) and body.workspace_id!=workspace_id:
+            raise RecoveryError("CURRENT_ACCESS_DENIED",403)
         dependencies.authorization_service.authorize_action(
             principal=principal, workspace_id=workspace_id, action=Action.POLICY_MANAGE,
             trace_id=request.state.trace_id,
@@ -7561,11 +7629,22 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             trace_id=request.state.trace_id,
             operation="recovery.restore_preview", idempotency_key=idempotency_key,
         )
-        view = recovery_service.create_restore_preview(
-            _recovery_context(principal, workspace_id, request, dependencies), id,
-            destination=RestoreDestination(**body.destination.model_dump()),
-            idempotency_key=idempotency_key, step_up_verified=True,
-        )
+        context=_recovery_context(principal,workspace_id,request,dependencies)
+        if isinstance(body,RegisteredRestorePreviewBody):
+            if not isinstance(recovery_service,PostgresRecoveryService): raise RecoveryError("RESOURCE_UNAVAILABLE",503)
+            def current():
+                value=_principal(request,dependencies)
+                if (value.tenant_id,value.user_id,value.session_id,value.device_id)!=(principal.tenant_id,principal.user_id,principal.session_id,principal.device_id):
+                    raise RecoveryError("CURRENT_ACCESS_DENIED",403)
+                dependencies.authorization_service.authorize_action(principal=value,workspace_id=workspace_id,action=Action.POLICY_MANAGE,
+                    trace_id=request.state.trace_id,policy_version=dependencies.settings.policy_version)
+            view=await _recovery_heavy(recovery_service.preview_registered_restore,context,id,destination_id=body.destination_id,destination_version=body.destination_version,
+                idempotency_key=idempotency_key,step_up_verified=True,recheck=current)
+            current()
+        else:
+            view = recovery_service.create_restore_preview(context, id,
+                destination=RestoreDestination(**body.destination.model_dump()),
+                idempotency_key=idempotency_key, step_up_verified=True)
         response = JSONResponse(
             {"data": _dataclass_json(view), "meta": {"trace_id": request.state.trace_id}},
             status_code=201,
@@ -7608,20 +7687,37 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             trace_id=request.state.trace_id,
             policy_version=dependencies.settings.policy_version,
         )
+        context=_recovery_context(principal,workspace_id,request,dependencies)
+        expected_version=_recovery_expected_version(if_match,id)
+        from .recovery import RegisteredRestorePreviewView
+        current_view=recovery_service.get_restore_request(context,id)
+        target_id=_registered_restore_execute_step_up_target(current_view) if isinstance(current_view.preview,RegisteredRestorePreviewView) else id
         dependencies.identity_service.consume_step_up(
             step_up_authorization=body.step_up_authorization_id,
             access_token=access_token,
-            action_group="permanent_delete_or_restore_rollback", target_id=id,
+            action_group="permanent_delete_or_restore_rollback", target_id=target_id,
             policy_version=dependencies.settings.policy_version,
             trace_id=request.state.trace_id,
             operation="recovery.restore_execute", idempotency_key=idempotency_key,
         )
-        view = recovery_service.execute_restore(
-            _recovery_context(principal, workspace_id, request, dependencies), id,
-            expected_version=_recovery_expected_version(if_match, id),
-            preview_version=body.preview_version, idempotency_key=idempotency_key,
-            step_up_verified=True,
-        )
+        if isinstance(current_view.preview,RegisteredRestorePreviewView):
+            if not isinstance(recovery_service,PostgresRecoveryService):raise RecoveryError("RESOURCE_UNAVAILABLE",503)
+            def current():
+                try:
+                    value=_principal(request,dependencies)
+                    if (value.tenant_id,value.user_id,value.session_id,value.device_id)!=(principal.tenant_id,principal.user_id,principal.session_id,principal.device_id):
+                        raise RecoveryError("CURRENT_ACCESS_DENIED",403)
+                    dependencies.authorization_service.authorize_action(principal=value,workspace_id=workspace_id,action=Action.POLICY_MANAGE,
+                        trace_id=request.state.trace_id,policy_version=dependencies.settings.policy_version)
+                except (IdentityError,AuthorizationError) as error:raise _LineageRecheckAuthError(error) from None
+            try:
+                view=await _recovery_heavy(recovery_service.execute_registered_restore,context,id,expected_version=expected_version,
+                    preview_version=body.preview_version,idempotency_key=idempotency_key,step_up_verified=True,recheck=current)
+                current()
+            except _LineageRecheckAuthError as error:raise error.original from None
+        else:
+            view = recovery_service.execute_restore(context,id,expected_version=expected_version,
+                preview_version=body.preview_version,idempotency_key=idempotency_key,step_up_verified=True)
         response = JSONResponse({
             "data": _dataclass_json(view), "meta": {"trace_id": request.state.trace_id}
         })
@@ -7657,13 +7753,48 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     return app
 
 
+def _registered_restore_execute_step_up_target(view):
+    preview=view.preview
+    raw=json.dumps(["registered-restore-execute-step-up-v1",view.request_id,preview.version,
+        preview.source_manifest_digest,preview.closure_fingerprint,preview.created_at.isoformat()],
+        ensure_ascii=False,separators=(",",":")).encode("utf-8")
+    return "rrexec-v1:"+hashlib.sha256(raw).hexdigest()
+
+
+async def _recovery_heavy(call,*args,**kwargs):
+    """S44의 동기 I/O/암호화만 분리. 취소는 다음 기존 쓰기 전 재검사에서 안전 거부한다.
+
+    thread를 강제 종료하거나 진행된 외부 쓰기를 rollback했다고 주장하지 않는다.
+    기존 R3 phase/불확정 보존과 store 정리 경계가 결과를 관리한다.
+    """
+    cancelled=threading.Event()
+    original=kwargs.get("recheck")
+    if original is not None:
+        def current():
+            if cancelled.is_set():raise RecoveryError("RESOURCE_UNAVAILABLE",503,retryable=False)
+            result=original()
+            if cancelled.is_set():raise RecoveryError("RESOURCE_UNAVAILABLE",503,retryable=False)
+            return result
+        kwargs["recheck"]=current
+    try:return await asyncio.to_thread(call,*args,**kwargs)
+    except asyncio.CancelledError:
+        cancelled.set()
+        raise
+
+
 def _build_recovery_service(settings: RuntimeSettings, object_storage):
+    if settings.recovery_restore_config_file is not None and settings.recovery_capture_root is None:
+        raise ValueError("REGISTERED_RESTORE_CONFIG_INVALID")
     if settings.cloud_database_dsn is None or object_storage is None or settings.recovery_manifest_key_file is None:
         if settings.recovery_capture_root is not None:
             raise ValueError("RECOVERY_CAPTURE_DEPENDENCY_REQUIRED")
         return UnavailableRecoveryService()
     try:
-        manifest_key = settings.recovery_manifest_key_file.read_bytes()
+        if settings.recovery_restore_config_file is None:
+            manifest_key = settings.recovery_manifest_key_file.read_bytes()
+        else:
+            from .recovery_postgres import _read_restore_protected_file
+            manifest_key = _read_restore_protected_file(settings.recovery_manifest_key_file,4096)
     except OSError:
         raise ValueError("RECOVERY_MANIFEST_KEY_REFERENCE_UNAVAILABLE") from None
     capture_store = lineage_capture_store = None
@@ -7676,10 +7807,23 @@ def _build_recovery_service(settings: RuntimeSettings, object_storage):
                 key_version=settings.recovery_capture_key_version, key_reference=settings.recovery_capture_key_reference)
         except (RecoveryError, OSError):
             raise ValueError("RECOVERY_CAPTURE_STORE_UNAVAILABLE") from None
-    return PostgresRecoveryService(settings.cloud_database_dsn, MinioRecoveryStorageAdapter(object_storage),
-        manifest_key=manifest_key, clock=lambda: datetime.now(timezone.utc),
-        notification_inbox_enabled=settings.notification_inbox_enabled, capture_store=capture_store,
-        lineage_capture_store=lineage_capture_store)
+    ports={};owned=()
+    if settings.recovery_restore_config_file is not None:
+        from .recovery_postgres import _load_registered_restore_ports
+        registry,probe,factory,owned=_load_registered_restore_ports(settings.recovery_restore_config_file,
+            master_key=manifest_key,key_version=settings.recovery_capture_key_version)
+        ports=dict(destination_registry=registry,destination_probe=probe,registered_target_factory=factory,
+            owned_restore_resources=owned)
+    try:
+        return PostgresRecoveryService(settings.cloud_database_dsn, MinioRecoveryStorageAdapter(object_storage),
+            manifest_key=manifest_key, clock=lambda: datetime.now(timezone.utc),
+            notification_inbox_enabled=settings.notification_inbox_enabled, capture_store=capture_store,
+            lineage_capture_store=lineage_capture_store,**ports)
+    except BaseException:
+        for resource in reversed(owned):
+            try:resource.close()
+            except Exception:pass
+        raise
 
 
 def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:

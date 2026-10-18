@@ -36,6 +36,350 @@ from test_identity_support import (
 
 
 class RecoveryRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
+    async def test_r4_new_preview_rejects_unused_execute_step_up_issued_before_confirmation(self):
+        """실제 Identity/재인증·ASGI/SQLite. recovery 업무쓰기 포트만 대역, 실PG 아님."""
+        import secrets
+        from datetime import timedelta
+        from daon_user_api.identity import PASSWORD_HASHER
+        from daon_user_api.recovery import RegisteredRestorePreviewView,RestoreRequestView,RecoveryError
+        from daon_user_api.recovery_postgres import PostgresRecoveryService
+        password=secrets.token_urlsafe(24)
+        connection=self.identity_repository._connect()
+        try:
+            connection.execute("INSERT INTO users(user_id,issuer,subject,login_id,email,password_digest,email_verified_at,state) "
+                "VALUES (?,?,?,?,?,?,?,'active')",("r4-local","local","r4-local","r4-local","r4-local@example.invalid",
+                    PASSWORD_HASHER.hash(password),self.clock().isoformat()))
+            connection.execute("INSERT INTO memberships(tenant_id,user_id,role) VALUES (?,?,?)",("tenant-001","r4-local","member"))
+            connection.commit()
+        finally:connection.close()
+        credentials=self.identity.local_login(login_id="r4-local",password=password,platform=DevicePlatform.WEB,
+            trace_id=TRACE_ID,policy_version=POLICY_VERSION)
+        workspace="workspace-r4-new-confirmation"
+        self.authorization_repository.bootstrap_workspace(tenant_id=credentials.tenant_id,workspace_id=workspace,
+            owner_user_id=credentials.user_id,owner_role=Role.ORGANIZATION_ADMIN,workspace_kind="organization",data_area="cloud_sync",
+            cost_limit_cents=1000,now=self.clock())
+        service=object.__new__(PostgresRecoveryService);previews=[];writes=[];business={}
+        service.locate_backup_workspace=lambda *args:workspace
+        def locate(tenant,identity):
+            if identity!="request-refresh":raise RecoveryError("RESTORE_REQUEST_UNAVAILABLE",404)
+            return workspace
+        service.locate_restore_workspace=locate
+        def view(context):
+            return RestoreRequestView("request-refresh","backup-refresh",context.tenant_id,workspace,"preview_ready",2,
+                previews[-1],("requested","preview_ready"),None)
+        def preview(context,identity,**kwargs):
+            kwargs["recheck"]();now=self.clock()
+            previews.append(RegisteredRestorePreviewView("selected_source_lineage",len(previews)+1,now,now+timedelta(minutes=10),
+                dict(destination_id="destination-a",version=1,display_name="격리",expires_at=(now+timedelta(hours=1)).isoformat()),
+                "a"*64,"b"*64,1,0,dict(purged=0,held=0,tombstoned=0)))
+            return view(context)
+        def execute(context,identity,**kwargs):
+            kwargs["recheck"]()
+            if kwargs["preview_version"]!=previews[-1].version:raise RecoveryError("RESTORE_VERSION_CONFLICT",409)
+            self.assertTrue(kwargs["step_up_verified"])
+            if kwargs["idempotency_key"] in business:return business[kwargs["idempotency_key"]]
+            writes.append(kwargs["idempotency_key"])
+            result=replace(view(context),state="completed",version=6);business[kwargs["idempotency_key"]]=result;return result
+        service.get_restore_request=lambda context,*args:view(context)
+        def protected(context,identity,*,recheck):
+            recheck();return view(context)  # 현재 SourceACL/암호 Preview 실제 consumer는 별도 SQL 경계 시험.
+        service.registered_restore_step_up_preview=protected
+        service.preview_registered_restore=preview;service.execute_registered_restore=execute
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(replace(self.dependencies,recovery_service=service))),
+                base_url="https://app.example.com",cookies={WEB_SESSION_COOKIE:credentials.access_token}) as client:
+            async def issue(target,key):
+                response=await client.post("/api/v1/session/step-up",json=dict(action_group="permanent_delete_or_restore_rollback",
+                    target_id=target,password=password,ttl_seconds=300),headers={"Idempotency-Key":key})
+                self.assertEqual(response.status_code,201)
+                return response.json()["data"]["step_up_authorization"]
+            async def confirm(key):
+                token=await issue("backup-refresh","step-up-"+key)
+                response=await client.post("/api/v1/backups/backup-refresh/restore-previews",json=dict(workspace_id=workspace,
+                    destination_id="destination-a",destination_version=1,step_up_authorization_id=token),headers={"Idempotency-Key":key})
+                self.assertEqual(response.status_code,201)
+                return response
+            first=await confirm("confirm-first-r4")
+            self.clock.advance(seconds=1)
+            old=await issue("request-refresh","step-up-old-execute-r4")
+            self.clock.advance(seconds=1)
+            with self.authorization_repository.transaction() as connection:
+                connection.execute("UPDATE auth_tenant_policies SET version=version+1 WHERE tenant_id=?",(credentials.tenant_id,))
+            second=await confirm("confirm-second-r4")
+            self.assertEqual((first.json()["data"]["preview"]["version"],second.json()["data"]["preview"]["version"]),(1,2))
+            self.assertEqual(first.headers["etag"],second.headers["etag"])
+            response=await client.post("/api/v1/restore-requests/request-refresh/execute",json=dict(preview_version=2,step_up_authorization_id=old),
+                headers={"If-Match":second.headers["etag"],"Idempotency-Key":"execute-old-confirmation"})
+            with self.subTest(old_token="new-body-must-not-authorize"):
+                self.assertEqual((response.status_code,writes),(403,[]))
+            self.clock.advance(seconds=1)
+            fresh=await issue("request-refresh","step-up-new-execute-r4")
+            response=await client.post("/api/v1/restore-requests/request-refresh/execute",json=dict(preview_version=2,step_up_authorization_id=fresh),
+                headers={"If-Match":second.headers["etag"],"Idempotency-Key":"execute-new-confirmation"})
+            self.assertEqual(response.status_code,200)
+            self.assertEqual(writes,["execute-new-confirmation"])
+            for version,status in ((2,200),(1,409)):
+                with self.subTest(consumed_replay_body=version):
+                    replay=await client.post("/api/v1/restore-requests/request-refresh/execute",json=dict(preview_version=version,step_up_authorization_id=fresh),
+                        headers={"If-Match":second.headers["etag"],"Idempotency-Key":"execute-new-confirmation"})
+                    self.assertEqual(replay.status_code,status);self.assertEqual(writes,["execute-new-confirmation"])
+            # NTP/고정시각을 freshness 증명으로 사용하지 않고 정확 Preview에 결속한다.
+            for shift,label in ((0,"same-clock"),(-1,"reverse-clock")):
+                self.clock.current=previews[-1].created_at
+                unused=await issue("request-refresh","step-up-unused-"+label)
+                self.clock.advance(seconds=shift)
+                latest=await confirm("confirm-"+label)
+                before=list(writes)
+                denied=await client.post("/api/v1/restore-requests/request-refresh/execute",json=dict(preview_version=previews[-1].version,step_up_authorization_id=unused),
+                    headers={"If-Match":latest.headers["etag"],"Idempotency-Key":"execute-unused-"+label})
+                with self.subTest(clock=label):self.assertEqual((denied.status_code,writes),(403,before))
+            consumed_old=await client.post("/api/v1/restore-requests/request-refresh/execute",json=dict(preview_version=previews[-1].version,step_up_authorization_id=fresh),
+                headers={"If-Match":latest.headers["etag"],"Idempotency-Key":"execute-new-confirmation"})
+            self.assertEqual((consumed_old.status_code,writes),(403,["execute-new-confirmation"]))
+            # 예약 internal namespace는 어느 action_group에서도 client 직접 발급0.
+            def issued_count():
+                connection=self.identity_repository._connect()
+                try:return connection.execute("SELECT count(*) FROM step_up_authorizations").fetchone()[0]
+                finally:connection.close()
+            for action in ("permanent_delete_or_restore_rollback","final_approval_or_knowledge_registration"):
+                before=issued_count()
+                denied=await client.post("/api/v1/session/step-up",json=dict(action_group=action,
+                    target_id="rrexec-v1:"+"a"*64,password=password,ttl_seconds=300),headers={"Idempotency-Key":"prefix-denied-"+action})
+                with self.subTest(prefix_action=action):self.assertEqual((denied.status_code,issued_count()),(400,before))
+            self.identity_repository.add_step_up_action(credentials.tenant_id,"final_approval_or_knowledge_registration")
+            other_resource=await client.post("/api/v1/session/step-up",json=dict(action_group="final_approval_or_knowledge_registration",
+                target_id="studio-output-normal",password=password,ttl_seconds=300),headers={"Idempotency-Key":"other-feature-normal-step-up"})
+            self.assertEqual(other_resource.status_code,201)
+            connection=self.identity_repository._connect()
+            try:
+                self.assertEqual(connection.execute("SELECT target_id FROM step_up_authorizations WHERE authorization_digest=?",
+                    (__import__("hashlib").sha256(other_resource.json()["data"]["step_up_authorization"].encode()).hexdigest(),)).fetchone()[0],"studio-output-normal")
+            finally:connection.close()
+            # 현재 POLICY_MANAGE는 유지하지만 자료 consumer가 거부하면 Identity 발급 자체0.
+            before=issued_count()
+            with patch.object(service,"registered_restore_step_up_preview",side_effect=RecoveryError("CURRENT_ACCESS_DENIED",403)):
+                denied=await client.post("/api/v1/session/step-up",json=dict(action_group="permanent_delete_or_restore_rollback",
+                    target_id="request-refresh",password=password,ttl_seconds=300),headers={"Idempotency-Key":"source-acl-revoked-issue"})
+            self.assertEqual((denied.status_code,issued_count()),(403,before))
+            for field,value in (("source_manifest_digest","c"*64),("closure_fingerprint","d"*64),
+                    ("created_at",previews[-1].created_at+timedelta(microseconds=1))):
+                original=previews[-1]
+                token=await issue("request-refresh","step-up-field-"+field)
+                previews[-1]=replace(original,**{field:value})
+                before=list(writes)
+                denied=await client.post("/api/v1/restore-requests/request-refresh/execute",json=dict(preview_version=original.version,step_up_authorization_id=token),
+                    headers={"If-Match":latest.headers["etag"],"Idempotency-Key":"bound-field-"+field})
+                with self.subTest(bound_field=field):self.assertEqual((denied.status_code,writes),(403,before))
+                previews[-1]=original
+            changed_issue=await client.post("/api/v1/session/step-up",json=dict(action_group="permanent_delete_or_restore_rollback",
+                target_id="request-refresh",password=password,ttl_seconds=300),headers={"Idempotency-Key":"step-up-new-execute-r4"})
+            self.assertEqual(changed_issue.status_code,409,"옛 발급key를 새 내부target으로 바꾸지 않음")
+            # 변조·다른 logical resource/Preview token·만료·다른 정식 세션/장치 소비 거부.
+            current_token=await issue("request-refresh","step-up-current-controls")
+            backup_token=await issue("backup-refresh","step-up-preview-controls")
+            for token,label in ((current_token+"x","tampered"),(backup_token,"preview")):
+                before=list(writes)
+                denied=await client.post("/api/v1/restore-requests/request-refresh/execute",json=dict(preview_version=previews[-1].version,step_up_authorization_id=token),
+                    headers={"If-Match":latest.headers["etag"],"Idempotency-Key":"control-"+label})
+                with self.subTest(token_case=label):self.assertEqual((denied.status_code,writes),(403,before))
+            other=self.identity.local_login(login_id="r4-local",password=password,platform=DevicePlatform.WEB,trace_id=TRACE_ID,policy_version=POLICY_VERSION)
+            self.assertNotEqual(other.session_id,credentials.session_id);self.assertNotEqual(other.device_id,credentials.device_id)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(replace(self.dependencies,recovery_service=service))),
+                    base_url="https://app.example.com",cookies={WEB_SESSION_COOKIE:other.access_token}) as different:
+                denied=await different.post("/api/v1/restore-requests/request-refresh/execute",json=dict(preview_version=previews[-1].version,step_up_authorization_id=current_token),
+                    headers={"If-Match":latest.headers["etag"],"Idempotency-Key":"other-session-control"})
+                self.assertEqual(denied.status_code,403)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(replace(self.dependencies,recovery_service=service))),
+                    base_url="https://app.example.com",cookies={WEB_SESSION_COOKIE:self.credentials.access_token}) as other_actor:
+                count=issued_count()
+                foreign=await other_actor.post("/api/v1/session/step-up",json=dict(action_group="permanent_delete_or_restore_rollback",
+                    target_id="request-refresh",password=password,ttl_seconds=300),headers={"Idempotency-Key":"foreign-actor-control"})
+                self.assertEqual((foreign.status_code,issued_count()),(403,count))
+            denied=await client.post("/api/v1/restore-requests/other-request/execute",json=dict(preview_version=previews[-1].version,step_up_authorization_id=current_token),
+                headers={"If-Match":'"restore:other-request:2"',"Idempotency-Key":"other-request-control"})
+            self.assertEqual(denied.status_code,404)
+            before=list(writes);self.clock.advance(seconds=301)
+            denied=await client.post("/api/v1/restore-requests/request-refresh/execute",json=dict(preview_version=previews[-1].version,step_up_authorization_id=current_token),
+                headers={"If-Match":latest.headers["etag"],"Idempotency-Key":"expired-control"})
+            self.assertEqual((denied.status_code,writes),(403,before))
+
+    async def test_r4_heavy_cancel_rejects_next_write_recheck_without_retry(self):
+        import asyncio,threading,time
+        from daon_user_api.runtime import _recovery_heavy
+        from daon_user_api.recovery import RecoveryError
+        entered,release,done=threading.Event(),threading.Event(),threading.Event()
+        calls=[];writes=[];errors=[]
+        def work(*,recheck):
+            calls.append(True);entered.set()
+            try:
+                release.wait(timeout=1);recheck();writes.append(True)
+            except RecoveryError as error:errors.append((error.status,error.retryable))
+            finally:done.set()
+        pending=asyncio.create_task(_recovery_heavy(work,recheck=lambda:None))
+        try:
+            deadline=time.monotonic()+2
+            while not entered.is_set() and time.monotonic()<deadline:await asyncio.sleep(0.001)
+            self.assertTrue(entered.is_set());pending.cancel()
+            with self.assertRaises(asyncio.CancelledError):await pending
+        finally:
+            release.set();self.assertTrue(await asyncio.to_thread(done.wait,2))
+        self.assertEqual(calls,[True]);self.assertEqual(writes,[]);self.assertEqual(errors,[(503,False)])
+
+    async def test_r4_heavy_preview_execute_leave_light_health_responsive(self):
+        import asyncio,threading,time
+        from datetime import timedelta
+        from daon_user_api.recovery import RegisteredRestorePreviewView,RestoreRequestView
+        from daon_user_api.recovery_postgres import PostgresRecoveryService
+        now=self.clock()
+        preview=RegisteredRestorePreviewView("selected_source_lineage",1,now,now+timedelta(minutes=10),
+            dict(destination_id="destination-a",version=1,display_name="격리",expires_at=(now+timedelta(hours=1)).isoformat()),
+            "a"*64,"b"*64,1,0,dict(purged=0,held=0,tombstoned=0))
+        for mode in ("preview","execute","destinations"):
+            with self.subTest(mode=mode):
+                entered,release,finished=threading.Event(),threading.Event(),threading.Event()
+                service=object.__new__(PostgresRecoveryService)
+                service.locate_backup_workspace=service.locate_restore_workspace=lambda *args:self.workspace_id
+                def view(context):return RestoreRequestView("request-a","backup-a",context.tenant_id,context.workspace_id,"preview_ready",2,preview,("requested","preview_ready"),None)
+                service.get_restore_request=lambda context,*args:view(context)
+                def work(context,*args,**kwargs):
+                    entered.set()
+                    try:
+                        release.wait(timeout=1.0);kwargs["recheck"]()
+                        return [] if mode=="destinations" else view(context)
+                    finally:finished.set()
+                service.preview_registered_restore=service.execute_registered_restore=service.list_restore_destinations=work
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(replace(self.dependencies,recovery_service=service))),
+                    base_url="https://app.example.com",cookies={WEB_SESSION_COOKIE:self.credentials.access_token}) as client:
+                    if mode=="preview":
+                        pending=asyncio.create_task(client.post("/api/v1/backups/backup-a/restore-previews",
+                            json=dict(workspace_id=self.workspace_id,destination_id="destination-a",destination_version=1,step_up_authorization_id=self._step_up("backup-a")),
+                            headers={"Idempotency-Key":"r4-thread-preview"}))
+                    elif mode=="execute":
+                        pending=asyncio.create_task(client.post("/api/v1/restore-requests/request-a/execute",
+                            json=dict(preview_version=1,step_up_authorization_id=self._step_up("request-a",registered_preview=preview)),
+                            headers={"Idempotency-Key":"r4-thread-execute","If-Match":'"restore:request-a:2"'}))
+                    else:pending=asyncio.create_task(client.get("/api/v1/backups/backup-a/restore-destinations"))
+                    try:
+                        deadline=time.monotonic()+2
+                        while not entered.is_set() and time.monotonic()<deadline:await asyncio.sleep(0.001)
+                        self.assertTrue(entered.is_set())
+                        health=await asyncio.wait_for(client.get("/health/live"),timeout=0.5)
+                        self.assertEqual(health.status_code,200)
+                        self.assertFalse(finished.is_set(),"heavy 복원 완료 전에 가벼운 health 요청이 처리되어야 함")
+                    finally:
+                        release.set();result=await pending
+                    self.assertEqual(result.status_code,201 if mode=="preview" else 200)
+
+    async def test_r4_execute_dispatch_requires_request_step_up_exact_etag_and_current_identity(self):
+        from daon_user_api import runtime
+        from daon_user_api.recovery import RegisteredRestorePreviewView,RestoreRequestView,RecoveryError
+        from daon_user_api.recovery_postgres import PostgresRecoveryService
+        from daon_user_api.identity import IdentityError
+        from daon_user_api.authorization import AuthorizationError
+        from datetime import timedelta
+        now=self.clock()
+        preview=RegisteredRestorePreviewView("selected_source_lineage",1,now,now+timedelta(minutes=10),
+            dict(destination_id="destination-a",version=1,display_name="격리",expires_at=(now+timedelta(hours=1)).isoformat()),
+            "a"*64,"b"*64,1,0,dict(purged=0,held=0,tombstoned=0))
+        for mode in ("normal","preview-token","changed","expired","denied","etag"):
+            with self.subTest(mode=mode):
+                service=object.__new__(PostgresRecoveryService);calls=[]
+                service.locate_restore_workspace=lambda *args:self.workspace_id
+                service.get_restore_request=lambda context,identity:RestoreRequestView("request-a","backup-a",context.tenant_id,context.workspace_id,"preview_ready",2,preview,("requested","preview_ready"),None)
+                def execute(context,identity,*,expected_version,preview_version,idempotency_key,step_up_verified,recheck):
+                    self.assertEqual((identity,expected_version,preview_version),("request-a",2,1));self.assertTrue(step_up_verified)
+                    calls.append(True);recheck()
+                    return RestoreRequestView(identity,"backup-a",context.tenant_id,context.workspace_id,"completed",6,preview,
+                        ("requested","preview_ready","authorized","restoring","verifying","completed"),"c"*64)
+                service.execute_registered_restore=execute
+                service.execute_restore=lambda *args,**kwargs:(_ for _ in ()).throw(AssertionError("LEGACY_FIXTURE_MUST_NOT_EXECUTE_V3"))
+                original=runtime._principal;authorize=self.authorization.authorize_action
+                def principal(request,deps):
+                    if calls and mode=="expired":raise IdentityError("ACCESS_EXPIRED",401)
+                    value=original(request,deps)
+                    return replace(value,device_id="different-device") if mode=="changed" and calls else value
+                def authorized(*args,**kwargs):
+                    if mode=="denied" and calls:raise AuthorizationError("ACTION_DENIED",403)
+                    return authorize(*args,**kwargs)
+                headers={"Idempotency-Key":"r4-execute-"+mode,"If-Match":'"restore:other-id:2"' if mode=="etag" else '"restore:request-a:2"'}
+                body=dict(preview_version=1,step_up_authorization_id=self._step_up("backup-a") if mode=="preview-token" else self._step_up("request-a",registered_preview=preview))
+                with patch.object(runtime,"_principal",side_effect=principal),patch.object(self.authorization,"authorize_action",side_effect=authorized):
+                    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(replace(self.dependencies,recovery_service=service))),base_url="https://app.example.com",
+                        cookies={WEB_SESSION_COOKIE:self.credentials.access_token}) as client:
+                        result=await client.post("/api/v1/restore-requests/request-a/execute",json=body,headers=headers)
+                # 다른 request-ID ETag는 기존 IF_MATCH_INVALID 형식 계약400을 유지한다.
+                self.assertEqual(result.status_code,dict(normal=200,**{"preview-token":403},changed=403,expired=401,denied=403,etag=400)[mode])
+                if mode in {"preview-token","etag"}:self.assertEqual(calls,[])
+                if mode=="normal":self.assertEqual(result.headers["etag"],'"restore:request-a:6"')
+
+    async def test_r4_registered_preview_real_step_up_exact_body_session_and_off(self):
+        from daon_user_api import runtime
+        from daon_user_api.recovery import RegisteredRestorePreviewView,RestoreRequestView
+        from daon_user_api.recovery_postgres import PostgresRecoveryService
+        from datetime import timedelta
+        for mode in ("normal","changed","off","workspace"):
+            with self.subTest(mode=mode):
+                service=object.__new__(PostgresRecoveryService);called=[]
+                service.locate_backup_workspace=lambda tenant,backup:self.workspace_id
+                def preview(context,backup_id,*,destination_id,destination_version,idempotency_key,step_up_verified,recheck):
+                    self.assertTrue(step_up_verified)
+                    self.assertEqual((destination_id,destination_version),("destination-a",1))
+                    called.append(True);recheck()
+                    now=self.clock()
+                    return RestoreRequestView("request-a",backup_id,context.tenant_id,context.workspace_id,"preview_ready",2,
+                        RegisteredRestorePreviewView("selected_source_lineage",1,now,now+timedelta(minutes=10),
+                            dict(destination_id="destination-a",version=1,display_name="격리",expires_at=(now+timedelta(hours=1)).isoformat()),
+                            "a"*64,"b"*64,1,0,dict(purged=0,held=0,tombstoned=0)),("requested","preview_ready"),None)
+                if mode!="off": service.preview_registered_restore=preview
+                original=runtime._principal
+                def principal(request,dependencies):
+                    value=original(request,dependencies)
+                    return replace(value,session_id="changed-session") if mode=="changed" and called else value
+                body=dict(workspace_id="wrong-workspace" if mode=="workspace" else self.workspace_id,destination_id="destination-a",destination_version=1,
+                    step_up_authorization_id=self._step_up("backup-current"))
+                with patch.object(runtime,"_principal",side_effect=principal):
+                    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(replace(self.dependencies,recovery_service=service))),
+                        base_url="https://app.example.com",cookies={WEB_SESSION_COOKIE:self.credentials.access_token}) as client:
+                        result=await client.post("/api/v1/backups/backup-current/restore-previews",json=body,headers={"Idempotency-Key":"preview-r4-"+mode})
+                self.assertEqual(result.status_code,dict(normal=201,changed=403,off=503,workspace=403)[mode])
+                if mode=="normal":
+                    self.assertEqual(result.headers["etag"],'"restore:request-a:2"')
+                    self.assertEqual(result.json()["data"]["preview"]["kind"],"selected_source_lineage")
+                if mode=="workspace": self.assertEqual(called,[])
+
+    async def test_r4_destination_get_uses_locator_current_session_and_safe_four_fields(self):
+        from types import SimpleNamespace
+        from daon_user_api import runtime
+        from daon_user_api.recovery import RecoveryError
+        from daon_user_api.recovery_postgres import PostgresRecoveryService
+        for mode in ("normal","changed","off"):
+            with self.subTest(mode=mode):
+                service=object.__new__(PostgresRecoveryService); called=[]
+                service.locate_backup_workspace=lambda tenant,backup:self.workspace_id
+                def destinations(context,backup_id,*,recheck):
+                    self.assertEqual((context.actor_id,context.session_id,context.device_id),
+                        (self.credentials.user_id,self.credentials.session_id,self.credentials.device_id))
+                    self.assertEqual(backup_id,"backup-current")
+                    called.append(True); recheck()
+                    if mode=="off": raise RecoveryError("RESOURCE_UNAVAILABLE",503)
+                    return [dict(destination_id="destination-a",version=1,display_name="격리 목적지",expires_at="2026-10-20T00:00:00Z",
+                        raw_ref="S44_NEVER_REFLECT")]
+                service.list_restore_destinations=destinations
+                deps=replace(self.dependencies,recovery_service=service)
+                original=runtime._principal
+                def principal(request,dependencies):
+                    value=original(request,dependencies)
+                    return replace(value,session_id="changed-session") if mode=="changed" and called else value
+                with patch.object(runtime,"_principal",side_effect=principal):
+                    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(deps)),
+                        base_url="https://app.example.com",cookies={WEB_SESSION_COOKIE:self.credentials.access_token}) as client:
+                        result=await client.get("/api/v1/backups/backup-current/restore-destinations")
+                self.assertEqual(result.status_code,{"normal":200,"changed":403,"off":503}[mode])
+                self.assertNotIn("S44_NEVER_REFLECT",result.text)
+                if mode=="normal":
+                    self.assertEqual(set(result.json()["data"][0]),{"destination_id","version","display_name","expires_at"})
+                    self.assertEqual(result.json()["data"][0]["destination_id"],"destination-a")
+                    self.assertIn("etag",result.headers)
+
     async def test_r1c_late_real_auth_exceptions_preserve_mapping_and_cleanup_uncertainty(self):
         import hashlib
         import io
@@ -357,7 +701,13 @@ class RecoveryRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.dependencies.close()
         self.directory.cleanup()
 
-    def _step_up(self, target_id: str) -> str:
+    def _step_up(self, target_id: str, *, registered_preview=None) -> str:
+        if registered_preview is not None:
+            import hashlib
+            raw=json.dumps(["registered-restore-execute-step-up-v1",target_id,registered_preview.version,
+                registered_preview.source_manifest_digest,registered_preview.closure_fingerprint,registered_preview.created_at.isoformat()],
+                ensure_ascii=False,separators=(",",":")).encode("utf-8")
+            target_id="rrexec-v1:"+hashlib.sha256(raw).hexdigest()
         return self.identity.issue_step_up(
             access_token=self.credentials.access_token,
             action_group="permanent_delete_or_restore_rollback", target_id=target_id,

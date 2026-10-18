@@ -25,6 +25,26 @@ function sessionFailure() {
   return error;
 }
 
+function exactFields(input, fields) {
+  return input && typeof input === "object" && !Array.isArray(input)
+    && Object.keys(input).length === fields.length && fields.every(key => Object.hasOwn(input, key));
+}
+
+function lineageSelection(input, create) {
+  const fields = ["workspace_id", "notebook_id", "source_version_ids", "lineage_mode",
+    ...(create ? ["trigger", "closure_consent"] : [])];
+  if (!exactFields(input, fields) || !selectionId(input.workspace_id) || !selectionId(input.notebook_id)
+    || input.lineage_mode !== "exact" || !Array.isArray(input.source_version_ids)
+    || input.source_version_ids.length < 1 || input.source_version_ids.length > 100
+    || !input.source_version_ids.every(selectionId) || new Set(input.source_version_ids).size !== input.source_version_ids.length) throw sessionFailure();
+  if (create && (input.trigger !== "manual" || !exactFields(input.closure_consent, ["include_prior_versions", "closure_fingerprint"])
+    || input.closure_consent.include_prior_versions !== true || !/^[0-9a-f]{64}$/u.test(input.closure_consent.closure_fingerprint))) throw sessionFailure();
+  return { workspace_id: input.workspace_id, notebook_id: input.notebook_id,
+    source_version_ids: [...input.source_version_ids].sort(), lineage_mode: "exact",
+    ...(create ? { trigger: "manual", closure_consent: { include_prior_versions: true,
+      closure_fingerprint: input.closure_consent.closure_fingerprint } } : {}) };
+}
+
 export function parseRecoverySessionContext(payload) {
   const session = payload?.data;
   const values = [session?.user_id, session?.tenant_id, session?.workspace_id];
@@ -81,6 +101,30 @@ export async function issueRestoreStepUp(requestId, password, { idempotencyKey, 
 
 export const recoveryApi = Object.freeze({
   issueRestoreStepUp,
+  previewBackupSelection(input, { signal } = {}) {
+    return request("/bff/api/backups/selection-previews", { method: "POST", signal, body: lineageSelection(input, false) });
+  },
+  createLineageBackup(input, idempotencyKey, { signal } = {}) {
+    if (!selectionId(idempotencyKey) || idempotencyKey.length < 16) throw sessionFailure();
+    return request("/bff/api/backups", { method: "POST", signal, body: lineageSelection(input, true),
+      headers: { "Idempotency-Key": idempotencyKey } });
+  },
+  getRestoreDestinations(backupId, { signal } = {}) {
+    if (!selectionId(backupId)) throw sessionFailure();
+    return request(`/bff/api/backups/${encodeURIComponent(backupId)}/restore-destinations`, { signal });
+  },
+  previewRegisteredRestore(backupId, input, idempotencyKey, { signal } = {}) {
+    if (!selectionId(backupId) || !selectionId(idempotencyKey) || idempotencyKey.length < 16
+      || !exactFields(input, ["workspace_id", "destination_id", "destination_version", "step_up_authorization_id"])
+      || !selectionId(input.workspace_id) || !selectionId(input.destination_id)
+      || !Number.isSafeInteger(input.destination_version) || input.destination_version < 1 || input.destination_version > 2147483647
+      || typeof input.step_up_authorization_id !== "string" || !input.step_up_authorization_id
+      || input.step_up_authorization_id.length > 512 || /[\u0000-\u0020\u007f]/u.test(input.step_up_authorization_id)) throw sessionFailure();
+    return request(`/bff/api/backups/${encodeURIComponent(backupId)}/restore-previews`, { method: "POST", signal,
+      body: { workspace_id: input.workspace_id, destination_id: input.destination_id,
+        destination_version: input.destination_version, step_up_authorization_id: input.step_up_authorization_id },
+      headers: { "Idempotency-Key": idempotencyKey } });
+  },
   async listSelectionNotebooks(workspaceId, { signal } = {}) {
     const payload = await listNotebooks(workspaceId, { signal, fetchImpl: selectionFetch });
     if (payload.meta.workspace_id !== workspaceId || new Set(payload.data.map(item => item.notebook_id)).size !== payload.data.length) throw sessionFailure();
@@ -120,8 +164,8 @@ export const recoveryApi = Object.freeze({
       method: "POST", body: input, headers: { "Idempotency-Key": idempotencyKey }
     });
   },
-  getBackup(id) {
-    return request(`/bff/api/backups/${encodeURIComponent(id)}`);
+  getBackup(id, { signal } = {}) {
+    return request(`/bff/api/backups/${encodeURIComponent(id)}`, { signal });
   },
   previewRestore(backupId, input, idempotencyKey) {
     return request(`/bff/api/backups/${encodeURIComponent(backupId)}/restore-previews`, {

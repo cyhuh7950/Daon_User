@@ -47,7 +47,7 @@ function actionSession(response) {
 const sameSession = (left, right) => left && right && left.identity.every((v, i) => v === right.identity[i]);
 // primary Workspace의 projection으로 다른 Workspace의 서버 GET 허용을 덮어쓰지 않는다.
 const permits = (session, item, kind) => !!session && (session.identity[2] !== item.workspaceId
-  || session.operations.includes(kind === "execute" ? "cloud_restore_execute" : "cloud_restore_cancel"));
+  || session.operations.includes(kind === "execute" ? "cloud_restore_execute" : kind === "preview" ? "cloud_restore_preview" : "cloud_restore_cancel"));
 // 비교 자료는 DOM·표시 state와 분리하며 projection의 수명 밖에는 남기지 않는다.
 const previewComparisons = new WeakMap();
 
@@ -67,6 +67,23 @@ function projectedPreview(preview) {
   if (!preview || !Number.isSafeInteger(preview.version) || preview.version < 1) return null;
   const destination = preview.destination;
   if (!destination || typeof destination !== "object" || Array.isArray(destination) || !serverTimestamp(preview.created_at)) return null;
+  if (Object.hasOwn(preview,"kind")) {
+    const keys=["kind","version","created_at","expires_at","destination","source_manifest_digest","closure_fingerprint","included_root_count","excluded_root_count","exclusion_counts"];
+    const summary=destinationSummary(destination);
+    const counts=preview.exclusion_counts;
+    if (Object.keys(preview).length!==keys.length || !keys.every(k=>Object.hasOwn(preview,k)) || preview.kind!=="selected_source_lineage" || !summary
+      || !serverTimestamp(preview.expires_at) || Date.parse(preview.expires_at)<=Date.parse(preview.created_at) || Date.parse(preview.expires_at)>Date.parse(summary.expires_at)
+      || ![preview.source_manifest_digest,preview.closure_fingerprint].every(v=>typeof v==="string"&&/^[a-f0-9]{64}$/u.test(v))
+      || ![preview.included_root_count,preview.excluded_root_count].every(v=>Number.isSafeInteger(v)&&v>=0&&v<=100)
+      || preview.included_root_count<1 || preview.included_root_count+preview.excluded_root_count>100
+      || !counts || Object.keys(counts).length!==3 || !Object.keys(EXCLUSION_NAMES).every(k=>Number.isSafeInteger(counts[k])&&counts[k]>=0&&counts[k]<=100)
+      || Object.values(counts).reduce((a,b)=>a+b,0)!==preview.excluded_root_count) return null;
+    const projection={version:preview.version,kind:preview.kind,includedCount:preview.included_root_count,excludedCount:preview.excluded_root_count,
+      counts:{purged:counts.purged,held:counts.held,tombstoned:counts.tombstoned},destination:summary,expiresAt:preview.expires_at};
+    previewComparisons.set(projection,JSON.stringify([preview.kind,preview.version,preview.created_at,preview.expires_at,summary,
+      preview.source_manifest_digest,preview.closure_fingerprint,preview.included_root_count,preview.excluded_root_count,projection.counts]));
+    return projection;
+  }
   const destinationIds = [destination.tenant_id, destination.workspace_id, destination.database_id, destination.bucket_id];
   if (!destinationIds.every(safeId)) return null;
   const included = preview.included_object_ids, excluded = preview.excluded_object_ids, reasons = preview.exclusion_reasons;
@@ -100,7 +117,39 @@ function projectedTarget(response, target, tenantId) {
       etag: response.etag === `"restore:${id}:${data.version}"` ? response.etag : null };
   }
   // 목적지·원문·manifest·추가 응답 필드는 표시 상태에 보존하지 않는다.
-  return item;
+  return {...item,etag:response.etag===`"backup:${id}:${data.version}"`?response.etag:null};
+}
+
+function destinationSummary(item) {
+  if (!item || typeof item!=="object" || Array.isArray(item) || Object.keys(item).length!==4
+    || !["destination_id","version","display_name","expires_at"].every(k=>Object.hasOwn(item,k))
+    || !safeId(item.destination_id) || !Number.isSafeInteger(item.version) || item.version<1 || item.version>2147483647
+    || typeof item.display_name!=="string" || !item.display_name.trim() || item.display_name.length>80 || /[<>:/\\\u0000-\u001f\u007f]/u.test(item.display_name)
+    || !serverTimestamp(item.expires_at)) return null;
+  return {destination_id:item.destination_id,version:item.version,display_name:item.display_name,expires_at:item.expires_at};
+}
+
+function destinationSummaries(response) {
+  const rows=response?.payload?.data;
+  if (!Array.isArray(rows)||rows.length>1000)throw new Error("INVALID_DESTINATIONS");
+  const values=rows.map(destinationSummary);
+  if (values.some(v=>!v)||new Set(values.map(v=>v.destination_id)).size!==values.length)throw new Error("INVALID_DESTINATIONS");
+  return values;
+}
+
+function lineageSummary(response,roots) {
+  const value=response?.payload?.data;
+  const fields=["root_source_version_ids","dependency_source_version_ids","dependency_source_ids","source_version_count","source_count","unique_object_count","total_bytes","metadata_bytes","closure_fingerprint"];
+  const canonId=v=>typeof v==="string"&&/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u.test(v)&&!/[\s\u0000-\u001f\u007f]/u.test(v);
+  if (!value || Object.keys(value).length!==9 || !fields.every(k=>Object.hasOwn(value,k)))throw new Error("INVALID_LINEAGE");
+  for (const key of fields.slice(0,3))if(!Array.isArray(value[key])||value[key].length>100||!value[key].every(canonId)||new Set(value[key]).size!==value[key].length)throw new Error("INVALID_LINEAGE");
+  if (JSON.stringify([...value.root_source_version_ids].sort())!==JSON.stringify(roots)||value.root_source_version_ids.some(v=>value.dependency_source_version_ids.includes(v))
+    || !["source_version_count","source_count","unique_object_count","total_bytes","metadata_bytes"].every(k=>Number.isSafeInteger(value[k])&&value[k]>=0)
+    || value.source_version_count!==roots.length+value.dependency_source_version_ids.length || value.source_version_count>100
+    || value.source_count<1||value.source_count>100||value.unique_object_count<1||value.unique_object_count>100||value.total_bytes>536870912||value.metadata_bytes<1||value.metadata_bytes>33554432
+    || typeof value.closure_fingerprint!=="string"||!/^[a-f0-9]{64}$/u.test(value.closure_fingerprint))throw new Error("INVALID_LINEAGE");
+  return {fingerprint:value.closure_fingerprint,dependencies:value.dependency_source_version_ids.length,versions:value.source_version_count,
+    objects:value.unique_object_count,bytes:value.total_bytes};
 }
 
 const COMPONENT_NAMES = { provider: "Provider 설정", api: "API", storage: "DB·Object Storage", sync: "동기화", queue: "작업 Queue" };
@@ -146,7 +195,7 @@ function selectionSources(value, notebookId) {
   return { notebookId, bindingEtag: value.bindingEtag, sources: value.sources.map(item => ({ sourceId: item.sourceId, versionId: item.versionId })) };
 }
 
-function BackupSelectionPane({ api, auth, scope, scopeRef, generation, paused, owner, actionRef, invalidate }) {
+function BackupSelectionPane({ api, auth, scope, scopeRef, generation, paused, owner, actionRef, invalidate, onNavigate }) {
   const mounted = useRef(true);
   const [pane, setPane] = useState({ phase: "closed", notebooks: [], selection: null, ids: [] });
   useEffect(() => {
@@ -223,6 +272,30 @@ function BackupSelectionPane({ api, auth, scope, scopeRef, generation, paused, o
         "요청 응답을 받았지만 독립 보존 완료는 확인되지 않았습니다. 기존 백업 목록에서 다시 확인해 주세요." });
     } catch (error) { fail(operation, error); } finally { finish(operation); }
   };
+  const lineage = async create => {
+    if (pane.phase!=="ready"||!pane.selection||!pane.ids.length||pane.ids.length>100||(create&&(!pane.lineage||!pane.consent)))return;
+    const operation=begin(create);if(!operation)return;
+    const selected=pane.selection,ids=[...pane.ids].sort(),prior=pane.lineage;
+    setPane(v=>({...v,phase:create?"posting":"loading",consent:false}));
+    try{
+      await checkSession(operation);
+      const fresh=selectionSources(await api.getSelectionSources(auth.identity[2],selected.notebookId,{signal:operation.controller.signal}),selected.notebookId);
+      check(operation);
+      if(fresh.bindingEtag!==selected.bindingEtag||ids.some(id=>!fresh.sources.some(s=>s.versionId===id&&selected.sources.some(old=>old.versionId===id&&old.sourceId===s.sourceId))))throw new Error("SELECTION_CHANGED");
+      const input={workspace_id:auth.identity[2],notebook_id:selected.notebookId,source_version_ids:ids,lineage_mode:"exact"};
+      const summary=lineageSummary(await api.previewBackupSelection(input,{signal:operation.controller.signal}),ids);
+      await checkSession(operation);check(operation);
+      if(!create){setPane(v=>({...v,phase:"ready",lineage:summary,consent:false}));return;}
+      if(summary.fingerprint!==prior.fingerprint)throw new Error("LINEAGE_CHANGED");
+      const result=await api.createLineageBackup({...input,trigger:"manual",closure_consent:{include_prior_versions:true,closure_fingerprint:prior.fingerprint}},secureUuid(),{signal:operation.controller.signal});
+      await checkSession(operation);check(operation);
+      const id=result?.payload?.data?.backup_id;if(!safeId(id))throw new Error("BACKUP_UNCERTAIN");
+      const detail=await api.getBackup(id,{signal:operation.controller.signal});await checkSession(operation);check(operation);
+      const actual=projectedTarget(detail,{key:"backup_id",id},auth.identity[1]);
+      if(!actual||actual.workspaceId!==auth.identity[2]||actual.state!=="ready")throw new Error("BACKUP_UNCERTAIN");
+      onNavigate(`?backup_id=${encodeURIComponent(id)}`);
+    }catch(error){fail(operation,error);}finally{finish(operation);}
+  };
   if (!allowed) return null;
   if (pane.phase === "closed") return <button type="button" onClick={() => { void load(); }}>백업 자료 선택</button>;
   return <div aria-label="백업 자료 선택">
@@ -239,9 +312,15 @@ function BackupSelectionPane({ api, auth, scope, scopeRef, generation, paused, o
       {pane.selection.sources.length === 0 && <p>현재 연결된 SourceVersion이 없습니다.</p>}
       {pane.selection.sources.map(item => <button type="button" key={item.versionId} aria-pressed={pane.ids.includes(item.versionId)}
         disabled={pane.phase !== "ready"} onClick={() => setPane(value => ({ ...value,
-          ids: value.ids.includes(item.versionId) ? value.ids.filter(id => id !== item.versionId) : [...value.ids, item.versionId] }))}>
+          ids: value.ids.includes(item.versionId) ? value.ids.filter(id => id !== item.versionId) : [...value.ids, item.versionId],lineage:null,consent:false }))}>
         SourceVersion {item.versionId}</button>)}
       <button type="submit" disabled={pane.phase !== "ready" || pane.ids.length < 1 || pane.ids.length > 100}>선택 자료 백업 요청</button>
+      {typeof api.previewBackupSelection==="function"&&<button type="button" disabled={pane.phase!=="ready"||!pane.ids.length||pane.ids.length>100} onClick={()=>{void lineage(false);}}>계보 사전확인</button>}
+      {pane.lineage&&<>
+        <p>선행 Version {pane.lineage.dependencies}개 · 전체 Version {pane.lineage.versions}개 · 고유 Object {pane.lineage.objects}개 · {pane.lineage.bytes} bytes</p>
+        <button type="button" disabled={pane.phase!=="ready"} aria-pressed={!!pane.consent} onClick={()=>setPane(v=>({...v,consent:!v.consent}))}>선행 버전 포함에 동의</button>
+        <button type="button" disabled={pane.phase!=="ready"||!pane.consent} onClick={()=>{void lineage(true);}}>계보 포함 백업 요청</button>
+      </>}
     </form>}
   </div>;
 }
@@ -260,6 +339,7 @@ export function RecoveryOperationsWorkspace({ api = recoveryApi } = {}) {
   const actionRef = useRef(null);
   const [confirmation, setConfirmation] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [destinations,setDestinations]=useState(null);
   const scopeRef = useRef({ api, active: false });
   if (scopeRef.current.api !== api) scopeRef.current = { api, active: false };
   const scope = scopeRef.current;
@@ -370,15 +450,43 @@ export function RecoveryOperationsWorkspace({ api = recoveryApi } = {}) {
     if (targetRef.current) { targetRef.current.hidden = !ready; targetRef.current.inert = !ready; }
   }, [ready, loaded]);
 
+  const canBrowseDestinations=()=>ready&&state==="ready"&&loaded.target?.state==="ready"&&!loaded.target.preview&&loaded.target.etag
+    && permits(loaded.target.actionSession,loaded.target,"preview")&&typeof api.getRestoreDestinations==="function";
   const canAct = kind => ready && state === "ready" && loaded.target?.etag
     && permits(loaded.target.actionSession, loaded.target, kind)
-    && (kind === "execute" ? loaded.target.state === "preview_ready" : CANCEL_STATES.has(loaded.target.state));
+    && (kind === "preview" ? canBrowseDestinations()&&destinations?.owner===loaded&&destinations.phase==="ready"&&!!destinations.selected
+      : kind === "execute" ? loaded.target.state === "preview_ready"&&!!loaded.target.preview
+        && (!loaded.target.preview.expiresAt||Date.parse(loaded.target.preview.expiresAt)>Date.now()) : !!loaded.target.preview&&CANCEL_STATES.has(loaded.target.state));
+  const navigate=address=>{window.history.replaceState(null,"",address);refreshRef.current?.();};
+  const loadDestinations=async()=>{
+    if(actionRef.current||!canBrowseDestinations())return;
+    const original=loaded.target,auth=original.actionSession;
+    const operation={controller:new AbortController(),password:"",token:""};actionRef.current=operation;setBusy(true);
+    const options={signal:operation.controller.signal};
+    const current=()=>scope.active&&scopeRef.current===scope&&generation.current===loaded.epoch&&!paused.current&&!options.signal.aborted
+      &&window.location.search+window.location.hash===loaded.address;
+    const check=()=>{if(!current())throw new Error("STALE_DESTINATION_READ");};
+    const read=async()=>{
+      const before=actionSession(await api.getSession(options));check();if(!sameSession(auth,before)||!permits(before,original,"preview"))throw new Error("SESSION_CHANGED");
+      const item=projectedTarget(await api.getBackup(original.id,options),{key:"backup_id",id:original.id},original.tenantId);check();
+      if(!item||item.workspaceId!==original.workspaceId||item.state!==original.state||item.version!==original.version||item.etag!==original.etag)throw new Error("BACKUP_CHANGED");
+      const after=actionSession(await api.getSession(options));check();if(!sameSession(auth,after)||!permits(after,original,"preview"))throw new Error("SESSION_CHANGED");
+    };
+    setDestinations({owner:loaded,phase:"loading",items:[],selected:null});
+    try{
+      await read();const items=destinationSummaries(await api.getRestoreDestinations(original.id,options));check();await read();
+      setDestinations({owner:loaded,phase:"ready",items,selected:null});
+    }catch(error){if(current()){
+      setDestinations({owner:loaded,phase:"error",items:[],selected:null});
+      if([401,403].includes(error?.status))setLoaded({...loaded,state:errorState(error),target:null});
+    }}finally{operation.password="";operation.token="";if(actionRef.current===operation){actionRef.current=null;setBusy(false);}}
+  };
 
   const mutate = async kind => {
     if (actionRef.current || confirmation?.owner !== loaded || confirmation.kind !== kind || !canAct(kind)) return;
     let password = passwordRef.current?.value ?? "";
     if (passwordRef.current) passwordRef.current.value = "";
-    if (kind === "execute" && (password.length < 12 || password.length > 1024)) {
+    if ((kind === "execute"||kind === "preview") && (password.length < 12 || password.length > 1024)) {
       setConfirmation(null); setLoaded({ ...loaded, state: "recheck", target: null }); return;
     }
     const operation = { controller: new AbortController(), password, token: "" };
@@ -396,9 +504,9 @@ export function RecoveryOperationsWorkspace({ api = recoveryApi } = {}) {
     };
     const exactRead = async unchanged => {
       requireSession(await api.getSession(options));
-      const response = await api.getRestore(original.id, options);
+      const response = await (kind==="preview"?api.getBackup(original.id,options):api.getRestore(original.id, options));
       requireCurrent();
-      const item = projectedTarget(response, { key: "restore_request_id", id: original.id }, original.tenantId);
+      const item = projectedTarget(response, { key: kind==="preview"?"backup_id":"restore_request_id", id: original.id }, original.tenantId);
       if (!item || item.workspaceId !== original.workspaceId || !item.etag || item.version < original.version) throw new Error("RECOVERY_TARGET_CHANGED");
       if (unchanged && (item.version !== original.version || item.etag !== original.etag || item.state !== original.state
         || previewComparisons.get(item.preview) !== previewComparisons.get(original.preview))) throw new Error("RECOVERY_TARGET_CHANGED");
@@ -410,16 +518,31 @@ export function RecoveryOperationsWorkspace({ api = recoveryApi } = {}) {
     try {
       await exactRead(true);
       requireCurrent();
-      if (kind === "execute") {
+      if (kind === "execute"||kind === "preview") {
         const issuance = api.issueRestoreStepUp(original.id, operation.password, { ...options, idempotencyKey: secureUuid() });
         operation.password = "";
         operation.token = await issuance;
         requireCurrent();
-        if (typeof operation.token !== "string" || !operation.token.trim() || operation.token.length > 4096
+        if (typeof operation.token !== "string" || !operation.token.trim() || operation.token.length > (kind==="preview"?512:4096)
           || /[\u0000-\u0020\u007f]/u.test(operation.token)) throw new Error("INVALID_STEP_UP");
         // 인증 도중 세션·대상·Preview 변경도 거부하고, POST body 구성 직전에 current를 확인한다.
         await exactRead(true);
         requireCurrent();
+        if(kind==="preview"){
+          const destination=confirmation.destination;
+          const items=destinationSummaries(await api.getRestoreDestinations(original.id,options));requireCurrent();
+          if(!destination||Date.parse(destination.expires_at)<=Date.now()||!items.some(item=>JSON.stringify(item)===JSON.stringify(destination)))throw new Error("DESTINATION_CHANGED");
+          await exactRead(true);requireCurrent();
+          const result=await api.previewRegisteredRestore(original.id,{workspace_id:original.workspaceId,destination_id:destination.destination_id,
+            destination_version:destination.version,step_up_authorization_id:operation.token},secureUuid(),options);
+          operation.token="";requireCurrent();
+          const id=result?.payload?.data?.request_id;if(!safeId(id))throw new Error("PREVIEW_UNCERTAIN");
+          requireSession(await api.getSession(options));
+          const detail=await api.getRestore(id,options);requireCurrent();
+          const item=projectedTarget(detail,{key:"restore_request_id",id},original.tenantId);
+          if(!item||item.workspaceId!==original.workspaceId||detail.payload.data.backup_id!==original.id||item.preview.kind!=="selected_source_lineage"||!item.etag)throw new Error("PREVIEW_UNCERTAIN");
+          requireSession(await api.getSession(options));requireCurrent();navigate(`?restore_request_id=${encodeURIComponent(id)}`);return;
+        }
         await api.executeRestore(original.id, { preview_version: original.preview.version, step_up_authorization_id: operation.token },
           original.etag, secureUuid(), options);
         operation.token = "";
@@ -449,9 +572,9 @@ export function RecoveryOperationsWorkspace({ api = recoveryApi } = {}) {
       <section ref={targetRef} className="operations-card" hidden={!ready} inert={!ready}
         aria-label={state === "home" ? "현재 운영 상태와 백업 목록" : "선택한 복구 대상"}>
         {ready && state === "home" && <>
-          <p>백업은 자료 선택·요청만 연결되며 독립 보존 준비 전에는 생성되지 않습니다. 새 Preview 생성은 아직 연결되지 않았습니다. 기존 저장 요청은 정확 ID 상세에서 제한형 Execute·Cancel을 사용할 수 있습니다. 독립 전체 DB 복원은 지원하지 않습니다.</p>
+          <p>백업은 자료 선택·계보 사전확인·명시 동의 후 독립 보존 준비가 된 서버에서만 생성됩니다. v3 백업의 등록 목적지 Preview와 별도 인증 Execute·Cancel은 정확 ID 상세에서 사용합니다. 독립 전체 DB 복원은 지원하지 않습니다.</p>
           <BackupSelectionPane api={api} auth={loaded.home.actionSession} scope={scope} scopeRef={scopeRef}
-            generation={generation} paused={paused} owner={loaded} actionRef={actionRef} invalidate={nextState => {
+            generation={generation} paused={paused} owner={loaded} actionRef={actionRef} onNavigate={navigate} invalidate={nextState => {
               ++generation.current;
               if (targetRef.current) { targetRef.current.hidden = true; targetRef.current.inert = true; }
               setLoaded({ ...loaded, state: nextState, target: null, home: null });
@@ -488,11 +611,24 @@ export function RecoveryOperationsWorkspace({ api = recoveryApi } = {}) {
           <dt>상태</dt><dd>{loaded.target.state}</dd>
           <dt>버전</dt><dd>{loaded.target.version}</dd>
         </dl>
+          {canBrowseDestinations()&&<button type="button" disabled={busy} onClick={()=>{void loadDestinations();}}>등록 복원 목적지 조회</button>}
+          {destinations?.owner===loaded&&<>
+            {destinations.phase==="loading"&&<p role="status">등록 목적지와 현재 권한을 확인하고 있습니다.</p>}
+            {destinations.phase==="error"&&<p role="status">등록 목적지를 확인할 수 없습니다. 다시 조회해 주세요.</p>}
+            {destinations.phase==="ready"&&destinations.items.length===0&&<p>사용 가능한 등록 목적지가 없습니다.</p>}
+            {destinations.items.map(item=><button key={item.destination_id} type="button" disabled={busy||destinations.phase!=="ready"}
+              aria-pressed={destinations.selected?.destination_id===item.destination_id} onClick={()=>setDestinations(v=>({...v,selected:item}))}>{item.display_name} · {item.destination_id}</button>)}
+            {canAct("preview")&&<button type="button" disabled={busy} onClick={()=>{
+              if(passwordRef.current)passwordRef.current.value="";
+              setConfirmation({owner:loaded,kind:"preview",destination:{...destinations.selected}});
+            }}>등록 목적지 Preview 준비</button>}
+          </>}
           {loaded.target.preview && <>
             <h2>기존 안전 Preview 결과</h2>
             <p>Preview 버전 {loaded.target.preview.version} · 포함 {loaded.target.preview.includedCount}건 · 제외 {loaded.target.preview.excludedCount}건</p>
             <ul>{Object.entries(EXCLUSION_NAMES).map(([reason, label]) => <li key={reason}>{label}: {loaded.target.preview.counts[reason]}건</li>)}</ul>
             <p>서버 검증 기록: {loaded.target.verified ? "있음" : "없음"}</p>
+            {loaded.target.preview.kind==="selected_source_lineage"&&<p>등록 목적지 {loaded.target.preview.destination.display_name} · 버전 {loaded.target.preview.destination.version} · 만료 {loaded.target.preview.expiresAt}. 포함/제외 수는 root 기준이며 필요한 선행은 함께 검증합니다.</p>}
             <p>completed는 서버 요청 처리 상태이며 전체 DB 복원 성공을 의미하지 않습니다. 독립 전체 DB 복원은 지원하지 않습니다.</p>
           </>}
           {canAct("execute") && <button type="button" disabled={busy} onClick={() => {
@@ -503,10 +639,10 @@ export function RecoveryOperationsWorkspace({ api = recoveryApi } = {}) {
             if (passwordRef.current) passwordRef.current.value = "";
             setConfirmation({ owner: loaded, kind: "cancel" });
           }}>복구 요청 취소</button>}
-          {confirmation?.owner === loaded && confirmation.kind === "execute" && canAct("execute") && <form onSubmit={event => {
-            event.preventDefault(); void mutate("execute");
+          {confirmation?.owner === loaded && ["execute","preview"].includes(confirmation.kind) && canAct(confirmation.kind) && <form onSubmit={event => {
+            event.preventDefault(); void mutate(confirmation.kind);
           }}>
-            <p>기존 Preview를 확인했습니다. 새 비밀번호 인증 후 이 요청을 별도로 실행합니다.</p>
+            <p>{confirmation.kind==="preview"?"등록 목적지에 대한 안전 Preview를 새 비밀번호 인증 후 요청합니다. 아직 복원 실행이 아닙니다.":"기존 Preview를 확인했습니다. 새 비밀번호 인증 후 이 요청을 별도로 실행합니다."}</p>
             <label>현재 비밀번호<input ref={bindPassword} type="password" autoComplete="current-password" minLength={12} maxLength={1024} required disabled={busy} /></label>
             <button type="submit" disabled={busy}>인증 후 실행 확정</button>
           </form>}

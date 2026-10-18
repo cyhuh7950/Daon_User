@@ -22,6 +22,54 @@ _COMPATIBLE_SCHEMA_REVISIONS = frozenset({"0062", "0063", "0064", "0066", "0067"
 _DEFAULT_DENY_CANONICAL_TEXT = '{"allowed_destinations":[],"allowed_provider_kinds":[],"classification":"restricted","masking_required":true,"max_bytes":0,"mode":"deny_external","redaction_required":true,"required_approver":"organization_admin"}'
 _DEFAULT_DENY_DIGEST = "caf695f3de7e3e05feb024b3ff4b8b14cbfad5318b885ac15d8e4da25b819d7f"
 
+# exact0070 SQL(E23AFAB1) 정적 계약. catalog 자신을 expected 기준으로 삼지 않는다.
+_REGISTERED_RESTORE_FUNCTIONS={
+    "registered_restore_actor_allowed(text,text,text)":("9f9b33a6afc90ad3f05a124f4e5dde24",True,"s","sql"),
+    "guard_registered_restore_insert()":("b6941d60f955b001034d0ee5e163d562",True,"v","plpgsql"),
+}
+_R2_RES="registered_restore_target_reservations"
+_R2_PRE="registered_restore_previews"
+_R2_PHASE="registered_restore_phase_receipts"
+_REGISTERED_RESTORE_COLUMN_NAMES={
+    _R2_RES:"registry_generation_id destination_id tenant_id workspace_id request_id actor_id destination_version backup_id manifest_version source_manifest_digest physical_receipt_digest target_database_fingerprint target_bucket_fingerprint owner_operation_id reserved_at",
+    _R2_PRE:"tenant_id workspace_id request_id preview_version actor_id registry_generation_id destination_id destination_version backup_id manifest_version source_manifest_digest closure_fingerprint included_roots_fingerprint excluded_roots_fingerprint source_policy_version retention_watermark expires_at encrypted_preview_receipt created_at",
+    _R2_PHASE:"tenant_id workspace_id request_id sequence actor_id registry_generation_id destination_id destination_version preview_version operation_id idempotency_key phase outcome target_digest result_digest trace_id created_at",
+}
+_REGISTERED_RESTORE_COLUMNS={table:[(column,"integer" if column in {"destination_version","manifest_version","preview_version","phase"}
+    else "bigint" if column=="sequence" else "timestamp with time zone" if column in {"created_at","reserved_at","expires_at"}
+    else "bytea" if column=="encrypted_preview_receipt" else "text",column!="result_digest",
+    "clock_timestamp()" if column in {"created_at","reserved_at"} else None,True)
+    for column in fields.split()] for table,fields in _REGISTERED_RESTORE_COLUMN_NAMES.items()}
+def _r2_key(kind,columns,table="",foreign=""):
+    return (kind,columns.split(),table,foreign.split(),True,False,False,True,"aas" if kind=="f" else "")
+_R2_SCOPE="tenant_id workspace_id request_id"
+_R2_RES_KEY=_R2_SCOPE+" registry_generation_id destination_id destination_version backup_id manifest_version source_manifest_digest actor_id"
+_R2_PRE_KEY=_R2_SCOPE+" preview_version registry_generation_id destination_id destination_version actor_id"
+_REGISTERED_RESTORE_KEYS={
+    _R2_RES:[_r2_key("p","registry_generation_id destination_id"),_r2_key("u","target_database_fingerprint"),
+        _r2_key("u","target_bucket_fingerprint"),_r2_key("u",_R2_SCOPE),_r2_key("u",_R2_RES_KEY),
+        _r2_key("f",_R2_SCOPE,"public.restore_requests",_R2_SCOPE),
+        _r2_key("f","tenant_id request_id","public.restore_request_locator","tenant_id request_id"),
+        _r2_key("f","tenant_id backup_id","public.backup_record_locator","tenant_id backup_id"),
+        _r2_key("f","tenant_id workspace_id backup_id manifest_version","public.backup_manifests","tenant_id workspace_id backup_id manifest_version")],
+    _R2_PRE:[_r2_key("p",_R2_SCOPE+" preview_version"),_r2_key("u",_R2_PRE_KEY),_r2_key("f",_R2_RES_KEY,"public."+_R2_RES,_R2_RES_KEY)],
+    _R2_PHASE:[_r2_key("p",_R2_SCOPE+" sequence"),_r2_key("u",_R2_SCOPE+" operation_id phase outcome"),_r2_key("f",_R2_PRE_KEY,"public."+_R2_PRE,_R2_PRE_KEY)],
+}
+_REGISTERED_RESTORE_POLICIES={}
+for _r2_table,_r2_name,_r2_parent,_r2_alias,_r2_extra in (
+    (_R2_RES,"registered_restore_reservations_scope","restore_requests","r",()),
+    (_R2_PRE,"registered_restore_previews_scope",_R2_RES,"r",("registry_generation_id","destination_id")),
+    (_R2_PHASE,"registered_restore_phase_scope",_R2_PRE,"p",("preview_version",))):
+    _r2_condition="registered_restore_actor_allowed(tenant_id,workspace_id,actor_id) AND EXISTS(SELECT 1 FROM "+_r2_parent+" "+_r2_alias+" WHERE "+" AND ".join(
+        _r2_alias+"."+col+"="+_r2_table+"."+col for col in ("tenant_id","workspace_id","request_id","actor_id",*_r2_extra))+")"
+    _REGISTERED_RESTORE_POLICIES[_r2_table]=[(_r2_name,"*",True,["PUBLIC"],_r2_condition,_r2_condition)]
+_r2_owner_scope="tenant_id=nullif(current_setting('app.tenant_id'::text,true),''::text) AND workspace_id=nullif(current_setting('app.workspace_id'::text,true),''::text)"
+_REGISTERED_RESTORE_POLICIES[_R2_RES].append(("registered_restore_reservations_owner_read","r",True,["daon_notebook_delete"],_r2_owner_scope,None))
+_REGISTERED_RESTORE_TRIGGERS=sorted([(table,"registered_restore_"+name+"_"+operation,kind,"O","public.guard_registered_restore_insert","",False,False,"",None,"",True)
+    for table,name in ((_R2_RES,"reservations"),(_R2_PRE,"previews"),(_R2_PHASE,"phases"))
+    for operation,kind in (("insert",7),("immutable",27),("truncate",34))]+[
+    ("restore_previews","registered_restore_fixture_mode_guard",7,"O","public.guard_registered_restore_insert","",False,False,"",None,"",True)])
+
 
 class _PoolAvailabilityLogFilter(logging.Filter):
     """Keep connection targets and driver failures out of operational logs."""
@@ -142,6 +190,10 @@ class PostgresCloudStore:
         def compatible(connection, revision, vector):
             if vector is None:
                 return False
+            if revision == "0070":
+                return (self._organization_storage_is_protected(connection)
+                    and self._notification_storage_is_protected(connection)
+                    and self._registered_restore_storage_is_protected(connection))
             if revision == "0069":
                 return self._organization_storage_is_protected(connection) and self._notification_storage_is_protected(connection)
             if getattr(self, "_notification_inbox_enabled", False):
@@ -177,6 +229,81 @@ class PostgresCloudStore:
             )
         except (Error, PoolTimeout, OSError):
             return CloudReadiness(False, None, None)
+
+    @staticmethod
+    def _registered_restore_storage_is_protected(connection) -> bool:
+        """0070 전용 실제 catalog 읽기. 구 revision/보호규칙·DB를 변경하지 않는다."""
+        from .notification_postgres import _normalize_expression
+        def values(row):return tuple(row.values()) if isinstance(row,dict) else tuple(row)
+        def normalize(value):return None if value is None else _normalize_expression(value.replace("public.",""))
+        try:
+            row=connection.execute("""/* r4:role */ SELECT count(*)=1 AND bool_and(NOT rolcanlogin AND rolinherit
+                AND NOT rolsuper AND NOT rolbypassrls AND NOT rolcreaterole AND NOT rolcreatedb)
+                AND NOT pg_catalog.pg_has_role('daon_app','daon_notebook_delete','MEMBER')
+                AND (SELECT count(*)=1 AND min(version_num)='0070' FROM public.alembic_version)
+                FROM pg_catalog.pg_roles WHERE rolname='daon_notebook_delete'""").fetchone()
+            if row is None or values(row)!=(True,):return False
+            for table,columns in _REGISTERED_RESTORE_COLUMNS.items():
+                qualified="public."+table
+                row=connection.execute("""/* r4:table */ SELECT c.relkind='r' AND c.relpersistence='p'
+                    AND c.relowner='daon_notebook_delete'::regrole AND c.relrowsecurity AND c.relforcerowsecurity
+                    AND NOT pg_catalog.has_table_privilege('daon_app',c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+                    AND NOT EXISTS(SELECT 1 FROM pg_catalog.aclexplode(COALESCE(c.relacl,pg_catalog.acldefault('r',c.relowner))) a
+                        WHERE a.grantee<>c.relowner OR a.is_grantable)
+                    FROM pg_catalog.pg_class c WHERE c.oid=pg_catalog.to_regclass(%s)""",(qualified,)).fetchone()
+                if row is None or values(row)!=(True,):return False
+                rows=connection.execute("""/* r4:columns */ SELECT a.attname,pg_catalog.format_type(a.atttypid,a.atttypmod),
+                    a.attnotnull,pg_catalog.pg_get_expr(d.adbin,d.adrelid),
+                    a.attidentity='' AND a.attgenerated='' AND a.attcollation=t.typcollation
+                    AND pg_catalog.has_column_privilege('daon_app',a.attrelid,a.attnum,'SELECT')
+                    AND pg_catalog.has_column_privilege('daon_app',a.attrelid,a.attnum,'INSERT')=(a.attname NOT IN ('created_at','reserved_at'))
+                    AND NOT pg_catalog.has_column_privilege('daon_app',a.attrelid,a.attnum,'UPDATE,REFERENCES')
+                    AND NOT EXISTS(SELECT 1 FROM pg_catalog.aclexplode(CASE WHEN cardinality(a.attacl)>0 THEN a.attacl ELSE NULL::pg_catalog.aclitem[] END) x
+                        WHERE x.grantee<>'daon_app'::regrole OR x.is_grantable OR x.privilege_type NOT IN ('SELECT','INSERT'))
+                    FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_type t ON t.oid=a.atttypid
+                    LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum
+                    WHERE a.attrelid=pg_catalog.to_regclass('public.'||%s) AND a.attnum>0 AND NOT a.attisdropped ORDER BY a.attnum""",(table,)).fetchall()
+                if [values(r) for r in rows]!=columns:return False
+                rows=connection.execute("""/* r4:constraints */ SELECT c.contype,
+                    ARRAY(SELECT a.attname::text FROM unnest(c.conkey) WITH ORDINALITY k(n,o) JOIN pg_catalog.pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=k.n ORDER BY k.o),
+                    CASE WHEN c.contype='f' THEN n.nspname||'.'||r.relname ELSE '' END,
+                    ARRAY(SELECT a.attname::text FROM unnest(c.confkey) WITH ORDINALITY k(n,o) JOIN pg_catalog.pg_attribute a ON a.attrelid=c.confrelid AND a.attnum=k.n ORDER BY k.o),
+                    c.convalidated,c.condeferrable,c.condeferred,
+                    CASE WHEN c.contype IN ('p','u') THEN i.indisvalid AND i.indisready AND i.indimmediate
+                        AND i.indpred IS NULL AND i.indexprs IS NULL AND i.indnkeyatts=cardinality(c.conkey) AND i.indnatts=i.indnkeyatts ELSE true END,
+                    CASE WHEN c.contype='f' THEN c.confupdtype::text||c.confdeltype::text||c.confmatchtype::text ELSE '' END
+                    FROM pg_catalog.pg_constraint c LEFT JOIN pg_catalog.pg_class r ON r.oid=c.confrelid
+                    LEFT JOIN pg_catalog.pg_namespace n ON n.oid=r.relnamespace LEFT JOIN pg_catalog.pg_index i ON i.indexrelid=c.conindid
+                    WHERE c.conrelid=pg_catalog.to_regclass('public.'||%s) AND c.contype IN ('p','u','f')""",(table,)).fetchall()
+                if sorted(map(values,rows),key=repr)!=sorted(_REGISTERED_RESTORE_KEYS[table],key=repr):return False
+                rows=connection.execute("""/* r4:policy */ SELECT p.polname,p.polcmd,p.polpermissive,
+                    ARRAY(SELECT CASE WHEN role_id=0 THEN 'PUBLIC' ELSE pg_catalog.pg_get_userbyid(role_id)::text END FROM unnest(p.polroles) role_id ORDER BY 1),
+                    pg_catalog.pg_get_expr(p.polqual,p.polrelid),pg_catalog.pg_get_expr(p.polwithcheck,p.polrelid)
+                    FROM pg_catalog.pg_policy p WHERE p.polrelid=pg_catalog.to_regclass('public.'||%s)""",(table,)).fetchall()
+                actual=[(*values(r)[:4],normalize(values(r)[4]),normalize(values(r)[5])) for r in rows]
+                expected=[(*r[:4],normalize(r[4]),normalize(r[5])) for r in _REGISTERED_RESTORE_POLICIES[table]]
+                if sorted(actual,key=repr)!=sorted(expected,key=repr):return False
+            for signature,expected in _REGISTERED_RESTORE_FUNCTIONS.items():
+                row=connection.execute("""/* r4:function */ SELECT md5(p.prosrc),p.prosecdef,p.provolatile,l.lanname,
+                    p.proowner='daon_notebook_delete'::regrole AND p.prokind='f' AND NOT p.proretset AND NOT p.proisstrict AND NOT p.proleakproof AND p.proparallel='u'
+                        AND p.prorettype=CASE WHEN p.proname='registered_restore_actor_allowed' THEN 'boolean'::regtype ELSE 'trigger'::regtype END,
+                    p.proconfig=ARRAY['search_path=pg_catalog, pg_temp']::text[],
+                    NOT EXISTS(SELECT 1 FROM pg_catalog.aclexplode(COALESCE(p.proacl,pg_catalog.acldefault('f',p.proowner))) a
+                        WHERE a.grantee NOT IN (p.proowner,'daon_app'::regrole) OR a.is_grantable OR a.privilege_type<>'EXECUTE'),
+                    pg_catalog.has_function_privilege('daon_app',p.oid,'EXECUTE')=(p.proname='registered_restore_actor_allowed')
+                    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_language l ON l.oid=p.prolang
+                    WHERE p.oid=pg_catalog.to_regprocedure(%s)""",("public."+signature,)).fetchone()
+                if row is None or values(row)!=(*expected,True,True,True,True):return False
+            rows=connection.execute("""/* r4:trigger */ SELECT c.relname,t.tgname,t.tgtype,t.tgenabled,
+                n.nspname||'.'||p.proname,pg_catalog.pg_get_function_identity_arguments(p.oid),t.tgdeferrable,t.tginitdeferred,
+                encode(t.tgargs,'hex'),pg_catalog.pg_get_expr(t.tgqual,t.tgrelid),t.tgattr::text,t.tgconstraint=0 AND t.tgparentid=0
+                FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_class c ON c.oid=t.tgrelid
+                JOIN pg_catalog.pg_namespace cn ON cn.oid=c.relnamespace JOIN pg_catalog.pg_proc p ON p.oid=t.tgfoid
+                JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace WHERE cn.nspname='public' AND NOT t.tgisinternal
+                AND (c.relname=ANY(%s::text[]) OR (c.relname='restore_previews' AND t.tgname='registered_restore_fixture_mode_guard'))
+                ORDER BY c.relname,t.tgname""",(list(_REGISTERED_RESTORE_COLUMNS),)).fetchall()
+            return [values(r) for r in rows]==_REGISTERED_RESTORE_TRIGGERS
+        except (Error,TypeError,ValueError,KeyError,AttributeError):return False
 
     @staticmethod
     def _notification_storage_is_protected(connection) -> bool:

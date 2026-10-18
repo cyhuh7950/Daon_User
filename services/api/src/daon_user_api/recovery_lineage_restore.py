@@ -465,11 +465,12 @@ class RestoreBinding:
     idempotency_key: str
     preview_expires_at: datetime
     catalog_digest: str
+    current_retention_watermark: str
 
     def __post_init__(self):
         for name in ("request_id", "backup_id", "registry_generation_id", "destination_id", "owner_operation_id", "operation_id", "idempotency_key"):
             _safe(getattr(self, name))
-        for name in ("manifest_digest", "receipt_digest", "closure_fingerprint", "retention_watermark", "catalog_digest"): _hex(getattr(self, name))
+        for name in ("manifest_digest", "receipt_digest", "closure_fingerprint", "retention_watermark", "catalog_digest", "current_retention_watermark"): _hex(getattr(self, name))
         if any(type(getattr(self, name)) is not int or getattr(self, name) <= 0 for name in ("preview_version", "destination_version")): raise _invalid()
         if (not isinstance(self.included_roots, tuple) or not self.included_roots
                 or self.included_roots != tuple(sorted(set(self.included_roots)))): raise _invalid()
@@ -481,6 +482,7 @@ class RestoreBinding:
 class CurrentRestoreState:
     context: RecoveryContext
     binding: RestoreBinding
+    current_retention_watermark: str
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -804,7 +806,8 @@ def materialize_lineage(context,scope,store,receipt,binding,destination,target,j
     now=clock or (lambda:datetime.now(timezone.utc))
     def current():
         result=recheck()
-        if type(result) is not CurrentRestoreState or result.context!=context or result.binding!=binding: raise _invalid()
+        if (type(result) is not CurrentRestoreState or result.context!=context or result.binding!=binding
+            or result.current_retention_watermark!=binding.current_retention_watermark): raise _invalid()
         return result
     if (type(context) is not RecoveryContext or type(scope) is not LineageCaptureScope or not isinstance(store,FileLineageCaptureStore)
         or type(binding) is not RestoreBinding or type(destination) is not RegisteredDestination

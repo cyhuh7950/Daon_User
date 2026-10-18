@@ -30,6 +30,68 @@ DEFAULT_DENY_DIGEST = "caf695f3de7e3e05feb024b3ff4b8b14cbfad5318b885ac15d8e4da25
 
 
 class CloudStorageContractTests(unittest.TestCase):
+    def test_r4_readiness_0070_requires_all_protections_in_both_pool_states(self):
+        class Result:
+            def __init__(self,row):self.row=row
+            def fetchone(self):return self.row
+        class Connection:
+            def execute(self,sql,params=()):return Result(("0070",) if "alembic_version" in sql else ("0.8.2",))
+        class Pool:
+            def __init__(self,closed):self.closed=closed
+            @contextmanager
+            def connection(self,**kwargs):yield Connection()
+        @contextmanager
+        def connect(*args,**kwargs):yield Connection()
+        for closed in (True,False):
+            for missing in (None,"organization","notification","registered"):
+                with self.subTest(closed=closed,missing=missing):
+                    store=object.__new__(PostgresCloudStore);store._dsn="not-a-real-connection";store._pool=Pool(closed)
+                    store._organization_storage_is_protected=lambda c:missing!="organization"
+                    store._notification_storage_is_protected=lambda c:missing!="notification"
+                    store._registered_restore_storage_is_protected=lambda c:missing!="registered"
+                    opened=[];store._ensure_pool_open=lambda:opened.append(True)
+                    with patch("daon_user_api.cloud_storage.connect",connect):status=store.readiness()
+                    self.assertEqual(status.ready,missing is None)
+                    self.assertEqual(bool(opened),closed and missing is None)
+
+    def test_r4_registered_catalog_guard_checks_exact_migration_and_rejects_each_missing_facet(self):
+        import hashlib,re
+        from daon_user_api import cloud_storage as api
+        guard=getattr(PostgresCloudStore,"_registered_restore_storage_is_protected",None)
+        self.assertTrue(callable(guard),"0070 actual protected catalog consumer missing")
+        migration=(MIGRATION.parent/"0070_registered_restore_destinations.sql").read_text(encoding="utf-8")
+        for signature,expected in api._REGISTERED_RESTORE_FUNCTIONS.items():
+            name=signature.split("(")[0]
+            match=re.search(r"CREATE FUNCTION public\."+name+r"\([^$]+?AS \$\$(.*?)\$\$;",migration,re.S)
+            self.assertIsNotNone(match)
+            self.assertEqual(hashlib.md5(match[1].encode()).hexdigest(),expected[0])
+        for bad in (None,"role","table","columns","constraints","policy","function","trigger","owner","grant","rls","body","disabled-trigger","global-composite-unique"):
+            queries=[]
+            class Result:
+                def __init__(self,rows):self.rows=rows
+                def fetchone(self):return self.rows[0] if self.rows else None
+                def fetchall(self):return self.rows
+            class Reader:
+                def execute(self,sql,params=()):
+                    queries.append(sql)
+                    facet=sql.split("/* r4:",1)[1].split(" */",1)[0]
+                    if bad==facet:return Result([])
+                    if facet=="table" and bad in {"owner","grant","rls"}:return Result([(False,)])
+                    if facet=="columns":return Result(api._REGISTERED_RESTORE_COLUMNS[params[0]])
+                    if facet=="constraints":
+                        rows=api._REGISTERED_RESTORE_KEYS[params[0]]
+                        if bad=="global-composite-unique" and params[0]==api._R2_RES:
+                            rows=[(r[0],[*r[1],"tenant_id"],*r[2:]) if r[0]=="u" and r[1]==["target_database_fingerprint"] else r for r in rows]
+                        return Result(rows)
+                    if facet=="function":
+                        expected=api._REGISTERED_RESTORE_FUNCTIONS[params[0].removeprefix("public.")]
+                        return Result([("0"*32 if bad=="body" else expected[0],*expected[1:],True,True,True,True)])
+                    if facet=="policy":return Result(api._REGISTERED_RESTORE_POLICIES[params[0]])
+                    if facet=="trigger":return Result([(*r[:3],"D",*r[4:]) for r in api._REGISTERED_RESTORE_TRIGGERS] if bad=="disabled-trigger" else api._REGISTERED_RESTORE_TRIGGERS)
+                    return Result([(True,)])
+            with self.subTest(facet=bad):self.assertEqual(guard(Reader()),bad is None)
+            self.assertTrue(all("pg_catalog" in query for query in queries))
+
     def test_s39_readiness_requires_0068_protection_and_flag_binding_in_both_pool_states(self):
         class Result:
             def __init__(self, row): self.row = row

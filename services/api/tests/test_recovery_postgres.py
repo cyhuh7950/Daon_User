@@ -12,7 +12,7 @@ from dataclasses import replace
 from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import patch
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import psycopg
@@ -30,6 +30,286 @@ from daon_user_api.object_queue import (
 )
 from daon_user_api.recovery import BackupObjectInput, BackupSelectionInput, RecoveryContext, RecoveryError, RestoreDestination
 from daon_user_api.recovery_capture import FileCaptureStore, decode_manifest
+
+
+class RegisteredRecoveryBoundaryTests(unittest.TestCase):
+    def test_r4_purged_missing_version_excludes_only_proven_root_without_bypassing_acl(self):
+        from test_recovery_lineage import Ledger,recanonical
+        from daon_user_api.recovery_lineage_capture import LineageCaptureScope
+        ledger=Ledger()
+        for table in ("sources","source_versions","object_records","canon_state_transitions","canon_transition_attempts","notebook_bindings"):
+            for original in list(ledger.tables[table]):
+                row=copy.deepcopy(original)
+                for field in ("record_id","aggregate_id","previous_version_id","source_id","object_id","version_id","transition_id","attempt_id"):
+                    if row.get(field) is not None:row[field]=row[field]+"-b"
+                if table=="source_versions":recanonical(row,{**row["canonical_json"],"object_id":row["object_id"]})
+                ledger.tables[table].append(row)
+        ledger.selection=BackupSelectionInput("notebook-a",("root-version","root-version-b"))
+        selection=ledger.resolve();metadata=selection.metadata();scope=LineageCaptureScope.from_selection(ledger.context,selection,capture_id="capture-mixed")
+        for table in ("sources","source_versions","notebook_bindings"):
+            ledger.tables[table]=[r for r in ledger.tables[table] if (r.get("source_id") or r["record_id"])!="source-a"]
+        ledger.tables["deletion_requests"]=[dict(tenant_id=ledger.context.tenant_id,workspace_id=ledger.context.workspace_id,request_id="purge-a",
+            source_id="source-a",state="purged",version=4,source_active=False,purge_started=True,policy_version="purge-policy")]
+        class Connection:
+            info=ledger.info
+            def cursor(self,*,row_factory):return ledger
+        service=object.__new__(PostgresRecoveryService);connection=Connection()
+        result=service._registered_current_decision(connection,ledger.context,scope,metadata)
+        self.assertEqual(result["included_roots"],["root-version-b"])
+        self.assertEqual(result["exclusion_reasons"],[["root-version","purged"]])
+        ledger.revoked.add("prior-version")
+        with self.assertRaises(RecoveryError) as denied:service._registered_current_decision(connection,ledger.context,scope,metadata)
+        self.assertEqual(denied.exception.status,403)
+        ledger.revoked.clear();ledger.tables["deletion_requests"][0]["state"]="cleanup_pending"
+        with self.assertRaises(RecoveryError):service._registered_current_decision(connection,ledger.context,scope,metadata)
+        ledger.tables["deletion_requests"][0]["state"]="purged"
+        ledger.tables["deletion_requests"].append({**ledger.tables["deletion_requests"][0],"request_id":"purge-b","source_id":"source-a-b"})
+        with self.assertRaises(RecoveryError) as excluded:service._registered_current_decision(connection,ledger.context,scope,metadata)
+        self.assertEqual(excluded.exception.status,409)
+
+    def test_r4_actual_policy_acl_membership_witness_changes_hash_without_losing_manage(self):
+        from test_recovery_lineage import Ledger
+        from daon_user_api.recovery_lineage_capture import LineageCaptureScope
+        ledger=Ledger();selected=ledger.resolve();scope=LineageCaptureScope.from_selection(ledger.context,selected,capture_id="capture-policy")
+        class Connection:
+            info=ledger.info
+            def cursor(self,*,row_factory):return ledger
+        service=object.__new__(PostgresRecoveryService);connection=Connection()
+        first=service._registered_current_decision(connection,ledger.context,scope,selected.metadata())
+        original=ledger.auth.execute;mode=[None]
+        def rows(sql,params=()):
+            cursor=original(sql,params);row=cursor.fetchone()
+            if row is not None and isinstance(row,dict):
+                row=dict(row)
+                if mode[0]=="policy" and "FROM identity_auth_tenant_policies" in sql:row["version"]=2
+                if mode[0]=="workspace-policy" and "FROM identity_auth_workspace_policies" in sql:row["version"]=2
+                if mode[0]=="acl" and "FROM identity_auth_workspaces" in sql:row["acl_version"]=2
+                if mode[0]=="membership" and "FROM identity_auth_tenant_roles" in sql:row["version"]=2
+            return SimpleNamespace(fetchone=lambda:row)
+        ledger.auth.execute=rows
+        for kind in ("policy","workspace-policy","acl","membership"):
+            with self.subTest(witness=kind):
+                mode[0]=kind
+                decision=service._registered_current_decision(connection,ledger.context,scope,selected.metadata())
+                self.assertNotEqual(decision["current_retention_watermark"],first["current_retention_watermark"])
+                if kind=="policy":self.assertEqual(decision["current_policy_version"],"tenant-2:workspace-1")
+                if kind=="workspace-policy":self.assertEqual(decision["current_policy_version"],"tenant-1:workspace-2")
+        self.assertEqual(ledger.context.policy_version,"policy-current")
+
+    def test_r4_fixed_target_factory_requires_exact_region_and_reuses_caller_owned_queue(self):
+        from daon_user_api.recovery_destinations import PhysicalProbeInstance,ProbeFoundation,ProbeRequest,RegisteredDestination,TrustedPhysicalProbe,DatabaseIdentity
+        factory_type=getattr(recovery_postgres,"PostgresRegisteredTargetFactory",None)
+        descriptor_type=getattr(recovery_postgres,"RegisteredTargetDescriptor",None)
+        self.assertTrue(callable(factory_type) and callable(descriptor_type),"fixed R4 target builder missing")
+        calls=[];context=RecoveryContext("tenant-a","workspace-a","actor-a","trace-a","policy-a",True)
+        class Connection:
+            def execute(self,sql,params=()):
+                self_sql=sql
+                if "pg_control_system" not in self_sql:raise AssertionError("READ_ONLY_FIXED_QUEUE_IDENTITY_REQUIRED")
+                return SimpleNamespace(fetchone=lambda:("daon_app",False,False,"qa-target","10001",222))
+        @contextmanager
+        def connection():yield Connection()
+        queue=object.__new__(PostgresObjectQueueStore)
+        queue._transaction=lambda *args:connection()
+        queue.close=lambda:calls.append("forbidden-shared-close")
+        storage=MinioObjectStorageAdapter(endpoint="target.invalid:9000",bucket="s44-target",access_key=secrets.token_hex(12),secret_key=secrets.token_hex(24),secure=False)
+        instance=PhysicalProbeInstance("database-a","bucket-a","qa-target",connection,storage,"us-east-1",
+            ProbeFoundation("tenant-a","workspace-a","actor-a","0070","a"*64),"provision-a",False,False)
+        request=ProbeRequest("source-a","target-a","database-a","bucket-a","owner-a")
+        class Probe(TrustedPhysicalProbe):
+            def observe(self,*args):raise AssertionError("no network during facade construction")
+        destination=RegisteredDestination("generation-a","destination-a",1,"격리","2099-01-01T00:00:00Z",context.tenant_id,context.workspace_id,context.actor_id,
+            "a"*64,DatabaseIdentity("10001",222).fingerprint(),"b"*64,"owner-a",datetime.now(timezone.utc))
+        entry=descriptor_type(instance,queue,request,"c"*64)
+        factory=factory_type({("generation-a","destination-a",1):entry},Probe())
+        target,digest=factory(context,destination)
+        self.assertEqual((target.region,digest),("us-east-1","c"*64))
+        self.assertIs(factory(context,destination)[0],target)
+        self.assertEqual(calls,[])
+        with self.assertRaises(RecoveryError):factory(context,replace(destination,target_database_fingerprint="f"*64))
+        with self.assertRaises(RecoveryError):factory_type({("generation-a","destination-a",1):replace(entry,instance=replace(instance,region=None))},Probe())
+
+    def test_r4_registered_preview_off_and_exact_persistence_replay_no_fixture_rows(self):
+        from test_recovery_lineage import Ledger
+        from daon_user_api.recovery_lineage_capture import LineageCaptureScope
+        from daon_user_api.recovery_lineage_restore import PostgresLineageTarget
+        from daon_user_api.recovery_destinations import SignedDestinationRegistry,TrustedPhysicalProbe,RegisteredDestination
+        from datetime import timedelta
+        service=object.__new__(PostgresRecoveryService)
+        method=getattr(service,"preview_registered_restore",None)
+        self.assertTrue(callable(method),"R4 registered preview consumer missing")
+        ledger=Ledger(); context=replace(ledger.context,session_id="session-a",device_id="device-a");ledger.context=context
+        with self.assertRaises(RecoveryError) as off:
+            method(context,"backup-a",destination_id="destination-a",destination_version=1,idempotency_key="preview-a",step_up_verified=True,recheck=lambda:None)
+        self.assertEqual(off.exception.status,503)
+        selection=ledger.resolve();scope=LineageCaptureScope.from_selection(context,selection,capture_id="capture-a")
+        now=datetime.now(timezone.utc)
+        destination=RegisteredDestination("generation-a","destination-a",1,"격리",(now+timedelta(hours=1)).isoformat(),context.tenant_id,
+            context.workspace_id,context.actor_id,"1"*64,"2"*64,"3"*64,"owner-a",now)
+        registry=object.__new__(SignedDestinationRegistry)
+        registry.resolve_registered_destination=lambda *args:destination
+        class Probe(TrustedPhysicalProbe):
+            def observe(self,request): raise AssertionError("registry probe covered separately")
+        target=object.__new__(PostgresLineageTarget); target.check=lambda *args,**kwargs:None
+        service._destination_registry=registry;service._destination_probe=Probe();service._registered_target_factory=lambda *args:(target,"4"*64)
+        service._lineage_capture_store=SimpleNamespace(key_version="v3-test",key_reference="memory-only")
+        service._manifest_master_key=secrets.token_bytes(32);service._clock=lambda:now
+        receipt={"synthetic-port-receipt":"not-real-capture-evidence"}
+        service._registered_capture=lambda *args,**kwargs: (dict(manifest_digest="a"*64),scope,receipt,SimpleNamespace(metadata=selection.metadata()))
+        requests={};previews={};log=[];audits=[];operations={}
+        class Cursor:
+            def __init__(self,row=None): self.row=row
+            def fetchone(self): return self.row
+        class Connection:
+            info=ledger.info
+            def cursor(self,*,row_factory): return ledger
+            def execute(self,sql,params=()):
+                log.append((sql,params))
+                if sql.startswith("SELECT request_id,request_fingerprint"):
+                    return Cursor(next((r for r in requests.values() if r["actor_id"]==params[0] and r["idempotency_key"]==params[1]),None))
+                if sql.startswith("SELECT request_fingerprint,result FROM idempotency_records"):return Cursor(operations.get(tuple(params)))
+                if sql.startswith("INSERT INTO idempotency_records"):
+                    operations[(params[2],params[3],params[4])]=dict(request_fingerprint=params[5],result=params[6].obj);return Cursor()
+                if sql.startswith("SELECT * FROM public.registered_restore_target_reservations"):return Cursor()
+                if sql.startswith("INSERT INTO public.restore_requests"):
+                    requests[params[2]]=dict(tenant_id=params[0],workspace_id=params[1],request_id=params[2],backup_id=params[3],actor_id=params[4],
+                        state="requested",version=1,idempotency_key=params[8],request_fingerprint=params[9]);return Cursor()
+                if sql.startswith("INSERT INTO public.registered_restore_previews"):
+                    columns=sql.split("(",1)[1].split(")",1)[0].split(",")
+                    previews[params[2]]=dict(zip(columns,params,strict=True));return Cursor()
+                if sql.startswith("UPDATE public.restore_requests"):
+                    requests[params[-1]].update(state="preview_ready",version=2);return Cursor()
+                if sql.startswith("SELECT r.*") and "registered_restore_previews" in sql:
+                    row=requests.get(params[0]);return Cursor(None if row is None else {**row,**previews[row["request_id"]],"verification_digest":None})
+                if sql.startswith(("INSERT INTO public.restore_request_locator","INSERT INTO public.registered_restore_target_reservations")): return Cursor()
+                if sql=="SELECT state FROM public.identity_org_tenant_memberships WHERE tenant_id=%s AND user_id=%s": return ledger.execute(sql,params)
+                raise AssertionError("UNEXPECTED_REGISTERED_SQL")
+        @contextmanager
+        def transaction(*args): yield Connection()
+        service._transaction=transaction
+        service._append_audit=lambda *args,**kwargs:audits.append(args[2]) or "audit-a"
+        checks=[]
+        kwargs=dict(destination_id="destination-a",destination_version=1,idempotency_key="preview-a",step_up_verified=True,recheck=lambda:checks.append(True))
+        view=method(context,"backup-a",**kwargs)
+        self.assertEqual((view.state,view.version,view.preview.included_root_count),("preview_ready",2,1))
+        self.assertEqual(view.preview.destination,destination.summary())
+        saved=previews[view.request_id]
+        self.assertEqual(saved["retention_watermark"],scope.retention_watermark)
+        self.assertEqual(saved["source_policy_version"],scope.policy_version)
+        decoded=service._open_registered_preview(saved,bytes(saved["encrypted_preview_receipt"]))
+        self.assertNotEqual(decoded["current_retention_watermark"],scope.retention_watermark)
+        before=len(log);self.assertEqual(method(context,"backup-a",**kwargs),view)
+        self.assertEqual(audits,["restore.previewed"])
+        self.assertFalse(any(sql.startswith(("INSERT","UPDATE")) for sql,_ in log[before:]))
+        self.assertFalse(any("INSERT INTO restore_previews" in sql for sql,_ in log))
+        with self.assertRaises(RecoveryError): method(context,"backup-a",**{**kwargs,"destination_version":2})
+        self.assertGreater(len(checks),3)
+
+    def test_r4_current_decision_reads_actual_bindings_retention_and_never_rewrites_archive(self):
+        from test_recovery_lineage import Ledger
+        from daon_user_api.recovery_lineage_capture import LineageCaptureScope
+        ledger=Ledger(); selected=ledger.resolve()
+        scope=LineageCaptureScope.from_selection(ledger.context,selected,capture_id="capture-a")
+        class Connection:
+            info=ledger.info
+            def cursor(self,*,row_factory): return ledger
+        service=object.__new__(PostgresRecoveryService)
+        method=getattr(service,"_registered_current_decision",None)
+        self.assertTrue(callable(method),"R4 actual current retention decision missing")
+        first=method(Connection(),ledger.context,scope,selected.metadata())
+        self.assertEqual(first["included_roots"],["root-version"])
+        self.assertEqual(first["excluded_roots"],[])
+        original=scope.retention_watermark
+        ledger.tables["legal_holds"].append(dict(tenant_id=ledger.context.tenant_id,workspace_id=ledger.context.workspace_id,
+            hold_id="hold-a",source_id="source-a",state="released",version=2,policy_version="policy-new"))
+        changed=method(Connection(),ledger.context,scope,selected.metadata())
+        self.assertNotEqual(changed["current_retention_watermark"],first["current_retention_watermark"])
+        self.assertEqual(scope.retention_watermark,original)
+        ledger.tables["legal_holds"][0]["state"]="active"
+        with self.assertRaises(RecoveryError) as held: method(Connection(),ledger.context,scope,selected.metadata())
+        self.assertEqual(held.exception.status,409)  # 全root除外から準備成功を作らない。
+        ledger.tables["legal_holds"].clear(); ledger.unbound.add("root-version")
+        with self.assertRaises(RecoveryError): method(Connection(),ledger.context,scope,selected.metadata())
+        ledger.unbound.clear(); ledger.revoked.add("prior-version")
+        with self.assertRaises(RecoveryError): method(Connection(),ledger.context,scope,selected.metadata())
+
+    def test_r4_versioned_preview_receipt_binds_archive_current_actor_registry_and_sets(self):
+        import json
+        service=object.__new__(PostgresRecoveryService)
+        service._manifest_master_key=secrets.token_bytes(32)
+        service._lineage_capture_store=SimpleNamespace(key_version="key-v3",key_reference="memory-only")
+        row=dict(tenant_id="tenant-a",workspace_id="workspace-a",actor_id="manager-a",request_id="request-a",backup_id="backup-a",
+            preview_version=1,registry_generation_id="generation-a",destination_id="destination-a",destination_version=1,
+            source_manifest_digest="a"*64,closure_fingerprint="b"*64,source_policy_version="policy-original",retention_watermark="c"*64,
+            included_roots_fingerprint=hashlib.sha256(b'["root-a"]').hexdigest(),excluded_roots_fingerprint=hashlib.sha256(b'[]').hexdigest(),
+            expires_at=datetime(2030,1,1,tzinfo=timezone.utc))
+        payload=dict(schema_version=1,current_retention_watermark="d"*64,current_policy_version="tenant-1:workspace-1",current_authorization_fingerprint="9"*64,runtime_policy_version="policy-current",
+            included_roots=["root-a"],excluded_roots=[],exclusion_reasons=[],session_id="session-a",device_id="device-a",request_version=2,
+            destination_summary=dict(destination_id="destination-a",version=1,display_name="격리",expires_at="2030-01-01T00:00:00+00:00"),
+            catalog_digest="e"*64,created_at="2026-10-19T00:00:00+00:00")
+        seal=getattr(service,"_seal_registered_preview",None)
+        self.assertTrue(callable(seal),"R4 AEAD registered preview receipt missing")
+        envelope=seal(row,payload)
+        self.assertTrue(envelope.startswith(b"DRP1"))
+        self.assertNotIn(b"manager-a",envelope)
+        self.assertEqual(service._open_registered_preview(row,envelope),payload)
+        from dataclasses import asdict
+        view=service._registered_preview_view(row,payload)
+        public=asdict(view)
+        self.assertEqual(set(public),{"kind","version","created_at","expires_at","destination","source_manifest_digest",
+            "closure_fingerprint","included_root_count","excluded_root_count","exclusion_counts"})
+        self.assertEqual(public["included_root_count"],1)
+        self.assertEqual(public["destination"],payload["destination_summary"])
+        self.assertNotIn("current_retention_watermark",public)
+        self.assertNotIn("root-a",json.dumps(public,default=str))
+        for key,value in (("actor_id","other-manager"),("request_id","other-request"),("registry_generation_id","other-generation"),
+                ("destination_version",2),("source_manifest_digest","f"*64),("closure_fingerprint","f"*64),("retention_watermark","f"*64)):
+            with self.subTest(binding=key),self.assertRaises(RecoveryError): service._open_registered_preview({**row,key:value},envelope)
+        for name,value in (("current_retention_watermark","invalid"),("included_roots",[]),("extra","secret-canary"),
+                ("exclusion_reasons",[["root-a","unknown"]]),("schema_version",True)):
+            with self.subTest(payload=name),self.assertRaises(RecoveryError): seal(row,{**payload,name:value})
+        with self.assertRaises(RecoveryError): service._open_registered_preview(row,envelope[:-1]+bytes([envelope[-1]^1]))
+        service._manifest_master_key=secrets.token_bytes(32)
+        with self.assertRaises(RecoveryError): service._open_registered_preview(row,envelope)
+
+    def test_r4_current_archive_authorization_uses_real_current_actor_and_all_dependencies(self):
+        from test_recovery_lineage import Ledger
+        from daon_user_api.recovery_postgres import PostgresRecoveryService
+        ledger=Ledger(); ledger.auth.auth_role="organization_admin"
+        context=replace(ledger.context,actor_id="current-manager"); ledger.context=context
+        scope=SimpleNamespace(tenant_id=context.tenant_id,workspace_id=context.workspace_id,actor_id="original-author",
+            notebook_id="notebook-a",root_source_version_ids=("root-version",),dependency_source_version_ids=("prior-version",))
+        method=getattr(PostgresRecoveryService,"_registered_authorization",None)
+        self.assertTrue(callable(method),"R4 current principal/archive provenance boundary missing")
+        class DictRowConnection:
+            info=ledger.info
+            def cursor(self,*,row_factory):
+                from psycopg.rows import tuple_row
+                self_expected=row_factory is tuple_row
+                if not self_expected: raise AssertionError("existing helpers require tuple cursor")
+                return ledger
+            def execute(self,sql,params=()):
+                # 실제 recovery pool은 dict_row. helper가 직접 [0]을 쓰면 실패해야 한다.
+                return SimpleNamespace(fetchone=lambda:{"state":"active"})
+        connection=DictRowConnection()
+        method(connection,context,scope)
+        queries=[params for sql,params in ledger.log if "FROM identity_auth_source_access" in sql]
+        self.assertEqual({p[-1] for p in queries},{"root-version","prior-version"})
+        self.assertTrue(all(p[2]=="current-manager" for p in queries))
+        ledger.revoked.add("prior-version")
+        with self.assertRaises(RecoveryError): method(connection,context,scope)
+        ledger.revoked.clear(); ledger.workflow_state="suspended"
+        with self.assertRaises(RecoveryError): method(connection,context,scope)
+        self.assertEqual(scope.actor_id,"original-author")
+
+    def test_r4_unconfigured_registry_is_explicit_off_without_database_or_fixture_fallback(self):
+        from daon_user_api.recovery_postgres import PostgresRecoveryService
+        service=object.__new__(PostgresRecoveryService)
+        method=getattr(service,"list_restore_destinations",None)
+        self.assertTrue(callable(method),"R4 registered destination consumer missing")
+        context=RecoveryContext("tenant-a","workspace-a","actor-a","trace-a","policy-a",True)
+        with self.assertRaises(RecoveryError) as caught: method(context,"backup-a",recheck=lambda:None)
+        self.assertEqual((caught.exception.code,caught.exception.status),("RESOURCE_UNAVAILABLE",503))
 from daon_user_api.runtime import RuntimeSettings, build_dependencies
 from daon_user_api.recovery_postgres import (
     MinioRecoveryStorageAdapter,
@@ -172,6 +452,510 @@ ACCESS_KEY = _environment_or_file("DAON_RECOVERY_INTEGRATION_ACCESS_KEY")
 SECRET_KEY = _environment_or_file("DAON_RECOVERY_INTEGRATION_SECRET_KEY")
 MANIFEST_KEY = _environment_or_bytes("DAON_RECOVERY_INTEGRATION_MANIFEST_KEY")
 CONFIGURED = all((DSN, ENDPOINT, BUCKET, ACCESS_KEY, SECRET_KEY, MANIFEST_KEY))
+
+
+class RegisteredExecuteTests(unittest.TestCase):
+    """Windows 실제 v3/AEAD→실R3 구현+SQL/Object/process 경계 대역. 실PG/MinIO 아님."""
+    def setUp(self):
+        import daon_user_api.recovery_lineage_restore as r3
+        from test_recovery_lineage_restore import RestoreFixture
+        from daon_user_api.recovery_lineage_capture import encode_manifest
+        from daon_user_api.recovery_destinations import SignedDestinationRegistry,TrustedPhysicalProbe
+        self.case=case=RestoreFixture(self,r3)
+        case.context=replace(case.context,session_id="session-current",device_id="device-current")
+        case.capture_case.ledger.context=case.context
+        service=self.service=object.__new__(PostgresRecoveryService)
+        # PostgreSQL advisory SQL/소유 세션 경계 대역. 실제 PG 잠금 경합 증거 아님.
+        import threading
+        from psycopg.pq import TransactionStatus
+        backend={"keys":{},"mutex":threading.Lock(),"next_pid":100,"sessions":[]}
+        class GuardPool:
+            closed=False
+            def clone(self):return GuardPool()
+            @contextmanager
+            def connection(self,**kwargs):
+                with backend["mutex"]:
+                    backend["next_pid"]+=1;pid=backend["next_pid"]
+                class Session:
+                    info=SimpleNamespace(transaction_status=TransactionStatus.IDLE)
+                    @contextmanager
+                    def transaction(inner):
+                        inner.info.transaction_status=TransactionStatus.INTRANS
+                        try:yield
+                        finally:
+                            with backend["mutex"]:
+                                for key,owner in list(backend["keys"].items()):
+                                    if owner==pid:del backend["keys"][key]
+                            inner.info.transaction_status=TransactionStatus.IDLE
+                    def execute(inner,sql,params=()):
+                        if sql=="SET LOCAL ROLE daon_app":return SimpleNamespace(fetchone=lambda:None)
+                        if sql=="SELECT pg_backend_pid() AS owner_pid":return SimpleNamespace(fetchone=lambda:dict(owner_pid=pid))
+                        if sql=="SELECT pg_try_advisory_xact_lock(%s) AS owned,pg_backend_pid() AS owner_pid":
+                            self_test=fixture
+                            self_test.assertEqual(len(params),1);self_test.assertIs(type(params[0]),int)
+                            with backend["mutex"]:
+                                owned=params[0] not in backend["keys"]
+                                if owned:backend["keys"][params[0]]=pid
+                            return SimpleNamespace(fetchone=lambda:dict(owned=owned,owner_pid=pid))
+                        raise AssertionError("UNEXPECTED_EXECUTION_GUARD_SQL")
+                session=Session();backend["sessions"].append(session)
+                yield session
+        service._pool=GuardPool();self.guard_backend=backend
+        service._key=hashlib.sha256(case.capture_case.key).digest();service._manifest_master_key=case.capture_case.key
+        service._clock=lambda:case.now;service._notification_inbox_enabled=True;service._lineage_capture_store=case.store
+        token=service._capture_identity(case.context.tenant_id,case.context.workspace_id,case.context.actor_id,"backup-key")
+        case.scope=replace(case.scope,capture_id="capture-"+token)
+        case.receipt=case.store.capture(case.scope,case.capture_case.selection,lambda item:io.BytesIO(case.content[item.object_id]),
+            closure_fingerprint=case.scope.closure_fingerprint,include_prior_versions=True,recheck=case.capture_case.ledger.resolve,owner_id="owned-r4")
+        envelope=encode_manifest(case.scope,case.receipt,master_key=case.capture_case.key,key_version=case.store.key_version,key_reference=case.store.key_reference)
+        case.binding=replace(case.binding,backup_id="backup-"+token,receipt_digest=r3._hash(case.receipt),manifest_digest=hashlib.sha256(envelope).hexdigest())
+        self.backup=dict(tenant_id=case.context.tenant_id,workspace_id=case.context.workspace_id,actor_id=case.scope.actor_id,
+            backup_id=case.binding.backup_id,idempotency_key="backup-key",schema_revision=case.scope.schema_revision,
+            retention_watermark=case.scope.retention_watermark,policy_version=case.scope.policy_version,request_fingerprint=case.scope.closure_fingerprint,
+            encrypted_inventory=envelope,manifest_digest=case.binding.manifest_digest,manifest_version=3,object_count=2,state="ready")
+        self.parent=dict(tenant_id=case.context.tenant_id,workspace_id=case.context.workspace_id,actor_id=case.context.actor_id,
+            request_id="request-a",backup_id=case.binding.backup_id,state="preview_ready",version=2,verification_digest=None)
+        self.events=[];self.verifications=[];self.operations={};self.lost_final=False;self.notified=[];self.failed_notified=[];self.current_hook=lambda:None
+        self.sql=[];self.preview_history=[]
+        ledger=case.capture_case.ledger;fixture=self
+        class Cursor:
+            def __init__(self,row=None,rows=(),count=1):self.row,self.rows,self.rowcount=row,list(rows),count
+            def fetchone(self):return self.row
+            def fetchall(self):return self.rows
+        class Connection:
+            info=ledger.info
+            def cursor(self,*,row_factory):return ledger
+            def execute(self,sql,params=()):
+                fixture.sql.append((sql,params))
+                if sql.startswith("SELECT b.*"):return Cursor(fixture.backup)
+                if sql.startswith("SELECT r.*") and "registered_restore_previews" in sql:
+                    return Cursor({**fixture.parent,**fixture.preview,**fixture.reservation})
+                if sql.startswith("SELECT * FROM public.restore_requests"):return Cursor(dict(fixture.parent))
+                if sql.startswith("SELECT request_id,request_fingerprint"):
+                    return Cursor(dict(fixture.parent) if params==(fixture.parent["actor_id"],fixture.parent["idempotency_key"]) else None)
+                if sql.startswith("SELECT * FROM public.registered_restore_target_reservations"):
+                    fixture.assertEqual(params,("generation-a","destination-a"));return Cursor(dict(fixture.reservation))
+                if sql.startswith("SELECT EXISTS(SELECT 1 FROM public.registered_restore_phase_receipts"):
+                    fixture.assertEqual(params,(case.context.tenant_id,case.context.workspace_id,"request-a"))
+                    return Cursor(dict(present=bool(case.journal.rows)))
+                if sql=="SELECT pg_try_advisory_xact_lock(%s) AS owned":
+                    with backend["mutex"]:
+                        owned=params[0] not in backend["keys"]
+                        if owned:backend["keys"][params[0]]=-1
+                    return Cursor(dict(owned=owned))
+                if sql.startswith("INSERT INTO public.restore_requests"):
+                    fixture.parent=dict(tenant_id=params[0],workspace_id=params[1],request_id=params[2],backup_id=params[3],actor_id=params[4],
+                        state="requested",version=1,idempotency_key=params[8],request_fingerprint=params[9],verification_digest=None)
+                    return Cursor()
+                if sql.startswith("INSERT INTO public.restore_request_locator"):return Cursor()
+                if sql.startswith("INSERT INTO public.registered_restore_target_reservations"):
+                    raise psycopg.errors.UniqueViolation("synthetic existing global reservation")
+                if sql.startswith("INSERT INTO public.registered_restore_previews"):
+                    columns=sql.split("(",1)[1].split(")",1)[0].split(",")
+                    row=dict(zip(columns,params,strict=True))
+                    fixture.assertEqual(row["request_id"],"request-a")
+                    fixture.assertEqual(row["preview_version"],fixture.preview["preview_version"]+1)
+                    fixture.assertEqual(case.journal.rows,[])
+                    fixture.preview=row;fixture.preview_history.append(copy.deepcopy(row));return Cursor()
+                if sql.startswith("SELECT request_fingerprint,result FROM idempotency_records"):
+                    return Cursor(fixture.operations.get(tuple(params)))
+                if sql.startswith("UPDATE public.restore_requests"):
+                    fixture.parent["state"]=params[0];fixture.parent["version"]+=1;return Cursor()
+                if sql.startswith("INSERT INTO restore_verifications"):
+                    fixture.verifications.append(params);fixture.parent["verification_digest"]=params[4];return Cursor()
+                if sql.startswith("INSERT INTO idempotency_records"):
+                    fixture.operations[(params[2],params[3],params[4])]=dict(request_fingerprint=params[5],result=params[6].obj);return Cursor()
+                if sql.startswith("SELECT metadata->>"):
+                    return Cursor(None if not fixture.events else dict(event_hash=fixture.events[-1][10].obj["event_hash"]))
+                if sql.startswith("INSERT INTO audit_events"):fixture.events.append(params);return Cursor()
+                raise AssertionError("UNEXPECTED_R4_EXECUTION_SQL")
+        self.connection=Connection()
+        @contextmanager
+        def transaction(*args):
+            before=copy.deepcopy((self.parent,self.events,self.verifications,self.operations,self.notified,self.failed_notified,self.preview_history,getattr(self,"preview",None)))
+            try:
+                yield self.connection
+                if self.lost_final and self.parent["state"]=="completed": raise RecoveryError("RESOURCE_UNAVAILABLE",503)
+            except BaseException:
+                self.parent,self.events,self.verifications,self.operations,self.notified,self.failed_notified,self.preview_history,self.preview=before
+                raise
+            finally:
+                with backend["mutex"]:
+                    for key,owner in list(backend["keys"].items()):
+                        if owner==-1:del backend["keys"][key]
+        service._transaction=transaction
+        decision=service._registered_current_decision(self.connection,case.context,case.scope,case.metadata)
+        self.preview=dict(tenant_id=case.context.tenant_id,workspace_id=case.context.workspace_id,actor_id=case.context.actor_id,
+            request_id="request-a",backup_id=case.binding.backup_id,preview_version=1,registry_generation_id="generation-a",destination_id="destination-a",
+            destination_version=1,source_manifest_digest=case.binding.manifest_digest,closure_fingerprint=case.scope.closure_fingerprint,
+            retention_watermark=case.scope.retention_watermark,source_policy_version=case.scope.policy_version,
+            included_roots_fingerprint=r3._hash(decision["included_roots"]),excluded_roots_fingerprint=r3._hash(decision["excluded_roots"]),expires_at=case.binding.preview_expires_at)
+        payload=dict(schema_version=1,**decision,runtime_policy_version=case.context.policy_version,session_id=case.context.session_id,device_id=case.context.device_id,request_version=2,
+            destination_summary=case.destination.summary(),catalog_digest=case.binding.catalog_digest,created_at=case.now.isoformat())
+        self.preview["encrypted_preview_receipt"]=service._seal_registered_preview(self.preview,payload)
+        self.preview_history=[copy.deepcopy(self.preview)]
+        self.parent.update(idempotency_key="preview-original",request_fingerprint=recovery_postgres._fingerprint((
+            "registered-lineage-preview-v1",case.binding.backup_id,case.binding.manifest_digest,case.scope.closure_fingerprint,
+            case.context.tenant_id,case.context.workspace_id,case.context.actor_id,case.context.session_id,case.context.device_id,case.context.policy_version,
+            "generation-a","destination-a",1,case.destination.physical_receipt_digest,decision)))
+        self.reservation=dict(registry_generation_id="generation-a",destination_id="destination-a",tenant_id=case.context.tenant_id,
+            workspace_id=case.context.workspace_id,actor_id=case.context.actor_id,request_id="request-a",destination_version=1,
+            backup_id=case.binding.backup_id,manifest_version=3,source_manifest_digest=case.binding.manifest_digest,
+            owner_operation_id="owner-a",physical_receipt_digest=case.destination.physical_receipt_digest,
+            target_database_fingerprint=case.destination.target_database_fingerprint,target_bucket_fingerprint=case.destination.target_bucket_fingerprint)
+        registry=object.__new__(SignedDestinationRegistry);registry._source="source-a"
+        entry=dict(destination_id="destination-a",version=1,display_name="격리",capture_kind="selected-source-lineage-v3",source_instance_ref="source-a",
+            authorized_tenant_id=case.context.tenant_id,authorized_workspace_id=case.context.workspace_id,authorized_actor_id=case.context.actor_id,
+            target_instance_ref="target-a",database_ref="database-a",bucket_ref="bucket-a",physical_receipt_digest=case.destination.physical_receipt_digest,
+            owner_operation_id="owner-a",created_at=(case.now-timedelta(minutes=1)).isoformat(),expires_at=case.destination.expires_at,
+            application_enabled=False,outbound_enabled=False)
+        registry._read=lambda:("generation-a",[entry])  # registry 서명/실파일은 별도 R2 시험. 여기서는 공급 포트만 대역.
+        registry.resolve_registered_destination=lambda *args:case.destination
+        class Probe(TrustedPhysicalProbe):
+            def observe(self,request):return case.observation
+        service._destination_registry=registry;service._destination_probe=Probe()
+        service._registered_target_factory=lambda *args:(case.target,case.binding.catalog_digest)
+        def journal(context,binding):case.binding=binding;return case.journal
+        service._registered_phase_journal=journal
+        self.notify=patch("daon_user_api.notification_recovery.enqueue_restore_completed_event",side_effect=lambda *args,**kwargs:self.notified.append(kwargs))
+        self.notify.start();self.addCleanup(self.notify.stop)
+        terminal=patch("daon_user_api.notification_recovery.enqueue_terminal_recovery_event",side_effect=lambda *args,**kwargs:self.failed_notified.append(kwargs))
+        terminal.start();self.addCleanup(terminal.stop)
+
+    def execute(self,**kwargs):
+        return self.service.execute_registered_restore(self.case.context,"request-a",expected_version=2,preview_version=1,
+            idempotency_key="execute-r4",step_up_verified=True,recheck=self.current_hook,**kwargs)
+
+    def preview_again(self,key="preview-next"):
+        return self.service.preview_registered_restore(self.case.context,self.case.binding.backup_id,
+            destination_id="destination-a",destination_version=1,idempotency_key=key,step_up_verified=True,recheck=self.current_hook)
+
+    def test_r4_step_up_protected_preview_requires_actual_current_source_acl_and_workflow(self):
+        method=self.service.registered_restore_step_up_preview
+        with patch.object(self.service._destination_probe,"observe",side_effect=AssertionError("NO_TARGET_PROBE_AT_ISSUE")):
+            view=method(self.case.context,"request-a",recheck=self.current_hook)
+            self.assertEqual((view.request_id,view.preview.version),("request-a",1))
+            ledger=self.case.capture_case.ledger
+            ledger.revoked.add("prior-version")
+            with self.assertRaises(RecoveryError) as denied:method(self.case.context,"request-a",recheck=self.current_hook)
+            self.assertEqual(denied.exception.status,403)
+            ledger.revoked.clear();ledger.auth.auth_role="organization_admin";ledger.workflow_state="suspended"
+            with self.assertRaises(RecoveryError) as suspended:method(self.case.context,"request-a",recheck=self.current_hook)
+            self.assertEqual(suspended.exception.status,403)
+            ledger.workflow_state="active"
+            with self.assertRaises(RecoveryError) as foreign:
+                method(replace(self.case.context,actor_id="another-manager"),"request-a",recheck=self.current_hook)
+            self.assertEqual(foreign.exception.status,403)
+        self.assertEqual(self.case.database.writes,0);self.assertEqual(self.events,[])
+
+    def test_r4_step_up_rechecks_latest_preview_after_capture_read(self):
+        capture=self.service._registered_capture
+        payload=self.service._open_registered_preview(self.preview,self.preview["encrypted_preview_receipt"])
+        def changed(*args,**kwargs):
+            result=capture(*args,**kwargs)
+            self.preview["preview_version"]+=1
+            self.preview["encrypted_preview_receipt"]=self.service._seal_registered_preview(self.preview,payload)
+            return result
+        with patch.object(self.service,"_registered_capture",side_effect=changed),self.assertRaises(RecoveryError) as stale:
+            self.service.registered_restore_step_up_preview(self.case.context,"request-a",recheck=self.current_hook)
+        self.assertEqual(stale.exception.status,409);self.assertEqual(self.case.database.writes,0)
+
+    def test_r4_new_confirmation_same_reserved_request_next_preview_then_execute(self):
+        original_parent=copy.deepcopy(self.parent);original_preview=copy.deepcopy(self.preview);original_reservation=copy.deepcopy(self.reservation)
+        ledger=self.case.capture_case.ledger;read=ledger.auth.execute
+        def policy(sql,params=()):
+            cursor=read(sql,params);row=cursor.fetchone()
+            if isinstance(row,dict) and "FROM identity_auth_tenant_policies" in sql:row={**row,"version":2}
+            return SimpleNamespace(fetchone=lambda:row)
+        ledger.auth.execute=policy
+        with self.assertRaises(RecoveryError) as stale:self.execute()
+        self.assertEqual(stale.exception.status,409);self.assertEqual(self.case.journal.rows,[])
+        self.assertEqual(self.parent,original_parent)
+        with self.assertRaises(RecoveryError) as old_key:self.preview_again("preview-original")
+        self.assertEqual(old_key.exception.status,409)
+        fresh=self.preview_again()
+        self.assertEqual((fresh.request_id,fresh.version,fresh.preview.version),("request-a",2,2))
+        self.assertEqual(self.reservation,original_reservation);self.assertEqual(self.preview_history[0],original_preview)
+        self.assertEqual(self.parent,original_parent,"0006 부모 불변, 같은 state UPDATE0")
+        payload=self.service._open_registered_preview(self.preview,self.preview["encrypted_preview_receipt"])
+        self.assertEqual(payload["current_policy_version"],"tenant-2:workspace-1")
+        with self.assertRaises(RecoveryError) as old_body:self.execute()
+        self.assertEqual(old_body.exception.status,409)
+        self.assertEqual(self.case.database.writes,0);self.assertEqual(self.case.journal.rows,[])
+        with self.assertRaises(RecoveryError) as no_step:
+            self.service.execute_registered_restore(self.case.context,"request-a",expected_version=2,preview_version=2,
+                idempotency_key="execute-new",step_up_verified=False,recheck=self.current_hook)
+        self.assertEqual(no_step.exception.status,403)
+        self.assertEqual(self.service.get_restore_request(self.case.context,"request-a"),fresh)
+        completed=self.service.execute_registered_restore(self.case.context,"request-a",expected_version=2,preview_version=2,
+            idempotency_key="execute-new",step_up_verified=True,recheck=self.current_hook)
+        self.assertEqual((completed.state,completed.preview.version),("completed",2))
+        self.assertEqual(len(self.case.journal.rows),14);self.assertEqual(len(self.notified),1)
+        self.assertEqual(self.preview_history[0],original_preview);self.assertEqual(self.reservation,original_reservation)
+
+    def test_r4_confirmation_replay_binds_its_own_preview_never_substitutes_latest(self):
+        second=self.preview_again()
+        def persisted():
+            events=[tuple(value.obj if isinstance(value,psycopg.types.json.Jsonb) else value for value in event) for event in self.events]
+            return copy.deepcopy((self.preview_history,events,self.operations))
+        before=persisted()
+        self.assertEqual(self.preview_again(),second)
+        self.assertEqual(persisted(),before)
+        third=self.preview_again("preview-third")
+        self.assertEqual(third.preview.version,3)
+        with self.assertRaises(RecoveryError) as old_key:self.preview_again()
+        self.assertEqual(old_key.exception.status,409)
+        self.assertEqual(len(self.preview_history),3)
+        with self.assertRaises(RecoveryError):self.preview_again("preview-original")
+
+    def test_r4_confirmation_all_held_requires_release_then_explicit_new_key(self):
+        ledger=self.case.capture_case.ledger
+        ledger.tables["legal_holds"].append(dict(tenant_id=self.case.context.tenant_id,workspace_id=self.case.context.workspace_id,
+            hold_id="new-hold",source_id="source-a",state="active",version=1,policy_version=self.case.context.policy_version))
+        for action in (self.execute,self.preview_again):
+            with self.assertRaises(RecoveryError) as held:action()
+            self.assertEqual(held.exception.status,409)
+        self.assertEqual(self.parent["state"],"preview_ready");self.assertEqual(self.case.journal.rows,[])
+        ledger.tables["legal_holds"][0].update(state="released",version=2)
+        self.assertEqual(self.preview_again().preview.version,2)
+        with self.assertRaises(RecoveryError) as old_body:self.execute()
+        self.assertEqual(old_body.exception.status,409)
+        with self.assertRaises(RecoveryError) as wrong_etag:
+            self.service.execute_registered_restore(self.case.context,"request-a",expected_version=1,preview_version=2,
+                idempotency_key="execute-new",step_up_verified=True,recheck=self.current_hook)
+        self.assertEqual(wrong_etag.exception.status,409)
+        self.assertEqual(self.case.database.writes,0)
+
+    def test_r4_confirmation_refuses_foreign_reservation_or_started_parent(self):
+        reservation=copy.deepcopy(self.reservation)
+        for field,value in (("actor_id","other-actor"),("backup_id","other-backup"),("tenant_id","other-tenant"),
+                ("registry_generation_id","other-generation"),("destination_version",2),("physical_receipt_digest","f"*64)):
+            with self.subTest(field=field):
+                self.reservation={**reservation,field:value}
+                with self.assertRaises(RecoveryError) as denied:self.preview_again()
+                self.assertEqual(denied.exception.status,409)
+                self.assertEqual(len(self.preview_history),1)
+        self.reservation=reservation
+        for state in ("authorized","restoring","verifying","completed","failed","cancelled"):
+            with self.subTest(state=state):
+                self.parent["state"]=state
+                with self.assertRaises(RecoveryError) as denied:self.preview_again()
+                self.assertEqual(denied.exception.status,409)
+        self.parent["state"]="preview_ready"
+        self.case.journal.rows.append(dict(sequence=1))
+        with self.assertRaises(RecoveryError) as begun:self.preview_again()
+        self.assertEqual(begun.exception.status,409)
+        self.assertEqual(self.case.database.writes,0);self.assertEqual(len(self.preview_history),1)
+
+    def test_r4_confirmation_cannot_enter_while_execute_owns_request(self):
+        with self.service._registered_execution_guard(self.case.context,"request-a"):
+            with self.assertRaises(RecoveryError) as busy:self.preview_again()
+            self.assertEqual(busy.exception.status,409)
+        self.assertEqual(self.parent["state"],"preview_ready");self.assertEqual(len(self.preview_history),1)
+
+    def test_r4_confirmation_hidden_or_racing_global_reservation_conflict_rolls_back(self):
+        # 다른 actor/RLS로 보이지 않거나 새 generation alias인 예약은 INSERT UNIQUE가 최종 차단한다.
+        before=copy.deepcopy((self.parent,self.preview_history,self.operations,self.reservation))
+        execute=self.connection.execute
+        def unseen(sql,params=()):
+            if sql.startswith("SELECT * FROM public.registered_restore_target_reservations"):
+                return SimpleNamespace(fetchone=lambda:None)
+            return execute(sql,params)
+        with patch.object(self.connection,"execute",side_effect=unseen),self.assertRaises(RecoveryError) as conflict:
+            self.preview_again()
+        self.assertEqual((conflict.exception.status,conflict.exception.retryable),(409,False))
+        self.assertEqual((self.parent,self.preview_history,self.operations,self.reservation),before)
+        self.assertEqual(self.events,[]);self.assertEqual(self.case.database.writes,0)
+
+    def test_r4_inflight_same_request_duplicate_cannot_fail_active_owner(self):
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+        checkpoint,release=threading.Event(),threading.Event();owner=[]
+        original_append=self.case.journal.append;original_objects=self.case.target.objects
+        def append(*args,**kwargs):
+            result=original_append(*args,**kwargs)
+            if args[2:4]==(1,"succeeded") and threading.get_ident()==owner[0]:
+                checkpoint.set()
+                if not release.wait(5):raise AssertionError("TEST_OWNER_NOT_RELEASED")
+            return result
+        def objects(*args,**kwargs):
+            if threading.get_ident()!=owner[0]:raise RecoveryError("RESOURCE_UNAVAILABLE",503)
+            return original_objects(*args,**kwargs)
+        def first():owner.append(threading.get_ident());return self.execute()
+        with patch.object(self.case.journal,"append",side_effect=append),patch.object(self.case.target,"objects",side_effect=objects), \
+                ThreadPoolExecutor(max_workers=1,thread_name_prefix="s44-r4-inflight-owner") as executor:
+            pending=executor.submit(first)
+            duplicate_status=None;first_error=None;result=None
+            try:
+                self.assertTrue(checkpoint.wait(5),"첫 실행이 phase1 성공 prefix에서 실제 진행 중")
+                # 별도 service/별도 pool이어도 같은 DB advisory namespace를 소비한다.
+                duplicate=object.__new__(PostgresRecoveryService);duplicate.__dict__.update(self.service.__dict__)
+                duplicate._pool=self.service._pool.clone()
+                try:duplicate.execute_registered_restore(self.case.context,"request-a",expected_version=2,preview_version=1,
+                    idempotency_key="execute-r4",step_up_verified=True,recheck=self.current_hook)
+                except RecoveryError as error:duplicate_status=error.status
+                state_after_duplicate=self.parent["state"]
+                prefix_after_duplicate=len(self.case.journal.rows)
+            finally:
+                release.set()
+                try:result=pending.result(timeout=5)
+                except Exception as error:first_error=type(error).__name__
+        self.assertEqual((duplicate_status,state_after_duplicate,prefix_after_duplicate,first_error),(409,"restoring",2,None),
+            "진행 중 중복은 busy 거부, 첫 부모/phase 실패 기록0")
+        self.assertEqual((state_after_duplicate,prefix_after_duplicate),("restoring",2))
+        self.assertIsNone(first_error);self.assertEqual(result.state,"completed")
+        self.assertEqual(len(self.case.journal.rows),14);self.assertEqual(len(self.verifications),1)
+        self.assertEqual(len(self.notified),1);self.assertEqual(self.failed_notified,[])
+        self.assertEqual(self.guard_backend["keys"],{})
+
+    def test_r4_execution_guard_is_request_scoped_nonblocking_and_exception_released(self):
+        other=object.__new__(PostgresRecoveryService);other.__dict__.update(self.service.__dict__);other._pool=self.service._pool.clone()
+        with self.service._registered_execution_guard(self.case.context,"request-a") as owner:
+            owner()
+            with self.assertRaises(RecoveryError) as busy:
+                with other._registered_execution_guard(self.case.context,"request-a"):self.fail("busy must not enter")
+            self.assertEqual((busy.exception.status,busy.exception.retryable),(409,False))
+            owner()
+            with other._registered_execution_guard(self.case.context,"request-b") as independent:independent()
+        self.assertEqual(self.guard_backend["keys"],{})
+        with self.assertRaisesRegex(RuntimeError,"owned-test-error"):
+            with self.service._registered_execution_guard(self.case.context,"request-a"):raise RuntimeError("owned-test-error")
+        with other._registered_execution_guard(self.case.context,"request-a") as reacquired:reacquired()
+        self.assertEqual(self.guard_backend["keys"],{})
+
+    def test_r4_execution_guard_ownership_loss_preserves_prefix_without_false_parent_failure(self):
+        from psycopg.pq import TransactionStatus
+        original=self.case.journal.append
+        def append(*args,**kwargs):
+            result=original(*args,**kwargs)
+            if args[2:4]==(1,"succeeded"):
+                self.guard_backend["sessions"][0].info.transaction_status=TransactionStatus.UNKNOWN
+            return result
+        with patch.object(self.case.journal,"append",side_effect=append),self.assertRaises(RecoveryError) as caught:self.execute()
+        self.assertEqual(caught.exception.status,503);self.assertEqual(self.parent["state"],"restoring")
+        self.assertEqual(len(self.case.journal.rows),2);self.assertEqual(self.failed_notified,[])
+        self.assertEqual(self.guard_backend["keys"],{})
+        self.assertEqual(self.execute().state,"completed")
+
+    def _final_probe_change(self,kind):
+        from daon_user_api import recovery_lineage_restore as materializer
+        finished=[];changed=[];actual=materializer.materialize_lineage
+        def materialized(*args,**kwargs):
+            result=actual(*args,**kwargs);finished.append(True);return result
+        original=self.service._destination_probe.observe
+        ledger=self.case.capture_case.ledger
+        def observe(request):
+            result=original(request)
+            if finished and not changed:
+                changed.append(True)
+                if kind=="acl":ledger.revoked.add("prior-version")
+                elif kind=="hold":ledger.tables["legal_holds"].append(dict(tenant_id=self.case.context.tenant_id,workspace_id=self.case.context.workspace_id,
+                    hold_id="probe-hold",source_id="source-a",state="released",version=2,policy_version=self.case.context.policy_version))
+                else:ledger.tables["deletion_requests"].append(dict(tenant_id=self.case.context.tenant_id,workspace_id=self.case.context.workspace_id,
+                    request_id="probe-purge",source_id="source-a",state="purged",version=4,source_active=False,purge_started=True,policy_version=self.case.context.policy_version))
+            return result
+        with patch.object(materializer,"materialize_lineage",side_effect=materialized),patch.object(self.service._destination_probe,"observe",side_effect=observe):
+            with self.assertRaises(RecoveryError) as caught:self.execute()
+        self.assertEqual(caught.exception.status,403 if kind=="acl" else 409)
+        self.assertTrue(changed);self.assertEqual(len(self.case.journal.rows),14)
+        self.assertEqual(self.parent["state"],"restoring")
+        self.assertEqual(self.verifications,[]);self.assertEqual(self.notified,[])
+        self.assertNotIn("restore.completed",[event.get("action") for event in self.events if isinstance(event,dict)])
+
+    def test_r4_final_physical_probe_acl_revocation_prevents_completion(self):self._final_probe_change("acl")
+
+    def test_r4_final_physical_probe_hold_change_prevents_completion(self):self._final_probe_change("hold")
+
+    def test_r4_final_physical_probe_purge_change_prevents_completion(self):self._final_probe_change("purge")
+
+    def test_r4_probe_completion_clock_and_during_probe_expiry_are_rechecked(self):
+        base=self.case.now;ticks=[base]
+        self.service._clock=lambda:ticks[0]
+        row={**self.parent,**self.preview,**self.reservation}
+        payload=self.service._open_registered_preview(row,bytes(row["encrypted_preview_receipt"]))
+        def observed(request):
+            ticks[0]+=timedelta(seconds=2)
+            return replace(self.case.observation,observed_at=ticks[0])
+        self.service._destination_probe.observe=observed
+        value=self.service._registered_current_destination(self.case.context,row,payload)
+        self.assertEqual(value.observed_at,base+timedelta(seconds=2))
+        def expired(request):
+            ticks[0]=base+timedelta(hours=2)
+            return replace(self.case.observation,observed_at=ticks[0])
+        ticks[0]=base;self.service._destination_probe.observe=expired
+        with self.assertRaises(RecoveryError):self.service._registered_current_destination(self.case.context,row,payload)
+        ticks[0]=base;self.service._destination_probe.observe=observed
+        with self.assertRaises(RecoveryError):self.service._registered_current_destination(self.case.context,{**row,"expires_at":base+timedelta(seconds=1)},payload)
+
+    def test_r4_execute_calls_real_r3_from_independent_bytes_then_verified_source_commit_once(self):
+        self.assertTrue(callable(getattr(self.service,"execute_registered_restore",None)),"R4 Execute consumer missing")
+        result=self.execute()
+        self.assertEqual((result.state,result.version),("completed",6))
+        self.assertEqual(len(self.case.journal.rows),14)
+        self.assertEqual(len(self.verifications),1)
+        self.assertEqual(tuple(self.verifications[0][5:9]),(True,True,True,True))
+        self.assertEqual(len(self.notified),1)
+        for row in self.case.metadata["source_versions"]:
+            self.assertEqual(self.case.database.rows["source_versions"][row["record_id"]],row)
+            self.assertEqual(self.case.storage.get(self.case.objects.records[row["object_id"]].object_key),self.case.content[row["object_id"]])
+        before=(self.case.database.writes,self.case.storage.puts,len(self.events))
+        replay=self.execute()
+        self.assertEqual(replay,result)
+        self.assertEqual((self.case.database.writes,self.case.storage.puts,len(self.events)),before)
+        self.assertEqual(len(self.notified),1)
+
+    def test_r4_late_current_retention_and_session_change_never_start_target(self):
+        self.assertTrue(callable(getattr(self.service,"execute_registered_restore",None)),"R4 Execute consumer missing")
+        self.case.context=replace(self.case.context,session_id="another-session")
+        with self.assertRaises(RecoveryError):self.execute()
+        self.assertEqual(self.case.database.writes,0)
+        self.case.context=replace(self.case.context,session_id="session-current")
+        ledger=self.case.capture_case.ledger
+        self.current_hook=lambda:ledger.revoked.add("prior-version")
+        with self.assertRaises(RecoveryError):self.execute()
+        self.assertEqual(self.case.database.writes,0)
+        self.assertEqual(self.notified,[])
+
+    def test_r4_retention_changes_during_heavy_verify_fail_before_target_write(self):
+        original_scope=self.case.scope;original_receipt=copy.deepcopy(self.case.receipt)
+        verify=self.case.store._verify_data;calls=[]
+        def changed(*args,**kwargs):
+            result=verify(*args,**kwargs);calls.append(True)
+            if len(calls)==2:
+                self.case.capture_case.ledger.tables["legal_holds"].append(dict(tenant_id=self.case.context.tenant_id,workspace_id=self.case.context.workspace_id,
+                    hold_id="late-hold",source_id="source-a",state="released",version=2,policy_version=self.case.context.policy_version))
+            return result
+        with patch.object(self.case.store,"_verify_data",side_effect=changed),self.assertRaises(RecoveryError) as caught:self.execute()
+        self.assertEqual(caught.exception.status,409)
+        self.assertEqual(self.case.database.writes,0)
+        self.assertEqual(self.case.journal.rows,[])
+        self.assertEqual(self.parent["state"],"failed")
+        self.assertEqual(self.notified,[])
+        self.assertEqual(self.case.scope,original_scope);self.assertEqual(self.case.receipt,original_receipt)
+
+    def test_r4_target_uncertainty_never_marks_source_completed_or_deletes_target(self):
+        self.assertTrue(callable(getattr(self.service,"execute_registered_restore",None)),"R4 Execute consumer missing")
+        self.case.storage.fail_promote=True
+        with self.assertRaises(RecoveryError):self.execute()
+        self.assertEqual(self.parent["state"],"failed")
+        self.assertEqual(self.case.journal.rows[-1]["outcome"],"uncertain")
+        self.assertEqual(self.verifications,[]);self.assertEqual(self.notified,[])
+        self.assertEqual(len(self.failed_notified),1)
+        self.assertEqual(self.case.storage.deletes,0)
+
+    def test_r4_source_final_commit_uncertainty_keeps_target_and_exact_reentry(self):
+        self.assertTrue(callable(getattr(self.service,"execute_registered_restore",None)),"R4 Execute consumer missing")
+        self.lost_final=True
+        with self.assertRaises(RecoveryError):self.execute()
+        self.assertEqual(len(self.case.journal.rows),14)
+        self.assertEqual(self.parent["state"],"restoring")
+        self.assertEqual(self.verifications,[])
+        self.assertEqual(self.notified,[])
+        before=(self.case.database.writes,self.case.storage.puts)
+        self.lost_final=False
+        self.assertEqual(self.execute().state,"completed")
+        self.assertEqual((self.case.database.writes,self.case.storage.puts),before)
+        self.assertEqual(len(self.notified),1)
 
 
 class RecoverySelectionResolverTests(unittest.TestCase):

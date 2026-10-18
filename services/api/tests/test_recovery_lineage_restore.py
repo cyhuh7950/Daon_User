@@ -26,6 +26,21 @@ class LineageRestoreTests(unittest.TestCase):
         self.m = importlib.import_module("daon_user_api.recovery_lineage_restore")
         self.case = RestoreFixture(self, self.m)
 
+    def test_current_retention_is_separate_from_archive_and_rechecked_before_writes(self):
+        self.assertNotEqual(self.case.binding.current_retention_watermark,self.case.scope.retention_watermark)
+        original=self.case.scope
+        self.case.current_watermark="d"*64
+        with self.assertRaises(RecoveryError) as caught: self.case.run()
+        self.assertEqual(caught.exception.status,409)
+        self.assertEqual(self.case.database.writes,0)
+        self.assertEqual(self.case.scope,original)
+        self.case.current_watermark=self.case.binding.current_retention_watermark
+        self.assertEqual(self.case.run().state,"materialized")
+        self.case.current_watermark="e"*64
+        writes=self.case.database.writes
+        with self.assertRaises(RecoveryError): self.case.run()
+        self.assertEqual(self.case.database.writes,writes)
+
     def test_restored_original_object_id_hash_and_version_fk(self):
         result = self.case.run()
         self.assertEqual(result.last_phase, 7)
@@ -443,7 +458,9 @@ class RestoreFixture:
         self.database=TargetSqlDouble(self)
         self.binding=module.RestoreBinding("request-a","backup-a","a"*64,module._hash(self.receipt),self.scope.closure_fingerprint,
             self.scope.retention_watermark,1,self.scope.root_source_version_ids,"generation-a","destination-a",1,"owner-a",
-            "operation-a","idempotency-a",self.now+timedelta(minutes=10),module._hash([self.database.catalog,self.database.functions]))
+            "operation-a","idempotency-a",self.now+timedelta(minutes=10),module._hash([self.database.catalog,self.database.functions]),
+            current_retention_watermark="c"*64)
+        self.current_watermark="c"*64
         self.storage=StorageDouble()
         from daon_user_api.cloud_storage import CloudAccessContext
         self.cloud=CloudAccessContext(self.context.tenant_id,self.context.workspace_id,self.context.actor_id,"object.write")
@@ -514,7 +531,7 @@ class RestoreFixture:
             for identity in self.scope.root_source_version_ids+self.scope.dependency_source_version_ids:
                 if not _source_access_allowed(ledger,context,identity) or not _special_source_access_allowed(ledger,context,identity): raise RecoveryError("CURRENT_ACCESS_DENIED",403)
         except Exception: raise RecoveryError("CURRENT_ACCESS_DENIED",403) from None
-        return self.m.CurrentRestoreState(self.context,self.binding)
+        return self.m.CurrentRestoreState(self.context,self.binding,self.current_watermark)
 
 
 class Cursor:

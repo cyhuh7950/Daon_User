@@ -18,6 +18,31 @@ async function loadContract() {
   return JSON.parse(await readFile(contractPath, "utf8"));
 }
 
+test("R4 closed registered destination Preview and unchanged Execute reject mutations",async()=>{
+  const doc=await loadContract(),s=doc.components.schemas;
+  assert.ok(doc.paths["/api/v1/backups/{id}/restore-destinations"]?.get);
+  assert.equal(s.RestorePreviewRequest.oneOf.length,2);
+  assert.deepEqual(s.RegisteredRestorePreviewRequest.required,["workspace_id","destination_id","destination_version","step_up_authorization_id"]);
+  assert.equal(s.RegisteredRestorePreview.required.length,10);
+  assert.equal(s.RestoreRequestView.properties.preview.oneOf.length,2);
+  assert.doesNotThrow(()=>validateOpenApiDocument(doc));
+  for(const mutate of [
+    d=>delete d.paths["/api/v1/backups/{id}/restore-destinations"],
+    d=>d.paths["/api/v1/backups/{id}/restore-destinations"].post=d.paths["/api/v1/backups/{id}/restore-previews"].post,
+    d=>d.components.schemas.RegisteredDestinationSummary.required.pop(),
+    d=>d.components.schemas.RegisteredDestinationSummary.properties.database_ref={type:"string"},
+    d=>d.components.schemas.RegisteredRestorePreviewRequest.additionalProperties=true,
+    d=>d.components.schemas.RegisteredRestorePreviewRequest.properties.destination_version.maximum++,
+    d=>d.components.schemas.RegisteredRestorePreviewRequest.properties.step_up_authorization_id.maxLength++,
+    d=>d.components.schemas.RegisteredRestorePreview.properties.current_retention_watermark={type:"string"},
+    d=>d.components.schemas.RegisteredRestorePreview.properties.exclusion_counts.additionalProperties=true,
+    d=>d.components.schemas.RestorePreviewRequest.oneOf.pop(),
+    d=>d.components.schemas.RestoreRequestView.required.pop(),
+    d=>d.components.schemas.RestoreExecuteRequest.properties.preview_version.minimum=0,
+    d=>d.components.responses.RestoreResponse.content["application/json"].schema.$ref="#/components/schemas/RecoveryEnvelope",
+  ]){const bad=structuredClone(doc);mutate(bad);assert.throws(()=>validateOpenApiDocument(bad));}
+});
+
 test("R1-C exact lineage preflight and three create branches reject contract mutations",async()=>{
   const doc=await loadContract(),s=doc.components.schemas;
   assert.ok(doc.paths["/api/v1/backups/selection-previews"]?.post);

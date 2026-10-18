@@ -743,6 +743,9 @@ function routeFor(method, segments) {
   if (segments.length === 2 && segments[0] === "backups" && segments[1] === "selection-previews") {
     return method === "POST" ? { path: "/api/v1/backups/selection-previews", query: new Set(), strictQuery: true } : { methodRejected: true };
   }
+  if (segments.length === 3 && segments[0] === "backups" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "restore-destinations") {
+    return method === "GET" ? { path: `/api/v1/backups/${encodeURIComponent(segments[1])}/restore-destinations`, query: new Set(), strictQuery: true } : { methodRejected: true };
+  }
   if (segments.length === 2 && segments[0] === "backups" && SAFE_SEGMENT.test(segments[1])) {
     return method === "GET"
       ? { path: `/api/v1/backups/${encodeURIComponent(segments[1])}`, query: null }
@@ -878,6 +881,8 @@ function nativeRouteFor(method, segments, requestUrl) {
     matched = new Set(["GET", "POST"]).has(method) ? route("/api/v1/backups", { maxResponseBytes: MAX_NATIVE_RECOVERY_RESPONSE_BYTES, ...(method === "POST" ? { requestMediaType: "application/json" } : {}) }) : { methodRejected: true };
   } else if (segments.length === 2 && segments[0] === "backups" && segments[1] === "selection-previews") {
     matched = method === "POST" ? route("/api/v1/backups/selection-previews", { maxResponseBytes: MAX_NATIVE_RECOVERY_RESPONSE_BYTES, requestMediaType: "application/json" }) : { methodRejected: true };
+  } else if (segments.length === 3 && segments[0] === "backups" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "restore-destinations") {
+    matched = method === "GET" ? route(`/api/v1/backups/${encodeURIComponent(segments[1])}/restore-destinations`, { maxResponseBytes: MAX_NATIVE_RECOVERY_RESPONSE_BYTES }) : { methodRejected: true };
   } else if (segments.length === 2 && segments[0] === "backups" && SAFE_SEGMENT.test(segments[1])) {
     matched = method === "GET" ? route(`/api/v1/backups/${encodeURIComponent(segments[1])}`, { maxResponseBytes: MAX_NATIVE_RECOVERY_RESPONSE_BYTES }) : { methodRejected: true };
   } else if (segments.length === 3 && segments[0] === "backups" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "restore-previews") {

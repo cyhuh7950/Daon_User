@@ -357,6 +357,10 @@ test("S44 L1 malformed 목록/context는 선택·POST를 차단하고 413·409·
 const restoreResponse = data => ({ payload: { data }, etag: `"restore:${data.request_id}:${data.version}"` });
 const pendingRestore = (changes = {}) => restore({ state: "preview_ready", version: 2, verification_digest: null,
   transitions: ["requested", "preview_ready"], ...changes });
+const registeredPreview = (changes={}) => ({kind:"selected_source_lineage",version:1,created_at:"2026-10-19T00:00:00Z",expires_at:"2099-01-01T00:00:00Z",
+  destination:{destination_id:"destination-a",version:1,display_name:"소유 격리 목적지",expires_at:"2099-01-02T00:00:00Z"},
+  source_manifest_digest:"a".repeat(64),closure_fingerprint:"b".repeat(64),included_root_count:1,excluded_root_count:0,
+  exclusion_counts:{purged:0,held:0,tombstoned:0},...changes});
 function actionPort(overrides = {}) {
   let current = pendingRestore();
   const calls = [];
@@ -380,6 +384,88 @@ async function submitExecute(view, count = 1) {
   await view.act(async () => { for (let n = 0; n < count; n++) form.dispatchEvent(new MinimalEvent("submit")); });
   assert.equal(field.value, "", "제출 직후 비밀번호 폐기");
 }
+
+test("R4 등록 목적지 Preview와 Execute는 별도 인증·정확GET·현재세션으로 순차 소비한다",async()=>{
+  const value=registeredPreview(),p=actionPort();
+  p.setCurrent(pendingRestore({preview:value}));
+  Object.assign(p.api,{
+    getBackup:async()=>({payload:{data:backup()},etag:'"backup:backup-a:3"'}),
+    getRestoreDestinations:async()=>response([value.destination]),
+    previewRegisteredRestore:async(...args)=>{p.calls.push(["preview",...args]);return restoreResponse(pendingRestore({preview:value}));},
+    executeRestore:async(...args)=>{p.calls.push(["execute",...args]);p.setCurrent(restore({preview:value}));return restoreResponse(restore({preview:value}));},
+  });
+  const view=await render("?backup_id=backup-a",p.api);
+  try{
+    await click(view,"등록 복원 목적지 조회");
+    await click(view,"소유 격리 목적지 · destination-a");
+    await click(view,"등록 목적지 Preview 준비");await submitExecute(view,2);
+    const sent=p.calls.filter(c=>c[0]==="preview");assert.equal(sent.length,1);
+    assert.deepEqual(sent[0][2],{workspace_id:"workspace-a",destination_id:"destination-a",destination_version:1,step_up_authorization_id:"synthetic-new-token"});
+    assert.equal(view.browser.location.search,"?restore_request_id=restore-a");
+    assert.match(visibleText(view.container),/포함 1건/u);
+    await click(view,"복구 실행 준비");await submitExecute(view,2);
+    assert.deepEqual(p.calls.filter(c=>c[0]==="stepup").map(c=>c[1]),["backup-a","restore-a"]);
+    assert.equal(p.calls.filter(c=>c[0]==="execute").length,1);
+    assert.match(visibleText(view.container),/상태completed/u);
+    assert.doesNotMatch(view.container.textContent,/synthetic-new-token|synthetic-password|raw_ref/u);
+  }finally{await view.cleanup();}
+});
+
+test("R4 등록 Preview의 잘못된 집합수·시각·목적지·digest는 실행준비를 남기지 않는다",async()=>{
+  for(const changes of [{included_root_count:0},{excluded_root_count:2},{exclusion_counts:{purged:0,held:1,tombstoned:0}},
+    {expires_at:"invalid"},{closure_fingerprint:"invalid"},{destination:{...registeredPreview().destination,database_ref:canary}}]){
+    const p=actionPort();p.setCurrent(pendingRestore({preview:registeredPreview(changes)}));
+    const view=await render("?restore_request_id=restore-a",p.api);
+    try{assert.doesNotMatch(visibleText(view.container),/복구 실행 준비/u);assert.doesNotMatch(view.container.textContent,/S42_표시금지/u);
+      assert.equal(p.calls.filter(c=>c[0]==="execute").length,0);
+    }finally{await view.cleanup();}
+  }
+});
+
+test("R4 Preview 인증 뒤 늦은 목적지 조회와 version 교체는 body0·중단·비밀폐기를 유지한다",async()=>{
+  for(const mode of ["pagehide","target","adapter","unmount","version"]){
+    const gate=deferred(),bodies=[];let issued=false,signal;
+    const destination=registeredPreview().destination,p=actionPort({
+      getBackup:async()=>({payload:{data:backup()},etag:'"backup:backup-a:3"'}),
+      issueRestoreStepUp:async()=>{issued=true;return "synthetic-preview-token";},
+      getRestoreDestinations:async(_id,options)=>{if(issued){signal=options.signal;return gate.promise;}return response([destination]);},
+      previewRegisteredRestore:async(_id,body)=>{bodies.push(body);return restoreResponse(pendingRestore({preview:registeredPreview()}));},
+    });
+    const view=await render("?backup_id=backup-a",p.api);
+    try{
+      await click(view,"등록 복원 목적지 조회");await click(view,"소유 격리 목적지 · destination-a");
+      await click(view,"등록 목적지 Preview 준비");await submitExecute(view);
+      assert.equal(issued,true);assert.ok(signal);
+      if(mode==="pagehide")await view.act(async()=>view.browser.dispatchEvent(new MinimalEvent("pagehide")));
+      if(mode==="target")await view.navigate("?backup_id=backup-b");
+      if(mode==="adapter")await view.rerender(actionPort().api);
+      if(mode==="unmount")await view.unmount();
+      if(mode!=="version")assert.equal(signal.aborted,true);
+      await view.act(async()=>gate.resolve(response([{...destination,version:mode==="version"?2:1}])));
+      assert.deepEqual(bodies,[]);assert.doesNotMatch(view.container.textContent,/synthetic-preview-token|synthetic-password/u);
+    }finally{gate.resolve(response([destination]));await view.cleanup();}
+  }
+});
+
+test("R4 계보 사전확인 뒤 기본OFF 동의와 exact6만 보내며503을성공으로표시하지 않는다",async()=>{
+  const calls=[],p=l1Port({
+    previewBackupSelection:async(...args)=>{calls.push(["preflight",...args]);return response({root_source_version_ids:["version-a"],dependency_source_version_ids:["prior-a"],
+      dependency_source_ids:["source-a"],source_version_count:2,source_count:1,unique_object_count:2,total_bytes:30,metadata_bytes:1000,closure_fingerprint:"a".repeat(64)});},
+    createLineageBackup:async(...args)=>{calls.push(["create",...args]);throw failure(503);},
+  });
+  const view=await render("",p.api);
+  try{
+    await l1Select(view);await click(view,"계보 사전확인");
+    const submit=findElements(view.container,n=>n.tagName==="BUTTON"&&n.textContent==="계보 포함 백업 요청")[0];
+    assert.ok(submit);assert.equal(reactProps(submit).disabled,true);
+    assert.equal(calls.filter(c=>c[0]==="create").length,0);
+    await click(view,"선행 버전 포함에 동의");await click(view,"계보 포함 백업 요청");
+    const writes=calls.filter(c=>c[0]==="create");assert.equal(writes.length,1);
+    assert.deepEqual(writes[0][1],{workspace_id:"workspace-a",notebook_id:"notebook-a",source_version_ids:["version-a"],lineage_mode:"exact",trigger:"manual",
+      closure_consent:{include_prior_versions:true,closure_fingerprint:"a".repeat(64)}});
+    assert.doesNotMatch(view.container.textContent,/백업 생성 성공|백업 생성 완료|S42_표시금지/u);
+  }finally{await view.cleanup();}
+});
 
 test("S44 fixpass 발급 뒤 session/target 지연은 pagehide/주소/API/unmount 시 abort되고 Execute body0이다", async () => {
   for (const stage of ["session-before", "target", "session-after"]) for (const mode of ["pagehide", "target", "adapter", "unmount"]) {
@@ -936,9 +1022,8 @@ test("S44 홈은 정상 session 전후를 확인하고 실제 5상태·빈 백�
     assert.deepEqual(p.calls, homeCalls);
     const text = visibleText(view.container);
     for (const code of ["PROVIDER_CONFIGURATION_REQUIRED", "API_READY", "STORAGE_READY", "SYNC_PENDING", "QUEUE_ATTENTION_REQUIRED"]) assert.ok(text.includes(code));
-    assert.match(text, /백업은 자료 선택·요청만 연결.*독립 보존 준비 전에는 생성되지 않습니다/u);
-    assert.match(text, /새 Preview 생성은 아직 연결되지 않았습니다/u);
-    assert.match(text, /기존 저장 요청은 정확 ID 상세에서 제한형 Execute·Cancel을 사용할 수 있습니다/u);
+    assert.match(text, /백업은 자료 선택·계보 사전확인·명시 동의 후 독립 보존 준비가 된 서버에서만 생성됩니다/u);
+    assert.match(text, /v3 백업의 등록 목적지 Preview와 별도 인증 Execute·Cancel은 정확 ID 상세에서 사용합니다/u);
     assert.match(text, /독립 전체 DB 복원은 지원하지 않습니다/u);
     assert.doesNotMatch(text, /백업 생성·복구 실행은 아직 연결되지 않았습니다/u);
     assert.match(text, /조회된 백업이 없습니다/u);

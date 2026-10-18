@@ -4561,13 +4561,20 @@
         "responses": { "200": { "$ref": "#/components/responses/BackupResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" } }
       }
     },
+    "/api/v1/backups/{id}/restore-destinations": {
+      "get": {
+        "operationId":"listRestoreDestinations","tags":["Recovery"],"summary":"현재 v3 접근·서명 registry의 안전 목적지 요약","x-implementation-owner":"S44-D2-R4",
+        "parameters":[{"$ref":"#/components/parameters/ResourceId"}],
+        "responses":{"200":{"$ref":"#/components/responses/RegisteredDestinationsResponse"},"400":{"$ref":"#/components/responses/BadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/NotFound"},"409":{"$ref":"#/components/responses/Conflict"},"412":{"$ref":"#/components/responses/PreconditionFailed"},"500":{"$ref":"#/components/responses/SafeFailure"},"503":{"$ref":"#/components/responses/ServiceUnavailable"}}
+      }
+    },
     "/api/v1/backups/{id}/restore-previews": {
       "post": {
         "operationId": "createRestorePreview", "tags": ["Recovery"],
         "summary": "현재 Retention을 반영한 격리 Restore Preview", "x-implementation-owner": "R1-M5-07",
         "parameters": [{ "$ref": "#/components/parameters/ResourceId" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RestorePreviewRequest" } } } },
-        "responses": { "201": { "$ref": "#/components/responses/RestoreResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" } }
+        "responses": { "201": { "$ref": "#/components/responses/RestoreResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" } }
       }
     },
     "/api/v1/restore-requests/{id}": {
@@ -4581,10 +4588,10 @@
     "/api/v1/restore-requests/{id}/execute": {
       "post": {
         "operationId": "executeRestore", "tags": ["Recovery"],
-        "summary": "새 Step-up으로 Fixture-only 격리 Restore 실행", "x-implementation-owner": "R1-M5-07",
+        "summary": "별도 Step-up으로 등록 v3 격리 복원 실행 및 기존 Fixture 계약 보존", "x-implementation-owner": "R1-M5-07",
         "parameters": [{ "$ref": "#/components/parameters/ResourceId" }, { "$ref": "#/components/parameters/IfMatch" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RestoreExecuteRequest" } } } },
-        "responses": { "200": { "$ref": "#/components/responses/RestoreResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" } }
+        "responses": { "200": { "$ref": "#/components/responses/RestoreResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" } }
       }
     },
     "/api/v1/workspaces/{id}/model-defaults": {
@@ -5443,7 +5450,12 @@
       "RestoreResponse": {
         "description": "Restore Preview·상태·검증 결과",
         "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } },
-        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RecoveryEnvelope" } } }
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RestoreEnvelope" } } }
+      },
+      "RegisteredDestinationsResponse": {
+        "description":"등록된 목적지의 안전4필드만 반환",
+        "headers":{"X-Trace-Id":{"$ref":"#/components/headers/XTraceId"},"ETag":{"$ref":"#/components/headers/ETag"}},
+        "content":{"application/json":{"schema":{"$ref":"#/components/schemas/RegisteredDestinationsEnvelope"}}}
       }
     },
     "schemas": {
@@ -8524,7 +8536,8 @@
           "bucket_id": { "type": "string", "pattern": "^fixture-" }
         }
       },
-      "RestorePreviewRequest": {
+      "RestorePreviewRequest": {"oneOf":[{"$ref":"#/components/schemas/LegacyRestorePreviewRequest"},{"$ref":"#/components/schemas/RegisteredRestorePreviewRequest"}]},
+      "LegacyRestorePreviewRequest": {
         "type": "object", "additionalProperties": false,
         "required": ["destination", "step_up_authorization_id"],
         "properties": {
@@ -8539,6 +8552,38 @@
           "preview_version": { "type": "integer", "minimum": 1 },
           "step_up_authorization_id": { "type": "string", "minLength": 1, "maxLength": 512, "writeOnly": true }
         }
+      },
+      "RegisteredRestorePreviewRequest": {
+        "type":"object","additionalProperties":false,"required":["workspace_id","destination_id","destination_version","step_up_authorization_id"],
+        "properties":{
+          "workspace_id":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}(?![\\s\\S])"},
+          "destination_id":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}(?![\\s\\S])"},
+          "destination_version":{"type":"integer","minimum":1,"maximum":2147483647},
+          "step_up_authorization_id":{"type":"string","minLength":1,"maxLength":512,"writeOnly":true}
+        }
+      },
+      "RegisteredDestinationSummary": {
+        "type":"object","additionalProperties":false,"required":["destination_id","version","display_name","expires_at"],
+        "properties":{"destination_id":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}(?![\\s\\S])"},"version":{"type":"integer","minimum":1,"maximum":2147483647},"display_name":{"type":"string","minLength":1,"maxLength":80},"expires_at":{"type":"string","format":"date-time"}}
+      },
+      "RegisteredDestinationsEnvelope": {
+        "type":"object","additionalProperties":false,"required":["data","meta"],
+        "properties":{"data":{"type":"array","maxItems":1000,"items":{"$ref":"#/components/schemas/RegisteredDestinationSummary"}},"meta":{"$ref":"#/components/schemas/OrganizationMeta"}}
+      },
+      "LegacyRestorePreview": {
+        "type":"object","additionalProperties":false,"required":["version","included_object_ids","excluded_object_ids","exclusion_reasons","destination","created_at"],
+        "properties":{"version":{"type":"integer","minimum":1},"included_object_ids":{"type":"array","uniqueItems":true,"items":{"$ref":"#/components/schemas/OpaqueId"}},"excluded_object_ids":{"type":"array","uniqueItems":true,"items":{"$ref":"#/components/schemas/OpaqueId"}},"exclusion_reasons":{"type":"array","items":{"type":"array","minItems":2,"maxItems":2,"prefixItems":[{"$ref":"#/components/schemas/OpaqueId"},{"type":"string","enum":["purged","held","tombstoned"]}]}},"destination":{"$ref":"#/components/schemas/RestoreDestination"},"created_at":{"type":"string","format":"date-time"}}
+      },
+      "RegisteredRestorePreview": {
+        "type":"object","additionalProperties":false,"required":["kind","version","created_at","expires_at","destination","source_manifest_digest","closure_fingerprint","included_root_count","excluded_root_count","exclusion_counts"],
+        "properties":{"kind":{"type":"string","const":"selected_source_lineage"},"version":{"type":"integer","minimum":1},"created_at":{"type":"string","format":"date-time"},"expires_at":{"type":"string","format":"date-time"},"destination":{"$ref":"#/components/schemas/RegisteredDestinationSummary"},"source_manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"},"closure_fingerprint":{"type":"string","pattern":"^[0-9a-f]{64}$"},"included_root_count":{"type":"integer","minimum":1,"maximum":100},"excluded_root_count":{"type":"integer","minimum":0,"maximum":100},"exclusion_counts":{"type":"object","additionalProperties":false,"required":["purged","held","tombstoned"],"properties":{"purged":{"type":"integer","minimum":0,"maximum":100},"held":{"type":"integer","minimum":0,"maximum":100},"tombstoned":{"type":"integer","minimum":0,"maximum":100}}}}
+      },
+      "RestoreRequestView": {
+        "type":"object","additionalProperties":false,"required":["request_id","backup_id","tenant_id","workspace_id","state","version","preview","transitions","verification_digest"],
+        "properties":{"request_id":{"$ref":"#/components/schemas/OpaqueId"},"backup_id":{"$ref":"#/components/schemas/OpaqueId"},"tenant_id":{"$ref":"#/components/schemas/OpaqueId"},"workspace_id":{"$ref":"#/components/schemas/OpaqueId"},"state":{"type":"string","enum":["requested","preview_ready","authorized","restoring","verifying","completed","failed","cancelled"]},"version":{"type":"integer","minimum":1},"preview":{"oneOf":[{"$ref":"#/components/schemas/LegacyRestorePreview"},{"$ref":"#/components/schemas/RegisteredRestorePreview"}]},"transitions":{"type":"array","items":{"type":"string","enum":["requested","preview_ready","authorized","restoring","verifying","completed","failed","cancelled"]}},"verification_digest":{"oneOf":[{"type":"string","pattern":"^[0-9a-f]{64}$"},{"type":"null"}]}}
+      },
+      "RestoreEnvelope": {
+        "type":"object","additionalProperties":false,"required":["data","meta"],"properties":{"data":{"$ref":"#/components/schemas/RestoreRequestView"},"meta":{"$ref":"#/components/schemas/OrganizationMeta"}}
       },
       "LicenseResourceUsage": {
         "type": "object", "additionalProperties": false,

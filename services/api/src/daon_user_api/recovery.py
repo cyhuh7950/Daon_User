@@ -197,6 +197,20 @@ class RestorePreviewView:
 
 
 @dataclass(frozen=True, slots=True)
+class RegisteredRestorePreviewView:
+    kind: str
+    version: int
+    created_at: datetime
+    expires_at: datetime
+    destination: dict[str, object]
+    source_manifest_digest: str
+    closure_fingerprint: str
+    included_root_count: int
+    excluded_root_count: int
+    exclusion_counts: dict[str, int]
+
+
+@dataclass(frozen=True, slots=True)
 class RestoreRequestView:
     request_id: str
     backup_id: str
@@ -204,7 +218,7 @@ class RestoreRequestView:
     workspace_id: str
     state: str
     version: int
-    preview: RestorePreviewView
+    preview: RestorePreviewView | RegisteredRestorePreviewView
     transitions: tuple[str, ...]
     verification_digest: str | None
 
