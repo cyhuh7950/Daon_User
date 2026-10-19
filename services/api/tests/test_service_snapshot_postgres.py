@@ -1798,6 +1798,15 @@ class ServiceSnapshotOperatorTests(unittest.TestCase):
                 self.assertFalse(active[0])
 
     def test_operator_real_files_assembly_and_late_runtime_change(self):
+        self._operator_real_files_assembly(("normal", "late-runtime", "schema", "late-image", "exit-runtime"))
+
+    def test_operator_exists_requires_each_store_own_root_pin(self):
+        self._operator_real_files_assembly(("image-pin", "capture-pin"), strict=True)
+
+    def test_operator_exists_rejects_changed_root_and_create_race(self):
+        self._operator_real_files_assembly(("image-root-changed", "capture-root-changed", "image-race", "capture-race"), strict=True)
+
+    def _operator_real_files_assembly(self, modes, *, strict=False):
         import json
         import shutil
         import struct
@@ -1815,7 +1824,7 @@ class ServiceSnapshotOperatorTests(unittest.TestCase):
             self.assertFalse(parent.is_symlink() or getattr(parent.lstat(), "st_file_attributes", 0) & 0x400)
         root.mkdir(mode=0o700)
         try:
-            for mode in ("normal", "late-runtime", "schema", "late-image", "exit-runtime"):
+            for mode in modes:
                 with self.subTest(mode=mode):
                     folder = root / mode; folder.mkdir(mode=0o700)
                     for name in ("runtime", "capture", "images"): (folder / name).mkdir(mode=0o700)
@@ -1823,7 +1832,35 @@ class ServiceSnapshotOperatorTests(unittest.TestCase):
                     source.write_bytes(original); source.chmod(0o600)
                     raw = _operator_config_fixture(); raw["capture"]["root"] = str(folder / "capture")
                     raw["runtime_files"][0].update(path=str(source), byte_size=len(original), digest_sha256=hashlib.sha256(original).hexdigest())
-                    archives = {}; events = []; physical_reads = []
+                    archives = {}; events = []; physical_reads = []; boundary_events = []
+                    success = mode in {"normal", "image-pin", "capture-pin"}
+                    base_files = _WindowsFiles if os.name == "nt" else _PosixFiles
+                    class StrictFiles(base_files):
+                        """실 Windows 파일 + POSIX의 인스턴스별 pin 필수 수명 대역."""
+                        def __init__(inner):
+                            super().__init__(); inner.active = []; inner.root = None; inner.root_reads = 0; inner.raced = False
+                        @contextmanager
+                        def pin(inner, path):
+                            with super().pin(path) as handle:
+                                inner.active.append(Path(path))
+                                try: yield handle
+                                finally: inner.active.pop()
+                        def identity(inner, path):
+                            value = super().identity(path)
+                            if inner.root is None: inner.root = Path(path)
+                            if Path(path) == inner.root:
+                                inner.root_reads += 1
+                                if mode.endswith("root-changed") and inner.root_reads > 1:
+                                    boundary_events.append("changed-root"); return value[0], value[1]+1
+                            return value
+                        def exists(inner, path):
+                            if Path(path).parent not in inner.active: raise SnapshotError("SNAPSHOT_TEST_INSTANCE_PIN_REQUIRED")
+                            boundary_events.append("pinned-exists")
+                            found = super().exists(path)
+                            if mode.endswith("race") and not inner.raced and Path(path).parent == inner.root and not found:
+                                inner.raced = True; super().mkdir(path); boundary_events.append("create-race")
+                                return False
+                            return found
                     for row in raw["image_archives"]:
                         data, image, config_data = _archive(layer=("synthetic-" + row["image_role"]).encode())
                         row.update(image_digest=image, archive_root=str(folder / "images"))
@@ -1925,12 +1962,14 @@ class ServiceSnapshotOperatorTests(unittest.TestCase):
                             source.write_bytes(b"changed-after-receipt")
                         return original_runtime_exit(guard, kind, error, traceback)
                     with patch.object(image_module, "FixedDockerCLI", return_value=CLI()), \
+                            patch.object(image_module, "_WindowsFiles" if os.name=="nt" else "_PosixFiles", StrictFiles if strict and mode.startswith("image-") else base_files), \
+                            patch.object(snapshot_module, "_WindowsFiles" if os.name=="nt" else "_PosixFiles", StrictFiles if strict and mode.startswith("capture-") else base_files), \
                             patch.object(m, "SourceIdentityProbe", side_effect=lambda cfg, storage: real_physical(cfg, storage, _io=IdentityIO())), \
                             patch.object(m, "QuiescentRuntime", side_effect=lambda *args, **kw: real_runtime(*args, **kw, _probe=RuntimeProbe())), \
                             patch.object(m.PostgresSnapshotPort, "open_snapshot", open_snapshot), \
                             patch.object(m.PostgresSnapshotPort, "dump_archive", dump), patch.object(m.PostgresSnapshotPort, "open_runtime", open_runtime), \
                             patch.object(m.PostgresSnapshotPort, "open_object", open_object), patch.object(real_runtime,"__exit__",runtime_exit):
-                        if mode == "normal":
+                        if success:
                             result = m.capture_service(config, "capture-a", inputs=Inputs())
                             before_receipt = (folder/"capture/capture-a/receipt.bin").read_bytes()
                             fail_existing_exit[0] = True
@@ -1941,8 +1980,18 @@ class ServiceSnapshotOperatorTests(unittest.TestCase):
                         else:
                             with self.assertRaises(SnapshotError): m.capture_service(config, "capture-a", inputs=Inputs())
                     self.assertEqual((folder / "capture" / "operator-snapshot.lock").exists(), mode=="exit-runtime")
-                    self.assertIn("runtime-close", events); self.assertIn("pg-close", events)
-                    if mode == "normal":
+                    self.assertIn("runtime-close", events)
+                    if not strict or success: self.assertIn("pg-close", events)
+                    else: self.assertNotIn("pg-close", events, "root 교체/존재 경합은 PG capture 전에 거부")
+                    if strict:
+                        if mode.endswith("root-changed"):
+                            self.assertIn("changed-root", boundary_events); self.assertNotIn("pinned-exists", boundary_events)
+                        else: self.assertIn("pinned-exists", boundary_events)
+                        if mode.endswith("race"):
+                            self.assertIn("create-race", boundary_events)
+                            target = folder/"images/api-image" if mode.startswith("image-") else folder/"capture/capture-a"
+                            self.assertEqual(list(target.iterdir()), [], "경합으로 나타난 기존 폴더는 덮어쓰거나 삭제하지 않음")
+                    if success:
                         self.assertEqual(sum(isinstance(event, tuple) and event[0]=="save" for event in events), 5, "API/doc/Studio 동일 image는 archive 한 개")
                         self.assertEqual(events.count("load"), 10)
                         self.assertEqual(len(physical_reads), 4)

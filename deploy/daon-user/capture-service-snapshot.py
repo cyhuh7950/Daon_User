@@ -843,7 +843,10 @@ def capture_service(config, capture_id, *, inputs=None, cancelled=lambda: False)
                 row["image_digest"], row["code_revision"], config.spec.key_version, config.spec.key_reference,
                 row["maximum_archive_bytes"], row["duration_seconds"])  # AAD 일부이므로 남은 시간으로 변경0.
             store = ImageArchiveStore(row["archive_root"], master_key=master)
-            if store._files.exists(row["archive_root"] / row["archive_id"]):
+            with store._files.pin(store.root):
+                if store._files.identity(store.root) != store._root_identity: raise SnapshotError()
+                image_exists = store._files.exists(store.root / row["archive_id"])
+            if image_exists:
                 image_receipt = store.verify(image_spec, deadline=deadline, cancelled=cancelled)
             else: image_receipt = store.capture(image_spec, cli=cli, cancelled=lambda: cancelled() or time.monotonic() >= deadline)
             check(); pins.recheck(); runtime.recheck()
@@ -874,7 +877,9 @@ def capture_service(config, capture_id, *, inputs=None, cancelled=lambda: False)
             physical.recheck(deadline=deadline, cancelled=cancelled)
             check(); pins.recheck(); runtime.recheck()
         executor = CheckedSnapshotExecutor(config.capture["root"], master_key=master, ports=ports, final_check=final_check)
-        if executor._files.exists(executor.root / capture_id):
+        with executor._pinned():
+            capture_exists = executor._files.exists(executor.root / capture_id)
+        if capture_exists:
             return executor.verify(config.spec, capture_id)  # 재생성/덮어쓰기0, 확정본만 검증.
         receipt = executor.capture(config.spec, capture_id=capture_id, cancelled=lambda: cancelled() or time.monotonic() >= deadline)
         completion.remember_new(executor, receipt)
