@@ -24,6 +24,78 @@ from daon_user_api.provider_catalog import DiscoveredModel
 from daon_user_api.provider_connection_adapters import AdapterRegistry, TransportResponse
 
 
+@pytest.mark.parametrize("outcome", ["verified", "failed", "observer_failed", "probe_failed", "off", "personal", "custom"])
+def test_existing_health_result_emits_readiness_only_after_real_check_and_commit(monkeypatch, outcome):
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    from daon_user_api.provider_connection_adapters import AdapterError
+    events, probes, verified_at = [], [], []
+    class Database:
+        active = False
+        @contextmanager
+        def _transaction(self, context):
+            self.active = True
+            try:
+                yield self
+            except BaseException:
+                events.append("rollback")
+                raise
+            else:
+                events.append("commit")
+            finally:
+                self.active = False
+        def execute(self, sql, params=()):
+            assert sql.startswith("UPDATE system_provider_connections SET verification_status=")
+            events.append("health_update")
+            return Cursor()
+    db = Database()
+    row = ["health-a", "OLLAMA", "QA", "http://model.internal:11434", None, None, None, None, 0,
+           outcome != "off", "unverified", None, 7, "personal" if outcome == "personal" else "public",
+           "none", "QA", "OLLAMA", "QA", None]
+    if outcome == "custom": row[1] = row[16] = "CUSTOM"
+    class Adapter:
+        def verify(self, profile, credential):
+            events.append("actual_verify")
+            verified_at.append(datetime.now(timezone.utc))
+            if outcome == "failed": raise AdapterError("PROVIDER_UNAVAILABLE", 503)
+    monkeypatch.setattr(provider_connection_admin_module, "AdapterRegistry",
+                        lambda **kwargs: SimpleNamespace(adapter=lambda *args: Adapter()))
+    if outcome == "probe_failed":
+        def fail_event_id():
+            raise RuntimeError("PRIVATE_PROBE_FAILURE")
+        monkeypatch.setattr(provider_connection_admin_module.uuid, "uuid4", fail_event_id)
+    def observe(probe):
+        assert not db.active, "health Tx 확정 전에 readiness 저장을 시도함"
+        assert events[-1] == "commit"
+        probes.append(probe)
+        if outcome == "observer_failed": raise RuntimeError("PRIVATE_UPSTREAM_BODY")
+    service = PostgresProviderConnectionService(db, ProviderCredentialCipher(b"p" * 32, encryption_key_version=1),
+                                              readiness_observer=observe)
+    monkeypatch.setattr(service, "_load", lambda *args: tuple(row))
+    result = service.check_active_connection(context(), "health-a")
+    expected = "skipped" if outcome in {"off", "personal", "custom"} else "failed" if outcome == "failed" else "verified"
+    assert result["status"] == expected
+    if outcome == "probe_failed":
+        assert probes == [] and events.count("actual_verify") == 1
+        assert service.readiness_observation_status == "unavailable"
+    elif expected == "skipped":
+        assert probes == [] and "actual_verify" not in events
+    else:
+        assert len(probes) == 1 and events.count("actual_verify") == 1
+        probe = probes[0]
+        assert set(probe) == {"event_id", "connection_id", "adapter_type", "configuration_version", "observed_at",
+                              "probe_kind", "capability", "status"}
+        assert probe["connection_id"] == "health-a" and probe["configuration_version"] == 7
+        assert probe["capability"] is None and probe["probe_kind"] == "provider_connection_check"
+        assert probe["status"] == ("unavailable" if expected == "failed" else "healthy")
+        assert probe["observed_at"] >= verified_at[0]
+        assert probe["observed_at"].utcoffset().total_seconds() == 0
+        assert probe["event_id"].startswith("rdy-") and len(probe["event_id"]) == 36
+        assert "PRIVATE_UPSTREAM_BODY" not in repr(result)
+        if outcome == "observer_failed":
+            assert service.readiness_observation_status == "unavailable"
+
+
 def test_native_asr_connection_policy_keeps_fixed_internal_endpoint_without_key():
     assert validate_connection_policy("CUSTOM", "public", "none", "AS", "asr_base_native",
                                       "http://asr-base:8080") == "public"

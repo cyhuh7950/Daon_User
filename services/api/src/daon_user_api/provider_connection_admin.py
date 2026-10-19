@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 import re
 import os
+import uuid
 from typing import Any, Callable, Mapping, Sequence, TypeVar, cast
 
 from psycopg import Connection
@@ -320,10 +321,36 @@ def validate_connection_policy(
 
 
 class PostgresProviderConnectionService:
-    def __init__(self, store: PostgresCloudStore, cipher: ProviderCredentialCipher) -> None:
+    def __init__(self, store: PostgresCloudStore, cipher: ProviderCredentialCipher, *, readiness_observer=None) -> None:
         self._store = store
         self._cipher = cipher
         self._mutations = PostgresProviderAdminMutationRepository(store)
+        self._readiness_observer = readiness_observer
+        self.readiness_observation_status = "not_collected"
+
+    def _health_probe(self, row, status):
+        if self._readiness_observer is None:
+            return None
+        try:
+            return {"event_id": "rdy-" + uuid.uuid4().hex, "connection_id": str(row[0]),
+                "adapter_type": str(row[16]), "configuration_version": int(row[12]),
+                "observed_at": datetime.now(timezone.utc), "probe_kind": "provider_connection_check",
+                "capability": None, "status": status}
+        except Exception:
+            self.readiness_observation_status = "unavailable"
+            return None
+
+    def _observe_health_probe(self, probe):
+        if probe is None:
+            return
+        try:
+            self._readiness_observer(probe)
+        except Exception:
+            # 검사/health Tx의 결과를 뒤집거나 여기서 재전송하지 않는다. 원응답/예외는 저장하지 않는다.
+            self.readiness_observation_status = "unavailable"
+        else:
+            # callback 전달 완료이지 실제 원장 저장/모델 실행 성공 판정이 아니다.
+            self.readiness_observation_status = "forwarded"
 
     @staticmethod
     def _cloud(context: ProviderConnectionAdminContext) -> CloudAccessContext:
@@ -429,6 +456,8 @@ class PostgresProviderConnectionService:
         self, context: ProviderConnectionAdminContext, connection_id: str,
     ) -> dict[str, object]:
         checked_at = datetime.now().astimezone().isoformat()
+        probe, row = None, None
+        attempt_started = verification_completed = False
         try:
             with self._store._transaction(self._cloud(context)) as connection:
                 row = self._load(connection, connection_id)
@@ -450,22 +479,29 @@ class PostgresProviderConnectionService:
                     adapter = AdapterRegistry(logical_models={connection_id: allowed}).adapter("OMNIROUTE")
                 else:
                     adapter = AdapterRegistry().adapter(str(row[1]))
+                attempt_started = True
                 adapter.verify(profile, credential)
+                verification_completed = True
+                probe = self._health_probe(row, "healthy")
                 status = "verified"
                 connection.execute(
                     "UPDATE system_provider_connections SET verification_status='verified',"
                     "verified_at=now(),updated_at=now() WHERE connection_id=%s",
                     (connection_id,),
                 )
-                return {"connection_id": connection_id, "status": status, "checked_at": checked_at}
-        except (AdapterError, ProviderCredentialError, ProviderSettingsError, Exception):
+                result = {"connection_id": connection_id, "status": status, "checked_at": checked_at}
+        except (AdapterError, ProviderCredentialError, ProviderSettingsError, Exception) as error:
+            probe = (self._health_probe(row, "unavailable")
+                     if attempt_started and not verification_completed and isinstance(error, AdapterError) else None)
             with self._store._transaction(self._cloud(context)) as connection:
                 connection.execute(
                     "UPDATE system_provider_connections SET verification_status='failed',"
                     "verified_at=now(),updated_at=now() WHERE connection_id=%s AND enabled=true",
                     (connection_id,),
                 )
-            return {"connection_id": connection_id, "status": "failed", "checked_at": checked_at}
+            result = {"connection_id": connection_id, "status": "failed", "checked_at": checked_at}
+        self._observe_health_probe(probe)
+        return result
 
     @staticmethod
     def _load(connection: Connection[tuple[Any, ...]], connection_id: str) -> tuple[Any, ...]:
