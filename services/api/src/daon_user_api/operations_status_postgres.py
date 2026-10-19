@@ -28,6 +28,11 @@ class PostgresOperationsStatusRepository:
     def __init__(self, cloud_store: PostgresCloudStore) -> None:
         self._cloud_store = cloud_store
 
+    def read_host_capacity(self):
+        # 현재 Workspace VIEW/visible POLICY_MANAGE 또는 시스템관리 전후 인가는 호출 경계가 소유한다.
+        from .operations_telemetry_postgres import PostgresHostCapacityRepository
+        return PostgresHostCapacityRepository.using_cloud_store(self._cloud_store).read_host_sample_for_collector()
+
     def read_system_observations(self):
         """system-admin 전후 인가는 runtime 소유. 보호된 서버 관측만 읽고 scope 자료는 열지 않는다."""
         from dataclasses import fields
@@ -171,11 +176,12 @@ class PostgresOperationsStatusRepository:
     def read_workspace_telemetry(self,context):
         from .operations_status import SystemOperationsStatusService,validate_telemetry
         with self._transaction(context) as connection:self._authorize_telemetry(connection,context)
-        result=unknown_telemetry(include_readiness=context.include_readiness)
+        result=unknown_telemetry(include_readiness=context.include_readiness,include_capacity=context.include_capacity)
         system=SystemOperationsStatusService(self).read(api_ready=True,database_ready=True,object_storage_ready=True,
-            checked_at=datetime.now(timezone.utc).isoformat().replace("+00:00","Z"))
+            checked_at=datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),include_capacity=context.include_capacity)
         for key in ("worker_samples","resource_samples"):
-            result[key]=[dict(row,coverage="workspace_operational_counts") for row in system[key]]
+            result[key]=[dict(row,coverage='server_host_observation' if row['worker_kind']=='server_host'
+                else 'workspace_operational_counts') for row in system[key]]
         result["deployment_summary"]=dict(system["deployment_summary"],coverage="actor_accessible_records")
         result["unimplemented"]=[r for r in result["unimplemented"] if r["producer_id"] not in {"cost_receipt_writer","deployment_receipt_writer"}]
         try:result["event_counts"][:4]=self.read_pending_events(context)
@@ -202,7 +208,7 @@ class PostgresOperationsStatusRepository:
             except (CloudDatabaseError,Error,ValueError,OverflowError):
                 result["event_counts"][9:]=unknown_telemetry("unavailable",include_readiness=True)["event_counts"][9:]
         with self._transaction(context) as connection:self._authorize_telemetry(connection,context)
-        return validate_telemetry(result,include_readiness=context.include_readiness)
+        return validate_telemetry(result,include_readiness=context.include_readiness,include_capacity=context.include_capacity)
 
     def read_readiness_metrics(self,context):
         """개별 원장을 읽지 않고 현재 인가된 보호 함수의 7필드/6행만 투영한다."""

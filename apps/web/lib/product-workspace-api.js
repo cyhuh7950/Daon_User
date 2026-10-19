@@ -502,7 +502,7 @@ function validObservations(rows) {
 const TELEMETRY_FIELDS=["worker_samples","resource_samples","event_counts","cost_summary","deployment_summary","unimplemented"];
 const EVENT_METRICS=["manual_reprocess_pending","readiness_reprocess_pending","retry_wait","backoff_wait","step_up_denied_24h","step_up_expired_24h","access_blocked_24h","access_masked_24h","egress_denied_24h"];
 const READINESS_EVENT_METRICS=["waiting_text_generation","waiting_image_understanding","waiting_document_parsing","waiting_speech_to_text","waiting_role_unknown","retry_suppressed_contexts_24h"];
-function validWorkspaceTelemetry(data,includeReadiness=false){
+function validWorkspaceTelemetry(data,includeReadiness=false,includeCapacity=false){
   const eventMetrics=includeReadiness?[...EVENT_METRICS,...READINESS_EVENT_METRICS]:EVENT_METRICS;
   const common=["state","observed_at","received_at","coverage","safe_code"],unknown=r=>["not_collected","not_reported","unavailable"].includes(r.state);
   const number=v=>Number.isSafeInteger(v)&&v>=0,nullable=v=>v===null||observationTime(v);
@@ -515,9 +515,22 @@ function validWorkspaceTelemetry(data,includeReadiness=false){
     &&["alive","processing","poll_stale","stopped","unknown"].includes(r.process_state)&&[r.poll_started_at,r.poll_finished_at,r.active_started_at].every(nullable)
     &&(!unknown(r)||(r.process_state==="unknown"&&[r.poll_started_at,r.poll_finished_at,r.active_started_at].every(v=>v===null)))
     &&(r.process_state!=="processing"||r.active_started_at!==null)))return false;
-  if(!Array.isArray(data.resource_samples)||data.resource_samples.length!==12||!data.resource_samples.every((r,i)=>
+  if(!Array.isArray(data.resource_samples)||data.resource_samples.length!==(includeCapacity?16:12)||!data.resource_samples.slice(0,12).every((r,i)=>
     base(r,["worker_kind","metric_id","value","unit"],"workspace_operational_counts",fresh)&&r.worker_kind===kinds[Math.floor(i/4)]
     &&r.metric_id===metrics[i%4]&&r.unit===(i%4===0?"millicores":"bytes")&&(unknown(r)?r.value===null:number(r.value))))return false;
+  if(includeCapacity){
+    const host=[["cpu_logical_millicores","millicores"],["cpu_usage_basis_points","basis_points"],["memory_total_bytes","bytes"],["memory_available_bytes","bytes"]];
+    for(const [i,[metric,unit]] of host.entries()){
+      const r=data.resource_samples[12+i];
+      if(!base(r,["worker_kind","metric_id","value","unit"],"server_host_observation",fresh)
+        ||r.worker_kind!=="server_host"||r.metric_id!==metric||r.unit!==unit
+        ||(unknown(r)?r.value!==null:!number(r.value)))return false;
+      if(!unknown(r)&&((i===0&&(r.value<1000||r.value>32768000||r.value%1000!==0))
+        ||(i===1&&r.value>10000)||(i===2&&r.value===0)))return false;
+    }
+    const total=data.resource_samples[14].value,available=data.resource_samples[15].value;
+    if(total!==null&&available!==null&&available>total)return false;
+  }
   if(!Array.isArray(data.event_counts)||data.event_counts.length!==eventMetrics.length||!data.event_counts.every((r,i)=>
     base(r,["metric_id","value","unit","window_start","window_end"],"actor_accessible_records",["measured","partial","not_collected","unavailable"])
     &&r.metric_id===eventMetrics[i]&&r.unit==="count"&&(unknown(r)?r.value===null&&r.window_start===null&&r.window_end===null:
@@ -547,13 +560,14 @@ function validWorkspaceTelemetry(data,includeReadiness=false){
 }
 
 export async function getWorkspaceOperationsStatus(
-  workspaceId, { fetchImpl = fetch, signal, scope="self", includeReadiness=false } = {},
+  workspaceId, { fetchImpl = fetch, signal, scope="self", includeReadiness=false,includeCapacity=false } = {},
 ) {
   const workspace = requiredWorkspace(workspaceId, "OPERATIONS_STATUS_INPUT_INVALID");
-  if(!["self","workspace_visible"].includes(scope)||typeof includeReadiness!=="boolean")throw new Error("OPERATIONS_STATUS_INPUT_INVALID");
+  if(!["self","workspace_visible"].includes(scope)||typeof includeReadiness!=="boolean"||typeof includeCapacity!=="boolean")throw new Error("OPERATIONS_STATUS_INPUT_INVALID");
   const query=new URLSearchParams();
   if(scope!=="self")query.set("scope",scope);
   if(includeReadiness)query.set("include_readiness","1");
+  if(includeCapacity)query.set('include_capacity','1');
   const response = await fetchImpl(
     `/bff/api/workspaces/${encodeURIComponent(workspace)}/operations/status${query.size?`?${query}`:""}`,
     { method: "GET", credentials: "same-origin", cache: "no-store", signal },
@@ -580,7 +594,7 @@ export async function getWorkspaceOperationsStatus(
       && typeof item.safe_code === "string" && /^[A-Z][A-Z0-9_]{2,63}$/u.test(item.safe_code)
       && Number.isSafeInteger(item.pending_count) && item.pending_count >= 0
       && new Set(["none", "open_llm_settings", "open_sync_settings", "refresh_status"]).has(item.recovery_action))
-    && validObservations(data.observations) && validWorkspaceTelemetry(data,includeReadiness) && validMeta(payload.meta, workspace);
+    && validObservations(data.observations) && validWorkspaceTelemetry(data,includeReadiness,includeCapacity) && validMeta(payload.meta, workspace);
   if (!valid) throw new Error("OPERATIONS_STATUS_RESPONSE_INVALID");
   return data;
 }

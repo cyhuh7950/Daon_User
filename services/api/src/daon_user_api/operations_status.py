@@ -29,9 +29,9 @@ UNIMPLEMENTED_PRODUCERS = {
 TELEMETRY_FIELDS = ("worker_samples", "resource_samples", "event_counts", "cost_summary", "deployment_summary", "unimplemented")
 
 
-def unknown_telemetry(state="not_collected", *, include_readiness=False):
+def unknown_telemetry(state="not_collected", *, include_readiness=False,include_capacity=False):
     from .operations_telemetry import KINDS, project_worker, project_resources
-    if state not in {"not_collected", "unavailable"} or type(include_readiness) is not bool: raise ValueError("OPERATIONS_TELEMETRY_INVALID")
+    if state not in {"not_collected", "unavailable"} or type(include_readiness) is not bool or type(include_capacity) is not bool: raise ValueError("OPERATIONS_TELEMETRY_INVALID")
     now=datetime.now(timezone.utc)
     common=dict(state=state,observed_at=None,received_at=None,coverage="actor_accessible_records",
         safe_code="TELEMETRY_"+state.upper())
@@ -41,6 +41,10 @@ def unknown_telemetry(state="not_collected", *, include_readiness=False):
         workers.append(worker)
         for row in project_resources(None,now=now,worker_kind=kind):
             row.update(state=state,safe_code=common["safe_code"]);resources.append(row)
+    if include_capacity:
+        from .operations_host_capacity import project_host_resources
+        for row in project_host_resources(None,now=now):
+            row.update(state=state,safe_code=common['safe_code']);resources.append(row)
     return dict(worker_samples=workers,resource_samples=resources,
         event_counts=[dict(common,metric_id=key,value=None,unit="count",window_start=None,window_end=None)
                       for key in EVENT_IDS + (READINESS_EVENT_IDS if include_readiness else ())],
@@ -64,12 +68,12 @@ def project_deployment_receipt(row):
         previous_image_digest=receipt.previous_image_digest,result=receipt.state)
 
 
-def validate_telemetry(data, *, include_readiness=False):
+def validate_telemetry(data, *, include_readiness=False,include_capacity=False):
     """서버 경계에서도 추가 필드·내부 식별자와 불확정을 성공 값으로 반환하지 않는다."""
     from decimal import Decimal
     def require(condition):
         if not condition:raise ValueError("OPERATIONS_TELEMETRY_INVALID")
-    require(type(include_readiness) is bool)
+    require(type(include_readiness) is bool and type(include_capacity) is bool)
     event_ids = EVENT_IDS + (READINESS_EVENT_IDS if include_readiness else ())
     def stamp(value):
         require(type(value) is str and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z",value) is not None)
@@ -91,13 +95,26 @@ def validate_telemetry(data, *, include_readiness=False):
             if row[key] is not None:stamp(row[key])
         if row["state"] in {"not_collected","unavailable"}:require(row["process_state"]=="unknown" and all(row[k] is None for k in ("poll_started_at","poll_finished_at","active_started_at")))
         if row["process_state"]=="processing":require(row["active_started_at"] is not None)
-    require(type(data["resource_samples"]) in {list,tuple} and len(data["resource_samples"])==12)
+    require(type(data["resource_samples"]) in {list,tuple} and len(data["resource_samples"])==(16 if include_capacity else 12))
     resource_ids=("cpu_quota_millicores","memory_limit_bytes","memory_current_bytes","runtime_available_bytes")
     for (kind,key),row in zip(((k,m) for k in ("document","studio","object") for m in resource_ids),data["resource_samples"]):
         base(row,{"worker_kind","metric_id","value","unit"},"workspace_operational_counts",{"fresh","stale","not_collected","unavailable"})
         require((row["worker_kind"],row["metric_id"],row["unit"])==(kind,key,"millicores" if key==resource_ids[0] else "bytes"))
         if row["state"] in {"not_collected","unavailable"}:require(row["value"] is None)
         else:integer(row["value"])
+    if include_capacity:
+        from .operations_host_capacity import HOST_METRICS
+        for (key,unit),row in zip(HOST_METRICS,data['resource_samples'][12:]):
+            base(row,{'worker_kind','metric_id','value','unit'},'server_host_observation',{'fresh','stale','not_collected','unavailable'})
+            require((row['worker_kind'],row['metric_id'],row['unit'])==('server_host',key,unit))
+            if row['state'] in {'not_collected','unavailable'}:require(row['value'] is None)
+            else:
+                integer(row['value'])
+                if key=='cpu_usage_basis_points':require(row['value']<=10000)
+                if key=='cpu_logical_millicores':require(1000<=row['value']<=32768000 and row['value']%1000==0)
+                if key=='memory_total_bytes':require(row['value']>0)
+        total,available=(row['value'] for row in data['resource_samples'][14:16])
+        if total is not None and available is not None:require(available<=total)
     require(type(data["event_counts"]) in {list,tuple} and len(data["event_counts"])==len(event_ids))
     for number,(key,row) in enumerate(zip(event_ids,data["event_counts"])):
         base(row,{"metric_id","value","unit","window_start","window_end"},"actor_accessible_records",{"measured","partial","not_collected","unavailable"})
@@ -192,9 +209,11 @@ class OperationsStatusContext:
     policy_version: str | None = None
     scope: str = "self"
     include_readiness: bool = False
+    include_capacity: bool = False
 
     def __post_init__(self) -> None:
-        if type(self.scope) is not str or self.scope not in {"self","workspace_visible"} or type(self.include_readiness) is not bool:
+        if (type(self.scope) is not str or self.scope not in {"self","workspace_visible"}
+            or type(self.include_readiness) is not bool or type(self.include_capacity) is not bool):
             raise ValueError("OPERATIONS_STATUS_CONTEXT_INVALID")
         if any(not isinstance(value, str) or not _SAFE_ID.fullmatch(value) for value in (self.tenant_id, self.workspace_id, self.actor_id)):
             raise ValueError("OPERATIONS_STATUS_CONTEXT_INVALID")
@@ -268,9 +287,9 @@ class OperationsStatusService:
         except ValueError:
             observations = unknown_observations("unavailable")
         telemetry_reader=getattr(self._repository,"read_workspace_telemetry",None)
-        telemetry=unknown_telemetry(include_readiness=context.include_readiness) if telemetry_reader is None else telemetry_reader(context)
-        try:telemetry=validate_telemetry(telemetry,include_readiness=context.include_readiness)
-        except (ValueError,TypeError,KeyError,OverflowError):telemetry=unknown_telemetry("unavailable",include_readiness=context.include_readiness)
+        telemetry=unknown_telemetry(include_readiness=context.include_readiness,include_capacity=context.include_capacity) if telemetry_reader is None else telemetry_reader(context)
+        try:telemetry=validate_telemetry(telemetry,include_readiness=context.include_readiness,include_capacity=context.include_capacity)
+        except (ValueError,TypeError,KeyError,OverflowError):telemetry=unknown_telemetry("unavailable",include_readiness=context.include_readiness,include_capacity=context.include_capacity)
         return OperationsStatusView(context.workspace_id, overall, checked_at, components, observations,
             tuple(telemetry["worker_samples"]),tuple(telemetry["resource_samples"]),tuple(telemetry["event_counts"]),
             telemetry["cost_summary"],telemetry["deployment_summary"],tuple(telemetry["unimplemented"]))
@@ -280,7 +299,8 @@ class SystemOperationsStatusService:
     """현재 system-admin을 전후 검증한 runtime만 소비. Workspace 집계/Provider 호출0."""
     def __init__(self,repository):self._repository=repository
 
-    def read(self,*,api_ready,database_ready,object_storage_ready,checked_at):
+    def read(self,*,api_ready,database_ready,object_storage_ready,checked_at,include_capacity=False):
+        if type(include_capacity) is not bool:raise ValueError('OPERATIONS_TELEMETRY_INVALID')
         from .operations_telemetry import KINDS,project_worker,project_resources,ReceivedWorkerSample,_utc
         checked_now=_utc(datetime.fromisoformat(checked_at.replace("Z","+00:00")));now=checked_now
         state="not_collected";stored=()
@@ -309,6 +329,18 @@ class SystemOperationsStatusService:
                 if value["value"] is not None and value["value"]>9007199254740991:
                     value.update(state="unavailable",value=None,observed_at=None,received_at=None,safe_code="TELEMETRY_UNAVAILABLE")
                 value.pop("coverage");resources.append(value)
+        if include_capacity:
+            from .operations_host_capacity import project_host_resources
+            host_reader=getattr(self._repository,'read_host_capacity',None)
+            failed=False
+            try:host=host_reader() if host_reader is not None else None
+            except Exception:host=None;failed=True
+            try:host_rows=project_host_resources(host,now=now)
+            except (ValueError,TypeError):
+                host_rows=project_host_resources(None,now=now);failed=True
+            for row in host_rows:
+                if failed:row.update(state='unavailable',safe_code='TELEMETRY_UNAVAILABLE',value=None,observed_at=None,received_at=None)
+                row.pop('coverage');resources.append(row)
         deployment=dict(state="not_collected",observed_at=None,received_at=None,safe_code="TELEMETRY_NOT_COLLECTED",
             operation=None,code_revision=None,image_digest=None,previous_image_digest=None,result=None)
         deployment_reader=getattr(self._repository,"read_deployment_receipt",None)

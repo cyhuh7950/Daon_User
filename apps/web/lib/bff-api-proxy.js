@@ -574,7 +574,7 @@ function routeFor(method, segments) {
     && segments[3] === "status"
   ) {
     return method === "GET"
-      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/operations/status`, query: new Set(["scope","include_readiness"]), strictQuery: true, operationsStatus: true }
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/operations/status`, query: new Set(["scope","include_readiness","include_capacity"]), strictQuery: true, operationsStatus: true }
       : { methodRejected: true };
   }
   if (
@@ -741,7 +741,7 @@ function routeFor(method, segments) {
       : { methodRejected: true };
   }
   if (segments.length === 3 && segments.join("/") === "system/operations/status") {
-    return method === "GET" ? { path: "/api/v1/system/operations/status", query: new Set(), strictQuery: true } : { methodRejected: true };
+    return method === "GET" ? { path: "/api/v1/system/operations/status", query: new Set(['include_capacity']), strictQuery: true, operationsStatus:true } : { methodRejected: true };
   }
   if (segments.length === 2 && segments[0] === "backups" && segments[1] === "selection-previews") {
     return method === "POST" ? { path: "/api/v1/backups/selection-previews", query: new Set(), strictQuery: true } : { methodRejected: true };
@@ -1240,7 +1240,8 @@ export function createBffProxy({
         return createBffSafeError(400, "INVALID_REQUEST", trace);
       }
       if (route.operationsStatus && ((query.has("scope") && !["self","workspace_visible"].includes(query.get("scope")))
-          || (query.has("include_readiness") && query.get("include_readiness")!=="1"))) {
+          || (query.has("include_readiness") && query.get("include_readiness")!=="1")
+          || (query.has('include_capacity') && query.get('include_capacity')!=='1'))) {
         return createBffSafeError(400, "INVALID_REQUEST", trace);
       }
     }

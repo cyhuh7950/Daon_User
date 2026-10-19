@@ -30,7 +30,7 @@ function exactFields(input, fields) {
     && Object.keys(input).length === fields.length && fields.every(key => Object.hasOwn(input, key));
 }
 
-export function parseSystemOperationsStatus(value) {
+export function parseSystemOperationsStatus(value,{includeCapacity=false}={}) {
   const kinds=["document","studio","object"],metrics=["cpu_quota_millicores","memory_limit_bytes","memory_current_bytes","runtime_available_bytes"];
   const utc=v=>typeof v==="string"&&/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/u.test(v)
     &&Number.isFinite(Date.parse(v))&&new Date(v).toISOString().slice(0,19)===v.slice(0,19);
@@ -41,12 +41,24 @@ export function parseSystemOperationsStatus(value) {
     &&(["not_collected","not_reported","unavailable"].includes(r.state)
       ?r.observed_at===null&&r.received_at===null:utc(r.observed_at)&&utc(r.received_at));
   const invalid=()=>{throw sessionFailure();};
-  if(!exactFields(value,["schema_version","checked_at","health","worker_samples","resource_samples","deployment_summary","unimplemented"])
+  if(typeof includeCapacity!=="boolean"||!exactFields(value,["schema_version","checked_at","health","worker_samples","resource_samples","deployment_summary","unimplemented"])
     ||value.schema_version!==1||!utc(value.checked_at)||!Array.isArray(value.health)||value.health.length!==3
-    ||!Array.isArray(value.worker_samples)||value.worker_samples.length!==3||!Array.isArray(value.resource_samples)||value.resource_samples.length!==12)invalid();
+    ||!Array.isArray(value.worker_samples)||value.worker_samples.length!==3||!Array.isArray(value.resource_samples)||value.resource_samples.length!==(includeCapacity?16:12))invalid();
   for(const [i,id] of ["api","database","object_storage"].entries()){
     const r=value.health[i];if(!exactFields(r,["component_id","state","checked_at","safe_code"])||r.component_id!==id
       ||!["ready","unavailable"].includes(r.state)||r.checked_at!==value.checked_at||r.safe_code!==`${id.toUpperCase()}_${r.state.toUpperCase()}`)invalid();
+  }
+  if(includeCapacity){
+    const host=[["cpu_logical_millicores","millicores"],["cpu_usage_basis_points","basis_points"],["memory_total_bytes","bytes"],["memory_available_bytes","bytes"]];
+    for(const [i,[metric,unit]] of host.entries()){
+      const r=value.resource_samples[12+i],missing=["not_collected","unavailable"].includes(r?.state);
+      if(!exactFields(r,[...common,"worker_kind","metric_id","value","unit"])||!commonValid(r)
+        ||!["fresh","stale","not_collected","unavailable"].includes(r.state)||r.worker_kind!=="server_host"
+        ||r.metric_id!==metric||r.unit!==unit||(missing?r.value!==null:!Number.isSafeInteger(r.value)||r.value<0))invalid();
+      if(!missing&&((i===0&&(r.value<1000||r.value>32768000||r.value%1000!==0))||(i===1&&r.value>10000)||(i===2&&r.value===0)))invalid();
+    }
+    const total=value.resource_samples[14].value,available=value.resource_samples[15].value;
+    if(total!==null&&available!==null&&available>total)invalid();
   }
   for(const [i,kind] of kinds.entries()){
     const r=value.worker_samples[i];if(!exactFields(r,[...common,"worker_kind","process_state","poll_started_at","poll_finished_at","active_started_at"])
@@ -147,9 +159,10 @@ export async function issueRestoreStepUp(requestId, password, { idempotencyKey, 
 }
 
 export const recoveryApi = Object.freeze({
-  async getSystemOperationsStatus({signal}={}) {
-    const {payload}=await request("/bff/api/system/operations/status",{signal});
-    return parseSystemOperationsStatus(payload?.data);
+  async getSystemOperationsStatus({signal,includeCapacity=false}={}) {
+    if(typeof includeCapacity!=="boolean")throw sessionFailure();
+    const {payload}=await request('/bff/api/system/operations/status'+(includeCapacity?'?include_capacity=1':''),{signal});
+    return parseSystemOperationsStatus(payload?.data,{includeCapacity});
   },
   issueRestoreStepUp,
   previewBackupSelection(input, { signal } = {}) {
@@ -216,8 +229,8 @@ export const recoveryApi = Object.freeze({
       workspace_id: input.workspace_id, notebook_id: input.notebook_id, trigger: "manual", source_version_ids: [...input.source_version_ids].sort(),
     }, headers: { "Idempotency-Key": idempotencyKey } });
   },
-  getOperationsStatus(workspaceId, { signal, scope="self", includeReadiness=false } = {}) {
-    return getWorkspaceOperationsStatus(workspaceId, { signal, scope, includeReadiness, fetchImpl: async (path, init) => {
+  getOperationsStatus(workspaceId, { signal, scope="self", includeReadiness=false,includeCapacity=false } = {}) {
+    return getWorkspaceOperationsStatus(workspaceId, { signal, scope, includeReadiness,includeCapacity, fetchImpl: async (path, init) => {
       const response = await fetch(path, init);
       if (!response.ok) throw requestError(response, await response.json().catch(() => null));
       return response;

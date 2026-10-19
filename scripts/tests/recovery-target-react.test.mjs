@@ -174,10 +174,43 @@ const systemStatus = () => {
     unimplemented:[{producer_id:"deployment_receipt_writer",safe_code:"PRODUCER_NOT_IMPLEMENTED",impact_code:"DEPLOYMENT_HISTORY_UNKNOWN"}]};
 };
 
+const withHostCapacity = (data,coverage=false,measured=false) => ({...data,resource_samples:[...data.resource_samples.slice(0,12),
+  ...[['cpu_logical_millicores','millicores',2000],['cpu_usage_basis_points','basis_points',4000],
+    ['memory_total_bytes','bytes',1073741824],['memory_available_bytes','bytes',536870912]].map(([metric_id,unit,value])=>({
+      worker_kind:'server_host',metric_id,unit,value:measured?value:null,state:measured?'fresh':'not_collected',safe_code:measured?'TELEMETRY_FRESH':'TELEMETRY_NOT_COLLECTED',
+      observed_at:measured?'2026-10-20T00:00:00Z':null,received_at:measured?'2026-10-20T00:00:01Z':null,
+      ...(coverage?{coverage:'server_host_observation'}:{})}))]});
+
+test('S44 Workspace host capacity is explicitly requested and renders measured percent source and time',async()=>{
+  const data=withHostCapacity(operations(),true,true);let options;
+  const p=homePort({getOperationsStatus:async(workspace,current)=>{options=current;return data;}});
+  const view=await render('',p.api);
+  try{
+    assert.equal(options.includeCapacity,true);
+    const text=visibleText(view.container);
+    for(const label of ['WSL-server 실측','논리 CPU','CPU 사용률','40.00%','가용 RAM','2026-10-20T00:00:00Z'])assert.ok(text.includes(label),label);
+    assert.deepEqual(p.writes,[]);
+  }finally{await view.cleanup();}
+});
+
+test('S44 noWorkspace admin explicitly requests and validates host capacity without source metadata',async()=>{
+  let options;
+  const p=homePort({getSession:async()=>session({workspace_id:null,is_system_admin:true}),
+    getSystemOperationsStatus:async current=>{options=current;return withHostCapacity(systemStatus(),false,true);}});
+  const view=await render('',p.api);
+  try{
+    assert.equal(options.includeCapacity,true);
+    assert.match(visibleText(view.container),/WSL-server 실측/u);
+    assert.match(visibleText(view.container),/40\.00%/u);
+    assert.doesNotMatch(visibleText(view.container),/boot_id|cpu_counters/u);
+    assert.deepEqual(p.writes,[]);
+  }finally{await view.cleanup();}
+});
+
 function workspaceTelemetry(){
-  const system=systemStatus(),common={state:"not_collected",observed_at:null,received_at:null,coverage:"actor_accessible_records",safe_code:"TELEMETRY_NOT_COLLECTED"};
+  const system=withHostCapacity(systemStatus()),common={state:"not_collected",observed_at:null,received_at:null,coverage:"actor_accessible_records",safe_code:"TELEMETRY_NOT_COLLECTED"};
   return {worker_samples:system.worker_samples.map(r=>({...r,coverage:"workspace_operational_counts"})),
-    resource_samples:system.resource_samples.map(r=>({...r,coverage:"workspace_operational_counts"})),
+    resource_samples:system.resource_samples.map(r=>({...r,coverage:r.worker_kind==='server_host'?'server_host_observation':"workspace_operational_counts"})),
     event_counts:["manual_reprocess_pending","readiness_reprocess_pending","retry_wait","backoff_wait","step_up_denied_24h","step_up_expired_24h","access_blocked_24h","access_masked_24h","egress_denied_24h"].map(metric_id=>({...common,metric_id,value:null,unit:"count",window_start:null,window_end:null})),
     cost_summary:{...common,known_amounts:[],unknown_attempt_count:null,unconfirmed_run_count:null,coverage_start:null,coverage_end:null},
     deployment_summary:{...common,operation:null,code_revision:null,image_digest:null,previous_image_digest:null,result:null},
@@ -194,7 +227,7 @@ test("R4 workspace home explicitly requests readiness and distinguishes current 
   const p=homePort({getOperationsStatus:async(workspace,options)=>{calls.push([workspace,options]);return data;}});
   const view=await render("",p.api);
   try{
-    assert.deepEqual(calls,[["workspace-a",{scope:"self",includeReadiness:true}]]);
+    assert.deepEqual(calls,[["workspace-a",{scope:"self",includeReadiness:true,includeCapacity:true}]]);
     const text=visibleText(view.container);
     for(const label of ["텍스트 생성 역할 대기","이미지 이해 역할 대기","문서 파싱 역할 대기","음성 전사 역할 대기","역할 미확인 대기","최초 억제 조건 · 최근 24시간"])
       assert.ok(text.includes(label),label);
@@ -240,7 +273,7 @@ test("M2 explicit Workspace scope remains denied on privilege withdrawal without
 
 test("M2-S noWS admin system home reads only system status with session before/after",async()=>{
   const p=homePort({getSession:async()=>{p.calls.push(["session"]);return session({workspace_id:null,is_system_admin:true});},
-    getSystemOperationsStatus:async()=>{p.calls.push(["system"]);return systemStatus();}});
+    getSystemOperationsStatus:async()=>{p.calls.push(["system"]);return withHostCapacity(systemStatus());}});
   const view=await render("",p.api);
   try{
     assert.match(visibleText(view.container),/시스템 운영 상태/u);
@@ -252,7 +285,7 @@ test("M2-S noWS admin system home reads only system status with session before/a
 
 test("M2-S noWS fallback never overrides Workspace or target query and client nonadmin",async()=>{
   for(const [address,changes] of [["",{is_system_admin:true}],["?backup_id=backup-a",{workspace_id:null,is_system_admin:true}],["",{workspace_id:null,is_system_admin:false}]]){
-    let systems=0;const p=homePort({getSession:async()=>session(changes),getSystemOperationsStatus:async()=>{++systems;return systemStatus();}});
+    let systems=0;const p=homePort({getSession:async()=>session(changes),getSystemOperationsStatus:async()=>{++systems;return withHostCapacity(systemStatus());}});
     const view=await render(address,p.api);
     try{assert.equal(systems,0);assert.doesNotMatch(visibleText(view.container),/시스템 운영 상태/u);}
     finally{await view.cleanup();}
@@ -271,7 +304,7 @@ test("M2-S system response is discarded on session/admin change and pagehide lat
       if(mode==="admin")reads=1;
       if(mode==="pagehide")await view.act(async()=>view.browser.dispatchEvent(new MinimalEvent("pagehide")));
       if(mode==="api")await view.rerender(homePort().api);
-      await view.act(async()=>late.resolve(systemStatus()));
+      await view.act(async()=>late.resolve(withHostCapacity(systemStatus())));
       assert.doesNotMatch(visibleText(view.container),/시스템 운영 상태/u);
       if(["pagehide","api"].includes(mode))assert.equal(signal.aborted,true);
     }finally{await view.cleanup();}
@@ -1125,10 +1158,18 @@ test("M1 운영 홈은 16관측의 partial/null과 남은 미수집 범위를 �
 
 test("S44 실제 기본 adapter는 홈 GET만 호출하고 목록 선택은 정확 backup GET으로 이어진다", async () => {
   const previous = globalThis.fetch, calls = [];
+  const statusPath='/bff/api/workspaces/workspace-a/operations/status?include_readiness=1&include_capacity=1';
   globalThis.fetch = async (url, init) => {
     calls.push([url, init.method, init.credentials, init.cache]);
     if (url === "/bff/api/session") return Response.json(session().payload);
-    if (url === "/bff/api/workspaces/workspace-a/operations/status") return Response.json({ data: operations(), meta: { trace_id: "trace-ops", workspace_id: "workspace-a" } });
+    if (url === statusPath) {
+      const data=operations();
+      data.event_counts.push(...['waiting_text_generation','waiting_image_understanding','waiting_document_parsing',
+        'waiting_speech_to_text','waiting_role_unknown','retry_suppressed_contexts_24h'].map(metric_id=>({
+          metric_id,state:'not_collected',value:null,unit:'count',observed_at:null,received_at:null,
+          coverage:'actor_accessible_records',safe_code:'TELEMETRY_NOT_COLLECTED',window_start:null,window_end:null})));
+      return Response.json({data,meta:{trace_id:'trace-ops',workspace_id:'workspace-a'}});
+    }
     if (url === "/bff/api/backups?workspace_id=workspace-a") return Response.json(response([backup({ raw_text: canary })]).payload);
     assert.equal(url, "/bff/api/backups/backup-a");
     return Response.json(response(backup()).payload);
@@ -1136,7 +1177,7 @@ test("S44 실제 기본 adapter는 홈 GET만 호출하고 목록 선택은 정�
   let view;
   try {
     view = await render("");
-    assert.deepEqual(calls.map(c => c[0]), ["/bff/api/session", "/bff/api/workspaces/workspace-a/operations/status", "/bff/api/backups?workspace_id=workspace-a", "/bff/api/session"]);
+    assert.deepEqual(calls.map(c => c[0]), ["/bff/api/session", statusPath, "/bff/api/backups?workspace_id=workspace-a", "/bff/api/session"]);
     const link = findElements(view.container, n => n.tagName === "A" && n.getAttribute("href") === "?backup_id=backup-a")[0];
     assert.ok(link, "실제 목록의 정확 백업 링크");
     await view.navigate(link.getAttribute("href"));

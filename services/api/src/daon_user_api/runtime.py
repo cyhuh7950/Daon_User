@@ -545,6 +545,27 @@ def _build_run_cost_sessions(store,settings):
         clock=lambda:datetime.now(timezone.utc))
 
 
+def _build_host_capacity_collector(store,settings):
+    if settings.operations_host_capacity_enabled is not True:return None
+    if store is None:raise ValueError('HOST_CAPACITY_STORAGE_REQUIRED')
+    ready=store.readiness()
+    if ready.ready is not True or ready.schema_revision!='0073':
+        raise ValueError('HOST_CAPACITY_PROTECTED_STORAGE_REQUIRED')
+    from .operations_host_capacity import HostCapacityCollector
+    from .operations_telemetry_postgres import PostgresHostCapacityRepository
+    return HostCapacityCollector(PostgresHostCapacityRepository.using_cloud_store(store),
+        enabled=True,clock=lambda:datetime.now(timezone.utc))
+
+
+async def _host_capacity_loop(collector,stop):
+    while not stop.is_set():
+        try:await asyncio.to_thread(collector.tick)
+        except Exception:_runtime_logger.warning('호스트 CPU·RAM 관측 저장 실패')
+        if stop.is_set():break
+        try:await asyncio.wait_for(stop.wait(),timeout=30)
+        except TimeoutError:pass
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeSettings:
     profile: str
@@ -2628,6 +2649,9 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             dependencies.cloud_store, dependencies.object_storage,
             creation_enforcer=enforce_license_creation if license_enforcement_enabled else None,
         ))
+    host_capacity_collector=_build_host_capacity_collector(dependencies.cloud_store,dependencies.settings)
+    host_capacity_stop=asyncio.Event()
+    host_capacity_task:asyncio.Task[None]|None=None
     provider_health_stop = asyncio.Event()
     provider_health_task: asyncio.Task[None] | None = None
 
@@ -2698,7 +2722,9 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         resume = getattr(dependencies.notebook_deletion_worker, "resume_startup", None)
         if callable(resume):
             await asyncio.to_thread(resume)
-        nonlocal provider_health_task
+        nonlocal provider_health_task,host_capacity_task
+        if host_capacity_collector is not None:
+            host_capacity_task=asyncio.create_task(_host_capacity_loop(host_capacity_collector,host_capacity_stop))
         if provider_connection_service is not None and provider_health_settings_service is not None:
             provider_health_task = asyncio.create_task(provider_health_loop())
         admin_audit_stop = threading.Event()
@@ -2718,6 +2744,9 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         finally:
             admin_audit_stop.set()
             provider_health_stop.set()
+            host_capacity_stop.set()
+            if host_capacity_task is not None:
+                await host_capacity_task
             if provider_health_task is not None:
                 await provider_health_task
             if admin_audit_thread is not None:
@@ -7106,8 +7135,11 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
 
     @app.get("/api/v1/system/operations/status")
     async def get_system_operations_status(request: Request) -> JSONResponse:
-        _require_query_keys(request,frozenset())
-        if await request.body():raise HTTPException(status_code=400,detail="SYSTEM_OPERATIONS_INPUT_INVALID")
+        _require_query_keys(request,frozenset({'include_capacity'}))
+        if (len(request.query_params.getlist('include_capacity'))>1
+            or ('include_capacity' in request.query_params and request.query_params['include_capacity']!='1')
+            or await request.body()):raise HTTPException(status_code=400,detail="SYSTEM_OPERATIONS_INPUT_INVALID")
+        include_capacity=request.query_params.get('include_capacity')=='1'
         principal=_principal(request,dependencies)
         if principal.user_id not in dependencies.settings.system_admin_user_ids:
             raise AuthorizationError("ACTION_DENIED",403)
@@ -7119,13 +7151,13 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         repository=PostgresOperationsStatusRepository(dependencies.cloud_store) if dependencies.cloud_store is not None else None
         view=await asyncio.to_thread(SystemOperationsStatusService(repository).read,
             api_ready=True,database_ready=database_ready,object_storage_ready=object_ready,
-            checked_at=datetime.now(timezone.utc).isoformat().replace("+00:00","Z"))
+            checked_at=datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),include_capacity=include_capacity)
         current=_principal(request,dependencies)
         if (current.user_id,current.tenant_id,current.session_id,current.device_id)!=(principal.user_id,principal.tenant_id,principal.session_id,principal.device_id) \
             or current.user_id not in dependencies.settings.system_admin_user_ids:
             raise AuthorizationError("CURRENT_ACCESS_DENIED",403)
         response = _json_with_etag({"data":view,"meta":{"trace_id":request.state.trace_id}},
-            f"system-operations|{view['checked_at']}|{principal.user_id}|{principal.session_id}")
+            f"system-operations|{view['checked_at']}|{principal.user_id}|{principal.session_id}"+('|capacity' if include_capacity else ''))
         response.headers["Cache-Control"] = "no-store"
         return response
 
@@ -7144,17 +7176,21 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
 
     @app.get("/api/v1/workspaces/{id}/operations/status")
     async def get_workspace_operations_status(id: str, request: Request) -> JSONResponse:
-        _require_query_keys(request, frozenset({"scope","include_readiness"}))
+        _require_query_keys(request, frozenset({"scope","include_readiness","include_capacity"}))
         if (len(request.query_params.getlist("scope"))>1 or len(request.query_params.getlist("include_readiness"))>1
                 or ("include_readiness" in request.query_params and request.query_params["include_readiness"]!="1")
+                or len(request.query_params.getlist('include_capacity'))>1
+                or ('include_capacity' in request.query_params and request.query_params['include_capacity']!='1')
                 or await request.body()):
             raise HTTPException(status_code=400,detail="OPERATIONS_STATUS_INPUT_INVALID")
         scope=request.query_params.get("scope","self")
         include_readiness=request.query_params.get("include_readiness")=="1"
+        include_capacity=request.query_params.get('include_capacity')=='1'
         principal = _principal(request, dependencies)
         try:
             context=OperationsStatusContext(principal.tenant_id,id,principal.user_id,
-                request.state.trace_id,dependencies.settings.policy_version,scope,include_readiness=include_readiness)
+                request.state.trace_id,dependencies.settings.policy_version,scope,
+                include_readiness=include_readiness,include_capacity=include_capacity)
         except ValueError:raise HTTPException(status_code=400,detail="OPERATIONS_STATUS_INPUT_INVALID") from None
         require_operations_read(principal,id,scope)
         if operations_status_service is None:
@@ -7202,7 +7238,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         response = _json_with_etag({
             "data": _dataclass_json(view),
             "meta": {"trace_id": request.state.trace_id, "workspace_id": id},
-        }, f"{id}|{scope + '|readiness' if include_readiness else scope}|{view.overall_status}|{view.checked_at}")
+        }, f"{id}|{scope + '|readiness' if include_readiness else scope}|{view.overall_status}|{view.checked_at}"+('|capacity' if include_capacity else ''))
         response.headers["Cache-Control"]="no-store"
         return response
 

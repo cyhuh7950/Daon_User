@@ -29,6 +29,19 @@ class PostgresHostCapacityRepository:
     def __init__(self,telemetry):
         self._telemetry=telemetry
 
+    @classmethod
+    def using_cloud_store(cls,store):
+        @contextmanager
+        def transaction():
+            store._ensure_pool_open()
+            with store._pool.connection(timeout=2) as connection,connection.transaction():
+                connection.execute('SET LOCAL ROLE daon_app')
+                connection.execute("SET LOCAL statement_timeout='1500ms'")
+                connection.execute("SET LOCAL lock_timeout='500ms'")
+                connection.execute("SET LOCAL TIME ZONE 'UTC'")
+                yield connection
+        return cls(PostgresOperationsTelemetryRepository.using_transaction(transaction))
+
     @staticmethod
     def _stored(row):
         from .operations_host_capacity import HostCapacitySample,ReceivedHostCapacitySample

@@ -203,6 +203,42 @@ class UnreadyObjectStorage:
 
 
 class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
+    async def test_s44_capacity_query_is_closed_opt_in_with_current_workspace_authorization(self):
+        from types import SimpleNamespace
+        from daon_user_api.operations_status import OperationsStatusService,OperationsCounts
+        flags=[]
+        def counts(context):flags.append(context.include_capacity);return OperationsCounts(0,0,0)
+        dependencies=replace(self.dependencies,operations_status_service=OperationsStatusService(SimpleNamespace(read_counts=counts)))
+        path='/api/v1/workspaces/workspace-001/operations/status'
+        headers={'cookie':f'{WEB_SESSION_COOKIE}={self.web.access_token}'}
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(dependencies)),base_url='http://127.0.0.1') as client:
+            self.assertEqual((await client.get(path+'?include_capacity=1')).status_code,401)
+            old=await client.get(path,headers=headers)
+            self.assertEqual(old.status_code,200)
+            self.assertEqual(len(old.json()['data']['resource_samples']),12)
+            selected=await client.get(path+'?include_capacity=1&include_readiness=1',headers=headers)
+            self.assertEqual(selected.status_code,200)
+            self.assertEqual(len(selected.json()['data']['resource_samples']),16)
+            self.assertEqual(len(selected.json()['data']['event_counts']),15)
+            self.assertEqual(selected.headers['cache-control'],'no-store')
+            for query in ('include_capacity=0','include_capacity=true','include_capacity=',
+                'include_capacity=1&include_capacity=1','include_capacity=1&actor_id=other'):
+                self.assertEqual((await client.get(path+'?'+query,headers=headers)).status_code,400)
+        self.assertEqual(flags,[False,True])
+
+    async def test_s44_system_capacity_requires_system_admin_not_workspace_membership(self):
+        path='/api/v1/system/operations/status?include_capacity=1'
+        headers={'cookie':f'{WEB_SESSION_COOKIE}={self.web.access_token}'}
+        self.assertEqual((await self.client.get(path)).status_code,401)
+        self.assertEqual((await self.client.get(path,headers=headers)).status_code,403)
+        self.dependencies.settings=replace(self.settings,system_admin_user_ids=frozenset({self.web.user_id}))
+        allowed=await self.client.get(path,headers=headers)
+        self.assertEqual(allowed.status_code,200)
+        self.assertEqual(len(allowed.json()['data']['resource_samples']),16)
+        self.assertFalse(any('boot_id' in row or 'cpu_counters' in row for row in allowed.json()['data']['resource_samples']))
+        self.dependencies.settings=self.settings
+        self.assertEqual((await self.client.get(path,headers=headers)).status_code,403)
+
     async def test_readiness_status_query_is_exact_opt_in_and_keeps_real_auth_boundary(self):
         from types import SimpleNamespace
         from daon_user_api.operations_status import OperationsStatusService, OperationsCounts
@@ -1563,6 +1599,41 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RuntimeSettingsTests(unittest.TestCase):
+    def test_s44_host_collector_default_off_and_exact_protected_storage_required(self):
+        from types import SimpleNamespace
+        from daon_user_api import runtime as module
+        class Store:
+            checks=0;revision='0072';ready=True
+            def readiness(self):self.checks+=1;return SimpleNamespace(ready=self.ready,schema_revision=self.revision)
+        store=Store()
+        settings=RuntimeSettings(profile='test',bind_host='127.0.0.1',port=8000)
+        self.assertIsNone(module._build_host_capacity_collector(store,settings))
+        self.assertEqual(store.checks,0)
+        enabled=replace(settings,operations_host_capacity_enabled=True)
+        with self.assertRaises(ValueError):module._build_host_capacity_collector(store,enabled)
+        store.revision='0073'
+        collector=module._build_host_capacity_collector(store,enabled)
+        self.assertTrue(collector.enabled)
+
+    def test_s44_host_loop_uses_thirty_second_wait_survives_failure_and_stops(self):
+        from daon_user_api import runtime as module
+        calls=[]
+        async def exercise():
+            loop=asyncio.get_running_loop();stop=asyncio.Event()
+            class Collector:
+                def tick(self):
+                    calls.append('tick')
+                    if calls.count('tick')==1:raise ValueError('CONTROLLED_PRIVATE_FAILURE')
+                    loop.call_soon_threadsafe(stop.set)
+            async def wait(coroutine,*,timeout):
+                calls.append(timeout);coroutine.close();raise TimeoutError
+            with patch.object(module.asyncio,'wait_for',side_effect=wait):
+                await module._host_capacity_loop(Collector(),stop)
+        with self.assertLogs('daon_user_api.runtime',level='WARNING') as logs:asyncio.run(exercise())
+        self.assertEqual(calls.count('tick'),2)
+        self.assertIn(30,calls)
+        self.assertNotIn('CONTROLLED_PRIVATE_FAILURE',' '.join(logs.output))
+
     def test_s44_cost_and_host_configuration_defaults_off_and_rejects_invalid_values(self):
         import os
         from daon_user_api import runtime as module

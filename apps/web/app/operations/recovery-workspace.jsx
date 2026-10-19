@@ -336,10 +336,17 @@ function BackupSelectionPane({ api, auth, scope, scopeRef, generation, paused, o
   </div>;
 }
 
+const hostMetricLabels={cpu_logical_millicores:'논리 CPU',cpu_usage_basis_points:'CPU 사용률',
+  memory_total_bytes:'전체 RAM',memory_available_bytes:'가용 RAM'};
+function resourceDisplay(row){
+  if(!Number.isSafeInteger(row?.value)||row.value<0)return '값 미확인';
+  return row.unit==='basis_points'?`${(row.value/100).toFixed(2)}%`:`${row.value} ${row.unit}`;
+}
+
 function WorkspaceTelemetry({status}){
-  const kinds={document:"문서",studio:"Studio",object:"Object"};
+  const kinds={document:"문서",studio:"Studio",object:"Object",server_host:'WSL-server 실측'};
   const states={fresh:"최근 수신",stale:"지난 관측",measured:"집계 확인",partial:"부분 집계",not_collected:"미집계",not_reported:"미보고",unavailable:"조회 불가"};
-  const metrics={cpu_quota_millicores:"CPU 할당",memory_limit_bytes:"메모리 한도",memory_current_bytes:"메모리 사용",runtime_available_bytes:"영속 저장 여유"};
+  const metrics={cpu_quota_millicores:"CPU 할당",memory_limit_bytes:"메모리 한도",memory_current_bytes:"메모리 사용",runtime_available_bytes:"영속 저장 여유",...hostMetricLabels};
   const events={manual_reprocess_pending:"수동 재처리 대기",readiness_reprocess_pending:"Readiness 재처리 대기",retry_wait:"재시도 대기",backoff_wait:"Backoff 대기",
     step_up_denied_24h:"추가 인증 거부",step_up_expired_24h:"만료 토큰 사용",access_blocked_24h:"접근 차단",access_masked_24h:"부분 마스킹",egress_denied_24h:"외부 송신 거부",
     waiting_text_generation:"텍스트 생성 역할 대기",waiting_image_understanding:"이미지 이해 역할 대기",waiting_document_parsing:"문서 파싱 역할 대기",
@@ -353,7 +360,10 @@ function WorkspaceTelemetry({status}){
       {serverTimestamp(r.observed_at)?` · ${r.observed_at}`:""}
     </li>)}</ul>
     <dl>{(status.resource_samples??[]).map(r=><div key={`${r.worker_kind}:${r.metric_id}`}><dt>{kinds[r.worker_kind]} · {metrics[r.metric_id]}</dt>
-      <dd>{states[r.state]??"조회 불가"} · {value(r)===null?"값 미확인":`${r.value} ${r.unit}`}</dd></div>)}</dl>
+      <dd>{states[r.state]??"조회 불가"} · {resourceDisplay(r)}
+        {r.worker_kind==='server_host'&&serverTimestamp(r.observed_at)?` · 관측 ${r.observed_at} · 수신 ${r.received_at}`:''}
+        {r.worker_kind==='server_host'&&<span title="WSL-server CPU·RAM 실측입니다. 30초 수집, 조회 시각 기준 60초 유효이며 첫 CPU는 미수집입니다. GPU·모델 적재 허용을 뜻하지 않습니다."> ⓘ</span>}
+      </dd></div>)}</dl>
     <h3>차단·재처리 관측 <span title="현재 접근 가능한 기록만 집계합니다. 추가 인증·접근·외부 송신 차단과 최초 억제 조건은 직전 24시간이며 역할 대기는 현재값입니다. 억제는 시도 횟수가 아닌 고유 조건의 관측 하한입니다. 부분 집계는 전체 수가 아니며 미수집·조회 실패는 0건으로 계산하지 않습니다.">ⓘ</span></h3>
     <dl>{Object.entries(events).map(([id,label])=>{const r=status.event_counts?.find(row=>row.metric_id===id);return <div key={id}><dt>{label}</dt>
       <dd>{states[r?.state]??"미집계"} · {value(r)===null?"값 미확인":`${r.value}건`}{serverTimestamp(r?.window_end)?` · ${r.window_start} ~ ${r.window_end}`:""}</dd></div>;})}</dl>
@@ -430,7 +440,7 @@ export function RecoveryOperationsWorkspace({ api = recoveryApi } = {}) {
         const systemBefore=target===null&&!before?systemSession(beforeResponse):null;
         if(systemBefore){
           const controller=new AbortController();systemController=controller;
-          const data=parseSystemOperationsStatus(await api.getSystemOperationsStatus({signal:controller.signal}));
+          const data=parseSystemOperationsStatus(await api.getSystemOperationsStatus({signal:controller.signal,includeCapacity:true}),{includeCapacity:true});
           if(!current()||controller.signal.aborted)return;
           const systemAfter=systemSession(await api.getSession({signal:controller.signal}));
           if(!current()||controller.signal.aborted)return;
@@ -444,7 +454,7 @@ export function RecoveryOperationsWorkspace({ api = recoveryApi } = {}) {
             publish("forbidden");return;
           }
           const [status, backups] = await Promise.allSettled([
-            Promise.resolve().then(() => api.getOperationsStatus(before[2],{scope:metricsScope,includeReadiness:true})),
+            Promise.resolve().then(() => api.getOperationsStatus(before[2],{scope:metricsScope,includeReadiness:true,includeCapacity:true})),
             Promise.resolve().then(() => api.listBackups(before[2])),
           ]);
           if (!current()) return;
@@ -641,10 +651,11 @@ export function RecoveryOperationsWorkspace({ api = recoveryApi } = {}) {
             {{document:"문서",studio:"Studio",object:"Object"}[r.worker_kind]} · {r.state==="fresh"?"최근 관측":r.state==="stale"?"지난 관측":r.state==="unavailable"?"조회 불가":"미수집"}
             {r.process_state==="processing"?" · 처리 중":r.process_state==="stopped"?" · 종료 관측":""}{r.observed_at?` · ${r.observed_at}`:""}
           </li>)}</ul>
-          <h3>프로세스 자원 관측 12종</h3>
+          <h3>프로세스·WSL 자원 관측 <span title="WSL-server CPU·RAM은 30초 수집한 실측입니다. 조회 시각 기준 60초가 지나면 지난 관측이며 GPU·모델 적재 가능량이 아닙니다.">ⓘ</span></h3>
           <ul>{loaded.home.status.resource_samples.map(r=><li key={`${r.worker_kind}:${r.metric_id}`}>
-            {r.worker_kind} · {{cpu_quota_millicores:"CPU 할당",memory_limit_bytes:"메모리 한도",memory_current_bytes:"메모리 사용",runtime_available_bytes:"영속 저장 여유"}[r.metric_id]}
-            {r.value===null?` · ${r.state==="unavailable"?"조회 불가":"미수집"}`:` · ${r.value} ${r.unit} · ${r.state==="stale"?"지난 관측":"최근 관측"}`}
+            {r.worker_kind==='server_host'?'WSL-server 실측':r.worker_kind} · {{cpu_quota_millicores:"CPU 할당",memory_limit_bytes:"메모리 한도",memory_current_bytes:"메모리 사용",runtime_available_bytes:"영속 저장 여유",...hostMetricLabels}[r.metric_id]}
+            {r.value===null?` · ${r.state==="unavailable"?"조회 불가":"미수집"}`:` · ${resourceDisplay(r)} · ${r.state==="stale"?"지난 관측":"최근 관측"}`}
+            {r.worker_kind==='server_host'&&r.observed_at?` · 관측 ${r.observed_at} · 수신 ${r.received_at}`:''}
           </li>)}</ul>
           <h3>배포·Rollback 기록</h3>
           {loaded.home.status.deployment_summary.result===null?<p>확인된 배포 기록 미수집</p>:<p>{loaded.home.status.deployment_summary.operation} · {loaded.home.status.deployment_summary.result} · {loaded.home.status.deployment_summary.code_revision}</p>}

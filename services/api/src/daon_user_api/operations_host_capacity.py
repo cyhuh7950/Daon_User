@@ -9,6 +9,8 @@ import re
 from .operations_run_cost import _utc
 
 HOST_REF='wsl-server-daon-user'
+HOST_METRICS=(('cpu_logical_millicores','millicores'),('cpu_usage_basis_points','basis_points'),
+    ('memory_total_bytes','bytes'),('memory_available_bytes','bytes'))
 
 
 @dataclass(frozen=True,slots=True)
@@ -138,3 +140,23 @@ class HostCapacityCollector:
             previous=None
         sample=self._reader(observed_at=now,sequence=sequence,previous=previous)
         return self._repository.record_host_sample(sample)
+
+
+def project_host_resources(stored,*,now):
+    _utc(now)
+    if stored is not None and type(stored) is not ReceivedHostCapacitySample:
+        raise ValueError('HOST_CAPACITY_INVALID')
+    state=host_sample_state(None if stored is None else stored.sample,
+        received_at=None if stored is None else stored.received_at,now=now)
+    result=[]
+    for key,unit in HOST_METRICS:
+        value=None if stored is None else getattr(stored.sample,key)
+        row_state='not_collected' if value is None else state
+        if value is not None and value>9007199254740991:
+            row_state='unavailable';value=None
+        known=row_state in {'fresh','stale'}
+        result.append(dict(worker_kind='server_host',metric_id=key,value=value,unit=unit,
+            state=row_state,observed_at=stored.sample.observed_at.isoformat().replace('+00:00','Z') if known else None,
+            received_at=stored.received_at.isoformat().replace('+00:00','Z') if known else None,
+            coverage='server_host_observation',safe_code='TELEMETRY_'+row_state.upper()))
+    return result

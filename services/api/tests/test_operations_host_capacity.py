@@ -115,3 +115,19 @@ def test_host_repository_writes_exact_sample_and_authorizes_ui_read_before_and_a
     assert repository.read_host_sample(context)==stored
     assert calls[3]==('authorize',context) and calls[-1]==calls[3]
     assert calls[4][0]=='SELECT * FROM public.read_operations_host_capacity()'
+
+
+def test_public_host_projection_is_closed_and_keeps_first_cpu_unknown_and_stale_distinct():
+    received=capacity.ReceivedHostCapacitySample(sample(),NOW)
+    rows=capacity.project_host_resources(received,now=NOW)
+    assert len(rows)==4
+    assert [(r['metric_id'],r['value'],r['unit']) for r in rows]==[
+        ('cpu_logical_millicores',2000,'millicores'),('cpu_usage_basis_points',None,'basis_points'),
+        ('memory_total_bytes',1073741824,'bytes'),('memory_available_bytes',536870912,'bytes')]
+    assert rows[1]['state']=='not_collected' and rows[1]['observed_at'] is None
+    assert all(set(r)=={'worker_kind','metric_id','value','unit','state','observed_at','received_at','coverage','safe_code'} for r in rows)
+    assert all(r['worker_kind']=='server_host' and r['coverage']=='server_host_observation' for r in rows)
+    stale=capacity.project_host_resources(received,now=NOW+timedelta(seconds=60))
+    assert stale[0]['state']=='stale' and stale[0]['value']==2000
+    unknown=capacity.project_host_resources(None,now=NOW)
+    assert all(r['state']=='not_collected' and r['value'] is None for r in unknown)

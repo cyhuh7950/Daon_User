@@ -891,14 +891,54 @@ function validateSourceReprocessingContract(document){
     trace_id:{$ref:"#/components/schemas/OpaqueId"}}}));
 }
 
+function validateOperationsCapacityContract(document){
+  const s=document.components?.schemas,same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+  const require=ok=>{if(!ok)fail('S44 host capacity exact opt-in contract');};
+  const ref=x=>({$ref:'#/components/schemas/'+x});
+  const host=[['cpu_logical_millicores','millicores',1000,32768000],['cpu_usage_basis_points','basis_points',0,10000],
+    ['memory_total_bytes','bytes',1,Number.MAX_SAFE_INTEGER],['memory_available_bytes','bytes',0,Number.MAX_SAFE_INTEGER]];
+  const properties={state:{enum:['fresh','stale','not_collected','unavailable']},observed_at:ref('SystemObservationTime'),
+    received_at:ref('SystemObservationTime'),safe_code:{type:'string'},worker_kind:{const:'server_host'},
+    metric_id:{enum:host.map(r=>r[0])},value:{type:['integer','null'],minimum:0,maximum:Number.MAX_SAFE_INTEGER},
+    unit:{enum:['millicores','basis_points','bytes']}};
+  const rules=[ref('SystemObservationTiming'),
+    {if:{properties:{state:{enum:['not_collected','unavailable']}}},then:{properties:{value:{type:'null'}}},else:{properties:{value:{type:'integer'}}}},
+    {oneOf:host.map(([metric,unit,minimum,maximum],i)=>({properties:{metric_id:{const:metric},unit:{const:unit},
+      value:{type:['integer','null'],minimum,maximum,...(i===0?{multipleOf:1000}:{})}}}))}];
+  require(same(s.SystemHostCapacitySample,{type:'object',additionalProperties:false,
+    required:['state','observed_at','received_at','safe_code','worker_kind','metric_id','value','unit'],properties,allOf:rules}));
+  require(same(s.WorkspaceHostCapacitySample,{type:'object',additionalProperties:false,
+    required:['state','observed_at','received_at','coverage','safe_code','worker_kind','metric_id','value','unit'],
+    properties:{...Object.fromEntries(Object.keys(properties).map(k=>[k,ref('SystemHostCapacitySample/properties/'+k)])),coverage:{const:'server_host_observation'}},
+    allOf:[0,1,2].map(i=>ref('SystemHostCapacitySample/allOf/'+i))}));
+  const capacity=(base,resource)=>({type:'array',minItems:16,maxItems:16,items:false,prefixItems:[
+    ...Array.from({length:12},(_,i)=>ref(base+'/properties/resource_samples/prefixItems/'+i)),
+    ...host.map(([metric,unit])=>({allOf:[ref(resource),{properties:{worker_kind:{const:'server_host'},metric_id:{const:metric},unit:{const:unit}}}]}))]});
+  for(const [name,base,readiness] of [['SystemOperationsStatusWithCapacity','SystemOperationsStatus',false],
+    ['OperationsStatusWithCapacity','OperationsStatus',false],['OperationsStatusWithReadinessCapacity','OperationsStatus',true]]){
+    require(same(s[name],{type:'object',additionalProperties:false,required:s[base].required,
+      properties:Object.fromEntries(s[base].required.map(k=>[k,k==='resource_samples'
+        ?capacity(base,base==='SystemOperationsStatus'?'SystemHostCapacitySample':'WorkspaceHostCapacitySample')
+        :ref((k==='event_counts'&&readiness?'OperationsStatusWithReadiness':base)+'/properties/'+k)]))}));
+  }
+  for(const [name,data,base] of [['SystemOperationsStatusCapacityEnvelope','SystemOperationsStatusWithCapacity','SystemOperationsStatusEnvelope'],
+    ['OperationsStatusCapacityEnvelope','OperationsStatusWithCapacity','OperationsStatusEnvelope'],
+    ['OperationsStatusReadinessCapacityEnvelope','OperationsStatusWithReadinessCapacity','OperationsStatusEnvelope']]){
+    require(same(s[name],{type:'object',additionalProperties:false,required:['data','meta'],
+      properties:{data:ref(data),meta:ref(base+'/properties/meta')}}));
+  }
+}
+
 function validateWorkspaceOperationsContract(document){
   const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b),require=ok=>{if(!ok)fail("M2 workspace operations exact contract");};
   const s=document.components?.schemas,op=document.paths?.["/api/v1/workspaces/{id}/operations/status"]?.get;
-  require(op?.parameters?.length===3&&op.parameters[0].$ref==="#/components/parameters/ResourceId"&&!op.requestBody);
+  require(op?.parameters?.length===4&&op.parameters[0].$ref==="#/components/parameters/ResourceId"&&!op.requestBody);
   require(same(op.parameters[1],{name:"scope",in:"query",required:false,schema:{type:"string",enum:["self","workspace_visible"],default:"self"}}));
   require(same(op.parameters[2],{name:"include_readiness",in:"query",required:false,schema:{type:"string",enum:["1"]}}));
+  require(same(op.parameters[3],{name:'include_capacity',in:'query',required:false,schema:{type:'string',enum:['1']}}));
   require(same(op.responses?.["200"]?.content?.["application/json"]?.schema,{oneOf:[
-    {$ref:"#/components/schemas/OperationsStatusEnvelope"},{$ref:"#/components/schemas/OperationsStatusReadinessEnvelope"}]}));
+    {$ref:"#/components/schemas/OperationsStatusEnvelope"},{$ref:"#/components/schemas/OperationsStatusReadinessEnvelope"},
+    {$ref:'#/components/schemas/OperationsStatusCapacityEnvelope'},{$ref:'#/components/schemas/OperationsStatusReadinessCapacityEnvelope'}]}));
   const exact=(name,keys)=>{const r=s?.[name];require(r?.type==="object"&&r.additionalProperties===false&&same(r.required,keys)&&same(Object.keys(r.properties).sort(),[...keys].sort()));return r;};
   const common=["state","observed_at","received_at","coverage","safe_code"];
   const data=exact("OperationsStatus",["workspace_id","overall_status","checked_at","components","observations","worker_samples","resource_samples","event_counts","cost_summary","deployment_summary","unimplemented"]);
@@ -957,8 +997,10 @@ function validateWorkspaceOperationsContract(document){
 function validateSystemOperationsContract(document) {
   const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b),require=(ok)=>{if(!ok)fail("M2-S system operations exact contract");};
   const path=document.paths?.["/api/v1/system/operations/status"],op=path?.get,s=document.components?.schemas;
-  require(same(Object.keys(path??{}),["get"])&&op.operationId==="getSystemOperationsStatus"&&same(op.parameters,[])&&!op.requestBody);
-  require(op.responses?.["200"]?.content?.["application/json"]?.schema?.$ref==="#/components/schemas/SystemOperationsStatusEnvelope");
+  require(same(Object.keys(path??{}),["get"])&&op.operationId==="getSystemOperationsStatus"
+    &&same(op.parameters,[{name:'include_capacity',in:'query',required:false,schema:{type:'string',enum:['1']}}])&&!op.requestBody);
+  require(same(op.responses?.['200']?.content?.['application/json']?.schema,{oneOf:[
+    {$ref:'#/components/schemas/SystemOperationsStatusEnvelope'},{$ref:'#/components/schemas/SystemOperationsStatusCapacityEnvelope'}]}));
   const exact=(name,fields)=>{const row=s?.[name];require(row?.type==="object"&&row.additionalProperties===false&&same(row.required,fields)
     &&same(Object.keys(row.properties).sort(),[...fields].sort()));return row;};
   const common=["state","observed_at","received_at","safe_code"];
@@ -1047,6 +1089,7 @@ export function validateOpenApiDocument(document) {
   for (const actualPath of actualPaths) if (!REQUIRED_PATHS.includes(actualPath)) fail(`unapproved path ${actualPath}`);
   validateSystemOperationsContract(document);
   validateWorkspaceOperationsContract(document);
+  validateOperationsCapacityContract(document);
   validateSourceReprocessingContract(document);
   validateOrganizationContract(document);
   validateWebsiteContract(document);

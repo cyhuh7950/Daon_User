@@ -4346,37 +4346,182 @@
     },
     "/api/v1/system/operations/status": {
       "get": {
-        "operationId": "getSystemOperationsStatus", "tags": ["Operations"], "x-implementation-owner": "S44-M2-S",
+        "operationId": "getSystemOperationsStatus",
+        "tags": [
+          "Operations"
+        ],
+        "x-implementation-owner": "S44-M2-S",
         "summary": "현재 system-admin 전용 안전 시스템 관측. Workspace 자료 집계·Provider 호출·쓰기 없음",
-        "parameters": [],
+        "parameters": [
+          {
+            "name": "include_capacity",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1"
+              ]
+            }
+          }
+        ],
         "responses": {
-          "200": { "description": "시스템 상태와 미수집·미구현 범위", "headers": { "ETag": { "$ref": "#/components/headers/ETag" }, "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SystemOperationsStatusEnvelope" } } } },
-          "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" },
-          "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" },
-          "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+          "200": {
+            "description": "시스템 상태와 미수집·미구현 범위 include_capacity=1은 기본 자원12행 뒤 고정 WSL CPU/RAM4행만 추가하며 미지정 응답은 기존12행이다.",
+            "headers": {
+              "ETag": {
+                "$ref": "#/components/headers/ETag"
+              },
+              "X-Trace-Id": {
+                "$ref": "#/components/headers/XTraceId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/SystemOperationsStatusEnvelope"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SystemOperationsStatusCapacityEnvelope"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
         }
       }
     },
     "/api/v1/workspaces/{id}/operations/status": {
       "get": {
-        "operationId": "getWorkspaceOperationsStatus", "tags": ["Operations"],
-        "summary": "Workspace Provider API Storage Sync Queue 안전 운영상태", "x-implementation-owner": "R1-M8-10",
-        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }, { "name": "scope", "in": "query", "required": false, "schema": { "type": "string", "enum": ["self", "workspace_visible"], "default": "self" } }, { "name": "include_readiness", "in": "query", "required": false, "schema": { "type": "string", "enum": ["1"] } }],
+        "operationId": "getWorkspaceOperationsStatus",
+        "tags": [
+          "Operations"
+        ],
+        "summary": "Workspace Provider API Storage Sync Queue 안전 운영상태",
+        "x-implementation-owner": "R1-M8-10",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "self",
+                "workspace_visible"
+              ],
+              "default": "self"
+            }
+          },
+          {
+            "name": "include_readiness",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1"
+              ]
+            }
+          },
+          {
+            "name": "include_capacity",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1"
+              ]
+            }
+          }
+        ],
         "responses": {
           "200": {
-            "description": "Workspace 운영 상태. include_readiness 미지정은 기존 event_counts 9행, 정확한 값 1을 지정한 요청만 Readiness 포함 15행을 반환한다. 서버와 클라이언트가 요청별 분기를 검증한다.",
-            "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } },
-            "content": { "application/json": { "schema": { "oneOf": [{ "$ref": "#/components/schemas/OperationsStatusEnvelope" }, { "$ref": "#/components/schemas/OperationsStatusReadinessEnvelope" }] } } }
+            "description": "Workspace 운영 상태. include_readiness 미지정은 기존 event_counts 9행, 정확한 값 1을 지정한 요청만 Readiness 포함 15행을 반환한다. 서버와 클라이언트가 요청별 분기를 검증한다. include_capacity=1은 기본 자원12행 뒤 고정 WSL CPU/RAM4행만 추가하며 미지정 응답은 기존12행이다.",
+            "headers": {
+              "X-Trace-Id": {
+                "$ref": "#/components/headers/XTraceId"
+              },
+              "ETag": {
+                "$ref": "#/components/headers/ETag"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/OperationsStatusEnvelope"
+                    },
+                    {
+                      "$ref": "#/components/schemas/OperationsStatusReadinessEnvelope"
+                    },
+                    {
+                      "$ref": "#/components/schemas/OperationsStatusCapacityEnvelope"
+                    },
+                    {
+                      "$ref": "#/components/schemas/OperationsStatusReadinessCapacityEnvelope"
+                    }
+                  ]
+                }
+              }
+            }
           },
-          "400": { "$ref": "#/components/responses/BadRequest" },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "404": { "$ref": "#/components/responses/NotFound" },
-          "409": { "$ref": "#/components/responses/Conflict" },
-          "412": { "$ref": "#/components/responses/PreconditionFailed" },
-          "500": { "$ref": "#/components/responses/SafeFailure" },
-          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
         }
       }
     },
@@ -8908,6 +9053,14 @@
         },
         "allOf": [{"$ref":"#/components/schemas/WorkspaceEventCount/allOf/0"},{"$ref":"#/components/schemas/WorkspaceEventCount/allOf/1"},{"$ref":"#/components/schemas/WorkspaceEventCount/allOf/2"}]
       },
+      "SystemHostCapacitySample": {"type":"object","additionalProperties":false,"required":["state","observed_at","received_at","safe_code","worker_kind","metric_id","value","unit"],"properties":{"state":{"enum":["fresh","stale","not_collected","unavailable"]},"observed_at":{"$ref":"#/components/schemas/SystemObservationTime"},"received_at":{"$ref":"#/components/schemas/SystemObservationTime"},"safe_code":{"type":"string"},"worker_kind":{"const":"server_host"},"metric_id":{"enum":["cpu_logical_millicores","cpu_usage_basis_points","memory_total_bytes","memory_available_bytes"]},"value":{"type":["integer","null"],"minimum":0,"maximum":9007199254740991},"unit":{"enum":["millicores","basis_points","bytes"]}},"allOf":[{"$ref":"#/components/schemas/SystemObservationTiming"},{"if":{"properties":{"state":{"enum":["not_collected","unavailable"]}}},"then":{"properties":{"value":{"type":"null"}}},"else":{"properties":{"value":{"type":"integer"}}}},{"oneOf":[{"properties":{"metric_id":{"const":"cpu_logical_millicores"},"unit":{"const":"millicores"},"value":{"type":["integer","null"],"minimum":1000,"maximum":32768000,"multipleOf":1000}}},{"properties":{"metric_id":{"const":"cpu_usage_basis_points"},"unit":{"const":"basis_points"},"value":{"type":["integer","null"],"minimum":0,"maximum":10000}}},{"properties":{"metric_id":{"const":"memory_total_bytes"},"unit":{"const":"bytes"},"value":{"type":["integer","null"],"minimum":1,"maximum":9007199254740991}}},{"properties":{"metric_id":{"const":"memory_available_bytes"},"unit":{"const":"bytes"},"value":{"type":["integer","null"],"minimum":0,"maximum":9007199254740991}}}]}]},
+      "WorkspaceHostCapacitySample": {"type":"object","additionalProperties":false,"required":["state","observed_at","received_at","coverage","safe_code","worker_kind","metric_id","value","unit"],"properties":{"state":{"$ref":"#/components/schemas/SystemHostCapacitySample/properties/state"},"observed_at":{"$ref":"#/components/schemas/SystemHostCapacitySample/properties/observed_at"},"received_at":{"$ref":"#/components/schemas/SystemHostCapacitySample/properties/received_at"},"safe_code":{"$ref":"#/components/schemas/SystemHostCapacitySample/properties/safe_code"},"worker_kind":{"$ref":"#/components/schemas/SystemHostCapacitySample/properties/worker_kind"},"metric_id":{"$ref":"#/components/schemas/SystemHostCapacitySample/properties/metric_id"},"value":{"$ref":"#/components/schemas/SystemHostCapacitySample/properties/value"},"unit":{"$ref":"#/components/schemas/SystemHostCapacitySample/properties/unit"},"coverage":{"const":"server_host_observation"}},"allOf":[{"$ref":"#/components/schemas/SystemHostCapacitySample/allOf/0"},{"$ref":"#/components/schemas/SystemHostCapacitySample/allOf/1"},{"$ref":"#/components/schemas/SystemHostCapacitySample/allOf/2"}]},
+      "SystemOperationsStatusWithCapacity": {"type":"object","additionalProperties":false,"required":["schema_version","checked_at","health","worker_samples","resource_samples","deployment_summary","unimplemented"],"properties":{"schema_version":{"$ref":"#/components/schemas/SystemOperationsStatus/properties/schema_version"},"checked_at":{"$ref":"#/components/schemas/SystemOperationsStatus/properties/checked_at"},"health":{"$ref":"#/components/schemas/SystemOperationsStatus/properties/health"},"worker_samples":{"$ref":"#/components/schemas/SystemOperationsStatus/properties/worker_samples"},"resource_samples":{"type":"array","minItems":16,"maxItems":16,"items":false,"prefixItems":[{"$ref":"#/components/schemas/SystemOperationsStatus/properties/resource_samples/prefixItems/0"},{"$ref":"#/components/schemas/SystemOperationsStatus/properties/resource_samples/prefixItems/1"},{"$ref":"#/components/schemas/SystemOperationsStatus/properties/resource_samples/prefixItems/2"},{"$ref":"#/components/schemas/SystemOperationsStatus/properties/resource_samples/prefixItems/3"},{"$ref":"#/components/schemas/SystemOperationsStatus/properties/resource_samples/prefixItems/4"},{"$ref":"#/components/schemas/SystemOperationsStatus/properties/resource_samples/prefixItems/5"},{"$ref":"#/components/schemas/SystemOperationsStatus/properties/resource_samples/prefixItems/6"},{"$ref":"#/components/schemas/SystemOperationsStatus/properties/resource_samples/prefixItems/7"},{"$ref":"#/components/schemas/SystemOperationsStatus/properties/resource_samples/prefixItems/8"},{"$ref":"#/components/schemas/SystemOperationsStatus/properties/resource_samples/prefixItems/9"},{"$ref":"#/components/schemas/SystemOperationsStatus/properties/resource_samples/prefixItems/10"},{"$ref":"#/components/schemas/SystemOperationsStatus/properties/resource_samples/prefixItems/11"},{"allOf":[{"$ref":"#/components/schemas/SystemHostCapacitySample"},{"properties":{"worker_kind":{"const":"server_host"},"metric_id":{"const":"cpu_logical_millicores"},"unit":{"const":"millicores"}}}]},{"allOf":[{"$ref":"#/components/schemas/SystemHostCapacitySample"},{"properties":{"worker_kind":{"const":"server_host"},"metric_id":{"const":"cpu_usage_basis_points"},"unit":{"const":"basis_points"}}}]},{"allOf":[{"$ref":"#/components/schemas/SystemHostCapacitySample"},{"properties":{"worker_kind":{"const":"server_host"},"metric_id":{"const":"memory_total_bytes"},"unit":{"const":"bytes"}}}]},{"allOf":[{"$ref":"#/components/schemas/SystemHostCapacitySample"},{"properties":{"worker_kind":{"const":"server_host"},"metric_id":{"const":"memory_available_bytes"},"unit":{"const":"bytes"}}}]}]},"deployment_summary":{"$ref":"#/components/schemas/SystemOperationsStatus/properties/deployment_summary"},"unimplemented":{"$ref":"#/components/schemas/SystemOperationsStatus/properties/unimplemented"}}},
+      "OperationsStatusWithCapacity": {"type":"object","additionalProperties":false,"required":["workspace_id","overall_status","checked_at","components","observations","worker_samples","resource_samples","event_counts","cost_summary","deployment_summary","unimplemented"],"properties":{"workspace_id":{"$ref":"#/components/schemas/OperationsStatus/properties/workspace_id"},"overall_status":{"$ref":"#/components/schemas/OperationsStatus/properties/overall_status"},"checked_at":{"$ref":"#/components/schemas/OperationsStatus/properties/checked_at"},"components":{"$ref":"#/components/schemas/OperationsStatus/properties/components"},"observations":{"$ref":"#/components/schemas/OperationsStatus/properties/observations"},"worker_samples":{"$ref":"#/components/schemas/OperationsStatus/properties/worker_samples"},"resource_samples":{"type":"array","minItems":16,"maxItems":16,"items":false,"prefixItems":[{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/0"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/1"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/2"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/3"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/4"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/5"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/6"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/7"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/8"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/9"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/10"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/11"},{"allOf":[{"$ref":"#/components/schemas/WorkspaceHostCapacitySample"},{"properties":{"worker_kind":{"const":"server_host"},"metric_id":{"const":"cpu_logical_millicores"},"unit":{"const":"millicores"}}}]},{"allOf":[{"$ref":"#/components/schemas/WorkspaceHostCapacitySample"},{"properties":{"worker_kind":{"const":"server_host"},"metric_id":{"const":"cpu_usage_basis_points"},"unit":{"const":"basis_points"}}}]},{"allOf":[{"$ref":"#/components/schemas/WorkspaceHostCapacitySample"},{"properties":{"worker_kind":{"const":"server_host"},"metric_id":{"const":"memory_total_bytes"},"unit":{"const":"bytes"}}}]},{"allOf":[{"$ref":"#/components/schemas/WorkspaceHostCapacitySample"},{"properties":{"worker_kind":{"const":"server_host"},"metric_id":{"const":"memory_available_bytes"},"unit":{"const":"bytes"}}}]}]},"event_counts":{"$ref":"#/components/schemas/OperationsStatus/properties/event_counts"},"cost_summary":{"$ref":"#/components/schemas/OperationsStatus/properties/cost_summary"},"deployment_summary":{"$ref":"#/components/schemas/OperationsStatus/properties/deployment_summary"},"unimplemented":{"$ref":"#/components/schemas/OperationsStatus/properties/unimplemented"}}},
+      "OperationsStatusWithReadinessCapacity": {"type":"object","additionalProperties":false,"required":["workspace_id","overall_status","checked_at","components","observations","worker_samples","resource_samples","event_counts","cost_summary","deployment_summary","unimplemented"],"properties":{"workspace_id":{"$ref":"#/components/schemas/OperationsStatus/properties/workspace_id"},"overall_status":{"$ref":"#/components/schemas/OperationsStatus/properties/overall_status"},"checked_at":{"$ref":"#/components/schemas/OperationsStatus/properties/checked_at"},"components":{"$ref":"#/components/schemas/OperationsStatus/properties/components"},"observations":{"$ref":"#/components/schemas/OperationsStatus/properties/observations"},"worker_samples":{"$ref":"#/components/schemas/OperationsStatus/properties/worker_samples"},"resource_samples":{"type":"array","minItems":16,"maxItems":16,"items":false,"prefixItems":[{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/0"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/1"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/2"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/3"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/4"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/5"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/6"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/7"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/8"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/9"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/10"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/11"},{"allOf":[{"$ref":"#/components/schemas/WorkspaceHostCapacitySample"},{"properties":{"worker_kind":{"const":"server_host"},"metric_id":{"const":"cpu_logical_millicores"},"unit":{"const":"millicores"}}}]},{"allOf":[{"$ref":"#/components/schemas/WorkspaceHostCapacitySample"},{"properties":{"worker_kind":{"const":"server_host"},"metric_id":{"const":"cpu_usage_basis_points"},"unit":{"const":"basis_points"}}}]},{"allOf":[{"$ref":"#/components/schemas/WorkspaceHostCapacitySample"},{"properties":{"worker_kind":{"const":"server_host"},"metric_id":{"const":"memory_total_bytes"},"unit":{"const":"bytes"}}}]},{"allOf":[{"$ref":"#/components/schemas/WorkspaceHostCapacitySample"},{"properties":{"worker_kind":{"const":"server_host"},"metric_id":{"const":"memory_available_bytes"},"unit":{"const":"bytes"}}}]}]},"event_counts":{"$ref":"#/components/schemas/OperationsStatusWithReadiness/properties/event_counts"},"cost_summary":{"$ref":"#/components/schemas/OperationsStatus/properties/cost_summary"},"deployment_summary":{"$ref":"#/components/schemas/OperationsStatus/properties/deployment_summary"},"unimplemented":{"$ref":"#/components/schemas/OperationsStatus/properties/unimplemented"}}},
+      "SystemOperationsStatusCapacityEnvelope": {"type":"object","additionalProperties":false,"required":["data","meta"],"properties":{"data":{"$ref":"#/components/schemas/SystemOperationsStatusWithCapacity"},"meta":{"$ref":"#/components/schemas/SystemOperationsStatusEnvelope/properties/meta"}}},
+      "OperationsStatusCapacityEnvelope": {"type":"object","additionalProperties":false,"required":["data","meta"],"properties":{"data":{"$ref":"#/components/schemas/OperationsStatusWithCapacity"},"meta":{"$ref":"#/components/schemas/OperationsStatusEnvelope/properties/meta"}}},
+      "OperationsStatusReadinessCapacityEnvelope": {"type":"object","additionalProperties":false,"required":["data","meta"],"properties":{"data":{"$ref":"#/components/schemas/OperationsStatusWithReadinessCapacity"},"meta":{"$ref":"#/components/schemas/OperationsStatusEnvelope/properties/meta"}}},
       "OperationsStatusWithReadiness": {
         "type":"object", "additionalProperties":false,
         "required":["workspace_id","overall_status","checked_at","components","observations","worker_samples","resource_samples","event_counts","cost_summary","deployment_summary","unimplemented"],

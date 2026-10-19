@@ -44,6 +44,37 @@ function readinessPayload(){const result=structuredClone(payload);
   result.data.event_counts.push(...readinessIds.map(metric_id=>({...common("actor_accessible_records"),
     metric_id,value:null,unit:"count",window_start:null,window_end:null})));return result;}
 
+const hostMetrics=[["cpu_logical_millicores","millicores"],["cpu_usage_basis_points","basis_points"],
+  ["memory_total_bytes","bytes"],["memory_available_bytes","bytes"]];
+function capacityPayload(){const result=structuredClone(payload);
+  result.data.resource_samples.push(...hostMetrics.map(([metric_id,unit])=>({...common("server_host_observation"),
+    worker_kind:"server_host",metric_id,unit,value:null})));return result;}
+
+test("S44 capacity opt-in accepts only exact host four rows and preserves default twelve",async()=>{
+  const value=capacityPayload();const calls=[];
+  const fetchImpl=async(path,init)=>{calls.push([path,init]);return Response.json(value);};
+  const result=await getWorkspaceOperationsStatus("workspace-1",{includeCapacity:true,fetchImpl});
+  assert.equal(calls[0][0],"/bff/api/workspaces/workspace-1/operations/status?include_capacity=1");
+  assert.equal(result.resource_samples.length,16);
+  await assert.rejects(()=>getWorkspaceOperationsStatus("workspace-1",{fetchImpl}),/OPERATIONS_STATUS_RESPONSE_INVALID/u);
+  for(const includeCapacity of ["1",1,null]){
+    let sent=false;
+    await assert.rejects(()=>getWorkspaceOperationsStatus("workspace-1",{includeCapacity,fetchImpl:async()=>{sent=true;return Response.json(payload);}}),/OPERATIONS_STATUS_INPUT_INVALID/u);
+    assert.equal(sent,false);
+  }
+});
+
+test("S44 host rows reject private fields, arbitrary metrics, wrong units and unsafe CPU",async()=>{
+  for(const [index,key,value] of [[12,"boot_id","PRIVATE_BOOT"],[12,"coverage","workspace_operational_counts"],
+    [13,"unit","percent"],[14,"metric_id","gpu_available_bytes"],[15,"value",true]]){
+    const response=capacityPayload();response.data.resource_samples[index][key]=value;
+    await assert.rejects(()=>getWorkspaceOperationsStatus("workspace-1",{includeCapacity:true,fetchImpl:async()=>Response.json(response)}),/OPERATIONS_STATUS_RESPONSE_INVALID/u);
+  }
+  const response=capacityPayload();response.data.resource_samples[13]={...response.data.resource_samples[13],
+    state:"fresh",safe_code:"TELEMETRY_FRESH",observed_at:payload.data.checked_at,received_at:payload.data.checked_at,value:10001};
+  await assert.rejects(()=>getWorkspaceOperationsStatus("workspace-1",{includeCapacity:true,fetchImpl:async()=>Response.json(response)}),/OPERATIONS_STATUS_RESPONSE_INVALID/u);
+});
+
 test("R4 readiness opt-in alone accepts exact15 and leaves default9 wire unchanged",async()=>{
   const calls=[];
   for(const scope of ["self","workspace_visible"]){

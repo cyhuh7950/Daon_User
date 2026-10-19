@@ -22,6 +22,77 @@ READINESS_IDS = ("waiting_text_generation", "waiting_image_understanding", "wait
                  "waiting_speech_to_text", "waiting_role_unknown", "retry_suppressed_contexts_24h")
 
 
+def test_host_capacity_opt_in_keeps_default_twelve_and_readiness_independent():
+    from daon_user_api.operations_status import unknown_telemetry,validate_telemetry
+    for readiness in (False,True):
+        original=unknown_telemetry(include_readiness=readiness)
+        selected=unknown_telemetry(include_readiness=readiness,include_capacity=True)
+        assert len(original['resource_samples'])==12 and len(selected['resource_samples'])==16
+        assert len(selected['event_counts'])==(15 if readiness else 9)
+        assert validate_telemetry(selected,include_readiness=readiness,include_capacity=True) is selected
+        with pytest.raises(ValueError):validate_telemetry(selected,include_readiness=readiness)
+    for invalid in (None,1,'1'):
+        with pytest.raises(ValueError):OperationsStatusContext('tenant-1','workspace-1','actor-1',include_capacity=invalid)
+
+
+def test_host_capacity_validator_rejects_extra_private_fields_wrong_metric_and_impossible_cpu():
+    from copy import deepcopy
+    from test_operations_host_capacity import NOW,sample
+    from daon_user_api.operations_host_capacity import project_host_resources,ReceivedHostCapacitySample
+    from daon_user_api.operations_status import unknown_telemetry,validate_telemetry
+    data=unknown_telemetry(include_capacity=True)
+    data['resource_samples'][12:]=project_host_resources(ReceivedHostCapacitySample(sample(),NOW),now=NOW)
+    assert validate_telemetry(data,include_capacity=True) is data
+    for index,key,value in ((12,'boot_id','PRIVATE_BOOT'),(12,'coverage','workspace_operational_counts'),
+        (13,'unit','percent'),(14,'metric_id','gpu_available_bytes'),(15,'value',True)):
+        changed=deepcopy(data);changed['resource_samples'][index][key]=value
+        with pytest.raises(ValueError):validate_telemetry(changed,include_capacity=True)
+    changed=deepcopy(data)
+    changed['resource_samples'][13].update(state='fresh',safe_code='TELEMETRY_FRESH',value=10001,
+        observed_at='2026-10-20T00:00:00Z',received_at='2026-10-20T00:00:00Z')
+    with pytest.raises(ValueError):validate_telemetry(changed,include_capacity=True)
+
+
+def test_system_host_capacity_opt_in_does_not_expose_private_observation_fields():
+    from test_operations_host_capacity import NOW,sample
+    from daon_user_api.operations_host_capacity import ReceivedHostCapacitySample
+    from daon_user_api.operations_status import SystemOperationsStatusService
+    class Repository:
+        def read_system_observations(self):return (),NOW
+        def read_host_capacity(self):return ReceivedHostCapacitySample(sample(),NOW)
+    service=SystemOperationsStatusService(Repository())
+    options=dict(api_ready=True,database_ready=True,object_storage_ready=True,checked_at='2026-10-20T00:00:00Z')
+    assert len(service.read(**options)['resource_samples'])==12
+    result=service.read(**options,include_capacity=True)
+    assert len(result['resource_samples'])==16
+    assert result['resource_samples'][-1]['value']==536870912
+    assert all(set(row)=={'state','observed_at','received_at','safe_code','worker_kind','metric_id','value','unit'} for row in result['resource_samples'][12:])
+
+
+def test_workspace_host_projection_keeps_global_provenance_and_current_access_checks():
+    from test_operations_host_capacity import NOW,sample
+    from daon_user_api.operations_host_capacity import ReceivedHostCapacitySample
+    from daon_user_api.operations_status import unknown_telemetry,validate_telemetry
+    class Store:
+        @contextmanager
+        def _transaction(self,context):yield SimpleNamespace()
+    repository=PostgresOperationsStatusRepository(Store())
+    context=OperationsStatusContext('tenant-1','workspace-1','actor-1',include_capacity=True)
+    with patch.object(repository,'_authorize_telemetry') as auth, \
+        patch.object(repository,'read_system_observations',return_value=((),NOW)), \
+        patch.object(repository,'read_deployment_receipt',return_value=None), \
+        patch.object(repository,'read_host_capacity',return_value=ReceivedHostCapacitySample(sample(),NOW),create=True), \
+        patch.object(repository,'read_pending_events',return_value=unknown_telemetry()['event_counts'][:4]), \
+        patch.object(repository,'read_decision_events',return_value=unknown_telemetry()['event_counts'][4:9]), \
+        patch.object(repository,'read_cost_summary',return_value=unknown_telemetry()['cost_summary']):
+        data=repository.read_workspace_telemetry(context)
+    assert auth.call_count==2
+    assert len(data['resource_samples'])==16
+    assert data['resource_samples'][-1]['value']==536870912
+    assert data['resource_samples'][-1]['coverage']=='server_host_observation'
+    assert validate_telemetry(data,include_capacity=True) is data
+
+
 def test_readiness_event_counts_are_opt_in_exact15_with_missing_producer_null_not_zero():
     repository = SimpleNamespace(read_counts=lambda context: OperationsCounts(0, 0, 0))
     service = OperationsStatusService(repository)

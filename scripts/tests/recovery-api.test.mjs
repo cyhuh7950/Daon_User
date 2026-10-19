@@ -13,7 +13,34 @@ test("M2-S system API uses same-origin signal and rejects malformed DTO",async()
 });
 
 import { createBffProxy } from "../../apps/web/lib/bff-api-proxy.js";
-import { parseRecoverySessionContext, recoveryApi, resolveRecoverySession } from "../../apps/web/lib/recovery-api.js";
+import { parseRecoverySessionContext, parseSystemOperationsStatus, recoveryApi, resolveRecoverySession } from "../../apps/web/lib/recovery-api.js";
+
+function hostSystemStatus(){
+  const kinds=['document','studio','object'];
+  const common={state:'not_collected',observed_at:null,received_at:null,safe_code:'TELEMETRY_NOT_COLLECTED'};
+  return {schema_version:1,checked_at:'2026-10-20T00:00:00Z',
+    health:['api','database','object_storage'].map(component_id=>({component_id,state:'ready',checked_at:'2026-10-20T00:00:00Z',safe_code:component_id.toUpperCase()+'_READY'})),
+    worker_samples:kinds.map(worker_kind=>({...common,worker_kind,process_state:'unknown',poll_started_at:null,poll_finished_at:null,active_started_at:null})),
+    resource_samples:[...kinds.flatMap(worker_kind=>['cpu_quota_millicores','memory_limit_bytes','memory_current_bytes','runtime_available_bytes'].map((metric_id,i)=>({...common,worker_kind,metric_id,unit:i===0?'millicores':'bytes',value:null}))),
+      ...[['cpu_logical_millicores','millicores'],['cpu_usage_basis_points','basis_points'],['memory_total_bytes','bytes'],['memory_available_bytes','bytes']].map(([metric_id,unit])=>({...common,worker_kind:'server_host',metric_id,unit,value:null}))],
+    deployment_summary:{...common,operation:null,code_revision:null,image_digest:null,previous_image_digest:null,result:null},unimplemented:[]};
+}
+
+test('S44 system host contract accepts exact opt-in sixteen and no private host fields',async()=>{
+  const data=hostSystemStatus();
+  assert.equal(parseSystemOperationsStatus(data,{includeCapacity:true}).resource_samples.length,16);
+  assert.throws(()=>parseSystemOperationsStatus(data),/RESOURCE_UNAVAILABLE/u);
+  const previous=globalThis.fetch,calls=[];
+  globalThis.fetch=async(path,init)=>{calls.push([path,init]);return Response.json({data});};
+  try{
+    assert.equal((await recoveryApi.getSystemOperationsStatus({includeCapacity:true})).resource_samples.length,16);
+    assert.equal(calls[0][0],'/bff/api/system/operations/status?include_capacity=1');
+    for(const [index,key,value] of [[12,'boot_id','PRIVATE_BOOT'],[13,'unit','percent'],[15,'value',true]]){
+      const broken=structuredClone(data);broken.resource_samples[index][key]=value;
+      assert.throws(()=>parseSystemOperationsStatus(broken,{includeCapacity:true}),/RESOURCE_UNAVAILABLE/u);
+    }
+  }finally{globalThis.fetch=previous;}
+});
 
 function labelContext(sources) {
   return Response.json({ data: { notebook_id: "notebook-a", sources,

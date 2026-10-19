@@ -18,14 +18,39 @@ async function loadContract() {
   return JSON.parse(await readFile(contractPath, "utf8"));
 }
 
+test('S44 capacity contracts keep default twelve and require exact independent opt-in branches',async()=>{
+  const doc=await loadContract(),s=doc.components.schemas;
+  const workspace=doc.paths['/api/v1/workspaces/{id}/operations/status'].get;
+  const system=doc.paths['/api/v1/system/operations/status'].get;
+  assert.deepEqual(workspace.parameters[3],{name:'include_capacity',in:'query',required:false,schema:{type:'string',enum:['1']}});
+  assert.deepEqual(system.parameters,[{name:'include_capacity',in:'query',required:false,schema:{type:'string',enum:['1']}}]);
+  assert.equal(s.OperationsStatus.properties.resource_samples.maxItems,12);
+  assert.equal(s.SystemOperationsStatus.properties.resource_samples.maxItems,12);
+  for(const name of ['OperationsStatusWithCapacity','OperationsStatusWithReadinessCapacity','SystemOperationsStatusWithCapacity']){
+    const array=s[name].properties.resource_samples;
+    assert.equal(array.minItems,16);assert.equal(array.maxItems,16);assert.equal(array.prefixItems.length,16);assert.equal(array.items,false);
+  }
+  assert.doesNotThrow(()=>validateOpenApiDocument(doc));
+  for(const mutate of [
+    d=>d.paths['/api/v1/system/operations/status'].get.parameters[0].schema.enum.push('0'),
+    d=>{d.components.schemas.OperationsStatusWithCapacity.properties.resource_samples.maxItems=17;},
+    d=>{d.components.schemas.WorkspaceHostCapacitySample.additionalProperties=true;},
+    d=>{d.components.schemas.SystemHostCapacitySample.properties.boot_id={type:'string'};},
+    d=>{d.components.schemas.SystemHostCapacitySample.properties.unit.enum.push('percent');},
+    d=>{d.components.schemas.OperationsStatus.properties.resource_samples.maxItems=16;},
+    d=>{d.components.schemas.OperationsStatusWithReadinessCapacity.properties.event_counts={$ref:'#/components/schemas/OperationsStatus/properties/event_counts'};},
+  ]){const changed=structuredClone(doc);mutate(changed);assert.throws(()=>validateOpenApiDocument(changed));}
+});
+
 test("R4 readiness query and response branch stay exact while default9 remains closed",async()=>{
   const doc=await loadContract(),path="/api/v1/workspaces/{id}/operations/status",op=doc.paths[path].get,s=doc.components.schemas;
-  assert.equal(op.parameters.length,3);
+  assert.equal(op.parameters.length,4);
   assert.deepEqual(op.parameters[2],{name:"include_readiness",in:"query",required:false,schema:{type:"string",enum:["1"]}});
   assert.equal(s.OperationsStatus.properties.event_counts.maxItems,9);
   assert.equal(s.OperationsStatusWithReadiness.properties.event_counts.maxItems,15);
   assert.deepEqual(op.responses["200"].content["application/json"].schema.oneOf,
-    [{$ref:"#/components/schemas/OperationsStatusEnvelope"},{$ref:"#/components/schemas/OperationsStatusReadinessEnvelope"}]);
+    [{$ref:"#/components/schemas/OperationsStatusEnvelope"},{$ref:"#/components/schemas/OperationsStatusReadinessEnvelope"},
+      {$ref:'#/components/schemas/OperationsStatusCapacityEnvelope'},{$ref:'#/components/schemas/OperationsStatusReadinessCapacityEnvelope'}]);
   assert.doesNotThrow(()=>validateOpenApiDocument(doc));
   for(const mutate of [
     d=>d.paths[path].get.parameters.pop(),d=>d.paths[path].get.parameters.push({in:"query",name:"actor_id"}),

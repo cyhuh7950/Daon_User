@@ -13,6 +13,24 @@ import {
   parsePublicGatewayOrigin,
 } from "../../apps/web/lib/bff-api-proxy.js";
 
+test('S44 capacity BFF forwards only literal1 on workspace and system paths',async()=>{
+  const calls=[];
+  const proxy=createBffProxy({baseUrl:new URL('https://api.example.com'),fetchImpl:async url=>{
+    calls.push(String(url));return Response.json({data:{}});
+  }});
+  for(const parts of [['workspaces','workspace-a','operations','status'],['system','operations','status']]){
+    const suffix=parts.join('/'),root='https://app.example.com/bff/api/'+suffix;
+    assert.equal((await proxy(new Request(root+'?include_capacity=1'),parts)).status,200);
+    assert.equal(calls.at(-1),'https://api.example.com/api/v1/'+suffix+'?include_capacity=1');
+    const before=calls.length;
+    for(const query of ['include_capacity=0','include_capacity=true','include_capacity=',
+      'include_capacity=1&include_capacity=1','include_capacity=1&actor_id=other']){
+      assert.equal((await proxy(new Request(root+'?'+query),parts)).status,400);
+    }
+    assert.equal(calls.length,before);
+  }
+});
+
 test("R4 readiness workspace BFF forwards only literal1 without duplicate or hidden scope",async()=>{
   const calls=[];
   const proxy=createBffProxy({baseUrl:new URL("https://api.example.com"),fetchImpl:async url=>{
