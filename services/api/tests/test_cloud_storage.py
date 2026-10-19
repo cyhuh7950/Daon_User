@@ -72,7 +72,7 @@ class CloudStorageContractTests(unittest.TestCase):
             actual_security[signature]='SECURITY DEFINER' in header[0]
         self.assertFalse(actual_security['guard_document_readiness_immutable()'])
         self.assertTrue(all(value for signature,value in actual_security.items() if signature!='guard_document_readiness_immutable()'))
-        bad_values=(None,"role","table","columns","keys","checks","policies","function","indexes","triggers","sequence",
+        bad_values=(None,"native-char-concat","role","table","columns","keys","checks","policies","function","indexes","triggers","sequence",
             "body","exec","out-name","out-type","out-mode","volatility","unknown-column","nullable","identity",
             "weakened-check","boolean-precedence","extra-key","foreign-parent","disabled-trigger","index-predicate","extra-index",
             "guard-secdef","missing-secdef")
@@ -93,6 +93,10 @@ class CloudStorageContractTests(unittest.TestCase):
                         if bad=='identity' and params[0]=='document_readiness_observations':rows[10]=(*rows[10][:4],'d',True)
                         return Result(rows)
                     if facet=='keys':
+                        # 실제 PG15가 cast 없는 내부 "char" 연결을 SQLSTATE42725로 거부했다.
+                        if bad=='native-char-concat' and 'c.confupdtype::text||c.confdeltype::text||c.confmatchtype::text' not in statement:
+                            from psycopg.errors import AmbiguousFunction
+                            raise AmbiguousFunction('operator is not unique: "char" || "char"')
                         rows=list(api._READINESS_KEYS[params[0]])
                         if bad=='extra-key':rows.append(api._r2_key('u','actor_id'))
                         if bad=='foreign-parent' and params[0]=='document_reprocess_receipts':
@@ -132,7 +136,7 @@ class CloudStorageContractTests(unittest.TestCase):
                         if bad=='disabled-trigger':rows[0]=(*rows[0][:3],'D',*rows[0][4:])
                         return Result(rows)
                     return Result([(True,)])
-            with self.subTest(facet=bad):self.assertEqual(PostgresCloudStore._document_readiness_storage_is_protected(Reader()),bad is None,
+            with self.subTest(facet=bad):self.assertEqual(PostgresCloudStore._document_readiness_storage_is_protected(Reader()),bad in (None,'native-char-concat'),
                 log[-1][0].split('*/')[0] if log else 'no query')
             self.assertTrue(all('pg_catalog' in statement and not re.match(r'\s*(INSERT|UPDATE|DELETE|ALTER|GRANT|CREATE)',statement)
                 for statement,_ in log))

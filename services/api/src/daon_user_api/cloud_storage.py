@@ -592,7 +592,7 @@ class PostgresCloudStore:
                     c.convalidated AND (c.contype<>'f' OR (SELECT count(*)=4 AND bool_and(t.tgenabled='O')
                         FROM pg_catalog.pg_trigger t WHERE t.tgconstraint=c.oid)),c.condeferrable,c.condeferred,
                     CASE WHEN c.contype IN ('p','u') THEN i.indisvalid AND i.indisready AND i.indimmediate AND NOT i.indnullsnotdistinct ELSE true END,
-                    CASE WHEN c.contype='f' THEN c.confupdtype||c.confdeltype||c.confmatchtype ELSE '' END
+                    CASE WHEN c.contype='f' THEN c.confupdtype::text||c.confdeltype::text||c.confmatchtype::text ELSE '' END
                     FROM pg_catalog.pg_constraint c LEFT JOIN pg_catalog.pg_class r ON r.oid=c.confrelid
                     LEFT JOIN pg_catalog.pg_namespace n ON n.oid=r.relnamespace LEFT JOIN pg_catalog.pg_index i ON i.indexrelid=c.conindid
                     WHERE c.conrelid=pg_catalog.to_regclass('public.'||%s) AND c.contype<>'c'""",(table,)).fetchall()
