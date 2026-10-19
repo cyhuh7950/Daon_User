@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import signal
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Protocol
@@ -29,6 +29,7 @@ from .workspace_model_defaults import PostgresWorkspaceModelResolver
 from .egress_policy import EgressPolicyService
 from .egress_policy_postgres import PostgresEgressPolicyRepository
 from .operations_telemetry import observe_poll,safe_hook,start_worker_observation,worker_publisher
+from .document_readiness import ReadinessDispatcherSettings
 
 
 class QueuePort(Protocol):
@@ -113,10 +114,13 @@ class DocumentWorkerSettings:
     lease_seconds: int
     poll_seconds: float
     notification_inbox_enabled: bool = False
+    readiness_settings: ReadinessDispatcherSettings = field(default_factory=ReadinessDispatcherSettings)
 
     def __post_init__(self) -> None:
         if type(self.notification_inbox_enabled) is not bool:
             raise ValueError("NOTIFICATION_INBOX_FLAG_INVALID")
+        if type(self.readiness_settings) is not ReadinessDispatcherSettings:
+            raise ValueError("DOCUMENT_PROCESSING_CONTEXT_INVALID")
 
     @classmethod
     def from_env(cls) -> DocumentWorkerSettings:
@@ -133,6 +137,10 @@ class DocumentWorkerSettings:
         notification_flag = os.environ.get("DAON_NOTIFICATION_INBOX_ENABLED", "false")
         if notification_flag not in {"true", "false"}:
             raise ValueError("NOTIFICATION_INBOX_FLAG_INVALID")
+        try:
+            readiness_settings = ReadinessDispatcherSettings.from_env()
+        except DocumentUnderstandingError:
+            raise ValueError("DOCUMENT_PROCESSING_CONTEXT_INVALID") from None
         return cls(
             worker_id=os.environ.get("DAON_DOCUMENT_WORKER_ID", "document-worker-1"),
             database_dsn=required["database_dsn"],
@@ -145,6 +153,7 @@ class DocumentWorkerSettings:
             lease_seconds=int(os.environ.get("DAON_DOCUMENT_WORKER_LEASE_SECONDS", "600")),
             poll_seconds=float(os.environ.get("DAON_DOCUMENT_WORKER_POLL_SECONDS", "0.5")),
             notification_inbox_enabled=notification_flag == "true",
+            readiness_settings=readiness_settings,
         )
 
 
@@ -165,7 +174,12 @@ def build_worker(settings: DocumentWorkerSettings) -> tuple[DocumentProcessingWo
         endpoint=settings.object_endpoint, bucket=settings.object_bucket,
         access_key=access_key, secret_key=secret_key, secure=settings.object_secure,
     )
-    repository = PostgresDocumentProcessingRepository(cloud_store, storage)
+    readiness = None
+    if settings.readiness_settings.scopes:
+        from .document_readiness_postgres import PostgresDocumentReadinessRepository
+        readiness = PostgresDocumentReadinessRepository(cloud_store, settings=settings.readiness_settings)
+    repository = PostgresDocumentProcessingRepository(cloud_store, storage,
+        readiness_port=readiness, readiness_settings=settings.readiness_settings)
     processing = DocumentProcessingService(
         repository,
         PostgresWorkspaceModelResolver(

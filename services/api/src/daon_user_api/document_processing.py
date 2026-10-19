@@ -296,13 +296,15 @@ class DocumentProcessingService:
         self, context: DocumentProcessingContext, *, source_id: str,
         processing_run_id: str,
     ) -> DocumentUnderstandingResult:
+        guard = getattr(self._repository, "authorize_readiness_run", None)
+        automatic = callable(guard) and guard(context, source_id, processing_run_id) is True
         document = self._repository.load_source_document(
             context, source_id, processing_run_id=processing_run_id,
         )
-        return self._execute(context, document, processing_run_id)
+        return self._execute(context, document, processing_run_id, readiness_guard=guard if automatic else None)
 
     @contextmanager
-    def _resolve_for_failure_stage(self, context, capability):
+    def _resolve_for_failure_stage(self, context, capability, *, before_use=None):
         # 진입만 resolver 실패다. body/다른 stage 실패를 이 역할로 덮어쓰지 않는다.
         with ExitStack() as stack:
             try:
@@ -310,16 +312,29 @@ class DocumentProcessingService:
             except WorkspaceModelUnavailable as error:
                 raise DocumentUnderstandingError(error.code, status=503, retryable=error.retryable,
                     failure_evidence=DocumentFailureEvidence(capability, None, "unknown")) from None
+            if before_use is not None:
+                before_use(model=model, capability=capability)
             yield model
 
     def _execute(
         self, context: DocumentProcessingContext, document: StoredSourceDocument,
         processing_run_id: str,
+        *, readiness_guard=None,
     ) -> DocumentUnderstandingResult:
+        def check(**options):
+            if readiness_guard is not None:
+                readiness_guard(context, document.source_id, processing_run_id, **options)
+
+        def resolve(capability):
+            return self._resolve_for_failure_stage(context, capability,
+                before_use=check if readiness_guard is not None else None)
         try:
+            check()  # 원문 로드 뒤에도 현재 설정/인가/원장을 재확인한다.
             if audio_source_format(document.filename, document.content_type):
-                with self._resolve_for_failure_stage(context, 'speech_to_text') as asr_model, self._resolve_for_failure_stage(context, 'text_generation') as text_model:
+                with resolve('speech_to_text') as asr_model, resolve('text_generation') as text_model:
                     def authorize_source():
+                        check(model=asr_model, capability="speech_to_text")
+                        check(model=text_model, capability="text_generation")
                         authorize = getattr(self._repository, 'authorize_audio_source', None)
                         if authorize is None:
                             raise DocumentUnderstandingError('CURRENT_ACCESS_DENIED', status=403)
@@ -328,47 +343,41 @@ class DocumentProcessingService:
                 self._repository.complete(context, processing_run_id, result)
                 return result
             if pptx_source_format(document.filename, document.content_type):
-                with self._resolve_for_failure_stage(context, 'text_generation') as model:
+                with resolve('text_generation') as model:
                     self._egress_guard.authorize(context, (model,))
                     result = _failure_call("text_generation", model.connection_id,
                         lambda: self._pptx_adapter.understand(document, model, context))
                 self._repository.complete(context, processing_run_id, result)
                 return result
             if docx_source_format(document.filename, document.content_type):
-                with self._resolve_for_failure_stage(context, "text_generation") as model:
+                with resolve("text_generation") as model:
                     self._egress_guard.authorize(context, (model,))
                     result = _failure_call("text_generation", model.connection_id,
                         lambda: self._docx_adapter.understand(document, model, context))
                 self._repository.complete(context, processing_run_id, result)
                 return result
             if xlsx_source_format(document.filename, document.content_type):
-                with self._resolve_for_failure_stage(context, "text_generation") as model:
+                with resolve("text_generation") as model:
                     self._egress_guard.authorize(context, (model,))
                     result = _failure_call("text_generation", model.connection_id,
                         lambda: self._xlsx_adapter.understand(document, model, context))
                 self._repository.complete(context, processing_run_id, result)
                 return result
             if image_source_format(document.filename, document.content_type):
-                with self._resolve_for_failure_stage(context, "image_understanding") as image_model:
+                with resolve("image_understanding") as image_model:
                     self._egress_guard.authorize(context, (image_model,))
                     result = _failure_call("image_understanding", image_model.connection_id,
                         lambda: self._image_adapter.understand(document, image_model, context))
                 self._repository.complete(context, processing_run_id, result)
                 return result
             if text_source_format(document.filename, document.content_type) is not None:
-                with self._resolve_for_failure_stage(
-                    context, "text_generation",
-                ) as text_model:
+                with resolve("text_generation") as text_model:
                     self._egress_guard.authorize(context, (text_model,))
                     result = _failure_call("text_generation", text_model.connection_id,
                         lambda: self._text_adapter.understand(document, text_model, context))
                 self._repository.complete(context, processing_run_id, result)
                 return result
-            with self._resolve_for_failure_stage(
-                context, "image_understanding",
-            ) as semantic, self._resolve_for_failure_stage(
-                context, "document_parsing",
-            ) as parser:
+            with resolve("image_understanding") as semantic, resolve("document_parsing") as parser:
                 self._egress_guard.authorize(context, (semantic, parser))
                 if semantic.provider_code != "UPSTAGE" or parser.provider_code != "UPSTAGE":
                     raise DocumentUnderstandingError(

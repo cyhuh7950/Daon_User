@@ -60,6 +60,65 @@ class ReprocessingModeSubmissionTests(unittest.TestCase):
 
 
 class FailureEvidenceServiceTests(unittest.TestCase):
+    def test_readiness_guard_denial_happens_before_original_or_model_access(self):
+        class Repository(RecordingRepository):
+            def authorize_readiness_run(inner, *args, **kwargs):
+                inner.events.append(("readiness-guard", None))
+                raise DocumentUnderstandingError("READINESS_ACCESS_DENIED", status=403)
+        repository = Repository()
+        service = DocumentProcessingService(repository, ModelResolver(), AdapterFactory(Adapter()))
+        context = DocumentProcessingContext("tenant-cp3", "workspace-cp3", "actor-cp3", "trace-cp3", "policy-v1")
+        with self.assertRaisesRegex(DocumentUnderstandingError, "READINESS_ACCESS_DENIED"):
+            service.process_existing(context, source_id="source-cp3", processing_run_id="run-bound")
+        self.assertEqual(repository.events, [("readiness-guard", None)])
+
+    def test_readiness_is_rechecked_after_original_load_and_before_selected_model_use(self):
+        for deny_at in (2, 3):
+            with self.subTest(deny_at=deny_at):
+                class Repository(RecordingRepository):
+                    checks = 0
+                    def authorize_readiness_run(inner, *args, **kwargs):
+                        inner.checks += 1
+                        if inner.checks == deny_at:
+                            raise DocumentUnderstandingError("READINESS_ACCESS_DENIED", status=403)
+                        return True
+                repository = Repository()
+                adapter = Adapter()
+                service = DocumentProcessingService(repository, ModelResolver(), AdapterFactory(adapter),
+                                                    egress_guard=FixtureOutboundGuard())
+                context = DocumentProcessingContext("tenant-cp3", "workspace-cp3", "actor-cp3", "trace-cp3", "policy-v1")
+                with self.assertRaisesRegex(DocumentUnderstandingError, "READINESS_ACCESS_DENIED"):
+                    service.process_existing(context, source_id="source-cp3", processing_run_id="run-bound")
+                self.assertEqual(adapter.calls, 0)
+                self.assertEqual(repository.checks, deny_at)
+                self.assertFalse(any(event[0] == "complete" for event in repository.events))
+
+    def test_readiness_audio_boundary_rechecks_after_models_were_selected(self):
+        from test_audio_source import wav_bytes
+        class Repository(RecordingRepository):
+            checks = 0
+            def authorize_readiness_run(inner, *args, **kwargs):
+                inner.checks += 1
+                if inner.checks == 5:
+                    raise DocumentUnderstandingError("READINESS_ACCESS_DENIED", status=403)
+                return True
+            def load_source_document(inner, context, source_id, **kwargs):
+                return StoredSourceDocument(source_id, "source-version-cp3", "qa.wav", wav_bytes(), "audio/wav")
+            def authorize_audio_source(inner, *args):
+                pass
+        class Audio:
+            model_calls = 0
+            def understand(inner, *args, authorize_source):
+                authorize_source()
+                inner.model_calls += 1
+                raise AssertionError("철회 후 음성/의미 처리를 호출함")
+        repository, audio = Repository(), Audio()
+        service = DocumentProcessingService(repository, ModelResolver(), AdapterFactory(Adapter()), audio_adapter=audio)
+        context = DocumentProcessingContext("tenant-cp3", "workspace-cp3", "actor-cp3", "trace-cp3", "policy-v1")
+        with self.assertRaisesRegex(DocumentUnderstandingError, "READINESS_ACCESS_DENIED"):
+            service.process_existing(context, source_id="source-cp3", processing_run_id="run-bound")
+        self.assertEqual(audio.model_calls, 0)
+
     def test_optional_sink_also_collects_unclassified_resolver_exit_without_changing_mapping(self):
         from daon_user_api.workspace_model_defaults import WorkspaceModelUnavailable
         class Resolver(ModelResolver):

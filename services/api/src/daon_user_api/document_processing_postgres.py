@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -28,11 +29,148 @@ _SAFE_NOTEBOOK_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
 
 
 class PostgresDocumentProcessingRepository:
-    def __init__(self, cloud_store: PostgresCloudStore, object_storage: ObjectStoragePort, *, readiness_port=None) -> None:
+    def __init__(self, cloud_store: PostgresCloudStore, object_storage: ObjectStoragePort, *, readiness_port=None, readiness_settings=None) -> None:
         self._cloud_store = cloud_store
         self._object_storage = object_storage
         # 미주입이면 기존 0071 실패 경로다. runtime/worker 주입은 별도 접합 단계다.
         self._readiness_port = readiness_port
+        from .document_readiness import ReadinessDispatcherSettings
+        self._readiness_settings = ReadinessDispatcherSettings() if readiness_settings is None else readiness_settings
+        if type(self._readiness_settings) is not ReadinessDispatcherSettings:
+            raise DocumentUnderstandingError("DOCUMENT_PROCESSING_CONTEXT_INVALID")
+
+    def authorize_readiness_run(self, context, source_id, processing_run_id, *, model=None, capability=None):
+        """원문/모델 전 현재 자동 Run의 근거를 읽는다. 기존 수동 Run은 신규 원장 없이 통과한다."""
+        from .document_readiness_postgres import _wait, PostgresDocumentReadinessRepository
+        from .workspace_model_defaults import read_document_readiness_policy, ReadinessPolicySnapshot
+        from .authorization import Permission, Role
+        from .open_law_source_access import _CurrentAuthorizationRules, _AuthReadConnection
+        safe_to_fail = False
+        try:
+            with self._cloud_store._transaction(self._cloud_context(context, "source.process")) as connection:
+                saved = connection.execute(
+                    "SELECT /* readiness-execution-run */ jsonb_build_object('trigger_type',pr.trigger_type,"
+                    "'payload',pr.canonical_json,'actor_id',pr.created_by,'source_version_id',pr.source_version_id,"
+                    "'state',pr.state,'source_state',s.state,'latest',"
+                    "pr.record_id=(SELECT p.record_id FROM public.processing_runs p WHERE "
+                    "(p.tenant_id,p.workspace_id,p.source_version_id)=(pr.tenant_id,pr.workspace_id,pr.source_version_id) "
+                    "ORDER BY p.created_at DESC,p.record_id DESC LIMIT 1) AND NOT EXISTS("
+                    "SELECT 1 FROM public.source_versions newer WHERE "
+                    "(newer.tenant_id,newer.workspace_id,newer.source_id)=(sv.tenant_id,sv.workspace_id,sv.source_id) "
+                    "AND newer.version>sv.version)) FROM public.processing_runs pr "
+                    "JOIN public.source_versions sv ON (sv.tenant_id,sv.workspace_id,sv.record_id)="
+                    "(pr.tenant_id,pr.workspace_id,pr.source_version_id) JOIN public.sources s "
+                    "ON (s.tenant_id,s.workspace_id,s.record_id)=(sv.tenant_id,sv.workspace_id,sv.source_id) "
+                    "WHERE (pr.tenant_id,pr.workspace_id,pr.record_id,s.record_id)=(%s,%s,%s,%s)",
+                    (context.tenant_id, context.workspace_id, processing_run_id, source_id)).fetchone()
+                if saved is None or type(saved[0]) is not dict:
+                    raise DocumentUnderstandingError("SOURCE_NOT_FOUND", status=404)
+                row = saved[0]
+                if row.get("trigger_type") != "readiness_event":
+                    return False
+                if (row.get("actor_id") != context.actor_id or row.get("latest") is not True
+                        or row.get("state") in {"completed", "failed", "policy_blocked"}
+                        or row.get("source_state") != "processing"):
+                    raise DocumentUnderstandingError("READINESS_ACCESS_DENIED", status=403)
+                safe_to_fail = True
+                version = row["source_version_id"]
+                if (context.tenant_id, context.workspace_id, context.actor_id, version) not in self._readiness_settings.scopes:
+                    raise DocumentUnderstandingError("READINESS_SCOPE_NOT_CONFIGURED", status=403)
+                payload = row["payload"]
+                proof = payload["readiness_context"]
+                if (type(proof) is not dict or set(proof) != {"version", "mode", "mode_origin", "frozen_context",
+                        "frozen_context_digest", "wait_processing_run_id"}
+                        or type(proof["version"]) is not int or proof["version"] != 1
+                        or proof["mode"] not in {"auto", "local_only"} or proof["mode_origin"] != "request"):
+                    raise DocumentUnderstandingError("READINESS_ACCESS_DENIED", status=403)
+                body = proof["frozen_context"]
+                digest = hashlib.sha256(canonical_json_bytes(body)).hexdigest()
+                if digest != proof["frozen_context_digest"] or payload["source_version_id"] != version:
+                    raise DocumentUnderstandingError("READINESS_ACCESS_DENIED", status=403)
+                wait_row = connection.execute("SELECT public.read_document_role_wait(%s,%s,%s,%s)",
+                    (context.tenant_id, context.workspace_id, proof["wait_processing_run_id"], body["role"])).fetchone()
+                if wait_row is None or wait_row[0] is None:
+                    raise DocumentUnderstandingError("READINESS_ACCESS_DENIED", status=403)
+                wait = _wait(wait_row[0])
+                if ((wait.tenant_id, wait.workspace_id, wait.actor_id, wait.notebook_id, wait.source_id,
+                     wait.source_version_id, wait.processing_run_id, wait.capability)
+                        != (context.tenant_id, context.workspace_id, context.actor_id, payload["notebook_id"],
+                            source_id, version, proof["wait_processing_run_id"], body["role"])
+                        or body["mode"] != {"mode": wait.mode.mode, "origin": wait.mode.origin}
+                        or (proof["mode"], proof["mode_origin"]) != (wait.mode.mode, wait.mode.origin)):
+                    raise DocumentUnderstandingError("READINESS_ACCESS_DENIED", status=403)
+                records = connection.execute(
+                    "SELECT value FROM public.read_document_reprocess_history(%s,%s,%s,%s,%s,%s,%s,%s,%s) AS h(value)",
+                    (wait.tenant_id, wait.workspace_id, wait.actor_id, wait.notebook_id, wait.source_id,
+                     wait.source_version_id, wait.processing_run_id, wait.capability, digest)).fetchall()
+                expected = {"tenant_id": wait.tenant_id, "workspace_id": wait.workspace_id, "actor_id": wait.actor_id,
+                    "notebook_id": wait.notebook_id, "source_id": wait.source_id, "source_version_id": wait.source_version_id,
+                    "processing_run_id": wait.processing_run_id, "capability_slot": wait.capability,
+                    "event_id": payload["trigger_event_id"], "frozen_context_digest": digest,
+                    "phase": "final", "outcome": "enqueued", "new_run_id": processing_run_id}
+                matched = False
+                for record in records:
+                    receipt = record[0]
+                    PostgresDocumentReadinessRepository._receipt(receipt)
+                    if all(receipt.get(key) == value for key, value in expected.items()):
+                        matched = True
+                if not matched:
+                    raise DocumentUnderstandingError("READINESS_ACCESS_DENIED", status=403)
+                current = read_document_readiness_policy(connection, context, wait, settings=self._readiness_settings)
+                if type(current) is not ReadinessPolicySnapshot:
+                    raise DocumentUnderstandingError("CURRENT_ACCESS_UNAVAILABLE", status=503)
+                eligibility = current.eligibility
+                if (not all((eligibility.authorized, eligibility.source_current, eligibility.policy_allowed,
+                             eligibility.candidate_available)) or eligibility.cost_state != "allowed"
+                        or eligibility.egress_state != "allowed"
+                        or (proof["mode"] == "local_only" and not eligibility.local_only_allowed)):
+                    raise DocumentUnderstandingError("READINESS_ACCESS_DENIED", status=403)
+                if current.frozen_context_json != canonical_json_bytes(body).decode("utf-8"):
+                    raise DocumentUnderstandingError("SOURCE_VERSION_CONFLICT", status=409)
+                if model is not None:
+                    if capability not in {"text_generation", "image_understanding", "document_parsing", "speech_to_text"}:
+                        raise DocumentUnderstandingError("READINESS_ACCESS_DENIED", status=403)
+                    selected_current = current
+                    if capability != wait.capability:
+                        # 다른 역할의 현재 선택만 별도로 읽는다. 원wait/영속 FrozenContext는 바꾸지 않는다.
+                        selected_current = read_document_readiness_policy(connection, context,
+                            replace(wait, capability=capability), settings=self._readiness_settings)
+                    if type(selected_current) is not ReadinessPolicySnapshot:
+                        raise DocumentUnderstandingError("CURRENT_ACCESS_UNAVAILABLE", status=503)
+                    selected = selected_current.eligibility
+                    if (not all((selected.authorized, selected.source_current, selected.policy_allowed,
+                                 selected.candidate_available)) or selected.cost_state != "allowed"
+                            or selected.egress_state != "allowed"
+                            or (proof["mode"] == "local_only" and not selected.local_only_allowed)):
+                        raise DocumentUnderstandingError("READINESS_ACCESS_DENIED", status=403)
+                    local = model.provider_kind in {"local", "server_internal", "local_runtime"}
+                    if proof["mode"] == "local_only" and not local:
+                        raise DocumentUnderstandingError("READINESS_ACCESS_DENIED", status=403)
+                    permission = Permission.LOCAL_INTERNAL_LLM if local else Permission.EXTERNAL_LLM
+                    role = Role(body["authorization"]["role"])
+                    decision = _CurrentAuthorizationRules()._effective_permission(_AuthReadConnection(connection),
+                        role=role, tenant_id=context.tenant_id, workspace_id=context.workspace_id,
+                        permission=permission, requested=True)
+                    if not decision.effective:
+                        raise DocumentUnderstandingError("READINESS_ACCESS_DENIED", status=403)
+                    binding = json.loads(selected_current.frozen_context_json)["binding"]
+                    if ((model.connection_id, model.model_id, model.provider_code, model.provider_kind, model.base_url)
+                            != (binding["connection_id"], binding["model_id"], binding["provider_code"],
+                                binding["provider_kind"], binding["endpoint"])
+                            or model.credential_version != binding["credential_reference"]["version"]):
+                        raise DocumentUnderstandingError("SOURCE_VERSION_CONFLICT", status=409)
+                return True
+        except Exception as error:
+            if safe_to_fail:
+                # 현재 소유한 최신 Run만 기존 실패 전이로 정리한다. 신규 wait 수집은 하지 않는다.
+                self._fail_readiness_guard(context, processing_run_id)
+            raise self._database_error(error) from None
+
+    def _fail_readiness_guard(self, context, processing_run_id):
+        # 판정 뒤 도착한 새 Version/Run도 기존 B2b 잠금/현재 부모 재검사로 보호한다.
+        # 자동 실행의 취소는 모델 가용성 실패가 아니므로 unknown·재시도 없음이다.
+        self._fail(context, processing_run_id, "READINESS_ACCESS_DENIED", retryable=False,
+                   evidence=DocumentFailureEvidence(None, None, "unknown"))
 
     def authorize_audio_source(self, context, document, processing_run_id) -> None:
         """전송 직전 기존 역할·정책과 Run/Notebook/최신 원본 결속을 다시 읽는다."""
@@ -872,7 +1010,10 @@ class PostgresDocumentProcessingRepository:
                     if "readiness_context" not in payload:
                         mode = ReadinessModeProof("legacy_unknown", "legacy_unknown")
                     else:
-                        if (type(proof) is not dict or set(proof) != {"version", "mode", "mode_origin"}
+                        fields = {"version", "mode", "mode_origin"}
+                        if payload.get("trigger_type") == "readiness_event":
+                            fields |= {"frozen_context", "frozen_context_digest", "wait_processing_run_id"}
+                        if (type(proof) is not dict or set(proof) != fields
                                 or type(proof["version"]) is not int or proof["version"] != 1):
                             raise DocumentUnderstandingError("DOCUMENT_PROCESSING_DATABASE_UNAVAILABLE", status=503)
                         mode = ReadinessModeProof(proof["mode"], proof["mode_origin"])

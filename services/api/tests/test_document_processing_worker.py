@@ -85,6 +85,22 @@ class FakeIndex:
 
 
 class DocumentProcessingWorkerTests(unittest.TestCase):
+    def test_worker_independently_parses_readiness_scope_without_enabling_default(self):
+        import json
+        values = {"DAON_CLOUD_DATABASE_DSN": "postgresql://fixture/fixture",
+            "DAON_OBJECT_STORAGE_ENDPOINT": "object-storage:9000", "DAON_OBJECT_STORAGE_BUCKET": "fixture",
+            "DAON_OBJECT_ACCESS_KEY_FILE": "fixture-access", "DAON_OBJECT_SECRET_KEY_FILE": "fixture-secret",
+            "DAON_PROVIDER_CREDENTIAL_KEY_FILE": "fixture-provider"}
+        with patch.dict("os.environ", values, clear=True):
+            self.assertEqual(DocumentWorkerSettings.from_env().readiness_settings.scopes, frozenset())
+            with patch.dict("os.environ", {"DAON_DOCUMENT_READINESS_SCOPES_JSON": json.dumps([
+                {"tenant_id": "tenant-a", "workspace_id": "workspace-a", "actor_id": "actor-a", "source_version_id": "version-a"}])}):
+                self.assertEqual(DocumentWorkerSettings.from_env().readiness_settings.scopes,
+                    frozenset({("tenant-a", "workspace-a", "actor-a", "version-a")}))
+            with patch.dict("os.environ", {"DAON_DOCUMENT_READINESS_SCOPES_JSON": "[{}]"}):
+                with self.assertRaises(ValueError):
+                    DocumentWorkerSettings.from_env()
+
     def test_pptx_worker_preserves_bound_run_and_indexes_only_verified_blocks(self):
         from contextlib import contextmanager
         from daon_user_api.workspace_model_defaults import ResolvedModel

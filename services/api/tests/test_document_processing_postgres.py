@@ -29,6 +29,181 @@ OBJECT_ID = "a" * 32
 OBJECT_KEY = f"tenant-cp3/workspace-cp3/source/{OBJECT_ID}"
 
 
+@pytest.fixture
+def readiness_execution(readiness_metadata, monkeypatch):
+    from dataclasses import asdict, replace
+    from test_document_readiness_postgres import with_synthetic_cost
+    from daon_user_api.document_readiness import ReadinessDispatcherSettings
+    f = readiness_metadata
+    snapshot = with_synthetic_cost(f.read(f.db, f.context, f.wait), "allowed")
+    body = json.loads(snapshot.frozen_context_json)
+    proof = {"version": 1, "mode": "auto", "mode_origin": "request",
+             "frozen_context": body, "frozen_context_digest": snapshot.eligibility.frozen_context_digest,
+             "wait_processing_run_id": "run-a"}
+    row = {"trigger_type": "readiness_event", "actor_id": "actor-a", "source_version_id": "version-a",
+           "state": "vision_llm_understanding", "source_state": "processing", "latest": True,
+           "payload": {"source_version_id": "version-a", "notebook_id": "notebook-a",
+               "trigger_event_id": "rdy-" + "1" * 32, "readiness_context": proof}}
+    wait = asdict(f.wait)
+    for key in ("failed_at", "not_before"):
+        wait[key] = wait[key].isoformat()
+    receipt = {"tenant_id": "tenant-a", "workspace_id": "workspace-a", "actor_id": "actor-a",
+        "notebook_id": "notebook-a", "source_id": "source-a", "source_version_id": "version-a",
+        "processing_run_id": "run-a", "capability_slot": "text_generation", "event_id": "rdy-" + "1" * 32,
+        "frozen_context_digest": proof["frozen_context_digest"], "phase": "final", "outcome": "enqueued",
+        "safe_code": "READY_REPROCESS_ALLOWED", "new_run_id": "auto-run-a",
+        "received_at": "2026-10-19T10:00:00+00:00"}
+    original = f.db.execute
+    calls, failures = [], []
+    def execute(sql, params=()):
+        calls.append(sql)
+        if "/* readiness-execution-run */" in sql:
+            assert tuple(params) == ("tenant-a", "workspace-a", "auto-run-a", "source-a")
+            return Cursor((copy.deepcopy(row),))
+        if "public.read_document_role_wait(" in sql:
+            return Cursor((copy.deepcopy(wait),))
+        if "public.read_document_reprocess_history(" in sql:
+            return SimpleNamespace(fetchall=lambda: [(copy.deepcopy(receipt),)])
+        return original(sql, params)
+    f.db.execute = execute
+    class Store:
+        @contextmanager
+        def _transaction(self, context):
+            yield f.db
+    settings = ReadinessDispatcherSettings(scopes=frozenset({("tenant-a", "workspace-a", "actor-a", "version-a")}))
+    repo = PostgresDocumentProcessingRepository(Store(), object(), readiness_settings=settings)
+    repo._fail_readiness_guard = lambda *args, **kwargs: failures.append((args, kwargs))
+    monkeypatch.setattr(f.module, "read_document_readiness_policy", lambda *args, **kwargs: snapshot)
+    context = DocumentProcessingContext("tenant-a", "workspace-a", "actor-a", "trace-a", "policy-a")
+    return SimpleNamespace(repo=repo, row=row, wait=wait, receipt=receipt, snapshot=snapshot,
+        context=context, calls=calls, failures=failures, auth=f, replace=replace)
+
+
+def test_readiness_execution_requires_current_scope_wait_receipt_and_frozen_body(readiness_execution):
+    f = readiness_execution
+    assert f.repo.authorize_readiness_run(f.context, "source-a", "auto-run-a") is True
+    assert f.failures == []
+    assert all(sql.lstrip().startswith("SELECT ") for sql in f.calls)
+
+
+@pytest.mark.parametrize("invalid", ["scope", "actor", "wait_actor", "receipt_actor", "receipt_run",
+    "receipt_event", "digest", "mode", "wait_ref", "latest", "terminal", "cost_unknown", "denied", "policy_changed"])
+def test_readiness_execution_denies_unbound_or_changed_context_without_model_use(readiness_execution, monkeypatch, invalid):
+    from daon_user_api.document_readiness import ReadinessDispatcherSettings
+    from test_document_readiness_postgres import with_synthetic_cost
+    f = readiness_execution
+    if invalid == "scope": f.repo._readiness_settings = ReadinessDispatcherSettings()
+    if invalid == "actor": f.row["actor_id"] = "another-actor"
+    if invalid == "wait_actor": f.wait["actor_id"] = "another-actor"
+    if invalid == "receipt_actor": f.receipt["actor_id"] = "another-actor"
+    if invalid == "receipt_run": f.receipt["new_run_id"] = "another-run"
+    if invalid == "receipt_event": f.receipt["event_id"] = "rdy-" + "2" * 32
+    if invalid == "digest": f.row["payload"]["readiness_context"]["frozen_context_digest"] = "f" * 64
+    if invalid == "mode": f.row["payload"]["readiness_context"]["mode"] = "pinned"
+    if invalid == "wait_ref": f.row["payload"]["readiness_context"]["wait_processing_run_id"] = "other-wait"
+    if invalid == "latest": f.row["latest"] = False
+    if invalid == "terminal": f.row["state"] = "completed"
+    if invalid == "cost_unknown":
+        monkeypatch.setattr(f.auth.module, "read_document_readiness_policy", lambda *args, **kwargs:
+                            with_synthetic_cost(f.snapshot, "unknown"))
+    if invalid == "denied":
+        monkeypatch.setattr(f.auth.module, "read_document_readiness_policy", lambda *args, **kwargs:
+            f.replace(f.snapshot, eligibility=f.replace(f.snapshot.eligibility, authorized=False)))
+    if invalid == "policy_changed":
+        body = json.loads(f.snapshot.frozen_context_json)
+        body["workspace_policy"]["cost_limit_cents"] += 1
+        from test_document_readiness_postgres import synthetic_snapshot
+        changed = synthetic_snapshot(f.snapshot.eligibility, mode=f.auth.wait.mode, body=body)
+        monkeypatch.setattr(f.auth.module, "read_document_readiness_policy", lambda *args, **kwargs: changed)
+    with pytest.raises(DocumentUnderstandingError):
+        f.repo.authorize_readiness_run(f.context, "source-a", "auto-run-a")
+    if invalid in {"actor", "latest", "terminal"}:
+        assert f.failures == []
+    else:
+        assert len(f.failures) == 1  # 소유한 현재 Run만 기존 실패 정리. 별도 job은 worker 소유.
+
+
+def test_manual_processing_does_not_require_new_readiness_ledger(readiness_execution):
+    f = readiness_execution
+    f.row["trigger_type"] = "manual_retry"
+    f.repo._readiness_settings = __import__("daon_user_api.document_readiness", fromlist=["ReadinessDispatcherSettings"]).ReadinessDispatcherSettings()
+    assert f.repo.authorize_readiness_run(f.context, "source-a", "auto-run-a") is False
+    assert len(f.calls) == 1 and "readiness-execution-run" in f.calls[0]
+
+
+@pytest.mark.parametrize("changed", ["connection", "model", "kind", "endpoint", "credential_version", "permission"])
+def test_readiness_selected_model_must_keep_binding_and_current_permission(readiness_execution, changed):
+    f = readiness_execution
+    binding = f.row["payload"]["readiness_context"]["frozen_context"]["binding"]
+    model = SimpleNamespace(connection_id=binding["connection_id"], model_id=binding["model_id"],
+        provider_code=binding["provider_code"], provider_kind=binding["provider_kind"], base_url=binding["endpoint"],
+        credential_version=binding["credential_reference"]["version"])
+    if changed == "connection": model.connection_id = "other-connection"
+    if changed == "model": model.model_id = "other-model"
+    if changed == "kind": model.provider_kind = "external_api"
+    if changed == "endpoint": model.base_url = "https://other.invalid"
+    if changed == "credential_version": model.credential_version += 1
+    if changed == "permission": f.auth.db.rules = [("workspace", "local_internal_llm", "deny", 0)]
+    with pytest.raises(DocumentUnderstandingError):
+        f.repo.authorize_readiness_run(f.context, "source-a", "auto-run-a", model=model, capability="text_generation")
+
+
+def test_readiness_selected_model_matching_current_binding_passes(readiness_execution):
+    f = readiness_execution
+    binding = f.row["payload"]["readiness_context"]["frozen_context"]["binding"]
+    model = SimpleNamespace(connection_id=binding["connection_id"], model_id=binding["model_id"],
+        provider_code=binding["provider_code"], provider_kind=binding["provider_kind"], base_url=binding["endpoint"],
+        credential_version=binding["credential_reference"]["version"])
+    assert f.repo.authorize_readiness_run(f.context, "source-a", "auto-run-a", model=model, capability="text_generation")
+
+
+@pytest.mark.parametrize("waiting_role", ["speech_to_text", "text_generation"])
+@pytest.mark.parametrize("changed", ["disabled", "connection", "model", "endpoint", "credential_version"])
+def test_readiness_other_audio_role_is_current_before_send(readiness_execution, monkeypatch, waiting_role, changed):
+    from dataclasses import asdict, replace
+    from test_document_readiness_postgres import with_synthetic_cost
+    f = readiness_execution
+    monkeypatch.setenv("DAON_QA_STRUCTURED_OLLAMA_WORKSPACE_ID", "workspace-a")
+    role_dbs = {role: ReadinessMetadataDB() for role in ("speech_to_text", "text_generation")}
+    asr = role_dbs["speech_to_text"]
+    asr.binding.update(connection_id="asr-a", provider_code="CUSTOM", adapter_type="asr_base_native",
+        base_url="http://asr-base:8080", model_id="faster-whisper-base")
+    asr.catalog[0].update(model_id="faster-whisper-base", effective_capabilities=["speech_to_text"])
+    def current(connection, context, wait, **kwargs):
+        # 실제 B1 metadata/권한/후보 검사를 SQL 대역 위에서 실행한다. 비용만 합성 허용이다.
+        return with_synthetic_cost(f.auth.read(role_dbs[wait.capability], context, wait), "allowed")
+    wait = replace(f.auth.wait, capability=waiting_role,
+                   dependency_connection_id=role_dbs[waiting_role].binding["connection_id"])
+    snapshot = current(None, f.context, wait)
+    f.wait.clear()
+    f.wait.update(asdict(wait))
+    for key in ("failed_at", "not_before"):
+        f.wait[key] = f.wait[key].isoformat()
+    proof = f.row["payload"]["readiness_context"]
+    proof.update(frozen_context=json.loads(snapshot.frozen_context_json),
+                 frozen_context_digest=snapshot.eligibility.frozen_context_digest)
+    f.receipt.update(capability_slot=waiting_role, frozen_context_digest=snapshot.eligibility.frozen_context_digest)
+    monkeypatch.setattr(f.auth.module, "read_document_readiness_policy", current)
+    actual_role = "text_generation" if waiting_role == "speech_to_text" else "speech_to_text"
+    selected = json.loads(current(None, f.context, replace(wait, capability=actual_role)).frozen_context_json)["binding"]
+    model = SimpleNamespace(connection_id=selected["connection_id"], model_id=selected["model_id"],
+        provider_code=selected["provider_code"], provider_kind=selected["provider_kind"], base_url=selected["endpoint"],
+        credential_version=selected["credential_reference"]["version"])
+    assert f.repo.authorize_readiness_run(f.context, "source-a", "auto-run-a", model=model, capability=actual_role)
+    db = role_dbs[actual_role]
+    if changed == "disabled": db.binding["enabled"] = False
+    if changed == "connection": db.binding["connection_id"] = "changed-connection"
+    if changed == "model": db.binding["model_id"] = "changed-model"
+    if changed == "endpoint": db.binding["base_url"] = "http://changed-internal:11434"
+    if changed == "credential_version": db.binding["credential_version"] += 1
+    model_calls = 0
+    with pytest.raises(DocumentUnderstandingError):
+        f.repo.authorize_readiness_run(f.context, "source-a", "auto-run-a", model=model, capability=actual_role)
+        model_calls += 1
+    assert model_calls == 0
+    assert proof["frozen_context"]["role"] == waiting_role  # 실패 역할/과거 본문을 다른 역할로 바꾸지 않음.
+
+
 class FailureWaitConnection(ReadinessMetadataDB):
     """실제 repository/reader/record_wait의 SQL·Tx 대역. 실PG 권한 증거가 아니다."""
     def __init__(self):
@@ -63,6 +238,10 @@ class FailureWaitConnection(ReadinessMetadataDB):
         from daon_user_api.data_canon import transition_allowed
         self.steps.append((sql, tuple(params)))
         assert "FOR UPDATE" not in sql and "FOR SHARE" not in sql, "app 직접 rowlock 금지"
+        if "/* readiness-execution-run */" in sql:
+            return Cursor(({"trigger_type": "readiness_event", "actor_id": self.actor,
+                "source_version_id": "version-a", "state": self.states["ProcessingRun"],
+                "source_state": self.states["Source"], "latest": True, "payload": copy.deepcopy(self.payload)},))
         if "/* readiness-failure-parent */" in sql:
             assert tuple(params) == ("tenant-a", "workspace-a", "run-a", "actor-a")
             assert "pr.created_by=%s" in sql and "ORDER BY p.created_at DESC,p.record_id DESC" in sql
@@ -160,6 +339,33 @@ def test_failure_wait_same_tx_reader_digest_locks_and_notification(failure_wait)
     assert recheck[0] < first_lock < recheck[1] < transition
     # 0003/0058/0060: app 직접 UPDATE 금지. rowlock은 기존 SECDEF 전이 소유다.
     assert all("FOR UPDATE" not in sql and "FOR SHARE" not in sql for sql, _ in statements)
+
+
+def test_auto_run_failure_accepts_saved_full_snapshot_without_rewriting_mode(failure_wait):
+    f = failure_wait
+    snapshot = f.auth.read(f.db, f.context, f.auth.wait)
+    f.db.payload["trigger_type"] = "readiness_event"
+    f.db.payload["readiness_context"].update(frozen_context=json.loads(snapshot.frozen_context_json),
+        frozen_context_digest=snapshot.eligibility.frozen_context_digest, wait_processing_run_id="earlier-wait-run")
+    f.repo.fail_with_readiness(f.context, "run-a", "UNDERSTANDING_PROVIDER_UNAVAILABLE", retryable=True,
+                               failure_evidence=f.evidence)
+    assert f.db.states == {"ProcessingRun": "failed", "Source": "waiting_model"}
+    assert len(f.db.waits) == 1
+    assert f.db.waits[0]["mode"] == {"mode": "auto", "origin": "request"}
+
+
+def test_readiness_denial_cleanup_rechecks_latest_version_under_existing_lock(failure_wait):
+    f = failure_wait
+    snapshot = f.auth.read(f.db, f.context, f.auth.wait)
+    f.db.payload["trigger_type"] = "readiness_event"
+    f.db.payload["readiness_context"].update(frozen_context=json.loads(snapshot.frozen_context_json),
+        frozen_context_digest=snapshot.eligibility.frozen_context_digest, wait_processing_run_id="earlier-wait-run")
+    f.db.publish_version_on_lock = True
+    with pytest.raises(DocumentUnderstandingError):
+        f.repo.authorize_readiness_run(f.context, "source-a", "run-a")
+    assert f.db.states == {"ProcessingRun": "failed", "Source": "processing"}
+    assert f.db.source_versions == [("version-a", 1), ("version-b", 2)]
+    assert f.db.waits == []
 
 
 @pytest.mark.parametrize("failure", [RuntimeError("protected-write"),
@@ -490,6 +696,9 @@ class FakeConnection:
         self.statements: list[tuple[str, tuple[object, ...]]] = []
 
     def execute(self, sql, params=()):  # type: ignore[no-untyped-def]
+        if "/* readiness-execution-run */" in sql:
+            self.statements.append((sql, tuple(params)))
+            return Cursor(({"trigger_type": "manual_retry"},))
         if sql.startswith("SELECT pr.state,pr.version,pr.source_version_id,sv.source_id"):
             return Cursor((self.states["ProcessingRun"], self.versions["ProcessingRun"], self.source_version_id, "source-cp3"))
         self.statements.append((sql, tuple(params)))
