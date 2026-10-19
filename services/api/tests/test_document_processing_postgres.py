@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import copy
 import json
 import sqlite3
 import unittest
@@ -21,6 +22,125 @@ from daon_user_api.document_understanding_adapter import (
 PDF = b"%PDF-1.4\n% postgres processing fixture\n%%EOF\n"
 OBJECT_ID = "a" * 32
 OBJECT_KEY = f"tenant-cp3/workspace-cp3/source/{OBJECT_ID}"
+
+
+from test_source_reprocessing import Store as ReprocessingStore, Cursor as ReprocessingCursor
+
+
+class ReprocessingModeStore(ReprocessingStore):
+    """실제 repository SQL 소비/rollback 대역. PostgreSQL 실행 증거가 아니다."""
+    def __init__(self):
+        super().__init__()
+        self.saved_runs = {}
+        self.saved_replays = {}
+
+    @contextmanager
+    def _transaction(self, context):
+        before = copy.deepcopy((self.saved_runs, self.saved_replays))
+        try:
+            with super()._transaction(context) as connection:
+                yield connection
+        except BaseException:
+            self.saved_runs, self.saved_replays = before
+            raise
+
+    def execute(self, sql, params=()):
+        if sql.startswith("SELECT request_fingerprint,result"):
+            self.calls.append((sql, params))
+            return ReprocessingCursor(self.saved_replays.get(tuple(params)))
+        if sql.startswith("SELECT pr.canonical_json FROM processing_runs pr"):
+            self.calls.append((sql, params))
+            saved = self.saved_runs.get(params[2])
+            if saved is None or (saved[0], saved[1], saved[2], saved[7], saved[9], saved[4].obj["notebook_id"]) != tuple(params):
+                return ReprocessingCursor()
+            return ReprocessingCursor((copy.deepcopy(saved[4].obj),))
+        result = super().execute(sql, params)
+        if sql.startswith("INSERT INTO processing_runs"):
+            self.saved_runs[params[2]] = copy.deepcopy(params)
+        if sql.startswith("INSERT INTO idempotency_records"):
+            self.saved_replays[tuple(params[:5])] = (params[5], copy.deepcopy(params[6].obj))
+        return result
+
+
+class ReprocessingModeStorageTests(unittest.TestCase):
+    def setUp(self):
+        self.store = ReprocessingModeStore()
+        self.context = DocumentProcessingContext("tenant-1", "workspace-1", "user-1", "trace-1", "policy-2")
+        self.repo = PostgresDocumentProcessingRepository(self.store, object())
+        self.args = dict(notebook_id="notebook-1", idempotency_key="retry-1",
+                         authorization_snapshot={"acl_version": 7, "membership_version": 2, "policy_version": "policy-2"})
+
+    def test_absent_mode_keeps_legacy_fingerprint_wire_and_only_new_run_unknown(self):
+        result = self.repo.reprocess(self.context, "source-1", "version-1", **self.args)
+        self.assertEqual(set(result), {"processing_run_id", "source_id", "source_version_id", "retry_of_processing_run_id",
+                                     "processing_state", "source_state", "job_state", "replayed"})
+        self.assertEqual(next(iter(self.store.saved_replays.values()))[0],
+                         "76b683b5297932160d9246e5dbb600248c5d661300841c5a6b1a997d1b50c2e8")
+        payload = self.store.saved_runs[result["processing_run_id"]][4].obj
+        self.assertEqual(payload["readiness_context"], {"version": 1, "mode": "legacy_unknown", "mode_origin": "legacy_unknown"})
+        self.assertEqual(self.store.old_run, ("run-failed-1", "failed", "dead_letter"))
+        self.assertFalse(any(sql.startswith("UPDATE") for sql, _ in self.store.writes))
+        before = len(self.store.writes)
+        replay = self.repo.reprocess(self.context, "source-1", "version-1", **self.args)
+        self.assertTrue(replay["replayed"])
+        self.assertNotIn("processing_mode", replay)
+        self.assertEqual(len(self.store.writes), before)
+
+    def test_explicit_mode_is_saved_reread_on_replay_and_same_key_different_mode_conflicts(self):
+        for mode in ("auto", "local_only", "pinned"):
+            with self.subTest(mode=mode):
+                self.setUp()
+                result = self.repo.reprocess(self.context, "source-1", "version-1", processing_mode=mode, **self.args)
+                self.assertEqual(result["processing_mode"], mode)
+                self.assertEqual(self.store.saved_runs[result["processing_run_id"]][4].obj["readiness_context"],
+                                 {"version": 1, "mode": mode, "mode_origin": "request"})
+                key = next(iter(self.store.saved_replays))
+                fingerprint, cached = self.store.saved_replays[key]
+                cached["processing_mode"] = "not-a-saved-mode"
+                self.store.saved_replays[key] = (fingerprint, cached)
+                before = len(self.store.writes)
+                replay = self.repo.reprocess(self.context, "source-1", "version-1", processing_mode=mode, **self.args)
+                self.assertEqual((replay["processing_mode"], replay["replayed"]), (mode, True))
+                self.assertEqual(len(self.store.writes), before)
+                for changed in ("auto", "local_only", "pinned", None):
+                    if changed == mode:
+                        continue
+                    with self.subTest(changed=changed):
+                        with self.assertRaises(DocumentUnderstandingError) as caught:
+                            self.repo.reprocess(self.context, "source-1", "version-1", **self.args,
+                                                **({} if changed is None else {"processing_mode": changed}))
+                        self.assertEqual((caught.exception.code, caught.exception.status), ("IDEMPOTENCY_KEY_REUSED", 409))
+                self.assertEqual(len(self.store.writes), before)
+
+    def test_invalid_mode_missing_saved_run_and_revocation_never_write_or_fallback(self):
+        for mode in (None, True, "legacy_unknown", "AUTO", {}):
+            with self.subTest(mode=mode):
+                with self.assertRaises(DocumentUnderstandingError):
+                    self.repo.reprocess(self.context, "source-1", "version-1", processing_mode=mode, **self.args)
+        self.assertEqual(self.store.writes, [])
+        result = self.repo.reprocess(self.context, "source-1", "version-1", processing_mode="auto", **self.args)
+        before = len(self.store.writes)
+        payload = self.store.saved_runs[result["processing_run_id"]][4].obj
+        for proof in (None, {"version": True, "mode": "auto", "mode_origin": "request"},
+                      {"version": 1, "mode": "pinned", "mode_origin": "request"},
+                      {"version": 1, "mode": "auto", "mode_origin": "request", "extra": True}):
+            with self.subTest(proof=proof):
+                payload["readiness_context"] = proof
+                with self.assertRaises(DocumentUnderstandingError) as caught:
+                    self.repo.reprocess(self.context, "source-1", "version-1", processing_mode="auto", **self.args)
+                self.assertEqual(caught.exception.status, 503)
+                self.assertEqual(len(self.store.writes), before)
+                # rollback 대역은 snapshot을 새 객체로 복구한다.
+                payload = self.store.saved_runs[result["processing_run_id"]][4].obj
+        self.store.saved_runs.clear()
+        with self.assertRaises(DocumentUnderstandingError):
+            self.repo.reprocess(self.context, "source-1", "version-1", processing_mode="auto", **self.args)
+        self.assertEqual(len(self.store.writes), before)
+        self.store.source = None
+        with self.assertRaises(DocumentUnderstandingError) as caught:
+            self.repo.reprocess(self.context, "source-1", "version-1", processing_mode="auto", **self.args)
+        self.assertEqual(caught.exception.status, 404)
+        self.assertEqual(len(self.store.writes), before)
 
 
 class Cursor:

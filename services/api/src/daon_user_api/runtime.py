@@ -105,6 +105,7 @@ from .document_processing import (
     DocumentProcessingSubmissionService,
 )
 from .document_processing_postgres import PostgresDocumentProcessingRepository
+from .document_readiness import ReadinessDispatcherSettings
 from .document_understanding_adapter import (
     DocumentUnderstandingError, ServerProviderCredentialResolver,
     UrlLibDocumentUnderstandingTransport,
@@ -569,8 +570,11 @@ class RuntimeSettings:
     system_admin_user_ids: frozenset[str] = frozenset({"admin"})
     organization_admin_v2_enabled: bool = False
     notification_inbox_enabled: bool = False
+    document_readiness_settings: ReadinessDispatcherSettings = field(default_factory=ReadinessDispatcherSettings)
 
     def __post_init__(self) -> None:
+        if type(self.document_readiness_settings) is not ReadinessDispatcherSettings:
+            raise ValueError("DOCUMENT_PROCESSING_CONTEXT_INVALID")
         if self.recovery_restore_config_file is not None and (
             not isinstance(self.recovery_restore_config_file,Path) or not self.recovery_restore_config_file.is_absolute()
             or ".." in self.recovery_restore_config_file.parts):
@@ -696,6 +700,7 @@ class RuntimeSettings:
         )
         return cls(
             profile=profile,
+            document_readiness_settings=ReadinessDispatcherSettings.from_env(),
             organization_admin_v2_enabled=organization_flag == "true",
             notification_inbox_enabled=notification_flag == "true",
             bind_host=os.environ.get("DAON_API_BIND_HOST", "127.0.0.1"),
@@ -913,6 +918,16 @@ class SourceReprocessingAttributes(BaseModel):
     workspace_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
     notebook_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
     source_version_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
+    processing_mode: Literal["auto", "local_only", "pinned"] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def explicit_mode_must_be_known(cls, value):
+        if isinstance(value, dict) and "processing_mode" in value and (
+                type(value["processing_mode"]) is not str
+                or value["processing_mode"] not in ("auto", "local_only", "pinned")):
+            raise ValueError("DOCUMENT_PROCESSING_CONTEXT_INVALID")
+        return value
 
 
 class SourceReprocessingBody(BaseModel):
@@ -4448,13 +4463,24 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         snapshot = {"acl_version": grant.acl_version, "membership_version": grant.membership_version,
                     "role": grant.role.value, "policy_version": grant.policy_version,
                     "external_transfer_policy": effective.frozen_context()}
+        mode_option = ({"processing_mode": attributes.processing_mode}
+                       if "processing_mode" in attributes.model_fields_set else {})
         result = await asyncio.to_thread(
             dependencies.document_processing_service.reprocess,
             DocumentProcessingContext(principal.tenant_id, attributes.workspace_id, principal.user_id,
                                       request.state.trace_id, dependencies.settings.policy_version),
             id, attributes.source_version_id, notebook_id=attributes.notebook_id,
             idempotency_key=idempotency_key, authorization_snapshot=snapshot,
+            **mode_option,
         )
+        if mode_option:
+            saved_mode = result.get("processing_mode")
+            if type(saved_mode) is not str or saved_mode not in ("auto", "local_only", "pinned"):
+                raise DocumentUnderstandingError("DOCUMENT_PROCESSING_DATABASE_UNAVAILABLE", status=503)
+            # 현재 설정은 준비/실행 성공이 아니다. replay에서도 저장된 bool을 재사용하지 않는다.
+            result = {**result, "auto_requeue_configured": saved_mode in ("auto", "local_only") and (
+                principal.tenant_id, attributes.workspace_id, principal.user_id, attributes.source_version_id
+            ) in dependencies.settings.document_readiness_settings.scopes}
         response = JSONResponse({"data": {"id": result["processing_run_id"], "kind": "processing_run",
                                          "version": "2", "attributes": result},
                                  "trace_id": request.state.trace_id}, status_code=201)

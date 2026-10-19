@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from daon_user_api.document_processing import (
     DocumentProcessingContext,
     DocumentProcessingService,
+    DocumentProcessingSubmissionService,
     StoredSourceDocument,
 )
 from daon_user_api.document_understanding_adapter import (
@@ -28,6 +29,34 @@ except ModuleNotFoundError:
 
 
 PDF = b"%PDF-1.4\n% processing fixture\n%%EOF\n"
+
+
+class ReprocessingModeSubmissionTests(unittest.TestCase):
+    def test_explicit_mode_is_validated_and_forwarded_without_extending_legacy_call(self):
+        class Repository:
+            def __init__(self):
+                self.calls = []
+
+            def reprocess(self, context, source_id, source_version_id, **options):
+                self.calls.append(options)
+                return {"processing_run_id": "run-a"}
+
+        repository = Repository()
+        service = DocumentProcessingSubmissionService(repository)
+        context = DocumentProcessingContext("tenant-a", "workspace-a", "actor-a", "trace-a", "policy-a")
+        args = dict(notebook_id="notebook-a", idempotency_key="request-a", authorization_snapshot={"acl_version": 1})
+        service.reprocess(context, "source-a", "version-a", **args)
+        self.assertNotIn("processing_mode", repository.calls[0])
+        for mode in ("auto", "local_only", "pinned"):
+            with self.subTest(mode=mode):
+                service.reprocess(context, "source-a", "version-a", processing_mode=mode, **args)
+                self.assertEqual(repository.calls[-1]["processing_mode"], mode)
+        self.assertEqual(len(repository.calls), 4)
+        for invalid in (None, True, 1, "legacy_unknown", "AUTO", "", [], {}):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(DocumentUnderstandingError):
+                    service.reprocess(context, "source-a", "version-a", processing_mode=invalid, **args)
+        self.assertEqual(len(repository.calls), 4)
 
 
 class RecordingRepository:

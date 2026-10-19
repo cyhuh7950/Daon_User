@@ -13,6 +13,7 @@ from .cloud_storage import CloudAccessContext, CloudDatabaseError, PostgresCloud
 from .data_canon import canonical_json_bytes
 from .document_processing import (
     DocumentProcessingContext, DocumentProcessingStatus, StoredSourceDocument, text_source_format, image_source_format, xlsx_source_format, docx_source_format, pptx_source_format, audio_source_format,
+    _PROCESSING_MODE_UNSET, _reprocessing_readiness_context,
 )
 from .document_understanding_adapter import (
     DocumentUnderstandingError,
@@ -258,10 +259,15 @@ class PostgresDocumentProcessingRepository:
     def reprocess(
         self, context: DocumentProcessingContext, source_id: str, source_version_id: str,
         *, notebook_id: str, idempotency_key: str, authorization_snapshot: Mapping[str, object],
+        processing_mode: object = _PROCESSING_MODE_UNSET,
     ) -> dict[str, object]:
         operation = "source.manual_reprocess"
-        _, fingerprint = self._snapshot({"source_id": source_id, "source_version_id": source_version_id,
-                                         "notebook_id": notebook_id})
+        readiness_context = _reprocessing_readiness_context(processing_mode)
+        explicit_mode = processing_mode is not _PROCESSING_MODE_UNSET
+        identity = {"source_id": source_id, "source_version_id": source_version_id, "notebook_id": notebook_id}
+        if explicit_mode:
+            identity["processing_mode"] = cast(str, processing_mode)
+        _, fingerprint = self._snapshot(identity)
         run_id = self._opaque_id("pr", context.tenant_id, context.workspace_id,
                                  context.actor_id, operation, idempotency_key)
         try:
@@ -317,7 +323,11 @@ class PostgresDocumentProcessingRepository:
                 if replay is not None:
                     if str(replay[0]) != fingerprint:
                         raise DocumentUnderstandingError("IDEMPOTENCY_KEY_REUSED", status=409)
-                    return {**cast(dict[str, object], replay[1]), "replayed": True}
+                    result = {**cast(dict[str, object], replay[1]), "replayed": True}
+                    if explicit_mode:
+                        result["processing_mode"] = self._saved_reprocessing_mode(connection, context,
+                            cast(str, result["processing_run_id"]), source_version_id, notebook_id, cast(str, processing_mode))
+                    return result
                 active = connection.execute(
                     "SELECT 1 FROM processing_runs pr LEFT JOIN document_processing_jobs job "
                     "ON job.tenant_id=pr.tenant_id AND job.workspace_id=pr.workspace_id AND job.processing_run_id=pr.record_id "
@@ -370,6 +380,7 @@ class PostgresDocumentProcessingRepository:
                            "trigger_type": "manual_request", "retry_of_processing_run_id": previous_id,
                            "trigger_event_id": run_id, "notebook_id": notebook_id,
                            "vision_llm_first": True, "parser_role": "validation_only",
+                           "readiness_context": readiness_context,
                            "authorization_snapshot": dict(authorization_snapshot),
                            "policy_snapshot": {"data_area": str(policy[0]), "cost_limit_cents": int(policy[1]),
                                                "routing_policy_version": context.policy_version}}
@@ -399,6 +410,9 @@ class PostgresDocumentProcessingRepository:
                 result = {"processing_run_id": run_id, "source_id": source_id, "source_version_id": source_version_id,
                           "retry_of_processing_run_id": previous_id, "processing_state": initial_state,
                           "source_state": "processing", "job_state": "pending", "replayed": False}
+                if explicit_mode:
+                    result["processing_mode"] = self._saved_reprocessing_mode(connection, context, run_id,
+                        source_version_id, notebook_id, cast(str, processing_mode))
                 connection.execute(
                     "INSERT INTO audit_events (event_id,tenant_id,workspace_id,actor_id,action,target_type,target_id,"
                     "outcome,trace_id,policy_version,metadata) VALUES (%s,%s,%s,%s,'source.manual_reprocess',"
@@ -416,6 +430,24 @@ class PostgresDocumentProcessingRepository:
                 return result
         except Exception as error:
             raise self._database_error(error) from None
+
+    @staticmethod
+    def _saved_reprocessing_mode(connection, context, run_id, source_version_id, notebook_id, requested_mode):
+        # 캐시/입력 Mode가 아닌 같은 transaction의 실제 Run canonical 저장값을 읽는다.
+        row = connection.execute(
+            "SELECT pr.canonical_json FROM processing_runs pr WHERE pr.tenant_id=%s AND pr.workspace_id=%s "
+            "AND pr.record_id=%s AND pr.created_by=%s AND pr.source_version_id=%s "
+            "AND pr.canonical_json->>'notebook_id'=%s",
+            (context.tenant_id, context.workspace_id, run_id, context.actor_id, source_version_id, notebook_id),
+        ).fetchone()
+        payload = None if row is None else row[0]
+        proof = payload.get("readiness_context") if type(payload) is dict else None
+        if (type(proof) is not dict or set(proof) != {"version", "mode", "mode_origin"}
+                or type(proof["version"]) is not int or proof["version"] != 1
+                or proof["mode_origin"] != "request" or type(proof["mode"]) is not str
+                or proof["mode"] not in ("auto", "local_only", "pinned") or proof["mode"] != requested_mode):
+            raise DocumentUnderstandingError("DOCUMENT_PROCESSING_DATABASE_UNAVAILABLE", status=503)
+        return proof["mode"]
 
     def start(
         self, context: DocumentProcessingContext, source_version_id: str,

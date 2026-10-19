@@ -67,6 +67,114 @@ class UnreadyObjectStorage:
 
 
 class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
+    def mode_dependencies(self):
+        from test_document_processing_postgres import ReprocessingModeStore
+        from daon_user_api.document_processing import DocumentProcessingSubmissionService
+        from daon_user_api.document_processing_postgres import PostgresDocumentProcessingRepository
+        from daon_user_api.document_readiness import ReadinessDispatcherSettings
+        from daon_user_api.egress_policy import EgressPolicyContext, EgressPolicyPayload, EgressPolicyService, ReferenceEgressPolicyRepository
+        from daon_user_api.document_understanding_adapter import DocumentUnderstandingError
+
+        class Notebook:
+            def get(inner, context, notebook_id):
+                if notebook_id != "notebook-001":
+                    raise DocumentUnderstandingError("SOURCE_NOT_FOUND", status=404)
+                return object()
+
+            def require_selected_bindings(inner, context, notebook_id, required):
+                if required != (("source", "src-001", "source-version-001"),):
+                    raise DocumentUnderstandingError("CURRENT_ACCESS_DENIED", status=403)
+                return object()
+
+        store = ReprocessingModeStore()
+        store.source = ("src-001", "waiting_model", 4, "source-version-001", "qa.txt", "text/plain")
+        policies = ReferenceEgressPolicyRepository()
+        context = EgressPolicyContext(self.web.tenant_id, self.web.tenant_id, "workspace-001",
+                                      self.web.user_id, TRACE_ID, POLICY_VERSION)
+        for scope in ("organization", "workspace"):
+            policies.seed(context, scope_type=scope, payload=EgressPolicyPayload.deny_external())
+        # SQL 대역 policy의 실제 ACL version을 HTTP의 현재 grant와 맞춘다.
+        grant = self.authorization.authorize_action(
+            principal=self.identity.validate_access(self.web.access_token, trace_id=TRACE_ID, policy_version=POLICY_VERSION),
+            workspace_id="workspace-001", action=Action.EDIT, trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+        original_execute = store.execute
+
+        def execute(sql, params=()):
+            if sql.startswith("SELECT data_area,cost_limit_cents,acl_version"):
+                from test_source_reprocessing import Cursor
+                store.calls.append((sql, params))
+                return Cursor(("cloud_sync", 1000, grant.acl_version))
+            return original_execute(sql, params)
+
+        store.execute = execute
+        settings = replace(self.settings, document_readiness_settings=ReadinessDispatcherSettings(scopes=frozenset({
+            (self.web.tenant_id, "workspace-001", self.web.user_id, "source-version-001")})))
+        deps = replace(self.dependencies, settings=settings, notebook_service=Notebook(),
+            document_processing_service=DocumentProcessingSubmissionService(PostgresDocumentProcessingRepository(store, object())),
+            egress_policy_service=EgressPolicyService(policies))
+        return deps, store
+
+    async def test_readiness_mode_saved_response_and_replay_uses_current_exact_scope_not_saved_flag(self):
+        from daon_user_api.document_readiness import ReadinessDispatcherSettings
+        deps, store = self.mode_dependencies()
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(deps)), base_url="http://127.0.0.1") as client:
+            auth = {"cookie": f"{WEB_SESSION_COOKIE}={self.web.access_token}"}
+            base = {"workspace_id": "workspace-001", "notebook_id": "notebook-001", "source_version_id": "source-version-001"}
+            for mode, configured in (("auto", True), ("local_only", True), ("pinned", False)):
+                with self.subTest(mode=mode):
+                    response = await client.post("/api/v1/sources/src-001/processing-runs", json={"kind": "processing_run",
+                        "attributes": {**base, "processing_mode": mode}}, headers={**auth, "Idempotency-Key": "mode-" + mode})
+                    self.assertEqual(response.status_code, 201, response.text)
+                    attributes = response.json()["data"]["attributes"]
+                    self.assertEqual((attributes["processing_mode"], attributes["auto_requeue_configured"]), (mode, configured))
+                    self.assertEqual((attributes["processing_state"], attributes["job_state"]), ("vision_llm_understanding", "pending"))
+            before = len(store.writes)
+            for scope in (frozenset(), frozenset({(self.web.tenant_id, "workspace-001", "another-actor", "source-version-001")}),
+                          frozenset({(self.web.tenant_id, "workspace-001", self.web.user_id, "another-version")})):
+                deps.settings = replace(deps.settings, document_readiness_settings=ReadinessDispatcherSettings(scopes=scope))
+                response = await client.post("/api/v1/sources/src-001/processing-runs", json={"kind": "processing_run",
+                    "attributes": {**base, "processing_mode": "auto"}}, headers={**auth, "Idempotency-Key": "mode-auto"})
+                self.assertEqual(response.status_code, 201, response.text)
+                attributes = response.json()["data"]["attributes"]
+                self.assertEqual((attributes["processing_mode"], attributes["auto_requeue_configured"], attributes["replayed"]),
+                                 ("auto", False, True))
+            self.assertEqual(len(store.writes), before)
+
+    async def test_readiness_mode_absent_wire_null_and_unknown_rejected_and_existing_auth_preserved(self):
+        deps, store = self.mode_dependencies()
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(deps)), base_url="http://127.0.0.1") as client:
+            headers = {"cookie": f"{WEB_SESSION_COOKIE}={self.web.access_token}", "Idempotency-Key": "mode-absent"}
+            base = {"workspace_id": "workspace-001", "notebook_id": "notebook-001", "source_version_id": "source-version-001"}
+            response = await client.post("/api/v1/sources/src-001/processing-runs", json={"kind": "processing_run", "attributes": base}, headers=headers)
+            self.assertEqual(response.status_code, 201, response.text)
+            self.assertEqual(set(response.json()["data"]["attributes"]), {"processing_run_id", "source_id", "source_version_id",
+                "retry_of_processing_run_id", "processing_state", "source_state", "job_state", "replayed"})
+            before = len(store.writes)
+            for mode in (None, True, 1, "legacy_unknown", "AUTO", {}, []):
+                with self.subTest(mode=mode):
+                    response = await client.post("/api/v1/sources/src-001/processing-runs", json={"kind": "processing_run",
+                        "attributes": {**base, "processing_mode": mode}}, headers=headers)
+                    self.assertEqual(response.status_code, 400, response.text)
+            valid = {"kind": "processing_run", "attributes": {**base, "processing_mode": "auto"}}
+            self.assertEqual((await client.post("/api/v1/sources/src-001/processing-runs", json=valid,
+                headers={"Idempotency-Key": "unauth-mode"})).status_code, 401)
+            for altered, expected in (({"workspace_id": "workspace-foreign"}, 404), ({"source_version_id": "wrong-version"}, 403)):
+                response = await client.post("/api/v1/sources/src-001/processing-runs", json={"kind": "processing_run",
+                    "attributes": {**base, **altered, "processing_mode": "auto"}}, headers=headers)
+                self.assertEqual(response.status_code, expected, response.text)
+            self.assertEqual(len(store.writes), before)
+
+    async def test_readiness_mode_same_key_different_explicit_mode_conflicts_without_second_job(self):
+        deps, store = self.mode_dependencies()
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(deps)), base_url="http://127.0.0.1") as client:
+            headers = {"cookie": f"{WEB_SESSION_COOKIE}={self.web.access_token}", "Idempotency-Key": "same-mode-key"}
+            base = {"workspace_id": "workspace-001", "notebook_id": "notebook-001", "source_version_id": "source-version-001"}
+            for mode, status in (("auto", 201), ("auto", 201), ("local_only", 409), ("pinned", 409)):
+                response = await client.post("/api/v1/sources/src-001/processing-runs", json={"kind": "processing_run",
+                    "attributes": {**base, "processing_mode": mode}}, headers=headers)
+                self.assertEqual(response.status_code, status, response.text)
+            self.assertEqual(sum(sql.startswith("INSERT INTO document_processing_jobs") for sql, _ in store.writes), 1)
+
     async def test_m2a_operations_scope_requires_real_current_workspace_view_and_never_writes_audit(self):
         from daon_user_api.runtime import _operations_workspace_scope
         principal=self.identity.validate_access(self.web.access_token,trace_id="trace-m2a",policy_version=self.settings.policy_version)
@@ -1290,6 +1398,20 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RuntimeSettingsTests(unittest.TestCase):
+    def test_readiness_mode_scope_settings_default_off_and_closed_four_id_environment(self):
+        from daon_user_api.document_understanding_adapter import DocumentUnderstandingError
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(RuntimeSettings.from_env().document_readiness_settings.scopes, frozenset())
+        scope = '[{"tenant_id":"tenant-a","workspace_id":"workspace-a","actor_id":"actor-a","source_version_id":"version-a"}]'
+        with patch.dict("os.environ", {"DAON_DOCUMENT_READINESS_SCOPES_JSON": scope}, clear=True):
+            self.assertEqual(RuntimeSettings.from_env().document_readiness_settings.scopes,
+                             frozenset({("tenant-a", "workspace-a", "actor-a", "version-a")}))
+        for raw in ('null', '[{"tenant_id":"*"}]', scope[:-1] + ',' + scope[1:],
+                    '[{"tenant_id":"tenant-a","workspace_id":"workspace-a","actor_id":"actor-a","source_version_id":"version-a","extra":true}]'):
+            with self.subTest(raw=raw), patch.dict("os.environ", {"DAON_DOCUMENT_READINESS_SCOPES_JSON": raw}, clear=True):
+                with self.assertRaises(DocumentUnderstandingError):
+                    RuntimeSettings.from_env()
+
     def test_s39_flag_defaults_off_and_rejects_non_boolean_environment(self) -> None:
         with patch.dict("os.environ", {"DAON_RUNTIME_PROFILE": "development"}, clear=True):
             self.assertFalse(RuntimeSettings.from_env().organization_admin_v2_enabled)

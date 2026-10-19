@@ -23,6 +23,15 @@ from .cloud_storage import CloudDatabaseError
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
 _TEXT_SOURCE_MIMES = {"txt": "text/plain", "md": "text/markdown", "csv": "text/csv"}
+_PROCESSING_MODE_UNSET = object()
+
+
+def _reprocessing_readiness_context(processing_mode: object) -> dict[str, object]:
+    if processing_mode is _PROCESSING_MODE_UNSET:
+        return {"version": 1, "mode": "legacy_unknown", "mode_origin": "legacy_unknown"}
+    if type(processing_mode) is not str or processing_mode not in ("auto", "local_only", "pinned"):
+        raise DocumentUnderstandingError("DOCUMENT_PROCESSING_CONTEXT_INVALID")
+    return {"version": 1, "mode": processing_mode, "mode_origin": "request"}
 
 
 def text_source_format(filename: str, content_type: str) -> str | None:
@@ -93,6 +102,7 @@ class DocumentProcessingRepository(Protocol):
     def reprocess(
         self, context: DocumentProcessingContext, source_id: str, source_version_id: str,
         *, notebook_id: str, idempotency_key: str, authorization_snapshot: Mapping[str, object],
+        processing_mode: object = _PROCESSING_MODE_UNSET,
     ) -> dict[str, object]: ...
 
     def load_source_document(
@@ -127,13 +137,17 @@ class DocumentProcessingSubmissionService:
     def reprocess(
         self, context: DocumentProcessingContext, source_id: str, source_version_id: str,
         *, notebook_id: str, idempotency_key: str, authorization_snapshot: Mapping[str, object],
+        processing_mode: object = _PROCESSING_MODE_UNSET,
     ) -> dict[str, object]:
         if any(not isinstance(value, str) or not _SAFE_ID.fullmatch(value)
                for value in (source_id, source_version_id, notebook_id)) or not idempotency_key:
             raise DocumentUnderstandingError("DOCUMENT_PROCESSING_CONTEXT_INVALID")
+        _reprocessing_readiness_context(processing_mode)
+        mode_option = {} if processing_mode is _PROCESSING_MODE_UNSET else {"processing_mode": processing_mode}
         return self._repository.reprocess(
             context, source_id, source_version_id, notebook_id=notebook_id,
             idempotency_key=idempotency_key, authorization_snapshot=authorization_snapshot,
+            **mode_option,
         )
 
     def submit(
