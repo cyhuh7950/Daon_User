@@ -197,7 +197,7 @@ _COST_CAPACITY_CHECKS={_COST_EVENT:["run_kind IN ('question','document')",
     "(state='uncertain' AND amount IS NULL AND currency IS NULL) OR (state IN ('reserved','known') AND amount>=0::numeric AND amount IS NOT NULL AND currency='USD')",
     "(state='reserved' AND receipt_id IS NULL AND usage_digest IS NULL) OR (state='known' AND receipt_id IS NOT NULL AND usage_digest IS NOT NULL) OR (state='uncertain' AND receipt_id IS NOT NULL)"],
     _HOST_SAMPLE:["host_ref='wsl-server-daon-user'","boot_id ~ '^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$'",'sequence>0',
-    '(cpu_logical_millicores>=1000 AND cpu_logical_millicores<=32768000) AND cpu_logical_millicores%1000=0',
+    '(cpu_logical_millicores>=1000 AND cpu_logical_millicores<=32768000) AND cpu_logical_millicores%(1000)::bigint=0',
     'cpu_usage_basis_points>=0 AND cpu_usage_basis_points<=10000','memory_total_bytes>0',
     'memory_available_bytes>=0 AND memory_available_bytes<=memory_total_bytes',
     'cardinality(cpu_counters)=8 AND array_position(cpu_counters,NULL::bigint) IS NULL AND 0<=ALL(cpu_counters)']}

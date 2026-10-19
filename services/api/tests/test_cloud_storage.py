@@ -34,6 +34,10 @@ class CloudStorageContractTests(unittest.TestCase):
         import hashlib,re
         from daon_user_api import cloud_storage as api
         migration=(MIGRATION.parent/'0073_operations_cost_capacity.sql').read_text(encoding='utf-8')
+        declared_cpu='(cpu_logical_millicores BETWEEN 1000 AND 32768000 AND cpu_logical_millicores%1000=0)'
+        self.assertIn(declared_cpu,migration)
+        deparsed_cpu='(((cpu_logical_millicores >= 1000) AND (cpu_logical_millicores <= 32768000)) AND ((cpu_logical_millicores % (1000)::bigint) = 0))'
+        self.assertIn(api._telemetry_expression(deparsed_cpu),list(map(api._telemetry_expression,api._COST_CAPACITY_CHECKS[api._HOST_SAMPLE])))
         for signature,expected in api._COST_CAPACITY_FUNCTIONS.items():
             body=re.search(r'CREATE FUNCTION public\.'+signature.split('(')[0]+r'\([^$]+?AS \$\$(.*?)\$\$;',migration,re.S)
             self.assertIsNotNone(body)
