@@ -8,7 +8,8 @@ import hashlib
 import json
 
 from .operations_run_cost import (PriceCard,RunCostPolicy,RunCostScope,CostDecision,
-    _id,_money,_utc,price_actual_usage,decide_run_cost)
+    _id,_money,_utc,price_actual_usage,decide_run_cost,verified_upstage_input_bound,
+    normalize_upstage_usage)
 from .operations_telemetry import CostReceipt,make_price_card_cost_receipt
 from .cloud_storage import CloudAccessContext
 
@@ -156,3 +157,93 @@ class OperationsRunCostRepository:
         if (type(row) not in (tuple,list) or len(row)!=1 or type(row[0]) is not int
             or row[0]<=reservation.sequence):raise ValueError('RUN_COST_DB_RESULT_INVALID')
         return receipt
+
+
+class RunCostTransportSession:
+    """실제 wire 직전 예약→전송 한 번→검증 후 정산. 응답·자격을 보관하지 않는다."""
+    def __init__(self,*,repository,context,scope,policy,evidence,attempt_key,transport,clock):
+        OperationsRunCostRepository._context(context,scope)
+        _id(attempt_key)
+        if type(policy) is not RunCostPolicy or not policy.matches(scope):
+            raise ValueError('RUN_COST_POLICY_UNCONFIRMED')
+        self._repository,self._context,self._scope=repository,context,scope
+        self._policy,self._evidence,self._attempt_key=policy,evidence,attempt_key
+        self._transport,self._clock=transport,clock
+        self._called=False
+        self._reservation=None
+        self._usage={}
+        self._finished=False
+        self._outcome=None
+        self._receipt=None
+
+    def post_json(self,*,url,api_key,payload,timeout_seconds):
+        if (self._called or url!=self._scope.base_url+'/chat/completions'
+            or type(api_key) is not str or not api_key):
+            raise ValueError('RUN_COST_ATTEMPT_INVALID')
+        self._called=True
+        now=_utc(self._clock())
+        upper=verified_upstage_input_bound(self._scope,payload,self._evidence,now=now)
+        held=self._repository.reserve(self._context,self._scope,self._policy,attempt_key=self._attempt_key,
+            input_token_upper_bound=upper,output_token_limit=payload.get('max_tokens') if type(payload) is dict else None,now=now)
+        if type(held) is not CostReservation:
+            raise ValueError('RUN_COST_CALL_NOT_AUTHORIZED')
+        self._reservation=held
+        try:
+            response=self._transport.post_json(url=url,api_key=api_key,payload=payload,timeout_seconds=timeout_seconds)
+        except Exception:
+            self.finish(outcome='failed')
+            raise ValueError('RUN_COST_CALL_UNCONFIRMED') from None
+        self._usage=normalize_upstage_usage(response,self._evidence) or {}
+        return response
+
+    def finish(self,*,outcome):
+        if outcome not in {'succeeded','failed','cancelled'}:raise ValueError('RUN_COST_OUTCOME_INVALID')
+        if self._finished:
+            if self._outcome!=outcome or self._receipt is None:raise ValueError('RUN_COST_SETTLEMENT_UNCONFIRMED')
+            return self._receipt
+        if self._reservation is None:return None
+        # DB 종료 결과가 불확정이면 같은 객체에서도 자동 재정산/전송하지 않는다.
+        self._finished=True;self._outcome=outcome
+        self._receipt=self._repository.settle(self._context,self._reservation,usage=self._usage,
+            outcome=outcome,settled_at=_utc(self._clock()))
+        if type(self._receipt) is not CostReceipt:raise ValueError('RUN_COST_SETTLEMENT_UNCONFIRMED')
+        return self._receipt
+
+
+class RunCostSessionFactory:
+    """명시된 논리 scope만 선택한다. 미등록 사용자/모델의 기존 경로는 변경하지 않는다."""
+    def __init__(self,repository,*,policies=(),evidence=None,clock):
+        if type(policies) is not tuple or len(policies)>64 or any(type(p) is not RunCostPolicy for p in policies):
+            raise ValueError('RUN_COST_POLICY_INVALID')
+        for p in policies:
+            declared=RunCostScope(p.tenant_id,p.workspace_id,p.actor_id,p.connection_id,p.model_id,p.run_kind,
+                'scope-check',p.price_card.base_url)
+            if (not p.matches(declared) or p.connection_id!='provider-upstage'
+                or (p.price_card.input_per_million,p.price_card.cached_input_per_million,p.price_card.output_per_million)
+                    !=(Decimal('0.30'),Decimal('0.06'),Decimal('1.20'))):
+                raise ValueError('RUN_COST_POLICY_UNCONFIRMED')
+        keys=[(p.tenant_id,p.workspace_id,p.actor_id,p.connection_id,p.model_id,p.run_kind) for p in policies]
+        if len(keys)!=len(set(keys)):raise ValueError('RUN_COST_POLICY_DUPLICATED')
+        self._repository,self._policies,self._evidence,self._clock=repository,policies,evidence,clock
+
+    def applies(self,context,selection,*,run_kind):
+        if (getattr(selection,'provider_code',None)!='UPSTAGE'
+            or getattr(selection,'provider_kind',None)!='external_api'
+            or getattr(selection,'capability',None)!='text_generation'):
+            return False
+        scope=RunCostScope(context.tenant_id,context.workspace_id,context.actor_id,selection.connection_id,
+            selection.model_id,run_kind,'scope-check',selection.base_url)
+        return any(p.matches(scope) for p in self._policies)
+
+    def for_call(self,context,selection,*,run_kind,run_id,attempt_key,transport):
+        if (getattr(selection,'provider_code',None)!='UPSTAGE'
+            or getattr(selection,'provider_kind',None)!='external_api'
+            or getattr(selection,'capability',None)!='text_generation'):
+            return None
+        scope=RunCostScope(context.tenant_id,context.workspace_id,context.actor_id,selection.connection_id,
+            selection.model_id,run_kind,run_id,selection.base_url)
+        matching=[p for p in self._policies if p.matches(scope)]
+        if not matching:return None
+        return RunCostTransportSession(repository=self._repository,
+            context=CloudAccessContext(scope.tenant_id,scope.workspace_id,scope.actor_id,'run.cost'),
+            scope=scope,policy=matching[0],evidence=self._evidence,attempt_key=attempt_key,transport=transport,clock=self._clock)

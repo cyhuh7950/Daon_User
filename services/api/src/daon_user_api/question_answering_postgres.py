@@ -1207,9 +1207,16 @@ class PostgresQuestionAnsweringRepository:
         if revision not in {'0071','0072','0073'}:
             raise QuestionRepositoryError('QUESTION_DATABASE_UNAVAILABLE',status=503)
         try:
-            receipt=make_cost_receipt(result.reported_cost if result is not None else None,
-                result.usage if result is not None else {},provider_connection_id=selection.connection_id,
-                outcome='succeeded' if result is not None else 'failed',observed_at=datetime.now(timezone.utc))
+            receipt=None if result is None else result.price_card_receipt
+            if receipt is not None:
+                if (revision!='0073' or selection.provider_code!='UPSTAGE'
+                    or selection.base_url!='https://api.upstage.ai/v1' or selection.model_id!='solar-pro4'
+                    or receipt.provider_connection_id!=selection.connection_id or receipt.basis!='price_card'
+                    or model_attempt_id is None):raise ValueError('RUN_COST_RECEIPT_BINDING_INVALID')
+            else:
+                receipt=make_cost_receipt(result.reported_cost if result is not None else None,
+                    result.usage if result is not None else {},provider_connection_id=selection.connection_id,
+                    outcome='succeeded' if result is not None else 'failed',observed_at=datetime.now(timezone.utc))
             record_cost_in_transaction(connection,context,run_id,receipt,model_attempt_id=model_attempt_id)
         except (TelemetryUnavailable,ValueError,TypeError):
             raise QuestionRepositoryError('QUESTION_DATABASE_UNAVAILABLE',status=503) from None

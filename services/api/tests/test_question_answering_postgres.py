@@ -232,6 +232,21 @@ class PostgresQuestionAnsweringRepositoryTests(unittest.TestCase):
         with self.assertRaisesRegex(QuestionRepositoryError,'QUESTION_DATABASE_UNAVAILABLE'):
             self._complete_cost()
 
+    def test_measured_price_card_receipt_is_used_instead_of_synthesized_unknown_report(self):
+        from unittest.mock import patch
+        from test_operations_run_cost_postgres import reservation
+        from daon_user_api.operations_run_cost_postgres import settle_reserved_usage
+        from test_operations_run_cost import NOW
+        receipt=settle_reserved_usage(reservation(),usage={'prompt_tokens':1000,'completion_tokens':100,'cached_input_tokens':200},outcome='succeeded',settled_at=NOW)
+        self.cloud.connection.revision='0073'
+        result=GroundedTextResult('answer',(),False,{},price_card_receipt=receipt)
+        selection=TextModelSelection('UPSTAGE','https://api.upstage.ai/v1','provider-upstage','provider-upstage:solar-pro4','solar-pro4',1,
+            connection_id='provider-upstage')
+        with patch('daon_user_api.question_answering_postgres.record_cost_in_transaction') as writer:
+            self.repository._record_run_cost(self.cloud.connection,self.context,'run-qa',selection,result=result,model_attempt_id='attempt-first')
+        self.assertEqual(writer.call_count,1)
+        self.assertIs(writer.call_args.args[3],receipt)
+
     def test_commit_rechecks_selected_source_before_any_result_write(self):
         # Revocation occurs after the service recheck but before this transaction.
         execute = self.cloud.connection.execute

@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 from .document_index_postgres import IndexedEvidenceChunk
 from .document_understanding_adapter import _evidence_anchors
 from .provider_settings import ProviderSettingsSnapshot
-from .operations_telemetry import ReportedCost,reported_cost_from_usage
+from .operations_telemetry import CostReceipt,ReportedCost,reported_cost_from_usage
 
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
@@ -97,6 +97,7 @@ class GroundedTextResult:
     insufficient: bool
     usage: Mapping[str, int]
     reported_cost: ReportedCost | None = None
+    price_card_receipt: CostReceipt | None = None
 
 
 class TextGenerationTransport(Protocol):

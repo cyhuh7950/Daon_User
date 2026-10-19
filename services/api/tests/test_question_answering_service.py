@@ -871,6 +871,95 @@ class OmniRouteTransport(CapturingGatewayTransport):
 
 
 class QuestionAnsweringServiceTests(unittest.TestCase):
+    def test_configured_run_cost_reserves_after_egress_and_persists_measured_price_card_receipt(self):
+        from decimal import Decimal
+        from test_operations_run_cost import NOW,policy
+        from daon_user_api.operations_run_cost import UpstageModelContextEvidence
+        from daon_user_api.operations_run_cost_postgres import RunCostSessionFactory,CostReservation,settle_reserved_usage
+        from daon_user_api.question_answering_postgres import PostgresQuestionAnsweringRepository
+        context=QuestionContext('tenant-cp3','workspace-cp3','actor-cp3','trace-cp3','policy-v1')
+        p=replace(policy(),tenant_id=context.tenant_id,workspace_id=context.workspace_id,actor_id=context.actor_id)
+        calls=[]
+        class Resolver(FakeProviderSettings):
+            @contextmanager
+            def resolve(self,context,capability):
+                with super().resolve(context,capability) as selected:
+                    yield replace(selected,connection_id='provider-upstage')
+        class Costs:
+            def reserve(self,ctx,scope,current,**kwargs):
+                assert kwargs['input_token_upper_bound']==524288 and kwargs['output_token_limit']==512
+                calls.append('reserve')
+                assert kwargs['attempt_key']==PostgresQuestionAnsweringRepository._opaque_id('attempt','run-cost-guard','provider-upstage:solar-pro4')
+                return CostReservation(scope,current,kwargs['attempt_key'],1,Decimal('0.157900800'),NOW)
+            def settle(self,ctx,held,**kwargs):calls.append('settle');return settle_reserved_usage(held,**kwargs)
+        class Transport(FakeTransport):
+            def post_json(self,**kwargs):
+                calls.append('post');self.payload=kwargs['payload']
+                return {**super().post_json(**kwargs),'model':'solar-pro4-260806','usage':{
+                    'prompt_tokens':1000,'completion_tokens':100,'total_tokens':1100,'prompt_tokens_details':{'cached_tokens':200}}}
+        class Egress(FakeEgress):
+            def authorize(self,ctx,**kwargs):calls.append('egress');self.wire=kwargs['provider_payload'];return super().authorize(ctx,**kwargs)
+        evidence=UpstageModelContextEvidence('solar-pro4','solar-pro4-260806',524288,'https://console.upstage.ai/docs/models/solar-pro-4',NOW)
+        factory=RunCostSessionFactory(Costs(),policies=(p,),evidence=evidence,clock=lambda:NOW)
+        repo,transport,egress=FakeRepository(),Transport(),Egress()
+        chunks=(IndexedEvidenceChunk('chunk-page-2','source-cp3','source-version-cp3',2,'ORANGE-COMPASS-42','span-page-2',1.0),)
+        service=QuestionAnsweringService(Resolver(),repo,FakeIndex(chunks),FakeCredential(),transport,egress,run_cost_sessions=factory)
+        prepared=service.prepare_authorization(context,source_id='source-cp3',source_version_id='source-version-cp3',question='What code?')
+        self.assertEqual(calls,[])
+        service.ask(context,source_id='source-cp3',source_version_id='source-version-cp3',question='What code?',run_id='run-cost-guard')
+        self.assertEqual(calls,['egress','reserve','post','settle'])
+        self.assertEqual(prepared.provider_payload,egress.wire)
+        self.assertEqual(json.loads(egress.wire),transport.payload)
+        self.assertEqual(transport.payload['max_tokens'],512)
+        receipt=repo.persisted['result'].price_card_receipt
+        self.assertEqual((receipt.basis,receipt.state,receipt.amount),('price_card','known',Decimal('0.000372000')))
+
+    def test_scoped_run_cost_general_paths_failure_and_egress_denial_do_not_auto_resend(self):
+        from decimal import Decimal
+        from test_operations_run_cost import NOW,policy
+        from daon_user_api.operations_run_cost import UpstageModelContextEvidence
+        from daon_user_api.operations_run_cost_postgres import RunCostSessionFactory,CostReservation,settle_reserved_usage
+        for mode in ('general','empty_evidence','transport_failure','egress_denied'):
+            with self.subTest(mode=mode):
+                context=QuestionContext('tenant-cp3','workspace-cp3','actor-cp3','trace-cp3','policy-v1')
+                p=replace(policy(),tenant_id=context.tenant_id,workspace_id=context.workspace_id,actor_id=context.actor_id)
+                events=[]
+                class Resolver(FakeProviderSettings):
+                    supports_user_credential_fallback=True
+                    @contextmanager
+                    def resolve(self,context,capability):
+                        with super().resolve(context,capability) as selected:yield replace(selected,connection_id='provider-upstage')
+                class Costs:
+                    def reserve(self,ctx,scope,current,**kwargs):
+                        events.append('reserve');return CostReservation(scope,current,kwargs['attempt_key'],1,Decimal('0.157900800'),NOW)
+                    def settle(self,ctx,held,**kwargs):
+                        receipt=settle_reserved_usage(held,**kwargs);events.append(receipt.state);return receipt
+                class Transport:
+                    def post_json(self,**kwargs):
+                        events.append('post')
+                        if mode=='transport_failure':raise TimeoutError('CONTROLLED_FAILURE')
+                        return {'choices':[{'message':{'content':json.dumps({'answer':'일반 답변입니다.'})}}],
+                            'model':'solar-pro4-260806','usage':{'prompt_tokens':1000,'completion_tokens':100,'total_tokens':1100,'prompt_tokens_details':{'cached_tokens':200}}}
+                class Egress(FakeEgress):
+                    def authorize(self,ctx,**kwargs):
+                        if mode=='egress_denied':raise QuestionAnsweringError('EGRESS_DENIED',status=403)
+                        return super().authorize(ctx,**kwargs)
+                evidence=UpstageModelContextEvidence('solar-pro4','solar-pro4-260806',524288,'https://console.upstage.ai/docs/models/solar-pro-4',NOW)
+                resolver,repo=Resolver(),FakeRepository()
+                service=QuestionAnsweringService(resolver,repo,FakeIndex(()),FakeCredential(),Transport(),Egress(),
+                    run_cost_sessions=RunCostSessionFactory(Costs(),policies=(p,),evidence=evidence,clock=lambda:NOW))
+                args=dict(source_id=None,source_version_id=None,question='안녕하세요',run_id='run-cost-general')
+                if mode=='empty_evidence':args.update(source_id='source-cp3',source_version_id='source-version-cp3',question='What code?')
+                if mode in ('transport_failure','egress_denied'):
+                    with self.assertRaises(QuestionAnsweringError):service.ask(context,**args)
+                    self.assertIsNone(repo.persisted)
+                    self.assertEqual(events,['reserve','post','uncertain'] if mode=='transport_failure' else [])
+                    self.assertEqual(resolver.calls,1)
+                else:
+                    service.ask(context,**args)
+                    self.assertEqual(events,['reserve','post','known'])
+                    self.assertEqual(repo.persisted['result'].price_card_receipt.basis,'price_card')
+
     def test_qa_workspace_xlsx_metadata_and_frozen_wire_are_scoped(self) -> None:
         cells = tuple(IndexedEvidenceChunk(
             f"cell-{i}", "source-cp3", "source-version-cp3", 1, text, f"span-{i}", 0.0,

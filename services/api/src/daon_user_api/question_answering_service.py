@@ -461,6 +461,7 @@ class QuestionAnsweringService:
         concurrent_wait_seconds: float = 2.0,
         concurrent_poll_seconds: float = 0.02,
         qa_structured_ollama_workspace_id: str = "",
+        run_cost_sessions=None,
     ) -> None:
         self._model_resolver = model_resolver
         self._repository = repository
@@ -474,6 +475,21 @@ class QuestionAnsweringService:
         self._concurrent_wait_seconds = max(0.0, concurrent_wait_seconds)
         self._concurrent_poll_seconds = max(0.001, concurrent_poll_seconds)
         self._qa_structured_ollama_workspace_id = qa_structured_ollama_workspace_id
+        self._run_cost_sessions = run_cost_sessions
+
+    def _generate_with_run_cost(self,prepared,*,general,session):
+        try:
+            result=(self._adapter_registry.generate_general(prepared) if general
+                else self._adapter_registry.generate_prepared(prepared))
+        except BaseException as error:
+            if session is not None:
+                session.finish(outcome='failed' if isinstance(error,Exception) else 'cancelled')
+            raise
+        if session is not None:
+            receipt=session.finish(outcome='succeeded')
+            if receipt is None:raise ValueError('RUN_COST_CALL_UNCONFIRMED')
+            result=replace(result,price_card_receipt=receipt)
+        return result
 
     def _qa_media_selection(self, context: QuestionContext, selection: object) -> bool:
         return bool(
@@ -494,6 +510,11 @@ class QuestionAnsweringService:
     def _prepare_qa_structured_payload(
         self, context: QuestionContext, prepared: QuestionAdapterRegistry.Prepared,
     ) -> QuestionAdapterRegistry.Prepared:
+        cost_sessions=getattr(self,'_run_cost_sessions',None)
+        if cost_sessions is not None and cost_sessions.applies(
+            context,prepared.selection,run_kind='question'):
+            prepared=replace(prepared,provider_payload={**prepared.provider_payload,
+                'max_tokens':prepared.provider_payload.get('max_tokens',512)})
         if (
             self._qa_media_selection(context, getattr(prepared, "selection", None))
             and isinstance(prepared.request, (GroundedQuestionRequest, GeneralConversationRequest))
@@ -783,6 +804,10 @@ class QuestionAnsweringService:
                         failure_capture=capture,
                     )
                 except QuestionAnsweringError as error:
+                    if self._run_cost_sessions is not None and self._run_cost_sessions.applies(
+                        context,selection,run_kind='question'):
+                        # 명시 Run 비용 경로는 실패/불확정 뒤 자동 credential 재전송을 하지 않는다.
+                        raise
                     if not getattr(self._model_resolver, "supports_user_credential_fallback", False) or error.code not in {
                         "TEXT_PROVIDER_UNAVAILABLE", "TEXT_GENERATION_PROVIDER_UNAVAILABLE",
                         "TEXT_GENERATION_FAILED",
@@ -831,6 +856,11 @@ class QuestionAnsweringService:
         context_mode: str, request_fingerprint: str,
         failure_capture: list[_FinalQuestionFailure] | None = None,
     ) -> StoredQuestionAnswer:
+        cost_session=None if self._run_cost_sessions is None else self._run_cost_sessions.for_call(
+            context,selection,run_kind='question',run_id=run_id,
+            attempt_key=PostgresQuestionAnsweringRepository._opaque_id('attempt',run_id,selection.deployment_id),
+            transport=self._transport)
+        transport=cost_session if cost_session is not None else self._transport
         if failure_capture is not None:
             failure_capture.clear()
         versions = tuple(dict.fromkeys(
@@ -851,11 +881,11 @@ class QuestionAnsweringService:
                 prepare_general = getattr(self._adapter_registry, "prepare_general", None)
                 prepared = (
                     prepare_general(
-                        selection, question, context.trace_id, self._transport,
+                        selection, question, context.trace_id, transport,
                     )
                     if callable(prepare_general)
                     else self._adapter_registry.prepare(
-                        selection, (), question, context.trace_id, self._transport,
+                        selection, (), question, context.trace_id, transport,
                     )
                 )
             except (ValueError, DocumentUnderstandingError) as error:
@@ -883,7 +913,7 @@ class QuestionAnsweringService:
                 )
             recheck()
             try:
-                generated = self._adapter_registry.generate_general(prepared)
+                generated = self._generate_with_run_cost(prepared,general=True,session=cost_session)
             except (ValueError, DocumentUnderstandingError) as error:
                 raw_code = error.code if isinstance(error, DocumentUnderstandingError) else str(error)
                 if (failure_capture is not None and egress_authorization.get("provider_owner") is True
@@ -938,7 +968,7 @@ class QuestionAnsweringService:
                     request_fingerprint=request_fingerprint,
                 )
             prepared = self._prepare_qa_structured_payload(context, prepare_general(
-                selection, question, context.trace_id, self._transport,
+                selection, question, context.trace_id, transport,
             ))
             # 전송할 실제 prepared payload를 기존 변환에 통과시키고 같은 표현의 canonical bytes를 승인한다.
             fallback_wire = canonical_json_bytes(prepared.provider_payload)
@@ -957,7 +987,7 @@ class QuestionAnsweringService:
             if egress_authorization.get("provider_owner") is False:
                 return self._wait_for_provider_owner(context, run_id, request_fingerprint)
             recheck()
-            generated = self._adapter_registry.generate_general(prepared)
+            generated = self._generate_with_run_cost(prepared,general=True,session=cost_session)
             recheck()
             return self._repository.persist_completed(
                 context, run_id=run_id, source_id=None, source_version_id=None,
@@ -969,7 +999,7 @@ class QuestionAnsweringService:
             )
         try:
             prepared = self._adapter_registry.prepare(
-                selection, evidence, question, context.trace_id, self._transport,
+                selection, evidence, question, context.trace_id, transport,
             )
         except (ValueError, DocumentUnderstandingError) as error:
             raw_code = error.code if isinstance(error, DocumentUnderstandingError) else str(error)
@@ -1030,7 +1060,7 @@ class QuestionAnsweringService:
                     **prepared.provider_payload, "format": ordered_schema})
         recheck()
         try:
-            generated = self._adapter_registry.generate_prepared(prepared)
+            generated = self._generate_with_run_cost(prepared,general=False,session=cost_session)
         except (ValueError, DocumentUnderstandingError) as error:
             raw_code = error.code if isinstance(error, DocumentUnderstandingError) else str(error)
             code = (

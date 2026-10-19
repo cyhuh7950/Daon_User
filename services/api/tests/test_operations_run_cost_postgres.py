@@ -138,3 +138,78 @@ def test_price_card_receipt_uses_separate_protected_writer_without_changing_repo
         'run-qa',receipt,model_attempt_id='attempt-first')
     assert calls[0][0].startswith('SELECT public.record_operations_price_card_receipt(')
     assert calls[0][1][4:8]==(receipt.receipt_id,'provider-upstage','attempt-first','price_card')
+
+
+def test_transport_session_reserves_real_wire_before_send_and_settles_explicit_usage_once():
+    from daon_user_api import operations_run_cost_postgres as storage
+    from daon_user_api.operations_run_cost import UpstageModelContextEvidence
+    from daon_user_api.cloud_storage import CloudAccessContext
+    calls=[]
+    class Repository:
+        def reserve(self,context,current,p,**kwargs):
+            assert current==scope() and p==policy()
+            assert kwargs==dict(attempt_key='attempt-first',input_token_upper_bound=524288,output_token_limit=512,now=NOW)
+            calls.append('reserve')
+            return CostReservation(current,p,'attempt-first',1,Decimal('0.157900800'),NOW)
+        def settle(self,context,held,**kwargs):
+            calls.append('settle')
+            return settle_reserved_usage(held,**kwargs)
+    response={'model':'solar-pro4-260806','usage':{'prompt_tokens':1000,'completion_tokens':100,'total_tokens':1100,'prompt_tokens_details':{'cached_tokens':200}},'choices':[]}
+    class Transport:
+        def post_json(self,**kwargs):calls.append('post');return response
+    evidence=UpstageModelContextEvidence('solar-pro4','solar-pro4-260806',524288,'https://console.upstage.ai/docs/models/solar-pro-4',NOW)
+    session=storage.RunCostTransportSession(repository=Repository(),context=CloudAccessContext('tenant-qa','workspace-qa','usr-qa','view'),
+        scope=scope(),policy=policy(),evidence=evidence,attempt_key='attempt-first',transport=Transport(),clock=lambda:NOW)
+    payload={'model':'solar-pro4','messages':[{'role':'user','content':'비민감 합성 질문'}],'max_tokens':512}
+    assert session.post_json(url='https://api.upstage.ai/v1/chat/completions',api_key='test-only-placeholder',payload=payload,timeout_seconds=60) is response
+    assert calls==['reserve','post']
+    receipt=session.finish(outcome='succeeded')
+    assert receipt.amount==Decimal('0.000372000') and receipt.basis=='price_card'
+    assert session.finish(outcome='succeeded')==receipt and calls==['reserve','post','settle']
+    import pytest
+    with pytest.raises(ValueError):session.post_json(url='https://api.upstage.ai/v1/chat/completions',api_key='test-only-placeholder',payload=payload,timeout_seconds=60)
+    assert calls==['reserve','post','settle']
+
+
+def test_transport_session_invalid_bound_never_sends_and_transport_failure_is_uncertain():
+    import pytest
+    from daon_user_api import operations_run_cost_postgres as storage
+    from daon_user_api.operations_run_cost import CostDecision,UpstageModelContextEvidence
+    from daon_user_api.cloud_storage import CloudAccessContext
+    calls=[]
+    class Repository:
+        def reserve(self,context,current,p,**kwargs):
+            if kwargs['input_token_upper_bound'] is None:return CostDecision('unknown','COST_EVIDENCE_UNCONFIRMED',None,None,None,None,None)
+            calls.append('reserve');return CostReservation(current,p,'attempt-first',1,Decimal('0.157900800'),NOW)
+        def settle(self,context,held,**kwargs):
+            calls.append(('settle',kwargs['outcome']));return settle_reserved_usage(held,**kwargs)
+    class Transport:
+        def post_json(self,**kwargs):calls.append('post');raise TimeoutError('CONTROLLED_TRANSPORT_FAILURE')
+    evidence=UpstageModelContextEvidence('solar-pro4','solar-pro4-260806',524288,'https://console.upstage.ai/docs/models/solar-pro-4',NOW)
+    def new(e):return storage.RunCostTransportSession(repository=Repository(),context=CloudAccessContext('tenant-qa','workspace-qa','usr-qa','view'),
+        scope=scope(),policy=policy(),evidence=e,attempt_key='attempt-first',transport=Transport(),clock=lambda:NOW)
+    payload={'model':'solar-pro4','messages':[{'role':'user','content':'합성 질문'}],'max_tokens':512}
+    with pytest.raises(ValueError):new(None).post_json(url='https://api.upstage.ai/v1/chat/completions',api_key='test-only-placeholder',payload=payload,timeout_seconds=60)
+    assert calls==[]
+    session=new(evidence)
+    with pytest.raises(ValueError):session.post_json(url='https://api.upstage.ai/v1/chat/completions',api_key='test-only-placeholder',payload=payload,timeout_seconds=60)
+    assert calls==['reserve','post',('settle','failed')]
+    assert session.finish(outcome='failed').state=='uncertain'
+
+
+def test_session_factory_matches_exact_configured_actor_model_and_rejects_duplicate_policy():
+    from types import SimpleNamespace
+    import pytest
+    from daon_user_api import operations_run_cost_postgres as storage
+    p=policy()
+    factory=storage.RunCostSessionFactory(object(),policies=(p,),evidence=None,clock=lambda:NOW)
+    context=SimpleNamespace(tenant_id=p.tenant_id,workspace_id=p.workspace_id,actor_id=p.actor_id)
+    selection=SimpleNamespace(connection_id=p.connection_id,model_id=p.model_id,base_url=p.price_card.base_url,
+        provider_code='UPSTAGE',provider_kind='external_api',capability='text_generation')
+    assert type(factory.for_call(context,selection,run_kind='question',run_id='run-qa',attempt_key='attempt-first',transport=object())) is storage.RunCostTransportSession
+    for changes in ({'actor_id':'other-user'},{'workspace_id':'other-workspace'}):
+        changed=SimpleNamespace(**{**vars(context),**changes})
+        assert factory.for_call(changed,selection,run_kind='question',run_id='run-qa',attempt_key='attempt-first',transport=object()) is None
+    with pytest.raises(ValueError):storage.RunCostSessionFactory(object(),policies=(p,p),evidence=None,clock=lambda:NOW)
+    for invalid in (replace(p,currency='KRW'),replace(p,price_card=replace(p.price_card,input_per_million=Decimal('0'),cached_input_per_million=Decimal('0'),output_per_million=Decimal('0')))):
+        with pytest.raises(ValueError):storage.RunCostSessionFactory(object(),policies=(invalid,),evidence=None,clock=lambda:NOW)
