@@ -5,6 +5,19 @@ import { parse } from "yaml";
 
 const composeUrl = new URL("../../deploy/daon-user/compose.yaml", import.meta.url);
 
+test("S44 API가 기대하는 문서 worker는 실제 Compose publisher 식별자와 일치한다", async () => {
+  const document = parse(await readFile(composeUrl, "utf8"));
+  const key = "DAON_DOCUMENT_WORKER_ID";
+  for (const [project, expected] of [["daon_user", "daon_user-document-worker"], ["qa-isolated", "qa-isolated-document-worker"]]) {
+    const resolved = name => document.services[name].environment[key]?.replaceAll("${COMPOSE_PROJECT_NAME}", project);
+    assert.equal(resolved("api"), expected, `API expected worker for ${project}`);
+    assert.equal(resolved("document-worker"), expected, `actual publisher for ${project}`);
+  }
+  for (const name of ["web", "studio-worker", "object-storage"]) {
+    assert.equal(Object.hasOwn(document.services[name].environment || {}, key), false, name);
+  }
+});
+
 test("S42 기존 알림 flag는 API·두 worker에만 default false로 전달된다", async () => {
   const document = parse(await readFile(composeUrl, "utf8"));
   const flag = "DAON_NOTIFICATION_INBOX_ENABLED";
