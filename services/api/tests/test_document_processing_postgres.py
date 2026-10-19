@@ -6,6 +6,11 @@ import json
 import sqlite3
 import unittest
 from contextlib import contextmanager
+from datetime import datetime, timezone
+from types import SimpleNamespace
+
+import pytest
+from test_workspace_model_defaults import readiness_metadata, ReadinessMetadataDB
 
 from daon_user_api.document_processing import DocumentProcessingContext, DocumentProcessingService
 from daon_user_api.cloud_storage import CloudDatabaseError
@@ -22,6 +27,328 @@ from daon_user_api.document_understanding_adapter import (
 PDF = b"%PDF-1.4\n% postgres processing fixture\n%%EOF\n"
 OBJECT_ID = "a" * 32
 OBJECT_KEY = f"tenant-cp3/workspace-cp3/source/{OBJECT_ID}"
+
+
+class FailureWaitConnection(ReadinessMetadataDB):
+    """실제 repository/reader/record_wait의 SQL·Tx 대역. 실PG 권한 증거가 아니다."""
+    def __init__(self):
+        super().__init__()
+        self.states = {"ProcessingRun": "vision_llm_understanding", "Source": "processing"}
+        self.versions = {"ProcessingRun": 2, "Source": 3}
+        self.payload = {"source_version_id": "version-a", "notebook_id": "notebook-a",
+                        "readiness_context": {"version": 1, "mode": "auto", "mode_origin": "request"}}
+        self.latest_run = "run-a"
+        self.source_versions = [("version-a", 1)]
+        self.publish_version_on_lock = False
+        self.other_runs = {}
+        self.actor = "actor-a"
+        self.waits, self.notices, self.steps = [], [], []
+        self.write_error = None
+        self.now = datetime(2026, 10, 19, 12, tzinfo=timezone.utc)
+
+    @contextmanager
+    def transaction(self):
+        snapshot = copy.deepcopy((self.states, self.versions, self.waits, self.notices))
+        self.steps.append("savepoint")
+        try:
+            yield self
+        except BaseException:
+            self.states, self.versions, self.waits, self.notices = snapshot
+            self.steps.append("rollback")
+            raise
+        else:
+            self.steps.append("commit")
+
+    def execute(self, sql, params=()):
+        from daon_user_api.data_canon import transition_allowed
+        self.steps.append((sql, tuple(params)))
+        assert "FOR UPDATE" not in sql and "FOR SHARE" not in sql, "app 직접 rowlock 금지"
+        if "/* readiness-failure-parent */" in sql:
+            assert tuple(params) == ("tenant-a", "workspace-a", "run-a", "actor-a")
+            assert "pr.created_by=%s" in sql and "ORDER BY p.created_at DESC,p.record_id DESC" in sql
+            return Cursor((self.states["ProcessingRun"], self.versions["ProcessingRun"], "source-a",
+                self.states["Source"], self.versions["Source"], copy.deepcopy(self.payload), self.actor,
+                "version-a", self.latest_run, not any(version > 1 for _, version in self.source_versions)))
+        if sql.startswith("SELECT pg_advisory_xact_lock"):
+            if self.publish_version_on_lock:
+                self.source_versions.append(("version-b", 2))
+                self.publish_version_on_lock = False
+            return Cursor()
+        if "transition_canon_state" in sql:
+            entity, _, version, target = params[:4]
+            assert version == self.versions[entity]
+            assert transition_allowed(entity, self.states[entity], target), (entity, self.states[entity], target)
+            self.states[entity] = target
+            self.versions[entity] += 1
+            return Cursor((target, self.versions[entity], "succeeded", None))
+        if sql == "SELECT clock_timestamp()":
+            return Cursor((self.now,))
+        if "/* readiness-parent */" in sql:
+            return Cursor(({"state": self.states["Source"], "version": self.versions["Source"],
+                "source_version_id": "version-a", "run_id": self.latest_run, "run_state": self.states["ProcessingRun"],
+                "canonical_json": copy.deepcopy(self.payload), "modality": "document"},))
+        if sql == "SELECT public.record_document_role_wait(%s)":
+            if self.write_error:
+                raise self.write_error
+            value = copy.deepcopy(params[0].obj)
+            assert self.states == {"ProcessingRun": "failed", "Source": "waiting_model"}
+            assert value["processing_run_id"] == self.latest_run and value["actor_id"] == self.actor
+            proof = self.payload.get("readiness_context", {"mode": "legacy_unknown", "mode_origin": "legacy_unknown"})
+            assert value["mode"] == {"mode": proof["mode"], "origin": proof["mode_origin"]}
+            assert value["frozen_context_digest"] != "0" * 64
+            self.waits.append(value)
+            return Cursor((value,))
+        return super().execute(sql, params)
+
+
+@pytest.fixture
+def failure_wait(readiness_metadata, monkeypatch):
+    import daon_user_api.document_readiness_postgres as readiness
+    import daon_user_api.open_law_source_access as law
+    import daon_user_api.document_index_postgres as index
+    import daon_user_api.notification_source_access as special
+    import daon_user_api.notification_events as events
+    from daon_user_api.document_readiness import ReadinessDispatcherSettings
+    from daon_user_api.document_understanding_adapter import DocumentFailureEvidence
+    connection = FailureWaitConnection()
+    class Store:
+        _notification_inbox_enabled = True
+        @contextmanager
+        def _transaction(self, context):
+            with connection.transaction():
+                yield connection
+    store = Store()
+    for name, value in (("_current_auth_grant", law._current_auth_grant),
+                         ("_source_access_allowed", index._source_access_allowed),
+                         ("_special_source_access_allowed", special._special_source_access_allowed)):
+        monkeypatch.setattr(readiness, name, value)
+    def notify(db, context, *, origin_event_id):
+        assert db is connection
+        connection.notices.append(origin_event_id)
+    monkeypatch.setattr(events, "enqueue_completed_event", notify)
+    settings = ReadinessDispatcherSettings()
+    port = readiness.PostgresDocumentReadinessRepository(store, settings=settings)
+    repository = PostgresDocumentProcessingRepository(store, object(), readiness_port=port)
+    context = DocumentProcessingContext("tenant-a", "workspace-a", "actor-a", "trace-a", "policy-a")
+    evidence = DocumentFailureEvidence("text_generation", "connection-a", "role_runtime")
+    return SimpleNamespace(db=connection, repo=repository, context=context, evidence=evidence,
+                           port=port, store=store, auth=readiness_metadata)
+
+
+def test_failure_wait_same_tx_reader_digest_locks_and_notification(failure_wait):
+    f = failure_wait
+    f.repo.fail_with_readiness(f.context, "run-a", "UNDERSTANDING_PROVIDER_UNAVAILABLE", retryable=False,
+                               failure_evidence=f.evidence)
+    assert f.db.states == {"ProcessingRun": "failed", "Source": "waiting_model"}
+    assert len(f.db.waits) == len(f.db.notices) == 1
+    wait = f.db.waits[0]
+    assert (wait["capability"], wait["dependency_connection_id"], wait["failure_kind"]) == (
+        "text_generation", "connection-a", "role_runtime")
+    assert wait["failed_at"] == "2026-10-19T12:00:00+00:00"
+    assert wait["not_before"] == "2026-10-19T12:01:00+00:00"
+    assert any("readiness-metadata-catalog" in sql for sql, _ in f.db.calls)
+    assert set(wait) == {"tenant_id", "workspace_id", "actor_id", "notebook_id", "source_id",
+        "source_version_id", "processing_run_id", "capability", "failure_kind", "mode",
+        "dependency_connection_id", "frozen_context_digest", "safe_error_code", "failed_at", "not_before"}
+    statements = [step for step in f.db.steps if type(step) is tuple]
+    locks = [params[0] for sql, params in statements if "pg_advisory_xact_lock" in sql]
+    assert locks[:3] == ["notebook-delete|tenant-a|workspace-a|notebook-a",
+                        "unbind-notebook|tenant-a|workspace-a|notebook-a", "retention-source|tenant-a|workspace-a|source-a"]
+    first_lock = next(i for i, (sql, _) in enumerate(statements) if "pg_advisory_xact_lock" in sql)
+    transition = next(i for i, (sql, _) in enumerate(statements) if "transition_canon_state" in sql)
+    recheck = [i for i, (sql, _) in enumerate(statements) if "readiness-failure-parent" in sql]
+    assert recheck[0] < first_lock < recheck[1] < transition
+    # 0003/0058/0060: app 직접 UPDATE 금지. rowlock은 기존 SECDEF 전이 소유다.
+    assert all("FOR UPDATE" not in sql and "FOR SHARE" not in sql for sql, _ in statements)
+
+
+@pytest.mark.parametrize("failure", [RuntimeError("protected-write"),
+    DocumentUnderstandingError("CURRENT_ACCESS_DENIED", status=503),
+    DocumentUnderstandingError("OTHER_DENIED", status=403),
+    DocumentUnderstandingError("SOURCE_NOT_FOUND", status=404)])
+def test_failure_wait_protection_errors_rollback_original_failure_and_notice(failure_wait, failure):
+    f = failure_wait
+    f.db.write_error = failure
+    with pytest.raises(DocumentUnderstandingError):
+        f.repo.fail_with_readiness(f.context, "run-a", "MODEL_FAILURE", retryable=True, failure_evidence=f.evidence)
+    assert f.db.states == {"ProcessingRun": "vision_llm_understanding", "Source": "processing"}
+    assert f.db.waits == f.db.notices == []
+
+
+def test_failure_wait_current_access_denied_preserves_original_failure_and_notification(failure_wait):
+    f = failure_wait
+    f.db.write_error = DocumentUnderstandingError("CURRENT_ACCESS_DENIED", status=403)
+    f.repo.fail_with_readiness(f.context, "run-a", "MODEL_FAILURE", retryable=True, failure_evidence=f.evidence)
+    assert f.db.states == {"ProcessingRun": "failed", "Source": "waiting_model"}
+    assert not f.db.waits and len(f.db.notices) == 1
+
+
+def test_failure_wait_real_metadata_reader_access_denial_preserves_failure_without_provider(failure_wait, monkeypatch):
+    import daon_user_api.document_index_postgres as index
+    f = failure_wait
+    monkeypatch.setattr(index, "_source_access_allowed", lambda *args: False)
+    f.repo.fail_with_readiness(f.context, "run-a", "MODEL_FAILURE", retryable=True, failure_evidence=f.evidence)
+    assert f.db.states == {"ProcessingRun": "failed", "Source": "waiting_model"}
+    assert not f.db.waits and len(f.db.notices) == 1
+    assert [call[2].value for call in f.auth.auth_calls] == ["edit", "analyze"]
+    assert "rollback" in f.db.steps and f.db.steps[-1] == "commit"
+
+
+def test_failure_wait_reader_binding_unbound_source_missing_preserves_failure_only(failure_wait):
+    f = failure_wait
+    # 실제 B1 SQL의 정확 Notebook/binding/source 조회가 None을 반환하는 대역이다.
+    # 원 실패 Run/Source는 존재하고 처리 중이므로 원 전이와 알림은 유효하다.
+    f.db.source = None
+    f.repo.fail_with_readiness(f.context, "run-a", "MODEL_FAILURE", retryable=True, failure_evidence=f.evidence)
+    assert f.db.states == {"ProcessingRun": "failed", "Source": "waiting_model"}
+    assert not f.db.waits and len(f.db.notices) == 1
+    queries = [(sql, params) for sql, params in f.db.calls if "readiness-metadata-source" in sql]
+    assert len(queries) == 1
+    sql, params = queries[0]
+    assert "JOIN public.notebook_bindings" in sql and "notebook_source_unbindings" in sql
+    assert params[:5] == ("notebook-a", "tenant-a", "workspace-a", "source-a", "version-a")
+    assert not any(type(step) is tuple and "record_document_role_wait" in step[0] for step in f.db.steps)
+    assert "rollback" in f.db.steps and f.db.steps[-1] == "commit"
+
+
+def test_failure_wait_snapshot_uses_same_connection_real_body_unknown_cost_and_failure_dependency(failure_wait, monkeypatch):
+    import daon_user_api.workspace_model_defaults as defaults
+    f = failure_wait
+    reader = defaults.read_document_readiness_policy
+    snapshots = []
+    def read(connection, context, wait, **options):
+        assert connection is f.db and context is f.context
+        assert wait.frozen_context_digest == "0" * 64
+        snapshot = reader(connection, context, wait, **options)
+        snapshots.append(snapshot)
+        return snapshot
+    monkeypatch.setattr(defaults, "read_document_readiness_policy", read)
+    # 실제 실패 connection은 A, 현재 binding은 B다. 기다림의 provenance를 B로 고치지 않는다.
+    f.db.binding["connection_id"] = "connection-b"
+    f.repo.fail_with_readiness(f.context, "run-a", "MODEL_FAILURE", retryable=True, failure_evidence=f.evidence)
+    body = json.loads(snapshots[0].frozen_context_json)
+    assert body["cost"] == {"state": "unknown"}
+    assert body["binding"]["connection_id"] == "connection-b"
+    assert body["scope"] == {"tenant_id": "tenant-a", "workspace_id": "workspace-a", "actor_id": "actor-a",
+                             "notebook_id": "notebook-a", "source_version_id": "version-a"}
+    assert f.db.waits[0]["dependency_connection_id"] == "connection-a"
+    assert f.db.waits[0]["frozen_context_digest"] == hashlib.sha256(snapshots[0].frozen_context_json.encode()).hexdigest()
+
+
+@pytest.mark.parametrize("proof", [None, {"version": True, "mode": "auto", "mode_origin": "request"},
+    {"version": 1, "mode": "auto", "mode_origin": "legacy_unknown"},
+    {"version": 1, "mode": "auto", "mode_origin": "request", "extra": 1}])
+def test_failure_wait_invalid_explicit_mode_proof_cannot_silently_fall_back(failure_wait, proof):
+    f = failure_wait
+    f.db.payload["readiness_context"] = proof
+    with pytest.raises(DocumentUnderstandingError):
+        f.repo.fail_with_readiness(f.context, "run-a", "MODEL_FAILURE", retryable=True, failure_evidence=f.evidence)
+    assert f.db.states == {"ProcessingRun": "vision_llm_understanding", "Source": "processing"}
+    assert f.db.waits == f.db.notices == []
+
+
+def test_failure_wait_optional_port_absent_keeps_original_sql_and_state_contract():
+    from daon_user_api.document_understanding_adapter import DocumentFailureEvidence
+    cloud = FakeCloudStore()
+    cloud.connection.states = {"ProcessingRun": "vision_llm_understanding", "Source": "processing"}
+    repo = PostgresDocumentProcessingRepository(cloud, object())
+    context = DocumentProcessingContext("tenant-cp3", "workspace-cp3", "actor-cp3", "trace-cp3", "policy-v1")
+    repo.fail_with_readiness(context, "run-cp3", "MODEL_FAILURE", retryable=False,
+        failure_evidence=DocumentFailureEvidence("text_generation", "connection-a", "role_runtime"))
+    assert cloud.connection.states == {"ProcessingRun": "failed", "Source": "failed"}
+    assert not any("readiness" in sql or "clock_timestamp" in sql for sql, _ in cloud.connection.statements)
+
+
+@pytest.mark.parametrize("mode,kind,role,connection,retryable,target,count", [
+    ("auto", "connection_availability", "text_generation", "connection-a", False, "waiting_model", 1),
+    ("local_only", "role_runtime", "speech_to_text", None, False, "waiting_model", 1),
+    ("pinned", "role_runtime", "text_generation", "connection-a", False, "failed", 0),
+    ("legacy_unknown", "role_runtime", "text_generation", "connection-a", True, "waiting_model", 1),
+    (None, "role_runtime", "text_generation", "connection-a", False, "failed", 0),
+    ("auto", "unknown", "text_generation", None, False, "failed", 0),
+    ("auto", "non_availability", "text_generation", "connection-a", True, "waiting_model", 1),
+    ("auto", "connection_availability", None, "connection-a", True, "waiting_model", 1),
+    ("pinned", "role_runtime", "text_generation", "connection-a", True, "waiting_model", 1),
+    (None, "unknown", None, None, True, "waiting_model", 1),
+])
+def test_failure_wait_explicit_mode_known_role_only_without_legacy_reclassification(
+        failure_wait, mode, kind, role, connection, retryable, target, count):
+    from daon_user_api.document_understanding_adapter import DocumentFailureEvidence
+    f = failure_wait
+    if mode is None:
+        f.db.payload.pop("readiness_context")
+    else:
+        f.db.payload["readiness_context"] = {"version": 1, "mode": mode,
+            "mode_origin": "legacy_unknown" if mode == "legacy_unknown" else "request"}
+    evidence = DocumentFailureEvidence(role, connection, kind)
+    f.repo.fail_with_readiness(f.context, "run-a", "MODEL_FAILURE", retryable=retryable, failure_evidence=evidence)
+    assert f.db.states == {"ProcessingRun": "failed", "Source": target}
+    assert len(f.db.waits) == count
+
+
+def test_failure_wait_missing_internal_metadata_collects_unknown_but_missing_notebook_cannot_backfill(failure_wait):
+    f = failure_wait
+    f.repo.fail_with_readiness(f.context, "run-a", "MODEL_FAILURE", retryable=True, failure_evidence=None)
+    assert len(f.db.waits) == 1
+    assert (f.db.waits[0]["capability"], f.db.waits[0]["dependency_connection_id"], f.db.waits[0]["failure_kind"]) == (
+        None, None, "unknown")
+    f.db.states = {"ProcessingRun": "vision_llm_understanding", "Source": "processing"}
+    f.db.waits.clear()
+    f.db.payload.pop("notebook_id")
+    f.repo.fail_with_readiness(f.context, "run-a", "MODEL_FAILURE", retryable=True, failure_evidence=None)
+    assert f.db.states == {"ProcessingRun": "failed", "Source": "waiting_model"}
+    assert not f.db.waits and len(f.db.notices) == 2
+
+
+@pytest.mark.parametrize("change", ["terminal", "latest", "actor", "source"])
+def test_failure_wait_late_terminal_or_changed_parent_writes_nothing(failure_wait, change):
+    f = failure_wait
+    if change == "terminal": f.db.states["ProcessingRun"] = "failed"
+    if change == "latest": f.db.latest_run = "manual-newer-run"
+    if change == "actor": f.db.actor = "other-actor"
+    if change == "source": f.db.states["Source"] = "ready"
+    f.repo.fail_with_readiness(f.context, "run-a", "MODEL_FAILURE", retryable=True, failure_evidence=f.evidence)
+    assert not f.db.waits and not f.db.notices
+    assert not any(type(step) is tuple and "transition_canon_state" in step[0] for step in f.db.steps)
+
+
+@pytest.mark.parametrize("new_source_state,retryable", [("processing", True), ("processing", False),
+                                                        ("ready", True), ("ready", False)])
+def test_failure_wait_old_version_failure_cleans_only_original_run_not_new_source(
+        failure_wait, new_source_state, retryable):
+    f = failure_wait
+    f.db.source_versions.append(("version-b", 2))
+    f.db.states["Source"] = new_source_state
+    f.db.versions["Source"] = 8
+    f.db.other_runs["run-new-version-b"] = {"state": "vision_llm_understanding" if new_source_state == "processing"
+                                          else "completed", "version": 4, "source_version_id": "version-b"}
+    before_new_run = copy.deepcopy(f.db.other_runs)
+    # 구 Version은 B1 최신성 조회에서 404다. 이 거부 격리가 새 Source 전이까지 commit하면 안 된다.
+    f.db.source = None
+    f.repo.fail_with_readiness(f.context, "run-a", "MODEL_FAILURE", retryable=retryable, failure_evidence=f.evidence)
+    assert f.db.states == {"ProcessingRun": "failed", "Source": new_source_state}
+    assert f.db.versions == {"ProcessingRun": 3, "Source": 8}
+    assert f.db.other_runs == before_new_run and not f.db.waits
+    assert len(f.db.notices) == 1
+    transitions = [params for step in f.db.steps if type(step) is tuple
+                   for sql, params in [step] if "transition_canon_state" in sql]
+    assert [(p[0], p[1], p[2], p[3]) for p in transitions] == [("ProcessingRun", "run-a", 2, "failed")]
+    assert not any("readiness-metadata-source" in sql for sql, _ in f.db.calls)
+
+
+def test_failure_wait_latest_source_version_is_rechecked_after_advisory_locks(failure_wait):
+    f = failure_wait
+    f.db.publish_version_on_lock = True
+    f.db.source = None
+    f.repo.fail_with_readiness(f.context, "run-a", "MODEL_FAILURE", retryable=True, failure_evidence=f.evidence)
+    assert f.db.states == {"ProcessingRun": "failed", "Source": "processing"}
+    assert f.db.versions["Source"] == 3 and not f.db.waits and len(f.db.notices) == 1
+    queries = [(i, step[0]) for i, step in enumerate(f.db.steps)
+               if type(step) is tuple and "readiness-failure-parent" in step[0]]
+    lock = next(i for i, step in enumerate(f.db.steps) if type(step) is tuple and "retention-source" in str(step[1]))
+    transition = next(i for i, step in enumerate(f.db.steps) if type(step) is tuple and "transition_canon_state" in step[0])
+    assert queries[0][0] < lock < queries[1][0] < transition
+    assert all("newer.version>sv.version" in sql and "NOT EXISTS" in sql for _, sql in queries)
 
 
 from test_source_reprocessing import Store as ReprocessingStore, Cursor as ReprocessingCursor

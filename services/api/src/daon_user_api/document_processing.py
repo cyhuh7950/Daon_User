@@ -398,12 +398,16 @@ class DocumentProcessingService:
             return result
         except WorkspaceModelUnavailable as error:
             mapped = DocumentUnderstandingError(error.code, status=503, retryable=error.retryable)
-            self._repository.fail(
-                context, processing_run_id, mapped.code, retryable=mapped.retryable,
-            )
+            self._fail_attempt(context, processing_run_id, mapped)
             raise mapped from None
         except DocumentUnderstandingError as error:
-            self._repository.fail(
-                context, processing_run_id, error.code, retryable=error.retryable,
-            )
+            self._fail_attempt(context, processing_run_id, error)
             raise
+
+    def _fail_attempt(self, context, processing_run_id, error):
+        failure_sink = getattr(self._repository, "fail_with_readiness", None)
+        if callable(failure_sink):
+            failure_sink(context, processing_run_id, error.code, retryable=error.retryable,
+                         failure_evidence=error.failure_evidence)
+        else:
+            self._repository.fail(context, processing_run_id, error.code, retryable=error.retryable)

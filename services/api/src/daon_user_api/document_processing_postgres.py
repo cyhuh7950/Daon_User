@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Mapping, cast
 
@@ -16,6 +17,7 @@ from .document_processing import (
     _PROCESSING_MODE_UNSET, _reprocessing_readiness_context,
 )
 from .document_understanding_adapter import (
+    DocumentFailureEvidence,
     DocumentUnderstandingError,
     DocumentUnderstandingResult,
 )
@@ -26,9 +28,11 @@ _SAFE_NOTEBOOK_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
 
 
 class PostgresDocumentProcessingRepository:
-    def __init__(self, cloud_store: PostgresCloudStore, object_storage: ObjectStoragePort) -> None:
+    def __init__(self, cloud_store: PostgresCloudStore, object_storage: ObjectStoragePort, *, readiness_port=None) -> None:
         self._cloud_store = cloud_store
         self._object_storage = object_storage
+        # 미주입이면 기존 0071 실패 경로다. runtime/worker 주입은 별도 접합 단계다.
+        self._readiness_port = readiness_port
 
     def authorize_audio_source(self, context, document, processing_run_id) -> None:
         """전송 직전 기존 역할·정책과 Run/Notebook/최신 원본 결속을 다시 읽는다."""
@@ -780,20 +784,135 @@ class PostgresDocumentProcessingRepository:
         self, context: DocumentProcessingContext, processing_run_id: str,
         code: str, *, retryable: bool,
     ) -> None:
+        self._fail(context, processing_run_id, code, retryable=retryable)
+
+    def fail_with_readiness(self, context, processing_run_id, code, *, retryable, failure_evidence):
+        if self._readiness_port is None:
+            return self.fail(context, processing_run_id, code, retryable=retryable)
+        if failure_evidence is None:
+            failure_evidence = DocumentFailureEvidence(None, None, "unknown")
+        if type(failure_evidence) is not DocumentFailureEvidence:
+            raise DocumentUnderstandingError("DOCUMENT_PROCESSING_CONTEXT_INVALID")
+        return self._fail(context, processing_run_id, code, retryable=retryable, evidence=failure_evidence)
+
+    @staticmethod
+    def _failure_parent(connection, context, processing_run_id):
+        return connection.execute(
+            "SELECT /* readiness-failure-parent */ pr.state,pr.version,sv.source_id,s.state,s.version,"
+            "pr.canonical_json,pr.created_by,pr.source_version_id,latest.record_id,"
+            "NOT EXISTS(SELECT 1 FROM public.source_versions newer WHERE "
+            "(newer.tenant_id,newer.workspace_id,newer.source_id)=(sv.tenant_id,sv.workspace_id,sv.source_id) "
+            "AND newer.version>sv.version) "
+            "FROM public.processing_runs pr JOIN public.source_versions sv ON "
+            "(sv.tenant_id,sv.workspace_id,sv.record_id)=(pr.tenant_id,pr.workspace_id,pr.source_version_id) "
+            "JOIN public.sources s ON (s.tenant_id,s.workspace_id,s.record_id)=(sv.tenant_id,sv.workspace_id,sv.source_id) "
+            "JOIN LATERAL(SELECT p.record_id FROM public.processing_runs p WHERE "
+            "(p.tenant_id,p.workspace_id,p.source_version_id)=(pr.tenant_id,pr.workspace_id,pr.source_version_id) "
+            "ORDER BY p.created_at DESC,p.record_id DESC LIMIT 1) latest ON true "
+            "WHERE pr.tenant_id=%s AND pr.workspace_id=%s AND pr.record_id=%s AND pr.created_by=%s",
+            (context.tenant_id, context.workspace_id, processing_run_id, context.actor_id),
+        ).fetchone()
+
+    def _record_failure_wait(self, connection, context, processing_run_id, row, mode, evidence, reason):
+        from .document_readiness import RoleWaitEvidence, ReadinessDispatcherSettings
+        from .workspace_model_defaults import read_document_readiness_policy, WorkspaceModelDefaultsError
+        settings = self._readiness_port.settings
+        if type(settings) is not ReadinessDispatcherSettings:
+            raise DocumentUnderstandingError("DOCUMENT_PROCESSING_CONTEXT_INVALID")
+        reader_source_gone = False
+        try:
+            # 현재 인가 철회/아래 B1의 식별된 자료 자격 소멸만 격리한다.
+            # SQL/보호 함수의 실패는 원 Tx까지 전파한다.
+            with connection.transaction():
+                now = connection.execute("SELECT clock_timestamp()").fetchone()[0]
+                provisional = RoleWaitEvidence(context.tenant_id, context.workspace_id, context.actor_id,
+                    row[5]["notebook_id"], row[2], row[7], processing_run_id, evidence.capability,
+                    evidence.failure_kind, mode, evidence.dependency_connection_id, "0" * 64, reason,
+                    now, now + timedelta(seconds=settings.backoff_seconds))
+                try:
+                    snapshot = read_document_readiness_policy(connection, context, provisional, settings=settings)
+                except WorkspaceModelDefaultsError as error:
+                    reader_source_gone = error.code == "SOURCE_NOT_FOUND" and error.status == 404
+                    raise DocumentUnderstandingError(error.code, status=error.status) from None
+                # provisional은 타입 구성 전용이며 저장 불가. 실제 B1 본문 digest로만 영속화한다.
+                wait = replace(provisional, frozen_context_digest=snapshot.eligibility.frozen_context_digest)
+                self._readiness_port.record_wait(connection, context, processing_run_id, wait)
+        except DocumentUnderstandingError as error:
+            if not ((error.code == "CURRENT_ACCESS_DENIED" and error.status == 403)
+                    or (reader_source_gone and error.code == "SOURCE_NOT_FOUND" and error.status == 404)):
+                raise
+
+    def _fail(self, context, processing_run_id, code, *, retryable, evidence=None):
         reason = code if code.isascii() and code.replace("_", "").isalnum() else (
             "RETRYABLE_PROVIDER_FAILURE" if retryable else "DOCUMENT_PROCESSING_FAILED"
         )
         try:
             with self._cloud_store._transaction(self._cloud_context(context, "source.process")) as connection:
-                row = connection.execute(
-                    "SELECT pr.state,pr.version,sv.source_id,s.state,s.version "
-                    "FROM processing_runs pr JOIN source_versions sv ON "
-                    "sv.tenant_id=pr.tenant_id AND sv.workspace_id=pr.workspace_id "
-                    "AND sv.record_id=pr.source_version_id JOIN sources s ON "
-                    "s.tenant_id=sv.tenant_id AND s.workspace_id=sv.workspace_id "
-                    "AND s.record_id=sv.source_id WHERE pr.record_id=%s",
-                    (processing_run_id,),
-                ).fetchone()
+                mode, wait_eligible, collect_wait, source_current = None, False, False, True
+                if evidence is not None:
+                    from .document_readiness import ReadinessModeProof
+                    before = self._failure_parent(connection, context, processing_run_id)
+                    if before is None:
+                        return
+                    payload = before[5]
+                    if (before[6] != context.actor_id or before[8] != processing_run_id
+                            or before[0] in {"completed", "failed", "policy_blocked"}):
+                        return
+                    if type(before[9]) is not bool:
+                        raise DocumentUnderstandingError("DOCUMENT_PROCESSING_DATABASE_UNAVAILABLE", status=503)
+                    if before[9] and before[3] != "processing":
+                        return
+                    if type(payload) is not dict or payload.get("source_version_id") != before[7]:
+                        raise DocumentUnderstandingError("DOCUMENT_PROCESSING_DATABASE_UNAVAILABLE", status=503)
+                    notebook_id = payload.get("notebook_id")
+                    if notebook_id is not None and (type(notebook_id) is not str
+                            or _SAFE_NOTEBOOK_ID.fullmatch(notebook_id) is None):
+                        raise DocumentUnderstandingError("DOCUMENT_PROCESSING_DATABASE_UNAVAILABLE", status=503)
+                    proof = payload.get("readiness_context")
+                    if "readiness_context" not in payload:
+                        mode = ReadinessModeProof("legacy_unknown", "legacy_unknown")
+                    else:
+                        if (type(proof) is not dict or set(proof) != {"version", "mode", "mode_origin"}
+                                or type(proof["version"]) is not int or proof["version"] != 1):
+                            raise DocumentUnderstandingError("DOCUMENT_PROCESSING_DATABASE_UNAVAILABLE", status=503)
+                        mode = ReadinessModeProof(proof["mode"], proof["mode_origin"])
+                    # Notebook 근거 없는 구 Run은 수집 불가다. 새 Notebook/Mode를 추정하지 않는다.
+                    locks = [] if notebook_id is None else [
+                        f"notebook-delete|{context.tenant_id}|{context.workspace_id}|{notebook_id}",
+                        f"unbind-notebook|{context.tenant_id}|{context.workspace_id}|{notebook_id}"]
+                    locks.append(f"retention-source|{context.tenant_id}|{context.workspace_id}|{before[2]}")
+                    for lock in locks:
+                        connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", (lock,))
+                    # app 직접 UPDATE/rowlock 권한은 없다. rowlock/경합 거부는 기존
+                    # SECDEF transition_canon_state의 expected_version 검사가 소유한다.
+                    row = self._failure_parent(connection, context, processing_run_id)
+                    if row is None or row[6] != context.actor_id or row[8] != processing_run_id:
+                        return
+                    if row[0] in {"completed", "failed", "policy_blocked"}:
+                        return
+                    if type(row[9]) is not bool:
+                        raise DocumentUnderstandingError("DOCUMENT_PROCESSING_DATABASE_UNAVAILABLE", status=503)
+                    source_current = row[9]
+                    if source_current and row[3] != "processing":
+                        return
+                    if row[2] != before[2] or row[5] != payload or row[7] != before[7]:
+                        raise DocumentUnderstandingError("SOURCE_PROCESSING_STATE_INVALID", status=409)
+                    # 구 Version의 실제 실패 정리/알림은 유지하되 새 Version의 Source를
+                    # waiting_model/failed로 바꾸거나 B1의 자격 소멸 격리로 commit하지 않는다.
+                    collect_wait = source_current and notebook_id is not None
+                    wait_eligible = (collect_wait and mode.mode in {"auto", "local_only"}
+                                     and evidence.capability is not None
+                                     and evidence.failure_kind in {"connection_availability", "role_runtime"})
+                else:
+                    row = connection.execute(
+                        "SELECT pr.state,pr.version,sv.source_id,s.state,s.version "
+                        "FROM processing_runs pr JOIN source_versions sv ON "
+                        "sv.tenant_id=pr.tenant_id AND sv.workspace_id=pr.workspace_id "
+                        "AND sv.record_id=pr.source_version_id JOIN sources s ON "
+                        "s.tenant_id=sv.tenant_id AND s.workspace_id=sv.workspace_id "
+                        "AND s.record_id=sv.source_id WHERE pr.record_id=%s",
+                        (processing_run_id,),
+                    ).fetchone()
                 if row is None:
                     raise DocumentUnderstandingError("PROCESSING_RUN_NOT_FOUND", status=404)
                 if str(row[0]) in {"completed", "failed", "policy_blocked"}:
@@ -807,13 +926,15 @@ class PostgresDocumentProcessingRepository:
                         expected_version=int(row[1]), target_state="failed",
                         reason_code=reason,
                     )
-                source_target = "waiting_model" if retryable else "failed"
-                if str(row[3]) == "processing":
+                source_target = "waiting_model" if retryable or wait_eligible else "failed"
+                if source_current and str(row[3]) == "processing":
                     self._transition(
                         connection, context, entity_type="Source",
                         aggregate_id=str(row[2]), expected_version=int(row[4]),
                         target_state=source_target, reason_code=reason,
                     )
+                if collect_wait and source_target == "waiting_model":
+                    self._record_failure_wait(connection, context, processing_run_id, row, mode, evidence, reason)
                 if getattr(self._cloud_store, '_notification_inbox_enabled', False):
                     from .notification_events import enqueue_completed_event
                     enqueue_completed_event(connection, context, origin_event_id=self._opaque_id(

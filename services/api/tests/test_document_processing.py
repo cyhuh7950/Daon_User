@@ -60,6 +60,61 @@ class ReprocessingModeSubmissionTests(unittest.TestCase):
 
 
 class FailureEvidenceServiceTests(unittest.TestCase):
+    def test_optional_sink_also_collects_unclassified_resolver_exit_without_changing_mapping(self):
+        from daon_user_api.workspace_model_defaults import WorkspaceModelUnavailable
+        class Resolver(ModelResolver):
+            @contextmanager
+            def resolve(inner, context, capability):
+                with super().resolve(context, capability) as model:
+                    yield model
+                raise WorkspaceModelUnavailable("WORKSPACE_MODEL_DEFAULT_UNAVAILABLE", retryable=True)
+        class Repository(RecordingRepository):
+            def fail_with_readiness(inner, context, run_id, code, *, retryable, failure_evidence):
+                inner.events.append(("readiness-fail", (run_id, code, retryable, failure_evidence)))
+        repository = Repository()
+        service = DocumentProcessingService(repository, Resolver(), AdapterFactory(Adapter()),
+                                            egress_guard=FixtureOutboundGuard())
+        context = DocumentProcessingContext("tenant-cp3", "workspace-cp3", "actor-cp3", "trace-cp3", "policy-v1")
+        with self.assertRaises(DocumentUnderstandingError) as caught:
+            service.process_existing(context, source_id="source-cp3", processing_run_id="run-bound")
+        self.assertEqual((caught.exception.code, caught.exception.status, caught.exception.retryable),
+                         ("WORKSPACE_MODEL_DEFAULT_UNAVAILABLE", 503, True))
+        self.assertEqual(repository.events[-1], ("readiness-fail",
+            ("run-bound", "WORKSPACE_MODEL_DEFAULT_UNAVAILABLE", True, None)))
+
+    def test_optional_failure_sink_collects_unknown_without_inventing_role(self):
+        error = DocumentUnderstandingError("UNDERSTANDING_PROVIDER_UNAVAILABLE", status=503, retryable=True)
+        class Repository(RecordingRepository):
+            def fail_with_readiness(inner, context, run_id, code, *, retryable, failure_evidence):
+                inner.events.append(("readiness-fail", (run_id, code, retryable, failure_evidence)))
+        repository = Repository()
+        service = DocumentProcessingService(repository, ModelResolver(), AdapterFactory(Adapter(error)),
+                                            egress_guard=FixtureOutboundGuard())
+        context = DocumentProcessingContext("tenant-cp3", "workspace-cp3", "actor-cp3", "trace-cp3", "policy-v1")
+        with self.assertRaises(DocumentUnderstandingError) as caught:
+            service.process_existing(context, source_id="source-cp3", processing_run_id="run-bound")
+        self.assertIs(caught.exception, error)
+        self.assertEqual(repository.events[-1], ("readiness-fail",
+            ("run-bound", "UNDERSTANDING_PROVIDER_UNAVAILABLE", True, None)))
+
+    def test_optional_failure_sink_gets_stage_evidence_without_changing_public_failure(self):
+        from daon_user_api.document_understanding_adapter import DocumentFailureEvidence
+        evidence = DocumentFailureEvidence("document_parsing", "parser-a", "role_runtime")
+        error = DocumentUnderstandingError("UNDERSTANDING_PROVIDER_UNAVAILABLE", status=503,
+                                           retryable=True, failure_evidence=evidence)
+        class Repository(RecordingRepository):
+            def fail_with_readiness(inner, context, run_id, code, *, retryable, failure_evidence):
+                inner.events.append(("readiness-fail", (run_id, code, retryable, failure_evidence)))
+        repository = Repository()
+        service = DocumentProcessingService(repository, ModelResolver(), AdapterFactory(Adapter(error)),
+                                            egress_guard=FixtureOutboundGuard())
+        context = DocumentProcessingContext("tenant-cp3", "workspace-cp3", "actor-cp3", "trace-cp3", "policy-v1")
+        with self.assertRaises(DocumentUnderstandingError) as caught:
+            service.process_existing(context, source_id="source-cp3", processing_run_id="run-bound")
+        self.assertIs(caught.exception, error)
+        self.assertEqual(repository.events[-1], ("readiness-fail",
+            ("run-bound", "UNDERSTANDING_PROVIDER_UNAVAILABLE", True, evidence)))
+
     def test_single_role_adapter_failures_bind_actual_selection_not_unbound_transport_evidence(self):
         from test_document_understanding_adapter import FailureEvidenceTransportTests
         transport_error = FailureEvidenceTransportTests().upstream_error(503)
