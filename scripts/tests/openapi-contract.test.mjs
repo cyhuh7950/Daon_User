@@ -18,6 +18,22 @@ async function loadContract() {
   return JSON.parse(await readFile(contractPath, "utf8"));
 }
 
+test("M2-S exact system path and closed observation schemas reject mutations",async()=>{
+  const doc=await loadContract();
+  assert.doesNotThrow(()=>validateOpenApiDocument(doc));
+  for(const mutate of [d=>delete d.paths["/api/v1/system/operations/status"],
+    d=>{d.paths["/api/v1/system/operations/status"].post={};},
+    d=>{d.paths["/api/v1/system/operations/status"].get.parameters=[{in:"query",name:"scope"}];},
+    d=>{d.components.schemas.SystemOperationsStatus.additionalProperties=true;},
+    d=>{d.components.schemas.SystemWorkerSample.properties.worker_id={type:"string"};},
+    d=>{d.components.schemas.SystemOperationsStatus.properties.resource_samples.maxItems=13;},
+    d=>{d.components.schemas.SystemOperationsStatus.properties.health.prefixItems[0].allOf[1].properties.component_id.const="provider";},
+    d=>{d.components.schemas.SystemResourceSample.properties.value.maximum=1e20;},
+    d=>{d.components.schemas.SystemWorkerSample.allOf=[];}]){
+    const changed=structuredClone(doc);mutate(changed);assert.throws(()=>validateOpenApiDocument(changed));
+  }
+});
+
 test("R4 closed registered destination Preview and unchanged Execute reject mutations",async()=>{
   const doc=await loadContract(),s=doc.components.schemas;
   assert.ok(doc.paths["/api/v1/backups/{id}/restore-destinations"]?.get);

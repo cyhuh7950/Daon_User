@@ -26,6 +26,35 @@ class PostgresOperationsStatusRepository:
     def __init__(self, cloud_store: PostgresCloudStore) -> None:
         self._cloud_store = cloud_store
 
+    def read_system_observations(self):
+        """system-admin 전후 인가는 runtime 소유. 보호된 서버 관측만 읽고 scope 자료는 열지 않는다."""
+        from dataclasses import fields
+        from psycopg.rows import dict_row
+        from .operations_telemetry import KINDS,WorkerSample,ReceivedWorkerSample,validate_worker_sample,_id,_utc
+        from .operations_telemetry_postgres import expected_worker_ids
+        expected=expected_worker_ids()
+        if set(expected)!=set(KINDS) or len(set(expected.values()))!=3:raise OperationsStatusError()
+        for value in expected.values():_id(value)
+        try:
+            self._cloud_store._ensure_pool_open()
+            with self._cloud_store._pool.connection(timeout=2) as connection,connection.transaction():
+                connection.execute("SET TRANSACTION READ ONLY")
+                connection.execute("SET LOCAL ROLE daon_app")
+                connection.execute("SET LOCAL statement_timeout='1500ms'")
+                with connection.cursor(row_factory=dict_row) as cursor:
+                    rows=cursor.execute("SELECT * FROM public.read_operations_worker_samples(%s) LIMIT 7",([expected[k] for k in KINDS],)).fetchall()
+                    now=_utc(cursor.execute("SELECT clock_timestamp() AS checked_at").fetchone()["checked_at"])
+            if len(rows)>6:raise ValueError()
+            names={field.name for field in fields(WorkerSample)};result=[]
+            for row in rows:
+                if set(row)!=names|{"received_at"}:raise ValueError()
+                sample=WorkerSample(**{name:row[name] for name in names})
+                if expected.get(sample.worker_kind)!=sample.worker_id:raise ValueError()
+                validate_worker_sample(sample,received_at=row["received_at"])
+                result.append(ReceivedWorkerSample(sample,row["received_at"]))
+            return tuple(result),now
+        except Exception:raise OperationsStatusError() from None
+
     def read_counts(self, context: OperationsStatusContext) -> OperationsCounts:
         try:
             with self._cloud_store._transaction(CloudAccessContext(context.tenant_id, context.workspace_id, context.actor_id, "operations.read")) as connection:

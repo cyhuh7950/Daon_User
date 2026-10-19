@@ -138,3 +138,47 @@ class OperationsStatusService:
         except ValueError:
             observations = unknown_observations("unavailable")
         return OperationsStatusView(context.workspace_id, overall, checked_at, components, observations)
+
+
+class SystemOperationsStatusService:
+    """현재 system-admin을 전후 검증한 runtime만 소비. Workspace 집계/Provider 호출0."""
+    def __init__(self,repository):self._repository=repository
+
+    def read(self,*,api_ready,database_ready,object_storage_ready,checked_at):
+        from .operations_telemetry import KINDS,project_worker,project_resources,ReceivedWorkerSample,_utc
+        checked_now=_utc(datetime.fromisoformat(checked_at.replace("Z","+00:00")));now=checked_now
+        state="not_collected";stored=()
+        if self._repository is not None:
+            try:
+                stored,now=self._repository.read_system_observations()
+                _utc(now)
+                if not isinstance(stored,tuple) or len(stored)>6 or any(type(row) is not ReceivedWorkerSample for row in stored):raise ValueError()
+                for kind in KINDS:
+                    rows=[r for r in stored if r.sample.worker_kind==kind]
+                    if len(rows)>2 or len({r.sample.boot_id for r in rows})!=len(rows) or len({r.sample.process_started_at for r in rows})!=len(rows):raise ValueError()
+                if any(r.sample.worker_kind not in KINDS for r in stored):raise ValueError()
+                # 아래 projection에서도 시각/형식 검증 후에만 안전한 필드를 복사한다.
+                for row in stored:project_worker(row,now=now)
+            except Exception:stored=();now=checked_now;state="unavailable"
+        workers=[];resources=[]
+        for kind in KINDS:
+            rows=sorted((r for r in stored if r.sample.worker_kind==kind),key=lambda r:(r.sample.process_started_at,r.received_at),reverse=True)
+            row=rows[0] if rows else None
+            worker=project_worker(row,now=now,worker_kind=kind)
+            values=project_resources(row,now=now,worker_kind=kind)
+            if row is None and state=="unavailable":
+                for value in (worker,*values):value.update(state="unavailable",safe_code="TELEMETRY_UNAVAILABLE")
+            worker.pop("coverage");workers.append(worker)
+            for value in values:
+                if value["value"] is not None and value["value"]>9007199254740991:
+                    value.update(state="unavailable",value=None,observed_at=None,received_at=None,safe_code="TELEMETRY_UNAVAILABLE")
+                value.pop("coverage");resources.append(value)
+        deployment=dict(state="not_collected",observed_at=None,received_at=None,safe_code="TELEMETRY_NOT_COLLECTED",
+            operation=None,code_revision=None,image_digest=None,previous_image_digest=None,result=None)
+        health=[]
+        for component,ready in (("api",api_ready),("database",database_ready),("object_storage",object_storage_ready)):
+            health.append(dict(component_id=component,state="ready" if ready is True else "unavailable",checked_at=checked_at,
+                safe_code=component.upper()+("_READY" if ready is True else "_UNAVAILABLE")))
+        return dict(schema_version=1,checked_at=checked_at,health=health,worker_samples=workers,resource_samples=resources,
+            deployment_summary=deployment,unimplemented=[dict(producer_id="deployment_receipt_writer",
+                safe_code="PRODUCER_NOT_IMPLEMENTED",impact_code="DEPLOYMENT_HISTORY_UNKNOWN")])

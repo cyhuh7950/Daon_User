@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { recoveryApi } from "../../lib/recovery-api.js";
+import { recoveryApi, parseSystemOperationsStatus } from "../../lib/recovery-api.js";
 import { secureUuid } from "@daon-user/ui/secure-uuid";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
@@ -36,6 +36,14 @@ function sessionCore(response) {
   const data = response?.payload?.data;
   const core = [data?.user_id, data?.tenant_id, data?.workspace_id, data?.session_id];
   return core.every(safeId) ? core : null;
+}
+
+function systemSession(response) {
+  const d=response?.payload?.data;
+  if(!safeId(d?.user_id)||!safeId(d?.session_id)||d.is_system_admin!==true
+    ||![null,undefined,""].includes(d.workspace_id)
+    ||[d.tenant_id,d.device_id].some(v=>v!=null&&v!==""&&!safeId(v)))return null;
+  return [d.user_id,d.session_id,d.tenant_id??null,d.device_id??null];
 }
 
 function actionSession(response) {
@@ -346,12 +354,14 @@ export function RecoveryOperationsWorkspace({ api = recoveryApi } = {}) {
   const [loaded, setLoaded] = useState({ ownerApi: api, state: "none", target: null });
   const address = typeof window === "undefined" ? "" : window.location.search + window.location.hash;
   const own = loaded.ownerApi === api && loaded.scope === scope && loaded.address === address;
-  const ready = own && ["ready", "home"].includes(loaded.state) && loaded.epoch === generation.current && !paused.current;
+  const ready = own && ["ready", "home", "system"].includes(loaded.state) && loaded.epoch === generation.current && !paused.current;
   const state = own ? loaded.state : loaded.state === "none" ? "none" : "loading";
 
   useEffect(() => {
     scope.active = true;
+    let systemController=null;
     const hide = () => {
+      systemController?.abort();systemController=null;
       if (passwordRef.current) passwordRef.current.value = "";
       if (actionRef.current) { actionRef.current.password = ""; actionRef.current.token = ""; actionRef.current.controller.abort(); }
       if (targetRef.current) { targetRef.current.hidden = true; targetRef.current.inert = true; }
@@ -381,6 +391,16 @@ export function RecoveryOperationsWorkspace({ api = recoveryApi } = {}) {
         const beforeResponse = await api.getSession();
         const before = sessionCore(beforeResponse);
         if (!current()) return;
+        const systemBefore=target===null&&!before?systemSession(beforeResponse):null;
+        if(systemBefore){
+          const controller=new AbortController();systemController=controller;
+          const data=parseSystemOperationsStatus(await api.getSystemOperationsStatus({signal:controller.signal}));
+          if(!current()||controller.signal.aborted)return;
+          const systemAfter=systemSession(await api.getSession({signal:controller.signal}));
+          if(!current()||controller.signal.aborted)return;
+          if(!systemAfter||!systemBefore.every((v,i)=>v===systemAfter[i])){publish("forbidden");return;}
+          publish("system",null,{status:data});return;
+        }
         if (!before) { publish("unavailable"); return; }
         // 실제 search/hash가 모두 없는 홈만 조회한다. 초기 state로 주소를 추정하지 않는다.
         if (target === null) {
@@ -570,7 +590,27 @@ export function RecoveryOperationsWorkspace({ api = recoveryApi } = {}) {
       {state !== "invalid" && <button type="button" disabled={state === "loading" || state === "none"}
         onClick={() => refreshRef.current?.()}>다시 조회</button>}
       <section ref={targetRef} className="operations-card" hidden={!ready} inert={!ready}
-        aria-label={state === "home" ? "현재 운영 상태와 백업 목록" : "선택한 복구 대상"}>
+        aria-label={state === "system" ? "시스템 운영 상태" : state === "home" ? "현재 운영 상태와 백업 목록" : "선택한 복구 대상"}>
+        {ready && state === "system" && <>
+          <h2>시스템 운영 상태</h2>
+          <p>Workspace 자료 집계가 아닌 시스템 관측입니다. 미수집은 0이나 준비 완료가 아닙니다.</p>
+          <ul>{loaded.home.status.health.map(r=><li key={r.component_id}>
+            {{api:"API",database:"DB",object_storage:"Object Storage"}[r.component_id]} · {r.state==="ready"?"준비":"조회 불가"} · {r.checked_at}
+          </li>)}</ul>
+          <h3>Worker 관측</h3>
+          <ul>{loaded.home.status.worker_samples.map(r=><li key={r.worker_kind}>
+            {{document:"문서",studio:"Studio",object:"Object"}[r.worker_kind]} · {r.state==="fresh"?"최근 관측":r.state==="stale"?"지난 관측":r.state==="unavailable"?"조회 불가":"미수집"}
+            {r.process_state==="processing"?" · 처리 중":r.process_state==="stopped"?" · 종료 관측":""}{r.observed_at?` · ${r.observed_at}`:""}
+          </li>)}</ul>
+          <h3>프로세스 자원 관측 12종</h3>
+          <ul>{loaded.home.status.resource_samples.map(r=><li key={`${r.worker_kind}:${r.metric_id}`}>
+            {r.worker_kind} · {{cpu_quota_millicores:"CPU 할당",memory_limit_bytes:"메모리 한도",memory_current_bytes:"메모리 사용",runtime_available_bytes:"영속 저장 여유"}[r.metric_id]}
+            {r.value===null?` · ${r.state==="unavailable"?"조회 불가":"미수집"}`:` · ${r.value} ${r.unit} · ${r.state==="stale"?"지난 관측":"최근 관측"}`}
+          </li>)}</ul>
+          <h3>배포·Rollback 기록</h3>
+          {loaded.home.status.deployment_summary.result===null?<p>확인된 배포 기록 미수집</p>:<p>{loaded.home.status.deployment_summary.operation} · {loaded.home.status.deployment_summary.result} · {loaded.home.status.deployment_summary.code_revision}</p>}
+          {loaded.home.status.unimplemented.length>0&&<p>미구현: {loaded.home.status.unimplemented.map(r=>({worker_observation_producer:"Worker 수집",resource_observation_producer:"자원 수집",deployment_receipt_writer:"배포 기록 수신"}[r.producer_id])).join(", ")}</p>}
+        </>}
         {ready && state === "home" && <>
           <p>백업은 자료 선택·계보 사전확인·명시 동의 후 독립 보존 준비가 된 서버에서만 생성됩니다. v3 백업의 등록 목적지 Preview와 별도 인증 Execute·Cancel은 정확 ID 상세에서 사용합니다. 독립 전체 DB 복원은 지원하지 않습니다.</p>
           <BackupSelectionPane api={api} auth={loaded.home.actionSession} scope={scope} scopeRef={scopeRef}

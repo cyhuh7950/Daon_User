@@ -13,6 +13,24 @@ import {
   parsePublicGatewayOrigin,
 } from "../../apps/web/lib/bff-api-proxy.js";
 
+test("M2-S system status GET literal is closed in web and native",async()=>{
+  const {createNativeBffProxy}=await import("../../apps/web/lib/bff-api-proxy.js");
+  for(const native of [false,true]){
+    const calls=[];const proxy=(native?createNativeBffProxy:createBffProxy)({baseUrl:new URL("https://api.example.com"),fetchImpl:async(url)=>{
+      calls.push(String(url));return Response.json({data:{}});
+    }});
+    const headers=native?{Authorization:"Bearer synthetic-native-credential"}:{};
+    const url="https://app.example.com/"+(native?"api/v1/":"bff/api/")+"system/operations/status";
+    const parts=["system","operations","status"];
+    assert.equal((await proxy(new Request(url,{headers}),parts)).status,200);
+    assert.deepEqual(calls,["https://api.example.com/api/v1/system/operations/status"]);
+    assert.equal((await proxy(new Request(url+"?scope=workspace_visible",{headers}),parts)).status,native?404:400);
+    assert.equal((await proxy(new Request(url,{method:"POST",headers:{...headers,Origin:"https://app.example.com","Content-Type":"application/json"},body:"{}"}),parts)).status,405);
+    assert.equal((await proxy(new Request(url+"/extra",{headers}),[...parts,"extra"])).status,404);
+    assert.equal(calls.length,1);
+  }
+});
+
 test("R4 registered destination GET literal is exact in web and native",async()=>{
   const {createNativeBffProxy}=await import("../../apps/web/lib/bff-api-proxy.js");
   for(const native of [false,true]){

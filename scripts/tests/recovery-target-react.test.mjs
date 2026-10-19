@@ -163,6 +163,57 @@ function homePort(overrides = {}) {
   return p;
 }
 const homeCalls = [["session"], ["status", "workspace-a"], ["list", "workspace-a"], ["session"]];
+const systemStatus = () => {
+  const common={state:"not_collected",observed_at:null,received_at:null,safe_code:"TELEMETRY_NOT_COLLECTED"};
+  const kinds=["document","studio","object"],metrics=["cpu_quota_millicores","memory_limit_bytes","memory_current_bytes","runtime_available_bytes"];
+  return {schema_version:1,checked_at:"2026-10-19T00:00:00Z",
+    health:["api","database","object_storage"].map(component_id=>({component_id,state:"ready",checked_at:"2026-10-19T00:00:00Z",safe_code:component_id.toUpperCase()+"_READY"})),
+    worker_samples:kinds.map(worker_kind=>({...common,worker_kind,process_state:"unknown",poll_started_at:null,poll_finished_at:null,active_started_at:null})),
+    resource_samples:kinds.flatMap(worker_kind=>metrics.map((metric_id,i)=>({...common,worker_kind,metric_id,value:null,unit:i===0?"millicores":"bytes"}))),
+    deployment_summary:{...common,operation:null,code_revision:null,image_digest:null,previous_image_digest:null,result:null},
+    unimplemented:[{producer_id:"deployment_receipt_writer",safe_code:"PRODUCER_NOT_IMPLEMENTED",impact_code:"DEPLOYMENT_HISTORY_UNKNOWN"}]};
+};
+
+test("M2-S noWS admin system home reads only system status with session before/after",async()=>{
+  const p=homePort({getSession:async()=>{p.calls.push(["session"]);return session({workspace_id:null,is_system_admin:true});},
+    getSystemOperationsStatus:async()=>{p.calls.push(["system"]);return systemStatus();}});
+  const view=await render("",p.api);
+  try{
+    assert.match(visibleText(view.container),/시스템 운영 상태/u);
+    assert.match(visibleText(view.container),/미수집/u);
+    assert.doesNotMatch(visibleText(view.container),/현재 Workspace|백업 목록/u);
+    assert.deepEqual(p.calls,[["session"],["system"],["session"]]);assert.deepEqual(p.writes,[]);
+  }finally{await view.cleanup();}
+});
+
+test("M2-S noWS fallback never overrides Workspace or target query and client nonadmin",async()=>{
+  for(const [address,changes] of [["",{is_system_admin:true}],["?backup_id=backup-a",{workspace_id:null,is_system_admin:true}],["",{workspace_id:null,is_system_admin:false}]]){
+    let systems=0;const p=homePort({getSession:async()=>session(changes),getSystemOperationsStatus:async()=>{++systems;return systemStatus();}});
+    const view=await render(address,p.api);
+    try{assert.equal(systems,0);assert.doesNotMatch(visibleText(view.container),/시스템 운영 상태/u);}
+    finally{await view.cleanup();}
+  }
+});
+
+test("M2-S system response is discarded on session/admin change and pagehide late result",async()=>{
+  for(const mode of ["session","admin","pagehide","api"]){
+    const late=deferred();let reads=0,signal;
+    const p=homePort({getSession:async()=>session({workspace_id:null,is_system_admin:mode!=="admin"||reads<1,
+      session_id:mode==="session"&&reads++>0?"session-b":"session-a"}),
+      getSystemOperationsStatus:async options=>{signal=options?.signal;return late.promise;}});
+    const view=await render("",p.api);
+    try{
+      assert.ok(signal,"시스템 GET의 AbortSignal 전달이 필요하다");
+      if(mode==="admin")reads=1;
+      if(mode==="pagehide")await view.act(async()=>view.browser.dispatchEvent(new MinimalEvent("pagehide")));
+      if(mode==="api")await view.rerender(homePort().api);
+      await view.act(async()=>late.resolve(systemStatus()));
+      assert.doesNotMatch(visibleText(view.container),/시스템 운영 상태/u);
+      if(["pagehide","api"].includes(mode))assert.equal(signal.aborted,true);
+    }finally{await view.cleanup();}
+  }
+});
+
 async function click(view, label) {
   const node = findElements(view.container, n => n.tagName === "BUTTON" && n.textContent === label)[0];
   assert.ok(node, label);

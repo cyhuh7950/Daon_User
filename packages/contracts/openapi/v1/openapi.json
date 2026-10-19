@@ -4341,6 +4341,20 @@
         }
       }
     },
+    "/api/v1/system/operations/status": {
+      "get": {
+        "operationId": "getSystemOperationsStatus", "tags": ["Operations"], "x-implementation-owner": "S44-M2-S",
+        "summary": "현재 system-admin 전용 안전 시스템 관측. Workspace 자료 집계·Provider 호출·쓰기 없음",
+        "parameters": [],
+        "responses": {
+          "200": { "description": "시스템 상태와 미수집·미구현 범위", "headers": { "ETag": { "$ref": "#/components/headers/ETag" }, "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SystemOperationsStatusEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" },
+          "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
     "/api/v1/workspaces/{id}/operations/status": {
       "get": {
         "operationId": "getWorkspaceOperationsStatus", "tags": ["Operations"],
@@ -8665,6 +8679,112 @@
             { "properties": { "state": { "const": "unavailable" }, "safe_code": { "const": "METRIC_UNAVAILABLE" }, "value": { "type": "null" }, "observed_at": { "type": "null" } } }
           ] }
         ]
+      },
+      "SystemObservationTime": { "type": ["string", "null"], "format": "date-time", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$" },
+      "SystemObservationTiming": {
+        "type": "object", "required": ["state", "observed_at", "received_at", "safe_code"],
+        "properties": {
+          "state": { "enum": ["fresh", "stale", "measured", "partial", "not_collected", "not_reported", "unavailable"] },
+          "observed_at": { "$ref": "#/components/schemas/SystemObservationTime" }, "received_at": { "$ref": "#/components/schemas/SystemObservationTime" },
+          "safe_code": { "enum": ["TELEMETRY_FRESH", "TELEMETRY_STALE", "TELEMETRY_MEASURED", "TELEMETRY_PARTIAL", "TELEMETRY_NOT_COLLECTED", "TELEMETRY_NOT_REPORTED", "TELEMETRY_UNAVAILABLE"] }
+        },
+        "allOf": [
+          { "if": { "properties": { "state": { "enum": ["not_collected", "not_reported", "unavailable"] } } }, "then": { "properties": { "observed_at": { "type": "null" }, "received_at": { "type": "null" } } }, "else": { "properties": { "observed_at": { "type": "string" }, "received_at": { "type": "string" } } } },
+          { "oneOf": [
+            { "properties": { "state": { "const": "fresh" }, "safe_code": { "const": "TELEMETRY_FRESH" } } },
+            { "properties": { "state": { "const": "stale" }, "safe_code": { "const": "TELEMETRY_STALE" } } },
+            { "properties": { "state": { "const": "measured" }, "safe_code": { "const": "TELEMETRY_MEASURED" } } },
+            { "properties": { "state": { "const": "partial" }, "safe_code": { "const": "TELEMETRY_PARTIAL" } } },
+            { "properties": { "state": { "const": "not_collected" }, "safe_code": { "const": "TELEMETRY_NOT_COLLECTED" } } },
+            { "properties": { "state": { "const": "not_reported" }, "safe_code": { "const": "TELEMETRY_NOT_REPORTED" } } },
+            { "properties": { "state": { "const": "unavailable" }, "safe_code": { "const": "TELEMETRY_UNAVAILABLE" } } }
+          ] }
+        ]
+      },
+      "SystemOperationsHealth": {
+        "type": "object", "additionalProperties": false, "required": ["component_id", "state", "checked_at", "safe_code"],
+        "properties": { "component_id": { "enum": ["api", "database", "object_storage"] }, "state": { "enum": ["ready", "unavailable"] },
+          "checked_at": { "allOf": [{ "$ref": "#/components/schemas/SystemObservationTime" }, { "type": "string" }] },
+          "safe_code": { "enum": ["API_READY", "API_UNAVAILABLE", "DATABASE_READY", "DATABASE_UNAVAILABLE", "OBJECT_STORAGE_READY", "OBJECT_STORAGE_UNAVAILABLE"] } },
+        "oneOf": [
+          { "properties": { "component_id": { "const": "api" }, "state": { "const": "ready" }, "safe_code": { "const": "API_READY" } } },
+          { "properties": { "component_id": { "const": "api" }, "state": { "const": "unavailable" }, "safe_code": { "const": "API_UNAVAILABLE" } } },
+          { "properties": { "component_id": { "const": "database" }, "state": { "const": "ready" }, "safe_code": { "const": "DATABASE_READY" } } },
+          { "properties": { "component_id": { "const": "database" }, "state": { "const": "unavailable" }, "safe_code": { "const": "DATABASE_UNAVAILABLE" } } },
+          { "properties": { "component_id": { "const": "object_storage" }, "state": { "const": "ready" }, "safe_code": { "const": "OBJECT_STORAGE_READY" } } },
+          { "properties": { "component_id": { "const": "object_storage" }, "state": { "const": "unavailable" }, "safe_code": { "const": "OBJECT_STORAGE_UNAVAILABLE" } } }
+        ]
+      },
+      "SystemWorkerSample": {
+        "type": "object", "additionalProperties": false,
+        "required": ["state", "observed_at", "received_at", "safe_code", "worker_kind", "process_state", "poll_started_at", "poll_finished_at", "active_started_at"],
+        "properties": { "state": { "enum": ["fresh", "stale", "not_collected", "unavailable"] }, "observed_at": { "$ref": "#/components/schemas/SystemObservationTime" }, "received_at": { "$ref": "#/components/schemas/SystemObservationTime" }, "safe_code": { "type": "string" },
+          "worker_kind": { "enum": ["document", "studio", "object"] }, "process_state": { "enum": ["alive", "processing", "poll_stale", "stopped", "unknown"] },
+          "poll_started_at": { "$ref": "#/components/schemas/SystemObservationTime" }, "poll_finished_at": { "$ref": "#/components/schemas/SystemObservationTime" }, "active_started_at": { "$ref": "#/components/schemas/SystemObservationTime" } },
+        "allOf": [{ "$ref": "#/components/schemas/SystemObservationTiming" },
+          { "if": { "properties": { "state": { "enum": ["not_collected", "unavailable"] } } }, "then": { "properties": { "process_state": { "const": "unknown" }, "poll_started_at": { "type": "null" }, "poll_finished_at": { "type": "null" }, "active_started_at": { "type": "null" } } } },
+          { "if": { "properties": { "process_state": { "const": "processing" } } }, "then": { "properties": { "active_started_at": { "type": "string" } } } }
+        ]
+      },
+      "SystemResourceSample": {
+        "type": "object", "additionalProperties": false,
+        "required": ["state", "observed_at", "received_at", "safe_code", "worker_kind", "metric_id", "value", "unit"],
+        "properties": { "state": { "type": "string" }, "observed_at": { "$ref": "#/components/schemas/SystemObservationTime" }, "received_at": { "$ref": "#/components/schemas/SystemObservationTime" }, "safe_code": { "type": "string" },
+          "worker_kind": { "enum": ["document", "studio", "object"] }, "metric_id": { "enum": ["cpu_quota_millicores", "memory_limit_bytes", "memory_current_bytes", "runtime_available_bytes"] }, "value": { "type": ["integer", "null"], "minimum": 0, "maximum": 9007199254740991 }, "unit": { "enum": ["millicores", "bytes"] } },
+        "allOf": [{ "$ref": "#/components/schemas/SystemObservationTiming" },
+          { "if": { "properties": { "state": { "enum": ["not_collected", "not_reported", "unavailable"] } } }, "then": { "properties": { "value": { "type": "null" } } }, "else": { "properties": { "value": { "type": "integer" } } } }
+        ]
+      },
+      "SystemDeploymentSummary": {
+        "type": "object", "additionalProperties": false,
+        "required": ["state", "observed_at", "received_at", "safe_code", "operation", "code_revision", "image_digest", "previous_image_digest", "result"],
+        "properties": { "state": { "type": "string" }, "observed_at": { "$ref": "#/components/schemas/SystemObservationTime" }, "received_at": { "$ref": "#/components/schemas/SystemObservationTime" }, "safe_code": { "type": "string" },
+          "operation": { "enum": [null, "deploy", "rollback"] }, "code_revision": { "type": ["string", "null"], "pattern": "^[a-f0-9]{40}$" }, "image_digest": { "type": ["string", "null"], "pattern": "^sha256:[a-f0-9]{64}$" }, "previous_image_digest": { "type": ["string", "null"], "pattern": "^sha256:[a-f0-9]{64}$" }, "result": { "enum": [null, "succeeded", "failed", "uncertain"] } },
+        "allOf": [{ "$ref": "#/components/schemas/SystemObservationTiming" },
+          { "if": { "properties": { "state": { "enum": ["not_collected", "not_reported", "unavailable"] } } }, "then": { "properties": { "operation": { "type": "null" }, "code_revision": { "type": "null" }, "image_digest": { "type": "null" }, "previous_image_digest": { "type": "null" }, "result": { "type": "null" } } } }
+        ]
+      },
+      "SystemOperationsStatus": {
+        "type": "object", "additionalProperties": false, "required": ["schema_version", "checked_at", "health", "worker_samples", "resource_samples", "deployment_summary", "unimplemented"],
+        "properties": { "schema_version": { "const": 1 }, "checked_at": { "allOf": [{ "$ref": "#/components/schemas/SystemObservationTime" }, { "type": "string" }] },
+          "health": { "type": "array", "minItems": 3, "maxItems": 3, "items": false, "prefixItems": [
+            { "allOf": [{ "$ref": "#/components/schemas/SystemOperationsHealth" }, { "properties": { "component_id": { "const": "api" } } }] },
+            { "allOf": [{ "$ref": "#/components/schemas/SystemOperationsHealth" }, { "properties": { "component_id": { "const": "database" } } }] },
+            { "allOf": [{ "$ref": "#/components/schemas/SystemOperationsHealth" }, { "properties": { "component_id": { "const": "object_storage" } } }] }
+          ] },
+          "worker_samples": { "type": "array", "minItems": 3, "maxItems": 3, "items": false, "prefixItems": [
+            { "allOf": [{ "$ref": "#/components/schemas/SystemWorkerSample" }, { "properties": { "worker_kind": { "const": "document" } } }] },
+            { "allOf": [{ "$ref": "#/components/schemas/SystemWorkerSample" }, { "properties": { "worker_kind": { "const": "studio" } } }] },
+            { "allOf": [{ "$ref": "#/components/schemas/SystemWorkerSample" }, { "properties": { "worker_kind": { "const": "object" } } }] }
+          ] },
+          "resource_samples": { "type": "array", "minItems": 12, "maxItems": 12, "items": false, "prefixItems": [
+            { "allOf": [{ "$ref": "#/components/schemas/SystemResourceSample" }, { "properties": { "worker_kind": { "const": "document" }, "metric_id": { "const": "cpu_quota_millicores" }, "unit": { "const": "millicores" } } }] },
+            { "allOf": [{ "$ref": "#/components/schemas/SystemResourceSample" }, { "properties": { "worker_kind": { "const": "document" }, "metric_id": { "const": "memory_limit_bytes" }, "unit": { "const": "bytes" } } }] },
+            { "allOf": [{ "$ref": "#/components/schemas/SystemResourceSample" }, { "properties": { "worker_kind": { "const": "document" }, "metric_id": { "const": "memory_current_bytes" }, "unit": { "const": "bytes" } } }] },
+            { "allOf": [{ "$ref": "#/components/schemas/SystemResourceSample" }, { "properties": { "worker_kind": { "const": "document" }, "metric_id": { "const": "runtime_available_bytes" }, "unit": { "const": "bytes" } } }] },
+            { "allOf": [{ "$ref": "#/components/schemas/SystemResourceSample" }, { "properties": { "worker_kind": { "const": "studio" }, "metric_id": { "const": "cpu_quota_millicores" }, "unit": { "const": "millicores" } } }] },
+            { "allOf": [{ "$ref": "#/components/schemas/SystemResourceSample" }, { "properties": { "worker_kind": { "const": "studio" }, "metric_id": { "const": "memory_limit_bytes" }, "unit": { "const": "bytes" } } }] },
+            { "allOf": [{ "$ref": "#/components/schemas/SystemResourceSample" }, { "properties": { "worker_kind": { "const": "studio" }, "metric_id": { "const": "memory_current_bytes" }, "unit": { "const": "bytes" } } }] },
+            { "allOf": [{ "$ref": "#/components/schemas/SystemResourceSample" }, { "properties": { "worker_kind": { "const": "studio" }, "metric_id": { "const": "runtime_available_bytes" }, "unit": { "const": "bytes" } } }] },
+            { "allOf": [{ "$ref": "#/components/schemas/SystemResourceSample" }, { "properties": { "worker_kind": { "const": "object" }, "metric_id": { "const": "cpu_quota_millicores" }, "unit": { "const": "millicores" } } }] },
+            { "allOf": [{ "$ref": "#/components/schemas/SystemResourceSample" }, { "properties": { "worker_kind": { "const": "object" }, "metric_id": { "const": "memory_limit_bytes" }, "unit": { "const": "bytes" } } }] },
+            { "allOf": [{ "$ref": "#/components/schemas/SystemResourceSample" }, { "properties": { "worker_kind": { "const": "object" }, "metric_id": { "const": "memory_current_bytes" }, "unit": { "const": "bytes" } } }] },
+            { "allOf": [{ "$ref": "#/components/schemas/SystemResourceSample" }, { "properties": { "worker_kind": { "const": "object" }, "metric_id": { "const": "runtime_available_bytes" }, "unit": { "const": "bytes" } } }] }
+          ] },
+          "deployment_summary": { "$ref": "#/components/schemas/SystemDeploymentSummary" },
+          "unimplemented": { "type": "array", "maxItems": 3, "uniqueItems": true, "items": { "type": "object", "additionalProperties": false, "required": ["producer_id", "safe_code", "impact_code"],
+            "properties": { "producer_id": { "enum": ["worker_observation_producer", "resource_observation_producer", "deployment_receipt_writer"] }, "safe_code": { "const": "PRODUCER_NOT_IMPLEMENTED" }, "impact_code": { "enum": ["WORKER_STATE_UNKNOWN", "CAPACITY_UNKNOWN", "DEPLOYMENT_HISTORY_UNKNOWN"] } },
+            "oneOf": [
+              { "properties": { "producer_id": { "const": "worker_observation_producer" }, "impact_code": { "const": "WORKER_STATE_UNKNOWN" } } },
+              { "properties": { "producer_id": { "const": "resource_observation_producer" }, "impact_code": { "const": "CAPACITY_UNKNOWN" } } },
+              { "properties": { "producer_id": { "const": "deployment_receipt_writer" }, "impact_code": { "const": "DEPLOYMENT_HISTORY_UNKNOWN" } } }
+            ] } }
+        }
+      },
+      "SystemOperationsStatusEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"], "properties": {
+          "data": { "$ref": "#/components/schemas/SystemOperationsStatus" }, "meta": { "type": "object", "additionalProperties": false, "required": ["trace_id"], "properties": { "trace_id": { "$ref": "#/components/schemas/OpaqueId" } } }
+        }
       },
       "OperationsStatus": {
         "type": "object", "additionalProperties": false,

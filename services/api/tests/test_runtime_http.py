@@ -67,6 +67,72 @@ class UnreadyObjectStorage:
 
 
 class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
+    async def test_m2s_real_session_without_workspace_reaches_system_home_without_creating_scope(self):
+        # 이 시험의 폐기 SQLite에서만 실제 Workspace 부재를 구성한다.
+        with self.authorization_repository.transaction() as connection:
+            connection.execute("DELETE FROM auth_result_dependencies WHERE result_id IN (SELECT result_id FROM auth_historical_results WHERE tenant_id=?)", (self.web.tenant_id,))
+            for table in ("auth_historical_results", "auth_source_access", "auth_memberships", "auth_admin_role_operations",
+                    "auth_workspace_permission_rules", "auth_workspace_policies"):
+                connection.execute(f"DELETE FROM {table} WHERE tenant_id=?", (self.web.tenant_id,))
+            connection.execute("DELETE FROM auth_workspaces WHERE tenant_id=?", (self.web.tenant_id,))
+        self.assertEqual(self.identity.selectable_tenant_workspaces(user_id=self.web.user_id), ())
+        self.assertIsNone(self.authorization_repository.primary_workspace_id(self.web.tenant_id))
+        headers={"cookie":f"{WEB_SESSION_COOKIE}={self.web.access_token}"}
+        self.dependencies.settings=replace(self.settings,system_admin_user_ids=frozenset({self.web.user_id}))
+        response=await self.client.get("/api/v1/session",headers=headers)
+        self.assertEqual(response.status_code,200)
+        data=response.json()["data"]
+        self.assertIsNone(data["workspace_id"])
+        self.assertEqual(data["recovery_operations"],[])
+        self.assertIs(data["is_system_admin"],True)
+        self.assertEqual((await self.client.get("/api/v1/system/operations/status",headers=headers)).status_code,200)
+        self.assertIsNone(self.authorization_repository.primary_workspace_id(self.web.tenant_id))
+        self.dependencies.settings=self.settings
+        self.assertEqual((await self.client.get("/api/v1/system/operations/status",headers=headers)).status_code,403)
+
+    async def test_m2s_system_operations_real_identity_admin_without_workspace_and_input_denial(self):
+        path="/api/v1/system/operations/status"
+        headers={"cookie":f"{WEB_SESSION_COOKIE}={self.web.access_token}"}
+        self.assertEqual((await self.client.get(path)).status_code,401)
+        # Workspace 관리자라는 기존 role만으로 system 권한이 생기지 않는다.
+        self.assertEqual((await self.client.get(path,headers=headers)).status_code,403)
+        self.dependencies.settings=replace(self.settings,system_admin_user_ids=frozenset({self.web.user_id}))
+        allowed=await self.client.get(path,headers=headers)
+        self.assertEqual(allowed.status_code,200)
+        self.assertRegex(allowed.headers.get("etag", ""), r'^"projection-[0-9a-f]{24}"$')
+        self.assertEqual(allowed.headers.get("cache-control"), "no-store")
+        self.assertEqual(allowed.headers["x-trace-id"], allowed.json()["meta"]["trace_id"])
+        data=allowed.json()["data"]
+        self.assertEqual(set(data),{"schema_version","checked_at","health","worker_samples","resource_samples","deployment_summary","unimplemented"})
+        self.assertEqual((len(data["health"]),len(data["worker_samples"]),len(data["resource_samples"])),(3,3,12))
+        self.assertNotIn("workspace",str(data));self.assertNotIn("provider",str(data))
+        self.assertEqual((await self.client.get(path+"?workspace_id=workspace-001",headers=headers)).status_code,400)
+        self.assertEqual((await self.client.request("GET",path,headers=headers,content=b"{}")).status_code,400)
+        self.dependencies.settings=replace(self.settings,system_admin_user_ids=frozenset())
+        self.assertEqual((await self.client.get(path,headers=headers)).status_code,403)
+
+    async def test_m2s_system_operations_rechecks_role_revocation_expiry_and_never_reads_workspace_or_provider(self):
+        from types import SimpleNamespace
+        from datetime import timedelta
+        path="/api/v1/system/operations/status";headers={"cookie":f"{WEB_SESSION_COOKIE}={self.web.access_token}"}
+        allowed=replace(self.settings,system_admin_user_ids=frozenset({self.web.user_id}))
+        self.dependencies.settings=allowed
+        calls=[]
+        def readiness():
+            calls.append("database-health")
+            self.dependencies.settings=replace(allowed,system_admin_user_ids=frozenset())
+            return SimpleNamespace(ready=True)
+        self.dependencies.cloud_store=SimpleNamespace(readiness=readiness,close=lambda:None)
+        with patch.object(self.authorization,"authorize_action",side_effect=AssertionError("NO_WORKSPACE_QUERY")):
+            response=await self.client.get(path,headers=headers)
+        self.assertEqual(response.status_code,403);self.assertEqual(calls,["database-health"])
+        self.dependencies.cloud_store=None;self.dependencies.settings=allowed
+        self.identity.revoke_current_web_session(access_token=self.web.access_token,policy_version=POLICY_VERSION,trace_id=TRACE_ID)
+        self.assertEqual((await self.client.get(path,headers=headers)).status_code,401)
+        native_headers={"Authorization":f"Bearer {self.native.access_token}"}
+        self.clock.advance(hours=2)
+        self.assertEqual((await self.client.get(path,headers=native_headers)).status_code,401)
+
     async def asyncSetUp(self) -> None:
         self.directory = tempfile.TemporaryDirectory()
         self.db_path = Path(self.directory.name) / "runtime.sqlite3"

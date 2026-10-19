@@ -17,6 +17,46 @@ from daon_user_api.operations_status import (
 from daon_user_api.operations_status_postgres import PostgresOperationsStatusRepository
 
 
+def test_system_operations_no_workspace_safe_projection_and_missing_is_not_zero():
+    from daon_user_api import operations_status as domain
+    assert hasattr(domain,"SystemOperationsStatusService"), "M2-S system projection missing"
+    service=domain.SystemOperationsStatusService(None)
+    view=service.read(api_ready=True,database_ready=False,object_storage_ready=False,checked_at="2026-10-19T00:00:00Z")
+    assert set(view)=={"schema_version","checked_at","health","worker_samples","resource_samples","deployment_summary","unimplemented"}
+    assert [r["component_id"] for r in view["health"]]==["api","database","object_storage"]
+    assert [r["state"] for r in view["health"]]==["ready","unavailable","unavailable"]
+    assert len(view["worker_samples"])==3 and len(view["resource_samples"])==12
+    assert all(r["state"]=="not_collected" and r["received_at"] is None for r in view["worker_samples"])
+    assert all(r["value"] is None for r in view["resource_samples"])
+    assert [r["producer_id"] for r in view["unimplemented"]]==["deployment_receipt_writer"]
+    assert "workspace" not in str(view) and "worker_id" not in str(view) and "boot_id" not in str(view)
+
+
+def test_system_operations_protected_reader_only_and_failure_isolated():
+    from daon_user_api import operations_status as domain
+    assert hasattr(domain,"SystemOperationsStatusService"), "M2-S system projection missing"
+    class Broken:
+        def read_system_observations(self):raise RuntimeError("PRIVATE_ENDPOINT_SECRET")
+    view=domain.SystemOperationsStatusService(Broken()).read(api_ready=True,database_ready=True,
+        object_storage_ready=True,checked_at="2026-10-19T00:00:00Z")
+    assert all(r["state"]=="unavailable" for r in view["worker_samples"])
+    assert all(r["value"] is None and r["state"]=="unavailable" for r in view["resource_samples"])
+    assert "PRIVATE" not in str(view)
+
+
+def test_system_operations_malformed_clock_or_boot_collision_never_becomes_success():
+    from daon_user_api import operations_status as domain
+    from daon_user_api.operations_telemetry import WorkerSample,ReceivedWorkerSample
+    from datetime import datetime,timezone
+    now=datetime(2026,10,19,tzinfo=timezone.utc)
+    row=ReceivedWorkerSample(WorkerSample("document-worker-1","boot-a","document",now,1,now),now)
+    for rows,clock in (((),None),((row,ReceivedWorkerSample(__import__("dataclasses").replace(row.sample,boot_id="boot-b"),now)),now)):
+        repository=SimpleNamespace(read_system_observations=lambda:(rows,clock))
+        view=domain.SystemOperationsStatusService(repository).read(api_ready=True,database_ready=True,
+            object_storage_ready=True,checked_at="2026-10-19T00:00:00Z")
+        assert all(r["state"]=="unavailable" for r in view["worker_samples"])
+
+
 @contextmanager
 def _observation_case(*, sources=None, attempts=None, failed=None):
     from daon_user_api import operations_status as domain, operations_status_postgres as pg

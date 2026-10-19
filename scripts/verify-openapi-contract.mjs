@@ -7,6 +7,7 @@ import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const REQUIRED_PATHS = Object.freeze([
+  "/api/v1/system/operations/status",
   "/api/v1/organization/admin/tenants",
   "/api/v1/organization/tenants/{tenant_id}/workspaces",
   "/api/v1/organization/tenants/{tenant_id}/invitations",
@@ -865,6 +866,47 @@ function validateOrganizationContract(document) {
   }
 }
 
+function validateSystemOperationsContract(document) {
+  const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b),require=(ok)=>{if(!ok)fail("M2-S system operations exact contract");};
+  const path=document.paths?.["/api/v1/system/operations/status"],op=path?.get,s=document.components?.schemas;
+  require(same(Object.keys(path??{}),["get"])&&op.operationId==="getSystemOperationsStatus"&&same(op.parameters,[])&&!op.requestBody);
+  require(op.responses?.["200"]?.content?.["application/json"]?.schema?.$ref==="#/components/schemas/SystemOperationsStatusEnvelope");
+  const exact=(name,fields)=>{const row=s?.[name];require(row?.type==="object"&&row.additionalProperties===false&&same(row.required,fields)
+    &&same(Object.keys(row.properties).sort(),[...fields].sort()));return row;};
+  const common=["state","observed_at","received_at","safe_code"];
+  const data=exact("SystemOperationsStatus",["schema_version","checked_at","health","worker_samples","resource_samples","deployment_summary","unimplemented"]);
+  const envelope=exact("SystemOperationsStatusEnvelope",["data","meta"]);
+  require(envelope.properties.data.$ref==="#/components/schemas/SystemOperationsStatus"&&envelope.properties.meta.additionalProperties===false
+    &&same(envelope.properties.meta.required,["trace_id"])&&same(Object.keys(envelope.properties.meta.properties),["trace_id"]));
+  exact("SystemOperationsHealth",["component_id","state","checked_at","safe_code"]);
+  const worker=exact("SystemWorkerSample",[...common,"worker_kind","process_state","poll_started_at","poll_finished_at","active_started_at"]);
+  const resource=exact("SystemResourceSample",[...common,"worker_kind","metric_id","value","unit"]);
+  const deployment=exact("SystemDeploymentSummary",[...common,"operation","code_revision","image_digest","previous_image_digest","result"]);
+  require(data.properties.schema_version.const===1&&worker.allOf?.length===3&&resource.allOf?.length===2&&deployment.allOf?.length===2);
+  require(same(worker.properties.state.enum,["fresh","stale","not_collected","unavailable"]));
+  require(same(resource.properties.value.type,["integer","null"])&&resource.properties.value.minimum===0&&resource.properties.value.maximum===Number.MAX_SAFE_INTEGER);
+  const timing=s.SystemObservationTiming;
+  require(same(timing?.required,common)&&timing.allOf?.length===2);
+  const states=["fresh","stale","measured","partial","not_collected","not_reported","unavailable"];
+  require(same(timing.allOf[1].oneOf?.map(r=>[r.properties.state.const,r.properties.safe_code.const]),states.map(v=>[v,`TELEMETRY_${v.toUpperCase()}`])));
+  require(timing.allOf[0].then?.properties?.observed_at?.type==="null"&&timing.allOf[0].then?.properties?.received_at?.type==="null");
+  const tuple=(key,expected,ref)=>{
+    const a=data.properties[key];require(a.type==="array"&&a.minItems===expected.length&&a.maxItems===expected.length&&a.items===false&&a.prefixItems?.length===expected.length);
+    require(same(a.prefixItems.map(r=>[r.allOf?.[0]?.$ref,r.allOf?.[1]?.properties]),expected.map(properties=>[`#/components/schemas/${ref}`,properties])));
+  };
+  tuple("health",["api","database","object_storage"].map(component_id=>({component_id:{const:component_id}})),"SystemOperationsHealth");
+  tuple("worker_samples",["document","studio","object"].map(worker_kind=>({worker_kind:{const:worker_kind}})),"SystemWorkerSample");
+  tuple("resource_samples",["document","studio","object"].flatMap(worker_kind=>["cpu_quota_millicores","memory_limit_bytes","memory_current_bytes","runtime_available_bytes"].map((metric_id,i)=>
+    ({worker_kind:{const:worker_kind},metric_id:{const:metric_id},unit:{const:i===0?"millicores":"bytes"}}))),"SystemResourceSample");
+  require(same(s.SystemOperationsHealth.oneOf?.map(r=>[r.properties.component_id.const,r.properties.state.const,r.properties.safe_code.const]),
+    ["api","database","object_storage"].flatMap(id=>["ready","unavailable"].map(state=>[id,state,`${id.toUpperCase()}_${state.toUpperCase()}`]))));
+  for(const row of [worker,resource,deployment])require(row.allOf[0].$ref==="#/components/schemas/SystemObservationTiming");
+  require(same(worker.allOf[1].then?.properties?.process_state,{const:"unknown"})&&worker.allOf[2].then?.properties?.active_started_at?.type==="string"
+    &&resource.allOf[1].then?.properties?.value?.type==="null"&&deployment.allOf[1].then?.properties?.result?.type==="null");
+  const u=data.properties.unimplemented;require(u.type==="array"&&u.maxItems===3&&u.uniqueItems===true&&u.items.additionalProperties===false
+    &&same(u.items.required,["producer_id","safe_code","impact_code"])&&u.items.oneOf?.length===3);
+}
+
 export function validateOpenApiDocument(document) {
   validateAccountSettings(document);
   validateStudioApprovalLifecycle(document);
@@ -915,6 +957,7 @@ export function validateOpenApiDocument(document) {
   const actualPaths = Object.keys(document.paths);
   for (const requiredPath of REQUIRED_PATHS) if (!(requiredPath in document.paths)) fail(`required path missing ${requiredPath}`);
   for (const actualPath of actualPaths) if (!REQUIRED_PATHS.includes(actualPath)) fail(`unapproved path ${actualPath}`);
+  validateSystemOperationsContract(document);
   validateOrganizationContract(document);
   validateWebsiteContract(document);
   validateOpenLawContract(document);

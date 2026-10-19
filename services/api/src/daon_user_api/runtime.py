@@ -201,7 +201,7 @@ from .workspace_model_defaults import (
 )
 from .retention_inventory_postgres import PostgresRetentionInventoryProvider
 from .retention_request_postgres import PostgresRetentionRequestService
-from .operations_status import OperationsStatusContext, OperationsStatusService
+from .operations_status import OperationsStatusContext, OperationsStatusService, SystemOperationsStatusService
 from .operations_status_postgres import (
     OperationsStatusError,
     PostgresOperationsStatusRepository,
@@ -5538,27 +5538,28 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             None,
         ) or dependencies.authorization_repository.primary_workspace_id(principal.tenant_id)
         recovery_operations: list[str] = []
-        try:
-            dependencies.authorization_service.authorize_action(
-                principal=principal,
-                workspace_id=workspace_id,
-                action=Action.POLICY_MANAGE,
-                trace_id=request.state.trace_id,
-                policy_version=dependencies.settings.policy_version,
-            )
-        except AuthorizationError as error:
-            if not (error.http_status == 403 and error.code in {"ACTION_DENIED", "ORGANIZATION_MEMBERSHIP_SUSPENDED"}):
-                raise
-        else:
-            recovery_operations = [
-                "cloud_backup_create",
-                "cloud_backup_get",
-                "cloud_backup_list",
-                "cloud_restore_cancel",
-                "cloud_restore_execute",
-                "cloud_restore_get",
-                "cloud_restore_preview",
-            ]
+        if workspace_id is not None or principal.user_id not in dependencies.settings.system_admin_user_ids:
+            try:
+                dependencies.authorization_service.authorize_action(
+                    principal=principal,
+                    workspace_id=workspace_id,
+                    action=Action.POLICY_MANAGE,
+                    trace_id=request.state.trace_id,
+                    policy_version=dependencies.settings.policy_version,
+                )
+            except AuthorizationError as error:
+                if not (error.http_status == 403 and error.code in {"ACTION_DENIED", "ORGANIZATION_MEMBERSHIP_SUSPENDED"}):
+                    raise
+            else:
+                recovery_operations = [
+                    "cloud_backup_create",
+                    "cloud_backup_get",
+                    "cloud_backup_list",
+                    "cloud_restore_cancel",
+                    "cloud_restore_execute",
+                    "cloud_restore_get",
+                    "cloud_restore_preview",
+                ]
         return {
             "data": {
                 "user_id": principal.user_id,
@@ -6954,6 +6955,31 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             },
             "|".join(item.etag for item in snapshot.profiles),
         )
+
+    @app.get("/api/v1/system/operations/status")
+    async def get_system_operations_status(request: Request) -> JSONResponse:
+        _require_query_keys(request,frozenset())
+        if await request.body():raise HTTPException(status_code=400,detail="SYSTEM_OPERATIONS_INPUT_INVALID")
+        principal=_principal(request,dependencies)
+        if principal.user_id not in dependencies.settings.system_admin_user_ids:
+            raise AuthorizationError("ACTION_DENIED",403)
+        async def checked(call):
+            try:return await asyncio.to_thread(call) is True
+            except Exception:return False
+        database_ready=await checked(lambda: dependencies.cloud_store.readiness().ready) if dependencies.cloud_store is not None else False
+        object_ready=await checked(dependencies.object_storage.health) if dependencies.object_storage is not None else False
+        repository=PostgresOperationsStatusRepository(dependencies.cloud_store) if dependencies.cloud_store is not None else None
+        view=await asyncio.to_thread(SystemOperationsStatusService(repository).read,
+            api_ready=True,database_ready=database_ready,object_storage_ready=object_ready,
+            checked_at=datetime.now(timezone.utc).isoformat().replace("+00:00","Z"))
+        current=_principal(request,dependencies)
+        if (current.user_id,current.tenant_id,current.session_id,current.device_id)!=(principal.user_id,principal.tenant_id,principal.session_id,principal.device_id) \
+            or current.user_id not in dependencies.settings.system_admin_user_ids:
+            raise AuthorizationError("CURRENT_ACCESS_DENIED",403)
+        response = _json_with_etag({"data":view,"meta":{"trace_id":request.state.trace_id}},
+            f"system-operations|{view['checked_at']}|{principal.user_id}|{principal.session_id}")
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @app.get("/api/v1/workspaces/{id}/operations/status")
     async def get_workspace_operations_status(id: str, request: Request) -> JSONResponse:

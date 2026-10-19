@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+test("M2-S system API uses same-origin signal and rejects malformed DTO",async()=>{
+  assert.equal(typeof recoveryApi.getSystemOperationsStatus,"function");
+  const previous=globalThis.fetch,calls=[];const controller=new AbortController();
+  globalThis.fetch=async(path,init)=>{calls.push([path,init]);return Response.json({data:{schema_version:1,secret:"PRIVATE_CANARY"}});};
+  try{
+    await assert.rejects(()=>recoveryApi.getSystemOperationsStatus({signal:controller.signal}),/RESOURCE_UNAVAILABLE/u);
+    assert.equal(calls[0][0],"/bff/api/system/operations/status");
+    assert.deepEqual([calls[0][1].credentials,calls[0][1].cache,calls[0][1].signal],["same-origin","no-store",controller.signal]);
+  }finally{globalThis.fetch=previous;}
+});
 
 import { createBffProxy } from "../../apps/web/lib/bff-api-proxy.js";
 import { parseRecoverySessionContext, recoveryApi, resolveRecoverySession } from "../../apps/web/lib/recovery-api.js";

@@ -740,6 +740,9 @@ function routeFor(method, segments) {
       ? { path: "/api/v1/backups", query: null }
       : { methodRejected: true };
   }
+  if (segments.length === 3 && segments.join("/") === "system/operations/status") {
+    return method === "GET" ? { path: "/api/v1/system/operations/status", query: new Set(), strictQuery: true } : { methodRejected: true };
+  }
   if (segments.length === 2 && segments[0] === "backups" && segments[1] === "selection-previews") {
     return method === "POST" ? { path: "/api/v1/backups/selection-previews", query: new Set(), strictQuery: true } : { methodRejected: true };
   }
@@ -877,6 +880,8 @@ function nativeRouteFor(method, segments, requestUrl) {
     matched = method === "POST" ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/studio/reports`, { requestMediaType: "application/json" }) : { methodRejected: true };
   } else if (segments.length === 4 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "studio" && segments[3] === "outputs") {
     matched = method === "GET" ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/studio/outputs`) : { methodRejected: true };
+  } else if (segments.length === 3 && segments.join("/") === "system/operations/status") {
+    matched = method === "GET" ? route("/api/v1/system/operations/status") : { methodRejected: true };
   } else if (segments.length === 1 && segments[0] === "backups") {
     matched = new Set(["GET", "POST"]).has(method) ? route("/api/v1/backups", { maxResponseBytes: MAX_NATIVE_RECOVERY_RESPONSE_BYTES, ...(method === "POST" ? { requestMediaType: "application/json" } : {}) }) : { methodRejected: true };
   } else if (segments.length === 2 && segments[0] === "backups" && segments[1] === "selection-previews") {
