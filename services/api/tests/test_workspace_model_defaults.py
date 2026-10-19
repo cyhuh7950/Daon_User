@@ -1,8 +1,326 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from copy import deepcopy
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+import json
+import hashlib
 
 import pytest
+
+
+class ReadinessMetadataDB:
+    """읽기 SQL/parameter 대역. 실제 PostgreSQL 인가·동시성 증거가 아니다."""
+    def __init__(self):
+        self.calls = []
+        self.source = "source-a"
+        self.workspace = {"workspace_kind": "organization", "data_area": "internal", "cost_limit_cents": 1000}
+        self.rules = [("workspace", "analyze", "grant", 0)]
+        self.binding = {"connection_id": "connection-a", "model_id": "model-a", "default_version": 2,
+            "provider_code": "OLLAMA", "base_url": "http://ollama:11434", "enabled": True,
+            "verification_status": "verified", "configuration_version": 3, "access_mode": "public",
+            "credential_requirement": "none", "adapter_type": "OLLAMA", "has_credential": False,
+            "has_nonce": False, "nonce_size": None, "encryption_key_version": None,
+            "credential_schema_version": None, "credential_version": 0}
+        self.catalog = [{"model_id": "model-a", "effective_capabilities": ["text_generation"],
+                         "catalog_status": "ready", "catalog_version": 1, "allowed": True}]
+        self.personal = None
+        self.egress = {"mode": "deny_external", "allowed_provider_kinds": [], "allowed_destinations": [],
+            "classification": "confidential", "max_bytes": 0, "masking_required": True,
+            "redaction_required": True, "required_approver": "organization_admin"}
+
+    def execute(self, sql, params=()):
+        assert sql.lstrip().startswith("SELECT "), "metadata reader의 업무 쓰기 금지"
+        self.calls.append((sql, params))
+        if "/* readiness-metadata-source */" in sql:
+            return SimpleNamespace(fetchone=lambda: None if self.source is None else (self.source,))
+        if "/* readiness-metadata-workspace */" in sql:
+            return SimpleNamespace(fetchone=lambda: (deepcopy(self.workspace),))
+        if "/* readiness-metadata-rules */" in sql:
+            return SimpleNamespace(fetchall=lambda: deepcopy(self.rules))
+        if "/* readiness-metadata-binding */" in sql:
+            return SimpleNamespace(fetchone=lambda: None if self.binding is None else (deepcopy(self.binding),))
+        if "/* readiness-metadata-catalog */" in sql:
+            return SimpleNamespace(fetchall=lambda: [(deepcopy(row),) for row in self.catalog])
+        if "/* readiness-metadata-personal */" in sql:
+            return SimpleNamespace(fetchone=lambda: None if self.personal is None else (deepcopy(self.personal),))
+        if "/* readiness-metadata-egress */" in sql:
+            body = deepcopy(self.egress)
+            return SimpleNamespace(fetchall=lambda: [] if body is None else [("organization", body), ("workspace", deepcopy(body))])
+        raise AssertionError("정의하지 않은 SQL: " + sql[:100])
+
+
+@pytest.fixture
+def readiness_metadata(monkeypatch):
+    import daon_user_api.workspace_model_defaults as module
+    import daon_user_api.open_law_source_access as law
+    import daon_user_api.document_index_postgres as index
+    import daon_user_api.notification_source_access as special
+    from daon_user_api.authorization import Action, Role, RoleScope
+    from daon_user_api.document_readiness import RoleWaitEvidence, ReadinessModeProof, ReadinessDispatcherSettings
+    from daon_user_api.organization_access import OrganizationAccessBridge
+    now = datetime(2026, 10, 19, 10, tzinfo=timezone.utc)
+    wait = RoleWaitEvidence("tenant-a", "workspace-a", "actor-a", "notebook-a", "source-a", "version-a", "run-a",
+        "text_generation", "connection_availability", ReadinessModeProof("auto", "request"), "connection-a", "a" * 64,
+        "MODEL_UNAVAILABLE", now - timedelta(seconds=120), now - timedelta(seconds=60))
+    context = WorkspaceModelDefaultsContext("tenant-a", "workspace-a", "actor-a", "trace-a", "policy-a")
+    grant = SimpleNamespace(allowed=True, actor_id="actor-a", tenant_id="tenant-a", workspace_id="workspace-a",
+        role=Role.EDITOR, role_scope=RoleScope.WORKSPACE, policy_version="tenant-1:workspace-1", acl_version=1,
+        membership_version=1, effective_permissions=())
+    auth_calls = []
+    def authorize(context, connection, action):
+        assert action in (Action.EDIT, Action.ANALYZE)
+        auth_calls.append((context, connection, action))
+        return replace_grant(action)
+    def replace_grant(action):
+        return SimpleNamespace(**{**vars(grant), "action": action})
+    monkeypatch.setattr(law, "_current_auth_grant", authorize)
+    monkeypatch.setattr(index, "_source_access_allowed", lambda *args: True)
+    monkeypatch.setattr(special, "_special_source_access_allowed", lambda *args: True)
+    monkeypatch.setattr(OrganizationAccessBridge, "assert_organization_active", lambda *args, **kwargs: None)
+    def forbidden(*args, **kwargs):
+        pytest.fail("metadata reader가 resolve/복호화/개인 Key 소비를 호출함")
+    monkeypatch.setattr(PostgresWorkspaceModelResolver, "resolve", forbidden)
+    monkeypatch.setattr(ProviderCredentialCipher, "decrypt", forbidden)
+    from daon_user_api.user_provider_credentials import PostgresUserProviderCredentialService
+    monkeypatch.setattr(PostgresUserProviderCredentialService, "resolve_credential", forbidden)
+    reader = getattr(module, "read_document_readiness_policy", None)
+    def read(db, context, wait):
+        assert callable(reader), "현재 정책/FrozenContext metadata producer 미구현"
+        return reader(db, context, wait, settings=settings)
+    settings = ReadinessDispatcherSettings(scopes=frozenset({("tenant-a", "workspace-a", "actor-a", "version-a")}))
+    return SimpleNamespace(module=module, db=ReadinessMetadataDB(), context=context, wait=wait,
+        grant=grant, auth_calls=auth_calls, read=read)
+
+
+def test_readiness_metadata_refresh_counters_do_not_change_semantic_frozen_digest(readiness_metadata):
+    f = readiness_metadata
+    first = f.read(f.db, f.context, f.wait)
+    f.db.binding.update(default_version=77, configuration_version=88)
+    f.grant.policy_version = "tenant-99:workspace-99"
+    f.grant.acl_version = 71
+    f.grant.membership_version = 81
+    second = f.read(f.db, replace(f.context, trace_id="new-trace", policy_version="other-counter"), f.wait)
+    assert first.eligibility.frozen_context_digest == second.eligibility.frozen_context_digest
+    assert second.eligibility.configuration_version == 88
+    assert first.frozen_context_json == second.frozen_context_json
+    body = json.loads(first.frozen_context_json)
+    assert body["scope"] == {"tenant_id": "tenant-a", "workspace_id": "workspace-a", "actor_id": "actor-a",
+                              "notebook_id": "notebook-a", "source_version_id": "version-a"}
+    assert body["mode"] == {"mode": "auto", "origin": "request"}
+    assert hashlib.sha256(first.frozen_context_json.encode()).hexdigest() == first.eligibility.frozen_context_digest
+    body["cost"]["state"] = "allowed"
+    assert json.loads(first.frozen_context_json)["cost"]["state"] == "unknown"
+    f.db.catalog.append({"model_id": "unused-model", "effective_capabilities": ["text_generation"],
+                         "catalog_status": "ready", "catalog_version": 1, "allowed": False})
+    unrelated = f.read(f.db, f.context, f.wait)
+    assert unrelated.eligibility.frozen_context_digest == first.eligibility.frozen_context_digest
+    assert unrelated.eligibility.model_catalog_digest != first.eligibility.model_catalog_digest
+
+
+def test_readiness_metadata_actual_policy_binding_permissions_and_credential_refs_change_digest(readiness_metadata):
+    f = readiness_metadata
+    baseline = f.read(f.db, f.context, f.wait).eligibility.frozen_context_digest
+    for field, value in (("policy", 1500), ("rules", [("workspace", "analyze", "deny", 1)]),
+                         ("allowlist", False), ("binding", "model-b"), ("credential", 4), ("egress", "restricted")):
+        db = deepcopy(f.db)
+        if field == "policy": db.workspace["cost_limit_cents"] = value
+        elif field == "rules": db.rules = value
+        elif field == "allowlist": db.catalog[0]["allowed"] = value
+        elif field == "binding": db.binding["model_id"] = value
+        elif field == "credential":
+            db.binding.update(has_credential=True, has_nonce=True, nonce_size=12, encryption_key_version=1,
+                              credential_schema_version=1, credential_version=value)
+        else: db.egress["classification"] = value
+        changed = f.read(db, f.context, f.wait)
+        assert changed.eligibility.frozen_context_digest != baseline, field
+    changed_mode = f.read(f.db, f.context, replace(f.wait, mode=type(f.wait.mode)("local_only", "request")))
+    assert changed_mode.eligibility.frozen_context_digest != baseline
+
+
+def test_readiness_metadata_cost_unknown_and_external_allow_never_invents_original_approval(readiness_metadata):
+    f = readiness_metadata
+    local = f.read(f.db, f.context, f.wait)
+    assert (local.eligibility.cost_state, local.eligibility.egress_state) == ("unknown", "allowed")
+    assert json.loads(local.frozen_context_json)["cost"] == {"state": "unknown"}
+    from daon_user_api.document_readiness import ValidatedReadinessObservation, decide_reprocess
+    now = datetime(2026, 10, 19, 10, tzinfo=timezone.utc)
+    observed = ValidatedReadinessObservation(1, "rdy-" + "1" * 32, "connection-a", "OLLAMA", "text_generation",
+        local.eligibility.model_catalog_digest, 3, now - timedelta(seconds=61), now,
+        "model_catalog_refresh", "healthy", 1, "d" * 64)
+    decision = decide_reprocess(f.wait, observed, replace(local.eligibility, latest_observation_sequence=1), db_now=now)
+    assert (decision.create_run, decision.safe_code) == (False, "READINESS_COST_UNCONFIRMED")
+    f.db.binding.update(provider_code="GROQ", adapter_type="GROQ", base_url="https://api.groq.com/openai/v1",
+        credential_requirement="required", has_credential=True, has_nonce=True, nonce_size=12,
+        encryption_key_version=1, credential_schema_version=1, credential_version=1)
+    f.db.egress.update(mode="allow_approved_external", allowed_provider_kinds=["external_api"],
+                       allowed_destinations=["api.groq.com"], max_bytes=1024)
+    external = f.read(f.db, f.context, f.wait)
+    assert (external.eligibility.cost_state, external.eligibility.egress_state) == ("unknown", "approval_missing")
+    assert not f.read(f.db, f.context, replace(f.wait, mode=type(f.wait.mode)("local_only", "request"))).eligibility.candidate_available
+    f.db.egress = None
+    missing = f.read(f.db, f.context, f.wait)
+    assert (missing.eligibility.policy_allowed, missing.eligibility.cost_state, missing.eligibility.egress_state) == (True, "unknown", "approval_missing")
+    f.db.egress = {"mode": "deny_external", "allowed_provider_kinds": [], "allowed_destinations": [],
+        "classification": "confidential", "max_bytes": 0, "masking_required": True,
+        "redaction_required": True, "required_approver": "organization_admin"}
+    assert f.read(f.db, f.context, f.wait).eligibility.egress_state == "blocked"
+
+
+def test_readiness_metadata_personal_and_invalid_credential_schema_do_not_resolve_keys(readiness_metadata):
+    f = readiness_metadata
+    f.db.binding.update(access_mode="personal", credential_requirement="required", provider_code="GROQ",
+        adapter_type="GROQ", base_url="https://api.groq.com/openai/v1")
+    assert not f.read(f.db, f.context, f.wait).eligibility.candidate_available
+    f.db.personal = {"provider_code": "GROQ", "verification_status": "verified", "has_credential": True,
+        "has_nonce": True, "nonce_size": 12, "credential_version": 2, "credential_schema_version": 1,
+        "encryption_key_version": 1}
+    assert not f.read(f.db, f.context, f.wait).eligibility.candidate_available
+    f.db.personal["credential_schema_version"] = 2
+    result = f.read(f.db, f.context, f.wait)
+    assert result.eligibility.candidate_available
+    assert (result.eligibility.cost_state, result.eligibility.egress_state) == ("unknown", "blocked")
+    assert json.loads(result.frozen_context_json)["binding"]["credential_reference"]["source"] == "user"
+    for sql, _ in f.db.calls:
+        assert not sql.lstrip().startswith(("INSERT", "UPDATE", "DELETE"))
+        assert "c.encrypted_credential," not in sql and "u.encrypted_credential," not in sql
+
+
+def test_readiness_metadata_native_asr_exact_qa_contract_and_no_live_ready_claim(readiness_metadata, monkeypatch):
+    f = readiness_metadata
+    wait = replace(f.wait, capability="speech_to_text")
+    f.db.binding.update(provider_code="CUSTOM", adapter_type="asr_base_native", base_url="http://asr-base:8080",
+                        model_id="faster-whisper-base")
+    f.db.catalog[0].update(model_id="faster-whisper-base", effective_capabilities=["speech_to_text"])
+    assert not f.read(f.db, f.context, wait).eligibility.candidate_available
+    monkeypatch.setenv("DAON_QA_STRUCTURED_OLLAMA_WORKSPACE_ID", "workspace-a")
+    valid = f.read(f.db, f.context, wait)
+    assert valid.eligibility.candidate_available
+    assert valid.eligibility.cost_state == "unknown"
+    monkeypatch.delenv("DAON_QA_STRUCTURED_OLLAMA_WORKSPACE_ID")
+    assert f.read(f.db, f.context, wait).eligibility.frozen_context_digest != valid.eligibility.frozen_context_digest
+    monkeypatch.setenv("DAON_QA_STRUCTURED_OLLAMA_WORKSPACE_ID", "workspace-a")
+    assert json.loads(valid.frozen_context_json)["binding"]["native_asr_contract"] == {
+        "revision": "ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66",
+        "model_digest": "d01c3014881c9c6f3133c182f3d2887eb6ca1c789a7538c5c007196857a0a6a9"}
+    for key, value in (("base_url", "http://other:8080"), ("adapter_type", "CUSTOM"), ("access_mode", "personal"),
+                       ("credential_requirement", "required"), ("model_id", "wrong-model")):
+        db = deepcopy(f.db); db.binding[key] = value
+        assert not f.read(db, f.context, wait).eligibility.candidate_available
+
+
+def test_readiness_metadata_strict_schema_absent_binding_current_capability_and_secret_errors(readiness_metadata):
+    f = readiness_metadata
+    for key, value in (("enabled", False), ("verification_status", "failed"), ("credential_schema_version", 999)):
+        db = deepcopy(f.db); db.binding[key] = value
+        assert not f.read(db, f.context, f.wait).eligibility.candidate_available
+    for change in ("missing", "capability", "duplicate"):
+        db = deepcopy(f.db)
+        if change == "missing": db.binding = None
+        elif change == "capability": db.catalog[0]["effective_capabilities"] = ["document_parsing"]
+        else: db.catalog.append(deepcopy(db.catalog[0]))
+        if change == "duplicate":
+            with pytest.raises(WorkspaceModelDefaultsError): f.read(db, f.context, f.wait)
+        else: assert not f.read(db, f.context, f.wait).eligibility.candidate_available
+    for key, value in (("credential_version", True), ("enabled", 1), ("raw_secret", "CANARY_PRIVATE")):
+        db = deepcopy(f.db); db.binding[key] = value
+        with pytest.raises(WorkspaceModelDefaultsError) as caught: f.read(db, f.context, f.wait)
+        assert "CANARY_PRIVATE" not in str(caught.value)
+    db = deepcopy(f.db)
+    db.binding.update(base_url="http://user:CANARY_PRIVATE@ollama:11434")
+    with pytest.raises(WorkspaceModelDefaultsError) as caught: f.read(db, f.context, f.wait)
+    assert "CANARY_PRIVATE" not in str(caught.value)
+    unknown = f.read(f.db, f.context, replace(f.wait, capability=None))
+    assert (unknown.eligibility.candidate_available, unknown.eligibility.dependency_connection_id,
+            unknown.eligibility.latest_observation_sequence) == (False, None, 0)
+
+
+def test_readiness_metadata_current_auth_source_and_org_checks_are_not_scope_flags(readiness_metadata, monkeypatch):
+    import daon_user_api.notification_source_access as special
+    import daon_user_api.open_law_source_access as law
+    from daon_user_api.organization_access import OrganizationAccessBridge
+    from daon_user_api.organization_membership import OrganizationWorkflowError
+    f = readiness_metadata
+    f.read(f.db, f.context, f.wait)
+    assert len(f.auth_calls) == 2
+    assert all(call[1] is f.db for call in f.auth_calls)
+    db = deepcopy(f.db); db.source = None
+    with pytest.raises(WorkspaceModelDefaultsError) as caught: f.read(db, f.context, f.wait)
+    assert caught.value.status == 404
+    with monkeypatch.context() as m:
+        m.setattr(special, "_special_source_access_allowed", lambda *args: False)
+        with pytest.raises(WorkspaceModelDefaultsError) as caught: f.read(f.db, f.context, f.wait)
+        assert caught.value.status == 403
+    with monkeypatch.context() as m:
+        def deny(*args, **kwargs): raise OrganizationWorkflowError("ORGANIZATION_MEMBERSHIP_SUSPENDED", 403)
+        m.setattr(OrganizationAccessBridge, "assert_organization_active", deny)
+        with pytest.raises(WorkspaceModelDefaultsError) as caught: f.read(f.db, f.context, f.wait)
+        assert caught.value.status == 403
+    with monkeypatch.context() as m:
+        def deny(*args): raise law.OpenLawAccessError("OPEN_LAW_ACCESS_DENIED")
+        m.setattr(law, "_current_auth_grant", deny)
+        with pytest.raises(WorkspaceModelDefaultsError) as caught: f.read(f.db, f.context, f.wait)
+        assert caught.value.status == 403
+    with pytest.raises(WorkspaceModelDefaultsError):
+        f.read(f.db, replace(f.context, actor_id="actor-b"), f.wait)
+
+
+def test_readiness_metadata_snapshot_type_binds_body_to_digest_without_mutable_cache(readiness_metadata):
+    f = readiness_metadata
+    result = f.read(f.db, f.context, f.wait)
+    with pytest.raises(WorkspaceModelDefaultsError):
+        replace(result, frozen_context_json=result.frozen_context_json.replace('"unknown"', '"allowed"'))
+    with pytest.raises(WorkspaceModelDefaultsError):
+        replace(result, eligibility=replace(result.eligibility, frozen_context_digest="f" * 64))
+
+
+def test_readiness_metadata_data_area_preserves_authorization_safe_id_contract_not_new_enum(readiness_metadata):
+    f = readiness_metadata
+    for area in ("local_private", "internal", "cloud_sync", "A", "tenant-zone.v2:private_1", "a" * 128):
+        f.db.workspace["data_area"] = area
+        result = f.read(f.db, f.context, f.wait)
+        assert json.loads(result.frozen_context_json)["workspace_policy"]["data_area"] == area
+    for area in (None, True, 1, [], {}, "", "*", " unsafe", "bad/area", "bad\narea", "a" * 129):
+        f.db.workspace["data_area"] = area
+        with pytest.raises(WorkspaceModelDefaultsError): f.read(f.db, f.context, f.wait)
+    f.db.workspace["data_area"] = "local_private"
+    f.db.workspace["workspace_kind"] = "local_private"
+    with pytest.raises(WorkspaceModelDefaultsError): f.read(f.db, f.context, f.wait)
+
+
+def test_readiness_catalog_helper_is_shared_db_canonical_not_provider_wire_or_counters(readiness_metadata):
+    f = readiness_metadata
+    helper = getattr(f.module, "read_readiness_catalog", None)
+    assert callable(helper), "관측/현재 판정이 공유할 DB catalog helper 미구현"
+    first = helper(f.db, "connection-a")
+    expected = '{"connection_id":"connection-a","models":[{"allowed":true,"catalog_status":"ready",'
+    expected += '"effective_capabilities":["text_generation"],"model_id":"model-a"}],"schema_version":1}'
+    assert first.canonical_json == expected
+    assert first.digest_sha256 == hashlib.sha256(expected.encode()).hexdigest()
+    f.db.catalog[0]["catalog_version"] = 99
+    assert helper(f.db, "connection-a") == first
+    assert f.read(f.db, f.context, f.wait).eligibility.model_catalog_digest == first.digest_sha256
+    for key, value in (("model_id", "model-b"), ("effective_capabilities", ["image_understanding"]),
+                       ("allowed", False), ("catalog_status", "stale")):
+        db = deepcopy(f.db); db.catalog[0][key] = value
+        assert helper(db, "connection-a").digest_sha256 != first.digest_sha256
+
+
+def test_readiness_catalog_order_and_capability_order_are_semantic_sets_without_extra_fields(readiness_metadata):
+    f = readiness_metadata
+    helper = getattr(f.module, "read_readiness_catalog", None)
+    assert callable(helper), "관측/현재 판정이 공유할 DB catalog helper 미구현"
+    f.db.catalog = [{"model_id": "model-b", "effective_capabilities": ["image_understanding", "text_generation"],
+                     "catalog_status": "ready", "catalog_version": 2, "allowed": True}, *f.db.catalog]
+    first = helper(f.db, "connection-a")
+    f.db.catalog.reverse()
+    f.db.catalog[1]["effective_capabilities"].reverse()
+    assert helper(f.db, "connection-a") == first
+    f.db.catalog[0]["raw_secret"] = "CANARY_PRIVATE"
+    with pytest.raises(WorkspaceModelDefaultsError) as caught: helper(f.db, "connection-a")
+    assert "CANARY_PRIVATE" not in str(caught.value)
 
 from daon_user_api.provider_credentials import ProviderCredentialCipher
 from daon_user_api.user_provider_credentials import UserProviderCredentialResult
