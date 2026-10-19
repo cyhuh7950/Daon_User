@@ -184,6 +184,26 @@ function workspaceTelemetry(){
     unimplemented:[{producer_id:"readiness_event_producer",safe_code:"PRODUCER_NOT_IMPLEMENTED",impact_code:"AUTOMATIC_REPROCESS_UNOBSERVED"}]};
 }
 
+test("R4 workspace home explicitly requests readiness and distinguishes current waits partial zero and uncollected",async()=>{
+  const calls=[];
+  const data=operations();
+  const ids=["waiting_text_generation","waiting_image_understanding","waiting_document_parsing","waiting_speech_to_text","waiting_role_unknown","retry_suppressed_contexts_24h"];
+  data.event_counts.push(...ids.map((metric_id,i)=>({metric_id,state:i===0?"partial":"not_collected",value:i===0?0:null,unit:"count",
+    observed_at:i===0?"2026-10-19T00:00:00Z":null,received_at:i===0?"2026-10-19T00:00:00Z":null,
+    coverage:"actor_accessible_records",safe_code:i===0?"TELEMETRY_PARTIAL":"TELEMETRY_NOT_COLLECTED",window_start:null,window_end:null})));
+  const p=homePort({getOperationsStatus:async(workspace,options)=>{calls.push([workspace,options]);return data;}});
+  const view=await render("",p.api);
+  try{
+    assert.deepEqual(calls,[["workspace-a",{scope:"self",includeReadiness:true}]]);
+    const text=visibleText(view.container);
+    for(const label of ["텍스트 생성 역할 대기","이미지 이해 역할 대기","문서 파싱 역할 대기","음성 전사 역할 대기","역할 미확인 대기","최초 억제 조건 · 최근 24시간"])
+      assert.ok(text.includes(label),label);
+    assert.match(text,/부분 집계.*0건/u);
+    assert.match(text,/미집계.*값 미확인/u);
+    assert.deepEqual(p.writes,[]);
+  }finally{await view.cleanup();}
+});
+
 test("M2 workspace home renders typed observations and discards prior scope while visible request waits",async()=>{
   const late=deferred(),scopes=[];
   const p=homePort({getOperationsStatus:async(workspace,{scope}={})=>{scopes.push(scope);return scope==="workspace_visible"?late.promise:operations();}});

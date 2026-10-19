@@ -341,7 +341,9 @@ function WorkspaceTelemetry({status}){
   const states={fresh:"최근 수신",stale:"지난 관측",measured:"집계 확인",partial:"부분 집계",not_collected:"미집계",not_reported:"미보고",unavailable:"조회 불가"};
   const metrics={cpu_quota_millicores:"CPU 할당",memory_limit_bytes:"메모리 한도",memory_current_bytes:"메모리 사용",runtime_available_bytes:"영속 저장 여유"};
   const events={manual_reprocess_pending:"수동 재처리 대기",readiness_reprocess_pending:"Readiness 재처리 대기",retry_wait:"재시도 대기",backoff_wait:"Backoff 대기",
-    step_up_denied_24h:"추가 인증 거부",step_up_expired_24h:"만료 토큰 사용",access_blocked_24h:"접근 차단",access_masked_24h:"부분 마스킹",egress_denied_24h:"외부 송신 거부"};
+    step_up_denied_24h:"추가 인증 거부",step_up_expired_24h:"만료 토큰 사용",access_blocked_24h:"접근 차단",access_masked_24h:"부분 마스킹",egress_denied_24h:"외부 송신 거부",
+    waiting_text_generation:"텍스트 생성 역할 대기",waiting_image_understanding:"이미지 이해 역할 대기",waiting_document_parsing:"문서 파싱 역할 대기",
+    waiting_speech_to_text:"음성 전사 역할 대기",waiting_role_unknown:"역할 미확인 대기",retry_suppressed_contexts_24h:"최초 억제 조건 · 최근 24시간"};
   const value=r=>r&&["fresh","stale","measured","partial"].includes(r.state)&&Number.isSafeInteger(r.value)&&r.value>=0?r.value:null;
   const cost=status.cost_summary,deployment=status.deployment_summary;
   return <>
@@ -352,7 +354,7 @@ function WorkspaceTelemetry({status}){
     </li>)}</ul>
     <dl>{(status.resource_samples??[]).map(r=><div key={`${r.worker_kind}:${r.metric_id}`}><dt>{kinds[r.worker_kind]} · {metrics[r.metric_id]}</dt>
       <dd>{states[r.state]??"조회 불가"} · {value(r)===null?"값 미확인":`${r.value} ${r.unit}`}</dd></div>)}</dl>
-    <h3>차단·재처리 관측 <span title="현재 접근 가능한 기록만 집계합니다. 뒤 5종은 같은 DB 시각의 직전 24시간입니다. 귀속 미확인·미구현·조회 실패는 0건으로 계산하지 않습니다.">ⓘ</span></h3>
+    <h3>차단·재처리 관측 <span title="현재 접근 가능한 기록만 집계합니다. 추가 인증·접근·외부 송신 차단과 최초 억제 조건은 직전 24시간이며 역할 대기는 현재값입니다. 억제는 시도 횟수가 아닌 고유 조건의 관측 하한입니다. 부분 집계는 전체 수가 아니며 미수집·조회 실패는 0건으로 계산하지 않습니다.">ⓘ</span></h3>
     <dl>{Object.entries(events).map(([id,label])=>{const r=status.event_counts?.find(row=>row.metric_id===id);return <div key={id}><dt>{label}</dt>
       <dd>{states[r?.state]??"미집계"} · {value(r)===null?"값 미확인":`${r.value}건`}{serverTimestamp(r?.window_end)?` · ${r.window_start} ~ ${r.window_end}`:""}</dd></div>;})}</dl>
     <h3>비용·배포 기록</h3>
@@ -442,7 +444,7 @@ export function RecoveryOperationsWorkspace({ api = recoveryApi } = {}) {
             publish("forbidden");return;
           }
           const [status, backups] = await Promise.allSettled([
-            Promise.resolve().then(() => api.getOperationsStatus(before[2],{scope:metricsScope})),
+            Promise.resolve().then(() => api.getOperationsStatus(before[2],{scope:metricsScope,includeReadiness:true})),
             Promise.resolve().then(() => api.listBackups(before[2])),
           ]);
           if (!current()) return;
