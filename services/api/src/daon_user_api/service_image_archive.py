@@ -229,6 +229,21 @@ def _v1_config(config):
     return result
 
 
+def _epoch_created_wire(value):
+    # fromisoformat의 microsecond 절삭 전에 모든 소수 digit을 확인한다.
+    if type(value) is not str: raise SnapshotError("SNAPSHOT_IMAGE_INVALID")
+    match = re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]"
+        r"(?:\.([0-9]{1,9}))?(Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])", value)
+    if (match is None or any(digit != "0" for digit in (match.group(1) or ""))
+            or match.group(2) == "-00:00"):  # RFC3339 unknown offset은 정확한 instant 증명이 아니다.
+        raise SnapshotError("SNAPSHOT_IMAGE_INVALID")
+    try:
+        if datetime.fromisoformat(value).astimezone(timezone.utc) != datetime(1970, 1, 1, tzinfo=timezone.utc):
+            raise SnapshotError("SNAPSHOT_IMAGE_INVALID")
+    except (ValueError, OverflowError): raise SnapshotError("SNAPSHOT_IMAGE_INVALID") from None
+    return value  # UTC로 다시 직렬화하지 않는다: Go CreateID는 원 wire에 결속된다.
+
+
 def _native_graph(manifest, members, small, digests, spec, check):
     def document(name):
         if name not in members or members[name][1]: raise SnapshotError("SNAPSHOT_IMAGE_INVALID")
@@ -301,7 +316,18 @@ def _native_graph(manifest, members, small, digests, spec, check):
         diff = "sha256:" + digests[name]
         chain = diff if chain is None else "sha256:" + hashlib.sha256((chain + " " + diff).encode()).hexdigest()
         final = index == len(layers) - 1
-        body = final_v1 if final else {"created": "1970-01-01T00:00:00Z", "container_config": _container_config({})}
+        if final:
+            body = final_v1
+        else:
+            candidates = [value for value in compatibility.values() if (
+                "parent" not in value if previous is None else value.get("parent") == previous)]
+            if len(candidates) != 1: raise SnapshotError("SNAPSHOT_IMAGE_INVALID")
+            candidate = candidates[0]
+            if (set(candidate) != {"id", "created", "container_config", "os", *({"parent"} if previous is not None else set())}
+                    or candidate["os"] != config["os"]
+                    or _go_json(candidate["container_config"]) != _go_json(_container_config({}))):
+                raise SnapshotError("SNAPSHOT_IMAGE_INVALID")
+            body = {"created": _epoch_created_wire(candidate["created"]), "container_config": _container_config({})}
         preimage = {**body, "layer_id": chain}
         if previous is not None: preimage["parent"] = "sha256:" + previous
         identity = hashlib.sha256(_go_json(dict(sorted(preimage.items())))).hexdigest()
@@ -780,7 +806,7 @@ class FixedDockerCLI:
             except Exception: raise SnapshotError("SNAPSHOT_IMAGE_COMMAND_FAILED") from None
 
     def tag_inventory(self, *, deadline, cancelled):
-        with self._run(["image", "ls", "--all", "--no-trunc", "--format", '{{json .Repository}} {{json .Tag}} {{json .ID}}'],
+        with self._run(["image", "ls", "--all", "--no-trunc", "--filter", "dangling=false", "--format", '{{json .Repository}} {{json .Tag}} {{json .ID}}'],
                 deadline=deadline, cancelled=cancelled) as command:
             rows = command.collect(1048576).splitlines()
         if len(rows) > 4096: raise SnapshotError("SNAPSHOT_IMAGE_COMMAND_FAILED")

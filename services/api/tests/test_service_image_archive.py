@@ -49,7 +49,7 @@ _ZERO_CONFIG = {"Hostname": "", "Domainname": "", "User": "", "AttachStdin": Fal
     "WorkingDir": "", "Entrypoint": None, "Labels": None}
 
 
-def _native_archive(*, mutate=None, config_mutate=None, graph_mutate=None):
+def _native_archive(*, mutate=None, config_mutate=None, graph_mutate=None, intermediate_created="1970-01-01T00:00:00Z"):
     def go(value):
         return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False).replace(
             "&", "\\u0026").replace("<", "\\u003c").replace(">", "\\u003e").replace(
@@ -79,7 +79,7 @@ def _native_archive(*, mutate=None, config_mutate=None, graph_mutate=None):
     for index, diff in enumerate(diff_ids):
         chain = diff if chain is None else "sha256:" + hashlib.sha256((chain + " " + diff).encode()).hexdigest()
         container = dict(_ZERO_CONFIG)
-        body = {"created": "1970-01-01T00:00:00Z", "container_config": dict(_ZERO_CONFIG)}
+        body = {"created": intermediate_created, "container_config": dict(_ZERO_CONFIG)}
         if index == 1:
             container["Env"] = config["config"]["Env"]
             labels = config["config"].get("Labels")
@@ -221,6 +221,40 @@ class ServiceImageArchiveTests(unittest.TestCase):
         proof = restarted.reconstruct(spec, cli=cli, cancelled=lambda: False)
         self.assertTrue(proof.verify_once(spec, proof.reference("native-image")))
         self.assertEqual(cli.loads, 1)
+
+    def test_native_intermediate_epoch_keeps_timezone_wire_in_create_id(self):
+        for created in ("1970-01-01T00:00:00Z", "1970-01-01T09:00:00+09:00",
+                "1969-12-31T19:00:00-05:00", "1970-01-01T05:30:00.000000000+05:30"):
+            with self.subTest(created=created):
+                raw, image, config = _native_archive(intermediate_created=created)
+                identity, tags = self.m._validate_tar(io.BytesIO(raw), replace(self.spec, image_digest=image))
+                self.assertEqual(identity["id"], image)
+                self.assertEqual(identity["layers"], config["rootfs"]["diff_ids"])
+                self.assertEqual(tags, ())
+
+    def test_native_intermediate_epoch_rejects_nonzero_nanos_invalid_timezone_and_ambiguous_parent(self):
+        for created in ("1970-01-01T09:00:01+09:00", "1970-01-01T09:00:00.000000001+09:00",
+                "1970-01-01T00:00:00.000000001Z", "1970-01-01T09:00:00", "1970-01-01T09:00:00+09:60",
+                "1970-01-01T00:00:00+24:00", "1970-01-01T00:00:00-00:00", "1970-02-30T00:00:00Z", True, None):
+            with self.subTest(created=created), self.assertRaises(SnapshotError):
+                raw, image, config = _native_archive(intermediate_created=created)
+                self.m._validate_tar(io.BytesIO(raw), replace(self.spec, image_digest=image))
+        def ambiguous(files, *unused):
+            # 최종 compat만 다른 정상 epoch의 root로 치환: 수는 유지하되 parent 후보가 둘이다.
+            other, _, _ = _native_archive(intermediate_created="1970-01-01T09:00:00+09:00")
+            with tarfile.open(fileobj=io.BytesIO(other), mode="r:") as archive:
+                for item in archive:
+                    if item.isfile() and item.name.startswith("blobs/sha256/"):
+                        raw = archive.extractfile(item).read()
+                        if raw[:1] == b"{":
+                            value = json.loads(raw)
+                            if "id" in value and "parent" not in value:
+                                alternate = (item.name, raw)
+            final = next(name for name, raw in files.items() if raw[:1] == b"{" and "parent" in json.loads(raw))
+            del files[final]
+            files[alternate[0]] = alternate[1]
+        raw, image, config = _native_archive(mutate=ambiguous)
+        with self.assertRaises(SnapshotError): self.m._validate_tar(io.BytesIO(raw), replace(self.spec, image_digest=image))
 
     def test_native_descriptor_graph_mutations_are_rejected_without_fallback(self):
         def change(files, config, image, kind):
@@ -501,6 +535,51 @@ class ServiceImageArchiveTests(unittest.TestCase):
         self.assertEqual(options["pass_fds"], (99,))
         self.assertEqual(options["env"], {})
         self.assertEqual(options["stderr"], __import__("subprocess").PIPE)
+
+    def test_tag_inventory_filters_dangling_before_unchanged_bounded_collection(self):
+        from types import SimpleNamespace
+        image = self.image
+        def row(repository, tag="latest", identity=image):
+            return b" ".join(json.dumps(value).encode() for value in (repository, tag, identity)) + b"\n"
+        tagged = b"".join(row("approved-" + str(index)) for index in range(1258))
+        untagged = row("<none>", "<none>")
+        all_rows = tagged + untagged * (9304 - 1258)
+        filtered_rows = tagged + untagged * 11  # digest-only 행도 parser에서 계속 제외한다.
+        self.assertLess(len(all_rows), 1048576)
+        payload, commands, closed = [filtered_rows], [], []
+        @contextmanager
+        def protected(): yield ("/proc/self/fd/99", (99,))
+        def spawn(argv, **options):
+            commands.append(argv)
+            raw = payload[0] if ["--filter", "dangling=false"] == argv[6:8] else all_rows
+            def pipe(value):
+                stream = io.BytesIO(value)
+                original = stream.close
+                def close(): closed.append(True); original()
+                stream.close = close
+                return stream
+            return SimpleNamespace(stdin=None, stdout=pipe(raw), stderr=pipe(b""), poll=lambda: 0)
+        class IO:
+            def prepare(inner, child): pass
+            def ready(inner, child, channels, write, timeout): return list(channels)
+            def read(inner, child, channel, count): return getattr(child, channel).read(count)
+        def command(child, **options): return self.m.OwnedDockerCommand(child, _io=IO(), **options)
+        cli = self.m.FixedDockerCLI(Path("D:/synthetic/docker") if os.name == "nt" else Path("/synthetic/docker"), "a" * 64,
+            _protected=protected, _spawn=spawn, _command=command)
+        result = cli.tag_inventory(deadline=time.monotonic()+10, cancelled=lambda: False)
+        self.assertEqual(result, {"approved-"+str(index)+":latest": image for index in range(1258)})
+        self.assertEqual(commands[0], ["/proc/self/fd/99", "--host=unix:///var/run/docker.sock",
+            "image", "ls", "--all", "--no-trunc", "--filter", "dangling=false", "--format",
+            '{{json .Repository}} {{json .Tag}} {{json .ID}}'])
+        payload[0] = b"".join(row("boundary-"+str(index)) for index in range(4096))
+        self.assertEqual(len(cli.tag_inventory(deadline=time.monotonic()+10, cancelled=lambda: False)), 4096)
+        for kind, raw in (("unfiltered-row-overflow", all_rows), ("4097", payload[0]+row("overflow")),
+                ("byte-overflow", b"x"*1048577), ("duplicate", row("same")*2),
+                ("unknown", b"not-valid-json\n"), ("invalid-none-id", row("<none>", "<none>", "invalid"))):
+            with self.subTest(kind=kind), self.assertRaises(SnapshotError):
+                payload[0] = raw
+                cli.tag_inventory(deadline=time.monotonic()+10, cancelled=lambda: False)
+        self.assertEqual(len(closed), 16, "8개 합성 command의 stdout/stderr를 모두 닫음")
 
     def test_image_archive_sequence_nonce_and_chunk_cap_are_authenticated(self):
         import struct
