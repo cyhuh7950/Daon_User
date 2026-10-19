@@ -1603,6 +1603,69 @@ class ServiceSnapshotOperatorTests(unittest.TestCase):
         self.assertEqual(events.count("owned-close"), 2)
         with self.assertRaises(SnapshotError): probe.recheck(deadline=time.monotonic()+2, cancelled=lambda: True)
 
+    def test_operator_physical_measure_merges_service_timeout_without_losing_readonly_identity(self):
+        import json
+        import psycopg
+        from contextlib import redirect_stdout, redirect_stderr
+        from unittest.mock import patch
+        from daon_user_api import recovery_destinations as destinations
+        from daon_user_api.object_queue import MinioObjectStorageAdapter
+        from test_recovery_destinations import ProbeHttpDouble
+        m = self.module(); config = m.parse_config(json.dumps(_operator_config_fixture()).encode())
+        password = secrets.token_hex(24)
+        self.storage = MinioObjectStorageAdapter(endpoint="source.invalid:9000", bucket="s44-source",
+            access_key=secrets.token_hex(12), secret_key=secrets.token_hex(24), secure=False)
+        real_probe = destinations.PostgresMinioPhysicalProbe
+        for configured in (False, True):
+            for duration, expected_timeout in ((2.9, 2), (20, 5), (0.25, 1)):
+                with self.subTest(configured=configured, duration=duration):
+                    options = {"dbname": config.source.database_name, "password": password, "host": "source.invalid"}
+                    if configured: options["connect_timeout"] = "5"
+                    original = dict(options); events = []; http = ProbeHttpDouble(self)
+                    @contextmanager
+                    def protected(port, source):
+                        self.assertIs(source, config.source)
+                        try: yield SimpleNamespace(options=options)
+                        finally: events.append("protected-close")
+                    class Connection:
+                        def __enter__(inner): return inner
+                        def __exit__(inner, *args): events.append("connection-close")
+                        @contextmanager
+                        def transaction(inner):
+                            events.append("transaction-open")
+                            try: yield
+                            finally: events.append("transaction-close")
+                        def execute(inner, sql, params=()):
+                            if sql == "SELECT pg_catalog.set_config('statement_timeout',%s,false)":
+                                self.assertEqual(params, (str(expected_timeout*1000),)); events.append("statement-timeout")
+                            elif sql == "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY": events.append("read-only")
+                            else:
+                                self.assertIn("FROM pg_catalog.pg_control_system()", sql)
+                                self.assertEqual(events[-1], "read-only")
+                                events.append("identity-select")
+                            return SimpleNamespace(fetchone=lambda: (config.source.database_name, "10001", 17, None, False, False))
+                    def connect(**actual):
+                        self.assertEqual(actual, {**original, "connect_timeout": expected_timeout, "autocommit": True})
+                        self.assertFalse(any(name.startswith("PG") for name in os.environ))
+                        events.append("connect"); return Connection()
+                    output = io.StringIO()
+                    with patch.dict(os.environ, {"PGOPTIONS": "SYNTHETIC_UNTRUSTED_ENV"}), \
+                            patch.object(m.PostgresSnapshotPort, "_protected_files", protected), \
+                            patch.object(psycopg, "connect", side_effect=connect), \
+                            patch.object(m.time, "monotonic", return_value=100), \
+                            patch.object(destinations, "PostgresMinioPhysicalProbe", side_effect=lambda instances: real_probe(instances, _pool_factory=http.pool)), \
+                            redirect_stdout(output), redirect_stderr(output):
+                        result = m._physical_measure(m._PhysicalWork(config, self.storage, 100+duration))
+                    self.assertEqual(result, {
+                        "database_fingerprint": hashlib.sha256(b'["postgres-database-v1","10001",17]').hexdigest(),
+                        "object_fingerprint": hashlib.sha256(b'["object-bucket-v1","11111111-1111-4111-8111-111111111111","s44-source"]').hexdigest()})
+                    self.assertEqual(options, original, "보호 service options 원본은 수정하지 않음")
+                    self.assertEqual(output.getvalue(), "")
+                    self.assertNotIn(password, repr(result))
+                    self.assertEqual(events, ["connect", "statement-timeout", "transaction-open", "read-only",
+                        "identity-select", "transaction-close", "connection-close", "protected-close"])
+                    self.assertTrue(all(response.closed and response.released for response in http.responses))
+
     def test_operator_final_file_verification_rechecks_before_receipt(self):
         from unittest.mock import patch
         m = self.module(); events = []

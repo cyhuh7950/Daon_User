@@ -406,7 +406,7 @@ def _physical_measure(work):
     def connection():
         with port._protected_files(work.config.source) as binding:
             remaining = max(1, min(5, int(work.deadline - time.monotonic())))
-            with psycopg.connect(**binding.options, connect_timeout=remaining, autocommit=True) as value:
+            with psycopg.connect(**{**binding.options, "connect_timeout": remaining}, autocommit=True) as value:
                 value.execute("SELECT pg_catalog.set_config('statement_timeout',%s,false)", (str(remaining*1000),))
                 yield value
     instance = PhysicalProbeInstance("source-database", "source-bucket", work.config.source.database_name,
