@@ -178,6 +178,32 @@ class ServiceSnapshotPostgresTests(unittest.TestCase):
         self.assertTrue(any("attacl" in sql for sql, _ in self.log))
         self.assertFalse(any("rolpassword" in sql for sql, _ in self.log))
 
+    def test_catalog_sequence_default_acl_is_lowercase_s_and_preserves_explicit_acl(self):
+        from unittest.mock import patch
+        original = self.connection.execute
+        # MAIN의 실제 PG15 acldefault 실측을 모델링하는 SQL 대역. PG 실행 증거는 아니다.
+        defaults = {"s": "rwU", "S": "U", "r": "arwdDxt"}
+        def execute(sql, params=()):
+            if sql.startswith("SELECT n.nspname,c.relname,c.relkind"):
+                choice = re.search(r"COALESCE\(c\.relacl,acldefault\(\(CASE WHEN c\.relkind='S' THEN '([^']+)' ELSE '([^']+)' END\)", sql)
+                self.assertIsNotNone(choice, "명시 ACL 우선 COALESCE/sequence 분기 유지")
+                self.assertIn("c.relkind IN ('r','p','v','m','S','f')", sql)
+                fixtures = [("explicit_sequence", "S", "rwU"), ("implicit_sequence", "S", None),
+                    ("explicit_usage_only", "S", "U")]
+                fixtures += [("implicit_"+kind, kind, None) for kind in ("r", "p", "v", "m", "f")]
+                return [("public", name, kind, "owner", False, False,
+                    "{owner="+(acl if acl is not None else defaults[choice[1] if kind=="S" else choice[2]])+"/owner}", [])
+                    for name, kind, acl in fixtures]
+            return original(sql, params)
+        with patch.object(self.connection, "execute", side_effect=execute):
+            catalog = self.m.PostgresSnapshotPort._catalog(self.connection, 32768)
+        relations = {row[1]: row for row in catalog["relations"] if row[0]=="public"}
+        self.assertEqual(relations["implicit_sequence"][6], "{owner=rwU/owner}")
+        self.assertEqual(relations["explicit_sequence"][6], "{owner=rwU/owner}")
+        self.assertEqual(relations["explicit_usage_only"][6], "{owner=U/owner}", "저장된 명시 U를 rwU로 확대하지 않음")
+        for kind in ("r", "p", "v", "m", "f"):
+            with self.subTest(kind=kind): self.assertEqual(relations["implicit_"+kind][6], "{owner=arwdDxt/owner}")
+
     def test_elapsed_deadline_before_export_never_starts_dump(self):
         from unittest.mock import patch
         tick = [0]
