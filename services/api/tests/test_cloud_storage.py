@@ -72,7 +72,7 @@ class CloudStorageContractTests(unittest.TestCase):
             actual_security[signature]='SECURITY DEFINER' in header[0]
         self.assertFalse(actual_security['guard_document_readiness_immutable()'])
         self.assertTrue(all(value for signature,value in actual_security.items() if signature!='guard_document_readiness_immutable()'))
-        bad_values=(None,"native-char-concat","role","table","columns","keys","checks","policies","function","indexes","triggers","sequence",
+        bad_values=(None,"native-char-concat","native-asr-check","asr-null-weakened","asr-not-removed","role","table","columns","keys","checks","policies","function","indexes","triggers","sequence",
             "body","exec","out-name","out-type","out-mode","volatility","unknown-column","nullable","identity",
             "weakened-check","boolean-precedence","extra-key","foreign-parent","disabled-trigger","index-predicate","extra-index",
             "guard-secdef","missing-secdef")
@@ -104,6 +104,11 @@ class CloudStorageContractTests(unittest.TestCase):
                         return Result(rows)
                     if facet=='checks':
                         rows=[(check,True) for check in api._READINESS_CHECKS[params[0]]]
+                        if bad in ('native-asr-check','asr-null-weakened','asr-not-removed') and params[0]=='document_readiness_observations':
+                            native="((probe_kind <> 'native_asr_ready'::text) OR (NOT (capability IS DISTINCT FROM 'speech_to_text'::text)))"
+                            if bad=='asr-null-weakened':native="probe_kind<>'native_asr_ready' OR capability='speech_to_text'"
+                            if bad=='asr-not-removed':native="probe_kind<>'native_asr_ready' OR capability IS DISTINCT FROM 'speech_to_text'"
+                            rows=[(native if check.startswith("probe_kind<>'native_asr_ready' OR ") else check,valid) for check,valid in rows]
                         if bad=='weakened-check':rows[0]=('true',True)
                         if bad=='boolean-precedence':rows[0]=('(a OR b) AND c',True)
                         return Result(rows)
@@ -136,7 +141,7 @@ class CloudStorageContractTests(unittest.TestCase):
                         if bad=='disabled-trigger':rows[0]=(*rows[0][:3],'D',*rows[0][4:])
                         return Result(rows)
                     return Result([(True,)])
-            with self.subTest(facet=bad):self.assertEqual(PostgresCloudStore._document_readiness_storage_is_protected(Reader()),bad in (None,'native-char-concat'),
+            with self.subTest(facet=bad):self.assertEqual(PostgresCloudStore._document_readiness_storage_is_protected(Reader()),bad in (None,'native-char-concat','native-asr-check'),
                 log[-1][0].split('*/')[0] if log else 'no query')
             self.assertTrue(all('pg_catalog' in statement and not re.match(r'\s*(INSERT|UPDATE|DELETE|ALTER|GRANT|CREATE)',statement)
                 for statement,_ in log))
