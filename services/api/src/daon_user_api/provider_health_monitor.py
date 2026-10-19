@@ -38,9 +38,23 @@ class ProviderHealthMonitor:
         *,
         list_connections: Callable[[], Iterable[_ConnectionT]],
         check_connection: Callable[[_ConnectionT], str],
+        readiness_consumer: Callable[[], object] | None = None,
     ) -> None:
         self._list_connections = list_connections
         self._check_connection = check_connection
+        self._readiness_consumer = readiness_consumer
+        self.readiness_consumer_status = "not_collected"
+
+    def _consume_readiness(self) -> None:
+        if self._readiness_consumer is None:
+            return
+        try:
+            self._readiness_consumer()
+        except Exception:
+            self.readiness_consumer_status = "unavailable"
+        else:
+            # bounded dispatcher 호출 완료일 뿐 실제 새 Run/모델 성공을 뜻하지 않는다.
+            self.readiness_consumer_status = "completed"
 
     def run_once(self) -> tuple[ProviderHealthCheckResult, ...]:
         results: list[ProviderHealthCheckResult] = []
@@ -52,6 +66,7 @@ class ProviderHealthMonitor:
             except Exception:
                 status = "failed"
             results.append(ProviderHealthCheckResult(connection.connection_id, status))
+        self._consume_readiness()
         return tuple(results)
 
     async def run_forever(
@@ -90,6 +105,9 @@ class ProviderHealthMonitor:
             if next_check_at is not None and now >= next_check_at:
                 await asyncio.to_thread(self.run_once)
                 next_check_at = loop.time() + setting.interval_minutes * seconds_per_minute
+            elif self._readiness_consumer is not None:
+                # 이미 저장된 사건의 DB 소비만. interval=0도 Provider 검사는 계속0이다.
+                await asyncio.to_thread(self._consume_readiness)
             wait_seconds = (
                 poll_seconds if next_check_at is None
                 else min(poll_seconds, max(0.0, next_check_at - loop.time()))

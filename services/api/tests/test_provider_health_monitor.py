@@ -13,6 +13,41 @@ class Connection:
     enabled: bool
 
 
+def test_readiness_consumer_is_bounded_hook_after_existing_checks_and_failure_is_isolated():
+    for failed in (False, True):
+        events = []
+        def consume():
+            events.append("consume")
+            if failed:
+                raise RuntimeError("PRIVATE_DATABASE_DETAIL")
+        monitor = ProviderHealthMonitor(
+            list_connections=lambda: [Connection("active", True), Connection("off", False)],
+            check_connection=lambda item: events.append("verify") or "verified",
+            readiness_consumer=consume)
+        result = monitor.run_once()
+        assert events == ["verify", "consume"]
+        assert [(item.connection_id, item.status) for item in result] == [("active", "verified")]
+        assert monitor.readiness_consumer_status == ("unavailable" if failed else "completed")
+        assert "PRIVATE_DATABASE_DETAIL" not in repr(result)
+
+
+def test_zero_health_interval_consumes_existing_events_without_new_provider_checks():
+    async def scenario():
+        stop = asyncio.Event()
+        checks, consumes = [], []
+        def consume():
+            consumes.append("existing_event_poll")
+            stop.set()
+        monitor = ProviderHealthMonitor(
+            list_connections=lambda: checks.append("list") or [],
+            check_connection=lambda item: checks.append("verify") or "verified",
+            readiness_consumer=consume)
+        await asyncio.wait_for(monitor.run_with_settings(stop, lambda: ProviderHealthCheckSettings(0, 1),
+            poll_seconds=0.01), 1)
+        assert checks == [] and consumes == ["existing_event_poll"]
+    asyncio.run(scenario())
+
+
 def test_monitor_checks_only_active_connections() -> None:
     checked: list[str] = []
     monitor = ProviderHealthMonitor(
