@@ -341,7 +341,8 @@ class PinnedContainers:
             elif image != self.config.spec.image_digest or row["pid"] != 0 or row["exit_code"] != 0:
                 raise SnapshotError("SNAPSHOT_SOURCE_UNAVAILABLE")
             # 문자열화는 자기기준 신뢰가 아니라 이후 변경 검출용 불변 관측 사본이다.
-            witness = json.dumps(row, sort_keys=True, separators=(",", ":"), allow_nan=False)
+            mounts = sorted(row["mounts"], key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":"), allow_nan=False))
+            witness = json.dumps({**row, "mounts": mounts}, sort_keys=True, separators=(",", ":"), allow_nan=False)
             if len(witness.encode("utf-8")) > 1048576: raise SnapshotError("SNAPSHOT_SOURCE_UNAVAILABLE")
             return row["id"], witness
         except SnapshotError: raise

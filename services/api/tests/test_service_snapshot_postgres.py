@@ -1420,6 +1420,36 @@ class ServiceSnapshotOperatorTests(unittest.TestCase):
         alias = m.parse_config(json.dumps(raw).encode())
         with self.assertRaises(SnapshotError): m.PinnedContainers(alias, Probe()).pin()
 
+    def test_operator_mount_order_only_preserves_pin_and_runtime_recheck(self):
+        import copy
+        m, config, rows, state, events, cli, probe = self.runtime_case()
+        api=rows[0]
+        api["mounts"][0].update(Driver="local",Mode="rw",Propagation="")
+        api["mounts"].append({"Type":"bind","Name":None,"Source":str(config.runtime_files[0]["path"].parent.parent/"protected"),
+            "Destination":"/run/protected","RW":False,"Mode":"ro","Propagation":"rprivate"})
+        config.docker["source_binding"]["containers"][0]["mounts"].append({"type":"bind","name":None,
+            "source":api["mounts"][1]["Source"],"destination":"/run/protected","read_only":True})
+        pins=m.PinnedContainers(config,m.ExplicitContainerProbe(cli)); pins.pin()
+        api["mounts"].reverse()
+        pins.recheck()
+        with m.QuiescentRuntime(config,cli,pinned=pins,_probe=probe) as guard:
+            api["mounts"].reverse()
+            guard.recheck()
+        self.assertEqual(events,["pin-open","pin-close"])
+        original=copy.deepcopy(api)
+        for change in ("source","destination","rw","duplicate","unknown-mount","unknown-row","image","container","other-field"):
+            api.clear(); api.update(copy.deepcopy(original))
+            if change=="source": api["mounts"][0]["Source"]+="-changed"
+            elif change=="destination": api["mounts"][0]["Destination"]="/changed"
+            elif change=="rw": api["mounts"][0]["RW"]=not api["mounts"][0]["RW"]
+            elif change=="duplicate": api["mounts"].append(copy.deepcopy(api["mounts"][0]))
+            elif change=="unknown-mount": api["mounts"][0]["unexpected"]=True
+            elif change=="unknown-row": api["unexpected"]=True
+            elif change=="image": api["image"]="sha256:"+"f"*64
+            elif change=="container": api["id"]="f"*64
+            elif change=="other-field": api["ports"]={"9999/tcp":None}
+            with self.subTest(change=change),self.assertRaises(SnapshotError): pins.recheck()
+
     def test_operator_explicit_inspect_never_lists_or_accepts_duplicate_json(self):
         m = self.module(); calls = []
         class Command:
