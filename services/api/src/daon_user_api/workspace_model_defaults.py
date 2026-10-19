@@ -21,7 +21,9 @@ from .provider_credentials import (
 from .user_provider_credentials import PostgresUserProviderCredentialService
 from .provider_settings import ProviderSettingsError, provider_requires_credential, validate_provider_base_url
 from .data_canon import canonical_json_bytes
-from .document_readiness import CurrentReprocessEligibility, RoleWaitEvidence, ReadinessDispatcherSettings
+from .document_readiness import (CurrentReprocessEligibility, RoleWaitEvidence, ReadinessDispatcherSettings,
+    InternalCostExclusionPolicy)
+from .document_understanding_adapter import DocumentUnderstandingError
 
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
@@ -69,10 +71,59 @@ class ReadinessPolicySnapshot:
                     or type(body["schema_version"]) is not int or body["schema_version"] != 1
                     or body["scope"] != dict(zip(("tenant_id", "workspace_id", "actor_id", "notebook_id", "source_version_id"),
                         (current.tenant_id, current.workspace_id, current.actor_id, current.notebook_id, current.source_version_id)))
-                    or body["role"] != current.capability or body["cost"] != {"state": current.cost_state}):
+                    or body["role"] != current.capability):
                 raise ValueError
-        except (ValueError, TypeError, KeyError, RecursionError):
+            cost = body["cost"]
+            if current.cost_state != "allowed":
+                if cost != {"state": current.cost_state}:
+                    raise ValueError
+            else:
+                if (type(cost) is not dict or set(cost) != {"state", "basis", "policy"}
+                        or cost["state"] != "allowed" or cost["basis"] != "internal_operating_cost_excluded"
+                        or type(cost["policy"]) is not dict
+                        or not all((current.scope_enabled, current.authorized, current.source_current,
+                            current.policy_allowed, current.local_only_allowed, current.candidate_available))):
+                    raise ValueError
+                policy = InternalCostExclusionPolicy(**cost["policy"])
+                if (body["binding"]["connection_id"] != current.dependency_connection_id
+                        or policy.as_dict() != _internal_cost_target(current, body["binding"])
+                        or not _internal_cost_binding_allowed(body["binding"], current.capability, body["catalog"])):
+                    raise ValueError
+        except (ValueError, TypeError, KeyError, AttributeError, RecursionError, DocumentUnderstandingError):
             raise WorkspaceModelDefaultsError("WORKSPACE_MODEL_RESOLUTION_UNAVAILABLE", 503) from None
+
+
+def _internal_cost_target(current, binding):
+    return {**{key: getattr(current, key) for key in (
+        "tenant_id", "workspace_id", "actor_id", "source_version_id", "capability")},
+        "connection_id": current.dependency_connection_id, "model_id": binding["model_id"],
+        "configuration_version": current.configuration_version, "endpoint": binding["endpoint"],
+        "policy_version": "internal-operating-cost-excluded-v1"}
+
+
+def _internal_cost_binding_allowed(binding, capability, catalog):
+    if not isinstance(binding, dict) or not isinstance(catalog, dict):
+        return False
+    empty_reference = {"source": "system", "present": False, "nonce_present": False,
+        "nonce_size": None, "version": 0, "schema_version": None, "key_version": None}
+    if (binding.get("enabled") is not True or binding.get("verification_status") != "verified"
+            or binding.get("access_mode") != "public" or binding.get("credential_requirement") != "none"
+            or binding.get("credential_reference") != empty_reference):
+        return False
+    ollama = (binding.get("provider_code") == binding.get("adapter_type") == "OLLAMA"
+        and binding.get("provider_kind") == "local" and capability in {"text_generation", "image_understanding"})
+    from .audio_document_understanding import _ASR_REVISION, _ASR_DIGEST
+    asr = (capability == "speech_to_text" and binding.get("provider_code") == "CUSTOM"
+        and binding.get("adapter_type") == "asr_base_native" and binding.get("provider_kind") == "server_internal"
+        and binding.get("endpoint") == "http://asr-base:8080" and binding.get("model_id") == "faster-whisper-base"
+        and binding.get("qa_scope_enabled") is True
+        and binding.get("native_asr_contract") == {"revision": _ASR_REVISION, "model_digest": _ASR_DIGEST})
+    models = catalog.get("models")
+    if not (ollama or asr) or type(models) is not list or catalog.get("connection_id") != binding.get("connection_id"):
+        return False
+    return any(type(m) is dict and m.get("model_id") == binding.get("model_id") and m.get("allowed") is True
+        and m.get("catalog_status") == "ready" and type(m.get("effective_capabilities")) is list
+        and capability in m["effective_capabilities"] for m in models)
 
 
 class WorkspaceModelDefaultsError(RuntimeError):
@@ -745,6 +796,16 @@ def read_document_readiness_policy(connection, context, wait, *, settings=None) 
             "effective": execution_permission.effective, "locked_by": execution_permission.locked_by,
             "reason_code": execution_permission.reason}
         egress_state = "allowed" if local else "blocked" if effective is not None and effective.mode == "deny_external" else "approval_missing"
+        cost = {"state": "unknown"}
+        scope_enabled = (wait.tenant_id, wait.workspace_id, wait.actor_id, wait.source_version_id) in settings.scopes
+        if scope_enabled and execution_allowed and candidate and local and _internal_cost_binding_allowed(binding, wait.capability, catalog):
+            target = _internal_cost_target(SimpleNamespace(tenant_id=wait.tenant_id, workspace_id=wait.workspace_id,
+                actor_id=wait.actor_id, source_version_id=wait.source_version_id, capability=wait.capability,
+                dependency_connection_id=dependency, configuration_version=configuration_version), binding)
+            for policy in settings.internal_cost_policies:
+                if policy.as_dict() == target:
+                    cost = {"state": "allowed", "basis": "internal_operating_cost_excluded", "policy": target}
+                    break
         # 관측용 catalog digest와 재큐 억제용 semantic digest는 용도가 다르다.
         # 관측은 전체 DB catalog helper, 억제 조건은 현재 역할의 실제 허용 후보만 결속한다.
         semantic_catalog = None if catalog is None else {**catalog, "models": [value for value in catalog["models"]
@@ -760,7 +821,7 @@ def read_document_readiness_policy(connection, context, wait, *, settings=None) 
                               "actions": actions, "execution_permission": execution_body},
             "workspace_policy": workspace, "binding": binding, "catalog": semantic_catalog,
             "egress": {**{key: None if value is None else value.as_dict() for key, value in egress.items()},
-                       "effective": None if effective is None else effective.as_dict()}, "cost": {"state": "unknown"}}
+                       "effective": None if effective is None else effective.as_dict()}, "cost": cost}
         canonical = canonical_json_bytes(body)
         current = CurrentReprocessEligibility(wait.tenant_id, wait.workspace_id, wait.actor_id, wait.notebook_id,
             wait.source_version_id, wait.capability, hashlib.sha256(canonical).hexdigest(), dependency,
@@ -768,7 +829,7 @@ def read_document_readiness_policy(connection, context, wait, *, settings=None) 
             (wait.tenant_id, wait.workspace_id, wait.actor_id, wait.source_version_id) in settings.scopes,
             # EDIT/ANALYZE 실검사 결과다. egress 누락은 확정 policy 차단으로 꾸미지 않는다.
             execution_allowed, True, True, local and execution_allowed, candidate, False, False, False,
-            "unknown", egress_state, wait.processing_run_id)
+            cost["state"], egress_state, wait.processing_run_id)
         return ReadinessPolicySnapshot(current, canonical.decode("utf-8"))
     except WorkspaceModelDefaultsError:
         raise

@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
 from typing import Literal
 
@@ -107,6 +107,41 @@ def _invalid_json_constant(_: str) -> None:
 
 
 @dataclass(frozen=True, slots=True, repr=False)
+class InternalCostExclusionPolicy:
+    """운영자가 지정한 내부 실행의 장치 운영비 제외 근거. 가격/인가 증거 아님."""
+    tenant_id: str
+    workspace_id: str
+    actor_id: str
+    source_version_id: str
+    capability: Capability
+    connection_id: str
+    model_id: str
+    configuration_version: int
+    endpoint: str
+    policy_version: str
+
+    def __post_init__(self):
+        for name in (*_SCOPE_FIELDS, "connection_id"):
+            _text(getattr(self, name), _ID)
+        _choice(self.capability, _CAPABILITIES)
+        _integer(self.configuration_version, 1)
+        if (type(self.model_id) is not str or not 1 <= len(self.model_id) <= 256
+                or any(ord(c) < 32 or ord(c) == 127 for c in self.model_id)
+                or type(self.policy_version) is not str or self.policy_version != "internal-operating-cost-excluded-v1"):
+            _invalid()
+        from .provider_settings import validate_provider_base_url, ProviderSettingsError
+        try:
+            if (type(self.endpoint) is not str or len(self.endpoint) > 2048 or "?" in self.endpoint or "#" in self.endpoint
+                    or validate_provider_base_url("OLLAMA", self.endpoint) != self.endpoint):
+                _invalid()
+        except (ProviderSettingsError, ValueError, TypeError):
+            _invalid()
+
+    def as_dict(self):
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True, repr=False)
 class ReadinessDispatcherSettings:
     scopes: frozenset[tuple[str, str, str, str]] = frozenset()
     backoff_seconds: int = 60
@@ -114,6 +149,7 @@ class ReadinessDispatcherSettings:
     future_tolerance_seconds: int = 5
     max_batch: int = 32
     max_seconds: int = 2
+    internal_cost_policies: tuple[InternalCostExclusionPolicy, ...] = ()
 
     def __post_init__(self) -> None:
         if type(self.scopes) is not frozenset or len(self.scopes) > 100:
@@ -123,6 +159,15 @@ class ReadinessDispatcherSettings:
                 _invalid()
             for value in scope:
                 _text(value, _ID)
+        if (type(self.internal_cost_policies) is not tuple or len(self.internal_cost_policies) > 100
+                or any(type(p) is not InternalCostExclusionPolicy for p in self.internal_cost_policies)):
+            _invalid()
+        targets = []
+        for policy in self.internal_cost_policies:
+            policy.__post_init__()
+            targets.append(tuple(getattr(policy, k) for k in (*_SCOPE_FIELDS, "capability")))
+        if len(set(targets)) != len(targets):
+            _invalid()
         # 현재 승인된 운영 상수다. 임의 환경변수/새 튜닝 범위를 열지 않는다.
         for value, expected in ((self.backoff_seconds, 60), (self.event_ttl_seconds, 300),
                                 (self.future_tolerance_seconds, 5), (self.max_batch, 32),
@@ -150,7 +195,17 @@ class ReadinessDispatcherSettings:
             if scope in scopes:
                 _invalid()
             scopes.add(scope)
-        return cls(scopes=frozenset(scopes))
+        try:
+            policies = json.loads(os.environ.get("DAON_DOCUMENT_READINESS_INTERNAL_COST_POLICIES_JSON", "[]"),
+                object_pairs_hook=_unique_json_object, parse_constant=_invalid_json_constant)
+            fields = set(InternalCostExclusionPolicy.__dataclass_fields__)
+            if (type(policies) is not list or len(policies) > 100
+                    or any(type(p) is not dict or set(p) != fields for p in policies)):
+                _invalid()
+            parsed = tuple(InternalCostExclusionPolicy(**p) for p in policies)
+        except (ValueError, TypeError, RecursionError):
+            _invalid()
+        return cls(scopes=frozenset(scopes), internal_cost_policies=parsed)
 
 
 @dataclass(frozen=True, slots=True, repr=False)

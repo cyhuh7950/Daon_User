@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
-from test_workspace_model_defaults import readiness_metadata, ReadinessMetadataDB
+from test_workspace_model_defaults import readiness_metadata, ReadinessMetadataDB, internal_cost_settings
 
 from daon_user_api.document_processing import DocumentProcessingContext, DocumentProcessingService
 from daon_user_api.cloud_storage import CloudDatabaseError
@@ -35,7 +35,8 @@ def readiness_execution(readiness_metadata, monkeypatch):
     from test_document_readiness_postgres import with_synthetic_cost
     from daon_user_api.document_readiness import ReadinessDispatcherSettings
     f = readiness_metadata
-    snapshot = with_synthetic_cost(f.read(f.db, f.context, f.wait), "allowed")
+    settings, _ = internal_cost_settings(f, monkeypatch)
+    snapshot = f.read(f.db, f.context, f.wait, settings=settings)
     body = json.loads(snapshot.frozen_context_json)
     proof = {"version": 1, "mode": "auto", "mode_origin": "request",
              "frozen_context": body, "frozen_context_digest": snapshot.eligibility.frozen_context_digest,
@@ -70,10 +71,10 @@ def readiness_execution(readiness_metadata, monkeypatch):
         @contextmanager
         def _transaction(self, context):
             yield f.db
-    settings = ReadinessDispatcherSettings(scopes=frozenset({("tenant-a", "workspace-a", "actor-a", "version-a")}))
     repo = PostgresDocumentProcessingRepository(Store(), object(), readiness_settings=settings)
     repo._fail_readiness_guard = lambda *args, **kwargs: failures.append((args, kwargs))
-    monkeypatch.setattr(f.module, "read_document_readiness_policy", lambda *args, **kwargs: snapshot)
+    monkeypatch.setattr(f.module, "read_document_readiness_policy", lambda connection, context, wait, **kwargs:
+        f.read(connection, context, wait, **kwargs))
     context = DocumentProcessingContext("tenant-a", "workspace-a", "actor-a", "trace-a", "policy-a")
     return SimpleNamespace(repo=repo, row=row, wait=wait, receipt=receipt, snapshot=snapshot,
         context=context, calls=calls, failures=failures, auth=f, replace=replace)
@@ -84,6 +85,18 @@ def test_readiness_execution_requires_current_scope_wait_receipt_and_frozen_body
     assert f.repo.authorize_readiness_run(f.context, "source-a", "auto-run-a") is True
     assert f.failures == []
     assert all(sql.lstrip().startswith("SELECT ") for sql in f.calls)
+
+
+def test_internal_cost_worker_reassembled_without_policy_rejects_before_model(readiness_execution):
+    f = readiness_execution
+    assert f.repo.authorize_readiness_run(f.context, "source-a", "auto-run-a") is True
+    # 정책은 시작 시 고정된다. 정상 재조립으로 회수된 settings를 사용하는 실행 경계다.
+    f.repo._readiness_settings = f.replace(f.repo._readiness_settings, internal_cost_policies=())
+    model_calls = []
+    with pytest.raises(DocumentUnderstandingError):
+        f.repo.authorize_readiness_run(f.context, "source-a", "auto-run-a")
+        model_calls.append(True)
+    assert model_calls == []
 
 
 @pytest.mark.parametrize("invalid", ["scope", "actor", "wait_actor", "receipt_actor", "receipt_run",
@@ -169,9 +182,14 @@ def test_readiness_other_audio_role_is_current_before_send(readiness_execution, 
     asr.binding.update(connection_id="asr-a", provider_code="CUSTOM", adapter_type="asr_base_native",
         base_url="http://asr-base:8080", model_id="faster-whisper-base")
     asr.catalog[0].update(model_id="faster-whisper-base", effective_capabilities=["speech_to_text"])
+    settings_by_role = {role: internal_cost_settings(SimpleNamespace(db=db, wait=replace(f.auth.wait, capability=role)), monkeypatch)[0]
+                       for role, db in role_dbs.items()}
+    settings = replace(f.repo._readiness_settings, internal_cost_policies=tuple(
+        p for s in settings_by_role.values() for p in s.internal_cost_policies))
+    f.repo._readiness_settings = settings
     def current(connection, context, wait, **kwargs):
-        # 실제 B1 metadata/권한/후보 검사를 SQL 대역 위에서 실행한다. 비용만 합성 허용이다.
-        return with_synthetic_cost(f.auth.read(role_dbs[wait.capability], context, wait), "allowed")
+        # 실제 B1 metadata/권한/후보 및 승인된 내부 정책 supplier. SQL은 대역이다.
+        return f.auth.read(role_dbs[wait.capability], context, wait, settings=kwargs.get("settings", settings))
     wait = replace(f.auth.wait, capability=waiting_role,
                    dependency_connection_id=role_dbs[waiting_role].binding["connection_id"])
     snapshot = current(None, f.context, wait)
