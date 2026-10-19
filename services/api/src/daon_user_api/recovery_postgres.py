@@ -940,7 +940,23 @@ class PostgresRecoveryService:
     def _select_restore(
         self, connection: Connection[Mapping[str, Any]], request_id: str
     ) -> RestoreRequestView:
-        if getattr(self,"_destination_registry",None) is not None:
+        registered_available = getattr(self,"_destination_registry",None) is not None
+        if not registered_available and getattr(self,"_lineage_capture_store",None) is not None:
+            # 목적지 회수 후에도 기존 키로 이력을 읽되, pre0070은 legacy로 남긴다.
+            # 존재 확인은 조회 형식 선택용이며 보호 catalog/readiness 검증을 대체하지 않는다.
+            try:
+                tables = connection.execute(
+                    "SELECT to_regclass('public.registered_restore_previews') IS NOT NULL AS previews_present, "
+                    "to_regclass('public.registered_restore_target_reservations') IS NOT NULL AS reservations_present"
+                ).fetchone()
+            except (Error, PoolTimeout, OSError):
+                raise RecoveryError("RESOURCE_UNAVAILABLE",503) from None
+            if (not isinstance(tables,Mapping) or set(tables)!={"previews_present","reservations_present"}
+                    or any(type(value) is not bool for value in tables.values())
+                    or tables["previews_present"] != tables["reservations_present"]):
+                raise RecoveryError("RESOURCE_UNAVAILABLE",503)
+            registered_available = tables["previews_present"]
+        if registered_available:
             registered=self._select_registered_restore(connection,request_id)
             if registered is not None: return registered
         row = connection.execute(

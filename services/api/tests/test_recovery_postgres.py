@@ -32,6 +32,142 @@ from daon_user_api.recovery import BackupObjectInput, BackupSelectionInput, Reco
 from daon_user_api.recovery_capture import FileCaptureStore, decode_manifest
 
 
+class RegisteredRestoreHistoryTests(unittest.TestCase):
+    """실제 preview AEAD/조회 decoder, DB 현재 scope 경계는 대역. 파일/DB 생성0."""
+    def setUp(self):
+        self.service = object.__new__(recovery_postgres.PostgresRecoveryService)
+        self.service._destination_registry = None
+        self.service._destination_probe = None
+        self.service._registered_target_factory = None
+        self.service._lineage_capture_store = SimpleNamespace(key_version="v3", key_reference="history-key")
+        self.service._manifest_master_key = b"h" * 32
+        self.service._key = hashlib.sha256(b"h" * 32).digest()
+        self.context = RecoveryContext("tenant-a", "workspace-a", "actor-a", "trace-a", "policy-a", True)
+        now = datetime(2026, 10, 20, tzinfo=timezone.utc)
+        roots = ["version-a"]
+        self.row = dict(tenant_id="tenant-a", workspace_id="workspace-a", actor_id="actor-a",
+            request_id="restore-a", backup_id="backup-a", state="completed", version=6,
+            preview_version=1, registry_generation_id="generation-a", destination_id="destination-a",
+            destination_version=1, source_manifest_digest="a" * 64, closure_fingerprint="b" * 64,
+            source_policy_version="policy-a", retention_watermark="c" * 64,
+            included_roots_fingerprint=hashlib.sha256(b'["version-a"]').hexdigest(),
+            excluded_roots_fingerprint=hashlib.sha256(b'[]').hexdigest(),
+            expires_at=now + timedelta(minutes=5), verification_digest="d" * 64)
+        payload = dict(schema_version=1, current_retention_watermark="c" * 64,
+            current_policy_version="policy-a", current_authorization_fingerprint="e" * 64,
+            runtime_policy_version="policy-a", included_roots=roots, excluded_roots=[], exclusion_reasons=[],
+            session_id="session-a", device_id="device-a", request_version=2,
+            destination_summary=dict(destination_id="destination-a", version=1, display_name="QA 격리",
+                expires_at=(now + timedelta(minutes=10)).isoformat()), catalog_digest="f" * 64,
+            created_at=now.isoformat())
+        self.row["encrypted_preview_receipt"] = self.service._seal_registered_preview(self.row, payload)
+        self.queries = []
+        self.legacy_row = None
+        self.registered_tables = dict(previews_present=True, reservations_present=True)
+        owner = self
+        class Connection:
+            def execute(inner, sql, params=()):
+                owner.queries.append(sql)
+                if sql.startswith("SELECT to_regclass("):
+                    if isinstance(owner.registered_tables, Exception):
+                        raise owner.registered_tables
+                    return SimpleNamespace(fetchone=lambda: owner.registered_tables)
+                if "public.registered_restore_previews" in sql:
+                    # 실제 SQL이 현재 actor를 결속해야만 대역도 해당 필터를 적용한다.
+                    if "r.actor_id=nullif(current_setting('app.actor_id',true),'')" not in sql:
+                        raise AssertionError("CURRENT_ACTOR_FILTER_REQUIRED")
+                    visible = owner.scope == ("tenant-a", "workspace-a", "actor-a")
+                    return SimpleNamespace(fetchone=lambda: owner.row if visible and params == ("restore-a",) else None)
+                return SimpleNamespace(fetchone=lambda: owner.legacy_row)
+        @contextmanager
+        def transaction(*scope):
+            self.scope = scope
+            yield Connection()
+        self.service._transaction = transaction
+
+    def test_completed_registered_history_remains_readable_after_destination_retirement(self):
+        view = self.service.get_restore_request(self.context, "restore-a")
+        self.assertEqual((view.request_id, view.state, view.version), ("restore-a", "completed", 6))
+        self.assertEqual(view.verification_digest, "d" * 64)
+        self.assertEqual((view.preview.kind, view.preview.included_root_count), ("selected_source_lineage", 1))
+
+    def test_retired_destination_does_not_allow_execution_or_destination_lookup(self):
+        for call in (
+            lambda: self.service.list_restore_destinations(self.context, "backup-a", recheck=lambda: None),
+            lambda: self.service._execute_registered_restore_owned(self.context, "restore-a", expected_version=6,
+                preview_version=1, idempotency_key="execute-a", step_up_verified=True, recheck=lambda: None,
+                ownership_check=lambda: None),
+        ):
+            with self.assertRaises(RecoveryError) as caught:
+                call()
+            self.assertEqual(caught.exception.status, 503)
+        self.assertEqual(self.queries, [])
+
+    def test_registered_history_keeps_current_scope_and_admin_checks(self):
+        for context, status in ((replace(self.context, actor_id="actor-b"), 404),
+                                (replace(self.context, workspace_id="workspace-b"), 404),
+                                (replace(self.context, organization_admin=False), 403)):
+            with self.subTest(context=context), self.assertRaises(RecoveryError) as caught:
+                self.service.get_restore_request(context, "restore-a")
+            self.assertEqual(caught.exception.status, status)
+
+    def test_registered_history_cipher_damage_is_not_hidden_by_legacy_fallback(self):
+        raw = self.row["encrypted_preview_receipt"]
+        self.row["encrypted_preview_receipt"] = raw[:-1] + bytes([raw[-1] ^ 1])
+        with self.assertRaises(RecoveryError) as caught:
+            self.service.get_restore_request(self.context, "restore-a")
+        self.assertEqual((caught.exception.code, caught.exception.status), ("BACKUP_MANIFEST_INVALID", 409))
+        self.assertFalse(any("FROM restore_requests r" in sql for sql in self.queries))
+
+    def test_legacy_without_lineage_store_never_queries_registered_tables(self):
+        for absent in (False, True):
+            self.service._lineage_capture_store = None
+            if absent:
+                del self.service._lineage_capture_store
+            self.queries.clear()
+            with self.subTest(absent=absent), self.assertRaises(RecoveryError) as caught:
+                self.service.get_restore_request(self.context, "legacy-missing")
+            self.assertEqual(caught.exception.status, 404)
+            self.assertEqual(len(self.queries), 1)
+            self.assertNotIn("registered_restore_previews", self.queries[0])
+
+    def test_legacy_preview_remains_readable_when_registered_history_is_absent(self):
+        self.legacy_row = dict(self.row, request_id="legacy-a", destination_tenant_id="target-tenant", destination_workspace_id="target-workspace",
+            destination_database_id="target-db", destination_bucket_id="target-bucket",
+            encrypted_adjustment_manifest=self.service._encode_preview(("object-a",), (), ()),
+            preview_created_at=datetime(2026, 10, 20, tzinfo=timezone.utc))
+        view = self.service.get_restore_request(self.context, "legacy-a")
+        self.assertEqual((view.request_id, view.state), ("legacy-a", "completed"))
+        self.assertEqual(view.preview.included_object_ids, ("object-a",))
+
+    def test_legacy_schema_with_lineage_store_skips_missing_registered_tables(self):
+        self.registered_tables = dict(previews_present=False, reservations_present=False)
+        with self.assertRaises(RecoveryError) as caught:
+            self.service.get_restore_request(self.context, "legacy-missing")
+        self.assertEqual(caught.exception.status, 404)
+        self.assertTrue(self.queries[0].startswith("SELECT to_regclass("))
+        self.assertFalse(any("FROM public.registered_restore_previews" in sql for sql in self.queries))
+
+    def test_partial_or_invalid_registered_schema_never_falls_back_to_legacy(self):
+        for tables in (dict(previews_present=True, reservations_present=False),
+                       dict(previews_present=False, reservations_present=True), None,
+                       dict(previews_present=1, reservations_present=True),
+                       dict(previews_present=True, reservations_present=True, extra=True)):
+            self.registered_tables = tables
+            self.queries.clear()
+            with self.subTest(tables=tables), self.assertRaises(RecoveryError) as caught:
+                self.service.get_restore_request(self.context, "restore-a")
+            self.assertEqual((caught.exception.code, caught.exception.status), ("RESOURCE_UNAVAILABLE", 503))
+            self.assertEqual(len(self.queries), 1)
+
+    def test_registered_schema_read_failure_is_not_hidden_as_missing_history(self):
+        self.registered_tables = psycopg.OperationalError("synthetic database unavailable")
+        with self.assertRaises(RecoveryError) as caught:
+            self.service.get_restore_request(self.context, "restore-a")
+        self.assertEqual((caught.exception.code, caught.exception.status), ("RESOURCE_UNAVAILABLE", 503))
+        self.assertEqual(len(self.queries), 1)
+
+
 class RegisteredRecoveryBoundaryTests(unittest.TestCase):
     def test_r4_registered_restore_row_reservation_join_uses_parent_scope_without_ambiguous_using(self):
         # SQL 출력 경계 검사이며 실제 PostgreSQL 실행 증거는 아니다.
