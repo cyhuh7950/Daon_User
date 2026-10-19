@@ -123,3 +123,18 @@ def test_repository_rejects_wrong_actor_and_invalid_db_dto_without_calling_provi
     with pytest.raises(ValueError,match='RUN_COST_DB_RESULT_INVALID'):
         repo.reserve(CloudAccessContext('tenant-qa','workspace-qa','usr-qa','view'),scope(),policy(),
             attempt_key='attempt-first',input_token_upper_bound=1000,output_token_limit=512,now=NOW)
+
+
+def test_price_card_receipt_uses_separate_protected_writer_without_changing_reported_cost_path():
+    from daon_user_api.cloud_storage import CloudAccessContext
+    from daon_user_api.operations_telemetry_postgres import record_cost_in_transaction
+    calls=[]
+    class Connection:
+        def execute(self,query,args):calls.append((query,args));self.args=args;return self
+        def fetchone(self):return (self.args[-1],)
+    receipt=settle_reserved_usage(reservation(),usage={'prompt_tokens':1000,'completion_tokens':100,'cached_input_tokens':200},
+        outcome='succeeded',settled_at=NOW+timedelta(seconds=1))
+    record_cost_in_transaction(Connection(),CloudAccessContext('tenant-qa','workspace-qa','usr-qa','question.execute'),
+        'run-qa',receipt,model_attempt_id='attempt-first')
+    assert calls[0][0].startswith('SELECT public.record_operations_price_card_receipt(')
+    assert calls[0][1][4:8]==(receipt.receipt_id,'provider-upstage','attempt-first','price_card')

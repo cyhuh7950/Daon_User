@@ -60,3 +60,58 @@ def test_reader_only_reads_fixed_proc_paths_with_size_bound():
     assert seen==[('/proc/meminfo',65536),('/proc/stat',1048576),('/proc/sys/kernel/random/boot_id',64)]
     with pytest.raises(ValueError):
         capacity.read_host_sample(read_text=lambda path,limit:'x'*(limit+1),observed_at=NOW,sequence=1)
+
+
+def test_collector_resumes_database_sequence_after_restart_without_replaying_or_reading_when_disabled():
+    from types import SimpleNamespace
+    class Repository:
+        def __init__(self):self.row=SimpleNamespace(sample=sample(),received_at=NOW);self.writes=[];self.reads=0
+        def read_host_sample_for_collector(self):self.reads+=1;return self.row
+        def record_host_sample(self,row):
+            assert row.sequence>self.row.sample.sequence
+            self.writes.append(row);self.row=SimpleNamespace(sample=row,received_at=row.observed_at);return self.row
+    repository=Repository()
+    def reader(**kwargs):return sample(previous=kwargs['previous'],sequence=kwargs['sequence'],at=kwargs['observed_at'],stat=STAT2)
+    collector=capacity.HostCapacityCollector(repository,clock=lambda:NOW+timedelta(seconds=30),reader=reader,enabled=False)
+    assert collector.tick() is None and repository.writes==[] and repository.reads==0
+    capacity.HostCapacityCollector(repository,clock=lambda:NOW+timedelta(seconds=30),reader=reader,enabled=True).tick()
+    assert repository.writes[-1].sequence==2 and repository.writes[-1].cpu_usage_basis_points==4000
+    capacity.HostCapacityCollector(repository,clock=lambda:NOW+timedelta(seconds=60),reader=reader,enabled=True).tick()
+    assert repository.writes[-1].sequence==3
+
+
+def test_collector_keeps_sequence_but_does_not_average_cpu_across_stale_gap():
+    from types import SimpleNamespace
+    class Repository:
+        def read_host_sample_for_collector(self):return SimpleNamespace(sample=sample(),received_at=NOW)
+        def record_host_sample(self,row):return row
+    def reader(**kwargs):return sample(previous=kwargs['previous'],sequence=kwargs['sequence'],at=kwargs['observed_at'],stat=STAT2)
+    row=capacity.HostCapacityCollector(Repository(),clock=lambda:NOW+timedelta(seconds=61),reader=reader,enabled=True).tick()
+    assert row.sequence==2 and row.cpu_usage_basis_points is None
+
+
+def test_host_repository_writes_exact_sample_and_authorizes_ui_read_before_and_after():
+    from contextlib import contextmanager
+    from dataclasses import asdict
+    from types import SimpleNamespace
+    from daon_user_api.operations_telemetry_postgres import PostgresHostCapacityRepository
+    calls=[]
+    row={**asdict(sample()),'received_at':NOW};row['cpu_counters']=list(row['cpu_counters'])
+    class Connection:
+        def execute(self,query,args=()):calls.append((query,args));return self
+        def fetchone(self):return row
+        def fetchall(self):return [row]
+    class Store:
+        @contextmanager
+        def _transaction(self):yield Connection()
+        def _authorize(self,connection,context):calls.append(('authorize',context))
+    repository=PostgresHostCapacityRepository(Store())
+    stored=repository.record_host_sample(sample())
+    assert stored.sample==sample() and stored.received_at==NOW
+    assert calls[0][0].startswith('SELECT * FROM public.record_operations_host_capacity(')
+    assert calls[0][1]==('wsl-server-daon-user',BOOT,1,NOW,2000,None,1073741824,536870912,[100,0,50,800,50,0,0,0])
+    calls.clear()
+    context=SimpleNamespace(tenant_id='tenant-qa',workspace_id='workspace-qa',actor_id='usr-qa')
+    assert repository.read_host_sample(context)==stored
+    assert calls[3]==('authorize',context) and calls[-1]==calls[3]
+    assert calls[4][0]=='SELECT * FROM public.read_operations_host_capacity()'

@@ -111,3 +111,30 @@ def read_host_sample(*,observed_at,sequence,previous=None,read_text=_read_fixed_
         values.append(value)
     return parse_host_sample(meminfo=values[0],stat=values[1],boot_id=values[2],
         observed_at=observed_at,sequence=sequence,previous=previous)
+
+
+@dataclass(frozen=True,slots=True)
+class ReceivedHostCapacitySample:
+    sample:HostCapacitySample
+    received_at:datetime
+
+    def __post_init__(self):
+        host_sample_state(self.sample,received_at=self.received_at,now=self.received_at)
+
+
+class HostCapacityCollector:
+    """기존 API 수명에서 tick을 호출한다. 자체 thread/재시도/연결·자격을 만들지 않는다."""
+    def __init__(self,repository,*,clock,reader=read_host_sample,enabled=False):
+        if type(enabled) is not bool:raise ValueError('HOST_CAPACITY_ENABLED_INVALID')
+        self._repository,self._clock,self._reader,self.enabled=repository,clock,reader,enabled
+
+    def tick(self):
+        if not self.enabled:return None
+        stored=self._repository.read_host_sample_for_collector()
+        now=_utc(self._clock())
+        previous=None if stored is None else stored.sample
+        sequence=1 if previous is None else previous.sequence+1
+        if stored is not None and host_sample_state(previous,received_at=stored.received_at,now=now)!='fresh':
+            previous=None
+        sample=self._reader(observed_at=now,sequence=sequence,previous=previous)
+        return self._repository.record_host_sample(sample)

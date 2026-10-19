@@ -24,6 +24,65 @@ from .operations_telemetry import (KINDS,WorkerSample,ReceivedWorkerSample,Telem
 _FIELDS=tuple(field.name for field in fields(WorkerSample))
 
 
+class PostgresHostCapacityRepository:
+    """기존 telemetry 연결을 재사용한다. 전역 host 관측에 가짜 tenant/Node를 붙이지 않는다."""
+    def __init__(self,telemetry):
+        self._telemetry=telemetry
+
+    @staticmethod
+    def _stored(row):
+        from .operations_host_capacity import HostCapacitySample,ReceivedHostCapacitySample
+        names=tuple(f.name for f in fields(HostCapacitySample))
+        if type(row) is not dict or set(row)!=set(names)|{'received_at'}:
+            raise TelemetryUnavailable()
+        try:
+            values={k:row[k] for k in names}
+            if type(values['cpu_counters']) is not list:raise ValueError()
+            values['cpu_counters']=tuple(values['cpu_counters'])
+            return ReceivedHostCapacitySample(HostCapacitySample(**values),row['received_at'])
+        except (ValueError,TypeError,KeyError):raise TelemetryUnavailable() from None
+
+    def record_host_sample(self,sample):
+        from .operations_host_capacity import HostCapacitySample
+        if type(sample) is not HostCapacitySample:raise TelemetryUnavailable()
+        try:sample.__post_init__()
+        except (ValueError,TypeError):raise TelemetryUnavailable() from None
+        values=(sample.host_ref,sample.boot_id,sample.sequence,sample.observed_at,
+            sample.cpu_logical_millicores,sample.cpu_usage_basis_points,sample.memory_total_bytes,
+            sample.memory_available_bytes,list(sample.cpu_counters))
+        try:
+            with self._telemetry._transaction() as connection:
+                row=connection.execute('SELECT * FROM public.record_operations_host_capacity('
+                    +','.join(['%s']*9)+')',values).fetchone()
+                stored=self._stored(row)
+                if stored.sample!=sample:raise TelemetryUnavailable()
+            return stored
+        except (Error,OSError):raise TelemetryUnavailable() from None
+
+    def read_host_sample_for_collector(self):
+        # API 수집자/이미 시스템관리 인가를 마친 내부 소비자만 호출한다. HTTP 직접 진입점이 아니다.
+        return self._read(None)
+
+    def read_host_sample(self,context):
+        if context is None:raise TelemetryUnavailable()
+        return self._read(context)
+
+    def _read(self,context):
+        try:
+            with self._telemetry._transaction() as connection:
+                if context is not None:
+                    for key in ('tenant_id','workspace_id','actor_id'):
+                        value=getattr(context,key,None);_id(value)
+                        connection.execute('SELECT set_config(%s,%s,true)',('app.'+key,value))
+                    self._telemetry._authorize(connection,context)
+                rows=connection.execute('SELECT * FROM public.read_operations_host_capacity()').fetchall()
+                if len(rows)>1:raise TelemetryUnavailable()
+                stored=self._stored(rows[0]) if rows else None
+                if context is not None:self._telemetry._authorize(connection,context)
+            return stored
+        except (Error,OSError):raise TelemetryUnavailable() from None
+
+
 def _canon_id(value):
     if type(value) is not str or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}",value) is None:
         raise TelemetryUnavailable()
@@ -41,7 +100,8 @@ def record_cost_in_transaction(connection,context,run_id,receipt,*,model_attempt
     canonical=[format(v,"f") if type(v) is Decimal else v.isoformat() if isinstance(v,datetime) else v for v in values]
     digest=hashlib.sha256(json.dumps(["operations-cost-receipt-v1",*canonical],separators=(",",":"),allow_nan=False).encode()).hexdigest()
     try:
-        row=connection.execute("SELECT public.record_operations_cost_receipt("+",".join(["%s"]*15)+")",(*values,digest)).fetchone()
+        writer='record_operations_price_card_receipt' if receipt.basis=='price_card' else 'record_operations_cost_receipt'
+        row=connection.execute('SELECT public.'+writer+'('+','.join(['%s']*15)+')',(*values,digest)).fetchone()
         actual=tuple(row.values()) if isinstance(row,dict) else tuple(row) if row is not None else ()
         if actual!=(digest,):raise TelemetryUnavailable()
     except (Error,OSError):raise TelemetryUnavailable() from None

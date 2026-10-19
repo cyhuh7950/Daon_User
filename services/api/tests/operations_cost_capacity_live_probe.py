@@ -15,7 +15,7 @@ W='workspace-2edb96cb84a252046e67307d'
 A='usr-fwYlLlWlcP_GvvpPoZIkadvr'
 
 
-def run_probe(connect,sql):
+def run_probe(connect,sql,*,host_reader=None):
     import psycopg
     result={}
     conn=blocker=None
@@ -58,11 +58,11 @@ def run_probe(connect,sql):
         for key,value in (('tenant_id',T),('workspace_id',W),('actor_id',A),('capability','run.cost')):
             conn.execute('SELECT set_config(%s,%s,true)',('app.'+key,value))
         conn.execute('SET LOCAL ROLE daon_app')
-        def denied(query,params=(),*,message=None):
+        def denied(query,params=(),*,message=None,sqlstate='42501'):
             try:
                 with conn.transaction():conn.execute(query,params)
             except psycopg.Error as error:
-                assert error.sqlstate=='42501','UNEXPECTED_ERROR_NOT_AUTHORIZATION_DENIAL'
+                assert error.sqlstate==sqlstate,'UNEXPECTED_ERROR_NOT_EXPECTED_DENIAL'
                 if message is not None:assert error.diag.message_primary==message,'WRONG_SCOPE_DENIAL_REASON'
                 return
             raise AssertionError('PROTECTED_WRITE_OR_SCOPE_WAS_ACCEPTED')
@@ -119,6 +119,26 @@ def run_probe(connect,sql):
         assert conn.execute(writer,correct).fetchone()==('b'*64,),'EXACT_ATTEMPT_NOT_ACCEPTED'
         result['wrong_same_run_attempt_and_known_null_denied']=True
         result['exact_attempt_receipt_saved']=True
+        if host_reader is not None:
+            assert conn.execute('SELECT * FROM public.read_operations_host_capacity()').fetchall()==[],'EXPECTED_EMPTY_HOST_SAMPLE'
+            actual=host_reader(observed_at=datetime.now(timezone.utc),sequence=1)
+            def host_args(row):
+                return (row.host_ref,row.boot_id,row.sequence,row.observed_at,row.cpu_logical_millicores,
+                    row.cpu_usage_basis_points,row.memory_total_bytes,row.memory_available_bytes,list(row.cpu_counters))
+            host_sql='SELECT * FROM public.record_operations_host_capacity('+','.join(['%s']*9)+')'
+            stored=conn.execute(host_sql,host_args(actual)).fetchone()
+            assert stored[0:4]==(actual.host_ref,actual.boot_id,1,actual.observed_at),'HOST_SAMPLE_IDENTITY_CHANGED'
+            assert stored[5:9]==(actual.cpu_logical_millicores,None,actual.memory_total_bytes,actual.memory_available_bytes),'HOST_SAMPLE_VALUES_CHANGED'
+            assert conn.execute('SELECT * FROM public.read_operations_host_capacity()').fetchone()==stored,'HOST_READ_DIFFERENT_FROM_COMMITTED_WRITE_IN_TX'
+            resumed=type(actual)(stored[0],stored[1],stored[2],stored[3],stored[5],stored[6],stored[7],stored[8],tuple(stored[9]))
+            time.sleep(.15)
+            next_sample=host_reader(observed_at=datetime.now(timezone.utc),sequence=resumed.sequence+1,previous=resumed)
+            assert next_sample.boot_id==actual.boot_id and next_sample.sequence==2,'HOST_RESTART_SEQUENCE_CHANGED'
+            assert type(next_sample.cpu_usage_basis_points) is int and 0<=next_sample.cpu_usage_basis_points<=10000,'HOST_CPU_DELTA_NOT_MEASURED'
+            updated=conn.execute(host_sql,host_args(next_sample)).fetchone()
+            assert updated[2]==2,'HOST_SEQUENCE_NOT_SAVED'
+            denied(host_sql,host_args(actual),sqlstate='23514',message='HOST_CAPACITY_REPLAY')
+            result['real_proc_sample_db_read_restart_sequence_replay_denial']=True
         conn.execute('RESET ROLE')
         assert conn.execute("SELECT oid,md5(prosrc) FROM pg_proc WHERE oid=ANY(%s) ORDER BY oid",([r[0] for r in before],)).fetchall()==before,'EXISTING_FUNCTION_DEFINITION_CHANGED'
         conn.rollback()
