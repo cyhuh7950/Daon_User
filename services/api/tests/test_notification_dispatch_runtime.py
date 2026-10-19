@@ -57,6 +57,30 @@ def _tick():
     return method
 
 
+def test_notification_dispatch_requires_current_ready_0072_before_discovery():
+    """현재 DB를 옛 revision으로 오인해 실제 알림 발견을 막는 회귀를 잡는다."""
+    import pytest
+    from daon_user_api.notification import NotificationError
+
+    class DiscoveryReached(RuntimeError):
+        pass
+
+    for ready,revision in ((True,'0072'),(True,'0069'),(True,'0071'),(True,'0073'),(False,'0072')):
+        cloud=SimpleNamespace(_notification_inbox_enabled=True,_dsn='postgresql://unused.invalid/unused',
+            readiness=lambda:SimpleNamespace(ready=ready,schema_revision=revision))
+        dependencies=SimpleNamespace(settings=SimpleNamespace(notification_inbox_enabled=True),cloud_store=cloud)
+        with patch('psycopg.connect',side_effect=DiscoveryReached) as connect:
+            if ready and revision=='0072':
+                with pytest.raises(DiscoveryReached):
+                    runtime._notification_dispatch_tick(dependencies,stop=Event(),limit=1)
+                assert connect.call_count==1
+            else:
+                with pytest.raises(NotificationError) as failure:
+                    runtime._notification_dispatch_tick(dependencies,stop=Event(),limit=1)
+                assert failure.value.code=='DATABASE_UNAVAILABLE'
+                assert connect.call_count==0
+
+
 def test_notification_dispatch_tick_real_scope_materializes_and_retries_central_after_restart_without_duplicate():
     """실제 새 source→알림 확정과 중앙 SQL 실패 pending→새 저장소 재시도를 구분한다."""
     scope = _pending_l2a_delivery()

@@ -1633,8 +1633,8 @@ def _notification_dispatch_tick(
     cloud = dependencies.cloud_store
     if cloud is None or getattr(cloud, '_notification_inbox_enabled', False) is not True:
         return after
-    ready = cloud.readiness()  # 0069의 원 조직/알림 보호 probe를 함께 검사한다.
-    if ready.ready is not True or ready.schema_revision != '0069':
+    ready = cloud.readiness()  # 현재0072와 기존 조직/알림 보호를 함께 검사한다.
+    if ready.ready is not True or ready.schema_revision != '0072':
         raise NotificationError('DATABASE_UNAVAILABLE', 503)
     if stop.is_set():
         return after
@@ -2354,7 +2354,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         if cloud is None or not getattr(cloud, '_notification_inbox_enabled', False):
             raise NotificationError('DATABASE_UNAVAILABLE', 503)
         ready = cloud.readiness()
-        if ready.ready is not True or ready.schema_revision != '0069':
+        if ready.ready is not True or ready.schema_revision != '0072':
             raise NotificationError('DATABASE_UNAVAILABLE', 503)
         try:
             workspaces = dependencies.identity_service.notification_workspace_ids(

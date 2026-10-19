@@ -814,7 +814,7 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         app=create_app(self.dependencies)
         auth={'cookie':f'{WEB_SESSION_COOKIE}={self.web.access_token}'}
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://127.0.0.1') as client:
-            with patch.object(cloud,'readiness',return_value=SimpleNamespace(ready=True,schema_revision='0069')),\
+            with patch.object(cloud,'readiness',return_value=SimpleNamespace(ready=True,schema_revision='0072')),\
                 patch('daon_user_api.notification_postgres.ScopedPostgresNotificationRepository',ScopedPort):
                 unauthorized=await client.get('/api/v1/notifications')
                 self.assertEqual(unauthorized.status_code,401);self.assertEqual(scopes,[])
@@ -841,11 +841,12 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
                     filtered=await client.get('/api/v1/notifications',headers=auth)
                 self.assertEqual(filtered.status_code,200)
                 self.assertEqual(tuple(item.workspace_id for item in scopes[-1]['contexts']),('workspace-001',))
-            with patch.object(cloud,'readiness',return_value=SimpleNamespace(ready=False,schema_revision='0068')):
-                unavailable=await client.get('/api/v1/notifications',headers=auth)
-                self.assertEqual((unavailable.status_code,unavailable.json()['error']['code'],unavailable.json()['error']['retryable']),
-                    (503,'RESOURCE_UNAVAILABLE',True),'구 DB를 Reference 빈 목록으로 바꾸지 않는다')
-            with patch.object(cloud,'readiness',return_value=SimpleNamespace(ready=True,schema_revision='0069')),\
+            for is_ready,revision in ((False,'0068'),(True,'0069'),(True,'0071'),(True,'0073'),(False,'0072')):
+                with self.subTest(ready=is_ready,revision=revision),patch.object(cloud,'readiness',return_value=SimpleNamespace(ready=is_ready,schema_revision=revision)):
+                    unavailable=await client.get('/api/v1/notifications',headers=auth)
+                    self.assertEqual((unavailable.status_code,unavailable.json()['error']['code'],unavailable.json()['error']['retryable']),
+                        (503,'RESOURCE_UNAVAILABLE',True),'정확한 준비 완료0072 이외는 빈 목록으로 바꾸지 않는다')
+            with patch.object(cloud,'readiness',return_value=SimpleNamespace(ready=True,schema_revision='0072')),\
                 patch('daon_user_api.notification_postgres.ScopedPostgresNotificationRepository',side_effect=NotificationError('DATABASE_UNAVAILABLE',503)):
                 unavailable=await client.get('/api/v1/notifications',headers=auth)
                 self.assertEqual((unavailable.status_code,unavailable.json()['error']['code']),(503,'RESOURCE_UNAVAILABLE'))
@@ -864,7 +865,7 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
             (self.authorization,'authorize_action',AuthorizationError('PERSISTENCE_UNAVAILABLE',503)))
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://127.0.0.1') as client:
             for owner,method,error in cases:
-                with self.subTest(stage=method),patch.object(cloud,'readiness',return_value=SimpleNamespace(ready=True,schema_revision='0069')),\
+                with self.subTest(stage=method),patch.object(cloud,'readiness',return_value=SimpleNamespace(ready=True,schema_revision='0072')),\
                     patch.object(owner,method,side_effect=error):
                     for endpoint in ('/api/v1/notifications', '/api/v1/inbox'):
                         response=await client.get(endpoint,headers=auth)
