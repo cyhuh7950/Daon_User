@@ -333,6 +333,35 @@ function BackupSelectionPane({ api, auth, scope, scopeRef, generation, paused, o
   </div>;
 }
 
+function WorkspaceTelemetry({status}){
+  const kinds={document:"문서",studio:"Studio",object:"Object"};
+  const states={fresh:"최근 수신",stale:"지난 관측",measured:"집계 확인",partial:"부분 집계",not_collected:"미집계",not_reported:"미보고",unavailable:"조회 불가"};
+  const metrics={cpu_quota_millicores:"CPU 할당",memory_limit_bytes:"메모리 한도",memory_current_bytes:"메모리 사용",runtime_available_bytes:"영속 저장 여유"};
+  const events={manual_reprocess_pending:"수동 재처리 대기",readiness_reprocess_pending:"Readiness 재처리 대기",retry_wait:"재시도 대기",backoff_wait:"Backoff 대기",
+    step_up_denied_24h:"추가 인증 거부",step_up_expired_24h:"만료 토큰 사용",access_blocked_24h:"접근 차단",access_masked_24h:"부분 마스킹",egress_denied_24h:"외부 송신 거부"};
+  const value=r=>r&&["fresh","stale","measured","partial"].includes(r.state)&&Number.isSafeInteger(r.value)&&r.value>=0?r.value:null;
+  const cost=status.cost_summary,deployment=status.deployment_summary;
+  return <>
+    <h3>Worker·자원 관측</h3>
+    <ul>{(status.worker_samples??[]).map(r=><li key={r.worker_kind}>
+      {kinds[r.worker_kind]} · {states[r.state]??"조회 불가"} · {{alive:"프로세스 관측",processing:"처리 중",poll_stale:"poll 지연",stopped:"종료 관측",unknown:"실행 미확인"}[r.process_state]}
+      {serverTimestamp(r.observed_at)?` · ${r.observed_at}`:""}
+    </li>)}</ul>
+    <dl>{(status.resource_samples??[]).map(r=><div key={`${r.worker_kind}:${r.metric_id}`}><dt>{kinds[r.worker_kind]} · {metrics[r.metric_id]}</dt>
+      <dd>{states[r.state]??"조회 불가"} · {value(r)===null?"값 미확인":`${r.value} ${r.unit}`}</dd></div>)}</dl>
+    <h3>차단·재처리 관측 <span title="현재 접근 가능한 기록만 집계합니다. 뒤 5종은 같은 DB 시각의 직전 24시간입니다. 귀속 미확인·미구현·조회 실패는 0건으로 계산하지 않습니다.">ⓘ</span></h3>
+    <dl>{Object.entries(events).map(([id,label])=>{const r=status.event_counts?.find(row=>row.metric_id===id);return <div key={id}><dt>{label}</dt>
+      <dd>{states[r?.state]??"미집계"} · {value(r)===null?"값 미확인":`${r.value}건`}{serverTimestamp(r?.window_end)?` · ${r.window_start} ~ ${r.window_end}`:""}</dd></div>;})}</dl>
+    <h3>비용·배포 기록</h3>
+    <p>비용: {states[cost?.state]??"미집계"} · {(cost?.known_amounts??[]).map(r=>`${r.currency} ${r.amount}`).join(" / ")||"확정 금액 없음"}
+      {Number.isSafeInteger(cost?.unknown_attempt_count)?` · 비용 미확인 attempt ${cost.unknown_attempt_count}건`:""}
+      {Number.isSafeInteger(cost?.unconfirmed_run_count)?` · 수집 미확정 Run ${cost.unconfirmed_run_count}건`:""}</p>
+    <p>배포·Rollback: {deployment?.result?`${deployment.operation} · ${deployment.result} · ${deployment.code_revision??"코드 미확인"}`:"확인된 기록 미수집"}</p>
+    {(status.unimplemented??[]).length>0&&<p>미구현 수집: {status.unimplemented.map(r=>({waiting_role_producer:"역할 Readiness",readiness_event_producer:"Readiness 자동 재처리",
+      retry_suppression_receipt:"중복 억제 기록",node_capacity_producer:"Node 용량",provider_capacity_reporter:"Provider 용량",deployment_receipt_writer:"배포 기록",cost_receipt_writer:"비용 기록"}[r.producer_id])).join(", ")}</p>}
+  </>;
+}
+
 export function RecoveryOperationsWorkspace({ api = recoveryApi } = {}) {
   const targetRef = useRef(null);
   const generation = useRef(0);
@@ -351,9 +380,11 @@ export function RecoveryOperationsWorkspace({ api = recoveryApi } = {}) {
   const scopeRef = useRef({ api, active: false });
   if (scopeRef.current.api !== api) scopeRef.current = { api, active: false };
   const scope = scopeRef.current;
+  const [metricsScope,setMetricsScope]=useState("self");
+  const metricsScopeRef=useRef(metricsScope);metricsScopeRef.current=metricsScope;
   const [loaded, setLoaded] = useState({ ownerApi: api, state: "none", target: null });
   const address = typeof window === "undefined" ? "" : window.location.search + window.location.hash;
-  const own = loaded.ownerApi === api && loaded.scope === scope && loaded.address === address;
+  const own = loaded.ownerApi === api && loaded.scope === scope && loaded.address === address && loaded.metricsScope===metricsScope;
   const ready = own && ["ready", "home", "system"].includes(loaded.state) && loaded.epoch === generation.current && !paused.current;
   const state = own ? loaded.state : loaded.state === "none" ? "none" : "loading";
 
@@ -380,9 +411,9 @@ export function RecoveryOperationsWorkspace({ api = recoveryApi } = {}) {
       const search = window.location.search, hash = window.location.hash;
       const currentAddress = search + hash;
       const current = () => scope.active && scopeRef.current === scope && generation.current === epoch
-        && !paused.current && window.location.search + window.location.hash === currentAddress;
+        && !paused.current && window.location.search + window.location.hash === currentAddress && metricsScopeRef.current===metricsScope;
       const publish = (nextState, target = null, home = null) => {
-        if (current()) setLoaded({ ownerApi: api, scope, address: currentAddress, epoch, state: nextState, target, home });
+        if (current()) setLoaded({ ownerApi: api, scope, metricsScope, address: currentAddress, epoch, state: nextState, target, home });
       };
       const target = selection(search, hash);
       if (target === false) { publish("invalid"); return; }
@@ -404,8 +435,11 @@ export function RecoveryOperationsWorkspace({ api = recoveryApi } = {}) {
         if (!before) { publish("unavailable"); return; }
         // 실제 search/hash가 모두 없는 홈만 조회한다. 초기 state로 주소를 추정하지 않는다.
         if (target === null) {
+          if(metricsScope==="workspace_visible"&&!actionSession(beforeResponse)?.operations.includes("cloud_backup_list")){
+            publish("forbidden");return;
+          }
           const [status, backups] = await Promise.allSettled([
-            Promise.resolve().then(() => api.getOperationsStatus(before[2])),
+            Promise.resolve().then(() => api.getOperationsStatus(before[2],{scope:metricsScope})),
             Promise.resolve().then(() => api.listBackups(before[2])),
           ]);
           if (!current()) return;
@@ -463,7 +497,7 @@ export function RecoveryOperationsWorkspace({ api = recoveryApi } = {}) {
       window.removeEventListener("focus", onRefresh);
       document.removeEventListener("visibilitychange", visibility);
     };
-  }, [api, scope]);
+  }, [api, scope,metricsScope]);
 
   useLayoutEffect(() => {
     if (!ready && passwordRef.current) passwordRef.current.value = "";
@@ -620,6 +654,12 @@ export function RecoveryOperationsWorkspace({ api = recoveryApi } = {}) {
               setLoaded({ ...loaded, state: nextState, target: null, home: null });
             }} />
           <h2>현재 Workspace 운영 상태</h2>
+          <fieldset><legend>관측 범위</legend>
+            <button type="button" aria-pressed={metricsScope==="self"} onClick={()=>setMetricsScope("self")}>본인 기록</button>
+            <button type="button" aria-pressed={metricsScope==="workspace_visible"}
+              disabled={!loaded.home.actionSession?.operations.includes("cloud_backup_list")}
+              onClick={()=>setMetricsScope("workspace_visible")}>현재 열람 가능한 Workspace 기록</button>
+          </fieldset>
           {loaded.home.status ? <>
             <p>기존 5종 상태: {STATUS_NAMES[loaded.home.status.overall_status]} · 확인 시각: {loaded.home.status.checked_at}</p>
             <ul>{loaded.home.status.components.map(item => <li key={item.component_id}>
@@ -635,7 +675,8 @@ export function RecoveryOperationsWorkspace({ api = recoveryApi } = {}) {
                 {measured && serverTimestamp(row.observed_at) ? ` · ${row.observed_at}` : ""}</dd></div>;
             })}</dl>
             <p>자료·Token은 본인의 현재 접근 가능한 기록만 집계합니다. Queue는 기존 Workspace 운영 집계입니다. Token 누락은 0으로 계산하지 않으며 기간 전체 사용량이 아닙니다.</p>
-            <p>실제 비용·Worker heartbeat·Node/모델 용량·차단·Update/Rollback 등의 미수집·미연결 범위는 남아 있습니다. lease와 Index 기록 수는 실제 생존이나 Build 진행률이 아닙니다.</p>
+            <WorkspaceTelemetry status={loaded.home.status}/>
+            <p>lease와 Index 기록 수는 실제 생존이나 Build 진행률이 아닙니다. 미집계·미보고는 정상 0건이 아닙니다.</p>
           </> : <p role="status">운영 상태: {MESSAGES[loaded.home.statusError]}</p>}
           <h2>백업 목록</h2>
           {loaded.home.items === null ? <p role="status">백업 목록: {MESSAGES[loaded.home.backupsError]}</p>

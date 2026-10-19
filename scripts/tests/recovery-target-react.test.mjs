@@ -154,7 +154,7 @@ const operations = () => ({ workspace_id: "workspace-a", overall_status: "warnin
     { component_id: "queue", status: "warning", safe_code: "QUEUE_ATTENTION_REQUIRED", pending_count: 0, recovery_action: "refresh_status" },
   ], observations: ["document_pending", "document_retry_wait", "document_leased", "document_dead_letter", "object_pending", "object_retry_wait", "object_leased", "object_dead_letter", "object_oldest_pending_seconds", "source_waiting_model", "index_records_current", "source_storage_bytes", "reported_prompt_tokens", "reported_completion_tokens", "reported_total_tokens", "attempts_without_reported_usage"].map((metric_id, index) => ({ metric_id,
     state: "not_collected", value: null, unit: index === 8 ? "seconds" : index === 11 ? "bytes" : index >= 12 && index <= 14 ? "tokens" : "count",
-    observed_at: null, coverage: index < 9 ? "workspace_operational_counts" : "actor_accessible_records", safe_code: "METRIC_NOT_COLLECTED" })) });
+    observed_at: null, coverage: index < 9 ? "workspace_operational_counts" : "actor_accessible_records", safe_code: "METRIC_NOT_COLLECTED" })),...workspaceTelemetry() });
 function homePort(overrides = {}) {
   const p = port();
   p.api.getOperationsStatus = async workspace => { p.calls.push(["status", workspace]); return operations(); };
@@ -173,6 +173,50 @@ const systemStatus = () => {
     deployment_summary:{...common,operation:null,code_revision:null,image_digest:null,previous_image_digest:null,result:null},
     unimplemented:[{producer_id:"deployment_receipt_writer",safe_code:"PRODUCER_NOT_IMPLEMENTED",impact_code:"DEPLOYMENT_HISTORY_UNKNOWN"}]};
 };
+
+function workspaceTelemetry(){
+  const system=systemStatus(),common={state:"not_collected",observed_at:null,received_at:null,coverage:"actor_accessible_records",safe_code:"TELEMETRY_NOT_COLLECTED"};
+  return {worker_samples:system.worker_samples.map(r=>({...r,coverage:"workspace_operational_counts"})),
+    resource_samples:system.resource_samples.map(r=>({...r,coverage:"workspace_operational_counts"})),
+    event_counts:["manual_reprocess_pending","readiness_reprocess_pending","retry_wait","backoff_wait","step_up_denied_24h","step_up_expired_24h","access_blocked_24h","access_masked_24h","egress_denied_24h"].map(metric_id=>({...common,metric_id,value:null,unit:"count",window_start:null,window_end:null})),
+    cost_summary:{...common,known_amounts:[],unknown_attempt_count:null,unconfirmed_run_count:null,coverage_start:null,coverage_end:null},
+    deployment_summary:{...common,operation:null,code_revision:null,image_digest:null,previous_image_digest:null,result:null},
+    unimplemented:[{producer_id:"readiness_event_producer",safe_code:"PRODUCER_NOT_IMPLEMENTED",impact_code:"AUTOMATIC_REPROCESS_UNOBSERVED"}]};
+}
+
+test("M2 workspace home renders typed observations and discards prior scope while visible request waits",async()=>{
+  const late=deferred(),scopes=[];
+  const p=homePort({getOperationsStatus:async(workspace,{scope}={})=>{scopes.push(scope);return scope==="workspace_visible"?late.promise:operations();}});
+  const view=await render("",p.api);
+  try{
+    assert.match(visibleText(view.container),/Worker·자원 관측/u);
+    assert.match(visibleText(view.container),/차단·재처리 관측/u);
+    assert.match(visibleText(view.container),/미집계/u);
+    await click(view,"현재 열람 가능한 Workspace 기록");
+    assert.doesNotMatch(visibleText(view.container),/차단·재처리 관측/u);
+    await view.act(async()=>late.resolve(operations()));
+    assert.deepEqual(scopes,["self","workspace_visible"]);
+    assert.match(visibleText(view.container),/차단·재처리 관측/u);
+    assert.doesNotMatch(visibleText(view.container),/기본 USD|PRIVATE_BOOT/u);
+    assert.deepEqual(p.writes,[]);
+  }finally{await view.cleanup();}
+});
+
+test("M2 explicit Workspace scope remains denied on privilege withdrawal without silently reading self",async()=>{
+  let revoked=false;const scopes=[];
+  const p=homePort({getSession:async()=>session(revoked?{recovery_operations:[]}:{}),
+    getOperationsStatus:async(workspace,{scope}={})=>{scopes.push(scope);return operations();}});
+  const view=await render("",p.api);
+  try{
+    assert.deepEqual(scopes,["self"]);
+    revoked=true;
+    await click(view,"현재 열람 가능한 Workspace 기록");
+    assert.deepEqual(scopes,["self"],"revoked explicit scope must not fetch a replacement self projection");
+    assert.match(visibleText(view.container),/권한|접근/u);
+    assert.doesNotMatch(visibleText(view.container),/차단·재처리 관측/u);
+    assert.deepEqual(p.writes,[]);
+  }finally{await view.cleanup();}
+});
 
 test("M2-S noWS admin system home reads only system status with session before/after",async()=>{
   const p=homePort({getSession:async()=>{p.calls.push(["session"]);return session({workspace_id:null,is_system_admin:true});},

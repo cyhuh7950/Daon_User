@@ -499,12 +499,58 @@ function validObservations(rows) {
       : Number.isSafeInteger(row.value) && row.value >= 0 && observationTime(row.observed_at)));
 }
 
+const TELEMETRY_FIELDS=["worker_samples","resource_samples","event_counts","cost_summary","deployment_summary","unimplemented"];
+const EVENT_METRICS=["manual_reprocess_pending","readiness_reprocess_pending","retry_wait","backoff_wait","step_up_denied_24h","step_up_expired_24h","access_blocked_24h","access_masked_24h","egress_denied_24h"];
+function validWorkspaceTelemetry(data){
+  const common=["state","observed_at","received_at","coverage","safe_code"],unknown=r=>["not_collected","not_reported","unavailable"].includes(r.state);
+  const number=v=>Number.isSafeInteger(v)&&v>=0,nullable=v=>v===null||observationTime(v);
+  const base=(r,fields,coverage,states)=>exact(r,[...common,...fields])&&states.includes(r.state)&&r.coverage===coverage
+    &&r.safe_code===`TELEMETRY_${r.state.toUpperCase()}`
+    &&(unknown(r)?r.observed_at===null&&r.received_at===null:observationTime(r.observed_at)&&observationTime(r.received_at));
+  const kinds=["document","studio","object"],metrics=["cpu_quota_millicores","memory_limit_bytes","memory_current_bytes","runtime_available_bytes"],fresh=["fresh","stale","not_collected","unavailable"];
+  if(!Array.isArray(data.worker_samples)||data.worker_samples.length!==3||!data.worker_samples.every((r,i)=>
+    base(r,["worker_kind","process_state","poll_started_at","poll_finished_at","active_started_at"],"workspace_operational_counts",fresh)&&r.worker_kind===kinds[i]
+    &&["alive","processing","poll_stale","stopped","unknown"].includes(r.process_state)&&[r.poll_started_at,r.poll_finished_at,r.active_started_at].every(nullable)
+    &&(!unknown(r)||(r.process_state==="unknown"&&[r.poll_started_at,r.poll_finished_at,r.active_started_at].every(v=>v===null)))
+    &&(r.process_state!=="processing"||r.active_started_at!==null)))return false;
+  if(!Array.isArray(data.resource_samples)||data.resource_samples.length!==12||!data.resource_samples.every((r,i)=>
+    base(r,["worker_kind","metric_id","value","unit"],"workspace_operational_counts",fresh)&&r.worker_kind===kinds[Math.floor(i/4)]
+    &&r.metric_id===metrics[i%4]&&r.unit===(i%4===0?"millicores":"bytes")&&(unknown(r)?r.value===null:number(r.value))))return false;
+  if(!Array.isArray(data.event_counts)||data.event_counts.length!==9||!data.event_counts.every((r,i)=>
+    base(r,["metric_id","value","unit","window_start","window_end"],"actor_accessible_records",["measured","partial","not_collected","unavailable"])
+    &&r.metric_id===EVENT_METRICS[i]&&r.unit==="count"&&(unknown(r)?r.value===null&&r.window_start===null&&r.window_end===null:
+      number(r.value)&&(i<4?r.window_start===null&&r.window_end===null:observationTime(r.window_start)&&r.window_end===r.observed_at&&Date.parse(r.window_end)-Date.parse(r.window_start)===86400000))))return false;
+  const c=data.cost_summary;
+  if(!base(c,["known_amounts","unknown_attempt_count","unconfirmed_run_count","coverage_start","coverage_end"],"actor_accessible_records",["measured","partial","not_collected","not_reported","unavailable"])
+    ||!Array.isArray(c.known_amounts)||!c.known_amounts.every(r=>exact(r,["currency","amount"])&&typeof r.currency==="string"&&/^[A-Z]{3}$/u.test(r.currency)
+      &&typeof r.amount==="string"&&/^(?:0|[1-9][0-9]{0,23})(?:\.[0-9]{1,9})?$/u.test(r.amount))
+    ||JSON.stringify(c.known_amounts.map(r=>r.currency))!==JSON.stringify([...new Set(c.known_amounts.map(r=>r.currency))].sort())
+    ||![c.coverage_start,c.coverage_end].every(nullable)
+    ||(unknown(c)?c.known_amounts.length!==0||[c.unknown_attempt_count,c.unconfirmed_run_count,c.coverage_start,c.coverage_end].some(v=>v!==null):
+      !number(c.unknown_attempt_count)||!number(c.unconfirmed_run_count)))return false;
+  const d=data.deployment_summary;
+  if(!base(d,["operation","code_revision","image_digest","previous_image_digest","result"],"actor_accessible_records",["measured","not_collected","unavailable"])
+    ||(unknown(d)?[d.operation,d.code_revision,d.image_digest,d.previous_image_digest,d.result].some(v=>v!==null):
+      !["deploy","rollback"].includes(d.operation)||!["succeeded","failed","uncertain"].includes(d.result)
+      ||!(d.code_revision===null||typeof d.code_revision==="string"&&/^[a-f0-9]{40}$/u.test(d.code_revision))
+      ||![d.image_digest,d.previous_image_digest].every(v=>v===null||typeof v==="string"&&/^sha256:[a-f0-9]{64}$/u.test(v))
+      ||d.result==="succeeded"&&(d.code_revision===null||d.image_digest===null||d.operation==="rollback"&&d.previous_image_digest===null)))return false;
+  const producers=["waiting_role_producer","readiness_event_producer","retry_suppression_receipt","node_capacity_producer","provider_capacity_reporter","deployment_receipt_writer","cost_receipt_writer"];
+  const impacts=["ROLE_READINESS_UNKNOWN","AUTOMATIC_REPROCESS_UNOBSERVED","DEDUP_NOT_OBSERVED","CAPACITY_UNKNOWN","CAPACITY_UNKNOWN","DEPLOYMENT_HISTORY_UNKNOWN","COST_UNKNOWN"];
+  let previous=-1;
+  if(!Array.isArray(data.unimplemented))return false;
+  for(const row of data.unimplemented){const i=producers.indexOf(row?.producer_id);
+    if(!exact(row,["producer_id","safe_code","impact_code"])||i<0||i<=previous||row.safe_code!=="PRODUCER_NOT_IMPLEMENTED"||row.impact_code!==impacts[i])return false;previous=i;}
+  return true;
+}
+
 export async function getWorkspaceOperationsStatus(
-  workspaceId, { fetchImpl = fetch, signal } = {},
+  workspaceId, { fetchImpl = fetch, signal, scope="self" } = {},
 ) {
   const workspace = requiredWorkspace(workspaceId, "OPERATIONS_STATUS_INPUT_INVALID");
+  if(!["self","workspace_visible"].includes(scope))throw new Error("OPERATIONS_STATUS_INPUT_INVALID");
   const response = await fetchImpl(
-    `/bff/api/workspaces/${encodeURIComponent(workspace)}/operations/status`,
+    `/bff/api/workspaces/${encodeURIComponent(workspace)}/operations/status${scope==="self"?"":"?scope=workspace_visible"}`,
     { method: "GET", credentials: "same-origin", cache: "no-store", signal },
   );
   const payload = await json(response, "OPERATIONS_STATUS_RESPONSE_INVALID");
@@ -518,7 +564,7 @@ export async function getWorkspaceOperationsStatus(
   const data = payload?.data;
   const components = data?.components;
   const valid = exact(payload, ["data", "meta"])
-    && exact(data, ["workspace_id", "overall_status", "checked_at", "components", "observations"])
+    && exact(data, ["workspace_id", "overall_status", "checked_at", "components", "observations",...TELEMETRY_FIELDS])
     && data.workspace_id === workspace
     && new Set(["ready", "warning", "error"]).has(data.overall_status)
     && typeof data.checked_at === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/u.test(data.checked_at)
@@ -529,7 +575,7 @@ export async function getWorkspaceOperationsStatus(
       && typeof item.safe_code === "string" && /^[A-Z][A-Z0-9_]{2,63}$/u.test(item.safe_code)
       && Number.isSafeInteger(item.pending_count) && item.pending_count >= 0
       && new Set(["none", "open_llm_settings", "open_sync_settings", "refresh_status"]).has(item.recovery_action))
-    && validObservations(data.observations) && validMeta(payload.meta, workspace);
+    && validObservations(data.observations) && validWorkspaceTelemetry(data) && validMeta(payload.meta, workspace);
   if (!valid) throw new Error("OPERATIONS_STATUS_RESPONSE_INVALID");
   return data;
 }

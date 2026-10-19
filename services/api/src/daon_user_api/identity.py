@@ -2137,6 +2137,7 @@ class IdentityService:
         operation: str | None = None,
         idempotency_key: str | None = None,
         success_audit=None,
+        operations_scope=None,
     ) -> None:
         tenant_id, actor_id = str(principal["tenant_id"]), str(principal["user_id"])
         if (operation is None) != (idempotency_key is None):
@@ -2152,6 +2153,12 @@ class IdentityService:
         row = connection.execute("SELECT * FROM step_up_authorizations WHERE authorization_digest=?", (_digest(raw),)).fetchone()
         if row is None:
             raise IdentityError("STEP_UP_REQUIRED", 403)
+        from .operations_audit_scope import scope_metadata
+        observed_scope=scope_metadata(operations_scope,principal)
+        def denial_metadata(reason):
+            value={"reason_code":reason}
+            if observed_scope is not None:value["operations_scope"]=observed_scope
+            return value
         consumption_fingerprint = hashlib.sha256(
             json.dumps(
                 [
@@ -2184,13 +2191,13 @@ class IdentityService:
             self._audit(action="identity.step_up.reuse_denied", outcome=AuditOutcome.DENIED,
                         trace_id=trace_id, policy_version=policy_version, tenant_id=tenant_id,
                         actor_id=actor_id, target_type="step_up", target_id=str(row["step_up_id"]),
-                        metadata={"reason_code": "STEP_UP_REUSED"})
+                        metadata=denial_metadata("STEP_UP_REUSED"))
             raise IdentityError("STEP_UP_REUSED", 403)
         if _dt(str(row["expires_at"])) <= now:
             self._audit(action="identity.step_up.expired", outcome=AuditOutcome.DENIED,
                         trace_id=trace_id, policy_version=policy_version, tenant_id=tenant_id,
                         actor_id=actor_id, target_type="step_up", target_id=str(row["step_up_id"]),
-                        metadata={"reason_code": "STEP_UP_EXPIRED"})
+                        metadata=denial_metadata("STEP_UP_EXPIRED"))
             raise IdentityError("STEP_UP_EXPIRED", 403)
         binding = (actor_id, str(principal["session_id"]), str(principal["device_id"]), tenant_id, action_group, target_id, policy_version)
         expected = (str(row["actor_id"]), str(row["session_id"]), str(row["device_id"]), str(row["tenant_id"]), str(row["action_group"]), str(row["target_id"]), str(row["policy_version"]))
@@ -2198,7 +2205,7 @@ class IdentityService:
             self._audit(action="identity.step_up.binding_denied", outcome=AuditOutcome.DENIED,
                         trace_id=trace_id, policy_version=policy_version, tenant_id=tenant_id,
                         actor_id=actor_id, target_type="step_up", target_id=str(row["step_up_id"]),
-                        metadata={"reason_code": "STEP_UP_BINDING_DENIED"})
+                        metadata=denial_metadata("STEP_UP_BINDING_DENIED"))
             raise IdentityError("STEP_UP_BINDING_DENIED", 403)
         connection.execute("UPDATE step_up_authorizations SET used_at=? WHERE step_up_id=? AND used_at IS NULL", (_iso(now), str(row["step_up_id"])))
         if operation is not None and idempotency_key is not None:
@@ -2232,6 +2239,7 @@ class IdentityService:
         trace_id: str,
         operation: str | None = None,
         idempotency_key: str | None = None,
+        operations_scope=None,
     ) -> None:
         action_group = _checked_text(action_group); target_id = _checked_text(target_id)
         _checked_text(policy_version); _checked_text(trace_id)
@@ -2241,7 +2249,7 @@ class IdentityService:
             self._consume_step_up(connection, raw=step_up_authorization, principal=principal,
                                   action_group=action_group, target_id=target_id,
                                   policy_version=policy_version, trace_id=trace_id, now=now,
-                                  operation=operation, idempotency_key=idempotency_key)
+                                  operation=operation, idempotency_key=idempotency_key,operations_scope=operations_scope)
 
     def trust_device(self, *, access_token: str, device_id: str, trace_id: str, policy_version: str) -> None:
         device_id = _checked_text(device_id); _checked_text(trace_id); _checked_text(policy_version)

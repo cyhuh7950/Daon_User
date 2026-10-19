@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 from .document_index_postgres import IndexedEvidenceChunk
 from .document_understanding_adapter import _evidence_anchors
 from .provider_settings import ProviderSettingsSnapshot
+from .operations_telemetry import ReportedCost,reported_cost_from_usage
 
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
@@ -95,6 +96,7 @@ class GroundedTextResult:
     cited_chunk_ids: tuple[str, ...]
     insufficient: bool
     usage: Mapping[str, int]
+    reported_cost: ReportedCost | None = None
 
 
 class TextGenerationTransport(Protocol):
@@ -263,7 +265,7 @@ class OpenAICompatibleTextGenerationAdapter:
             or not material_anchors_supported
         ):
             raise ValueError("TEXT_GENERATION_GROUNDING_INVALID")
-        return GroundedTextResult(answer, cited, insufficient, usage)
+        return GroundedTextResult(answer, cited, insufficient, usage,reported_cost_from_usage(response.get("usage")))
 
     def _post(self, selection: TextModelSelection, payload: dict[str, object]) -> dict[str, object]:
         if self._api_key is None:
@@ -324,7 +326,7 @@ class OpenAICompatibleTextGenerationAdapter:
             raise ValueError("TEXT_GENERATION_RESPONSE_INVALID") from None
         if not answer or len(answer) > 8_000:
             raise ValueError("TEXT_GENERATION_RESPONSE_INVALID")
-        return GroundedTextResult(answer, (), False, usage)
+        return GroundedTextResult(answer, (), False, usage,reported_cost_from_usage(response.get("usage")))
 
 
 class AnthropicMessagesTextGenerationAdapter(OpenAICompatibleTextGenerationAdapter):
@@ -763,7 +765,7 @@ class OllamaTextGenerationAdapter:
                 return values
             if not currencies(answer).issubset(currencies(cited_text)):
                 raise ValueError('TEXT_GENERATION_GROUNDING_INVALID')
-        return GroundedTextResult(answer, cited, insufficient, usage)
+        return GroundedTextResult(answer, cited, insufficient, usage,reported_cost_from_usage(response.get("usage")))
 
     @staticmethod
     def general_provider_payload(
@@ -808,4 +810,4 @@ class OllamaTextGenerationAdapter:
             raise ValueError("TEXT_GENERATION_RESPONSE_INVALID") from None
         if not answer or len(answer) > 8_000:
             raise ValueError("TEXT_GENERATION_RESPONSE_INVALID")
-        return GroundedTextResult(answer, (), False, usage)
+        return GroundedTextResult(answer, (), False, usage,reported_cost_from_usage(response.get("usage")))

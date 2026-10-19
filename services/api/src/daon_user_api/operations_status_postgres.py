@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import math
 import json
-from datetime import datetime, timezone
+import re
+from contextlib import contextmanager
+from datetime import datetime, timezone, timedelta
 from types import SimpleNamespace
 from psycopg import Error
 
 from .cloud_storage import CloudAccessContext, CloudDatabaseError, PostgresCloudStore
 from .operations_status import (OperationsCounts, OperationsStatusContext, OperationsObservation,
-    OBSERVATION_IDS, OBSERVATION_STATES, observation_scope, unknown_observations)
+    OBSERVATION_IDS, OBSERVATION_STATES, observation_scope, unknown_observations, unknown_telemetry)
 from .document_index_postgres import _source_access_allowed
 from .notification_source_access import _special_source_access_allowed
 from .notification import NotificationError
@@ -55,6 +57,18 @@ class PostgresOperationsStatusRepository:
             return tuple(result),now
         except Exception:raise OperationsStatusError() from None
 
+    def read_deployment_receipt(self):
+        from .operations_telemetry_postgres import PostgresOperationsTelemetryRepository
+        @contextmanager
+        def read_only():
+            self._cloud_store._ensure_pool_open()
+            with self._cloud_store._pool.connection(timeout=2) as connection,connection.transaction():
+                connection.execute("SET TRANSACTION READ ONLY")
+                connection.execute("SET LOCAL ROLE daon_app")
+                connection.execute("SET LOCAL statement_timeout='1500ms'")
+                yield connection
+        return PostgresOperationsTelemetryRepository.using_transaction(read_only).read_deployment_receipt()
+
     def read_counts(self, context: OperationsStatusContext) -> OperationsCounts:
         try:
             with self._cloud_store._transaction(CloudAccessContext(context.tenant_id, context.workspace_id, context.actor_id, "operations.read")) as connection:
@@ -73,6 +87,270 @@ class PostgresOperationsStatusRepository:
 
     def _transaction(self, context):
         return self._cloud_store._transaction(CloudAccessContext(context.tenant_id, context.workspace_id, context.actor_id, "operations.read"))
+
+    @staticmethod
+    def _authorize_telemetry(connection,context):
+        from .operations_telemetry_postgres import PostgresOperationsTelemetryRepository
+        from .authorization import Action,AuthorizationError
+        from .open_law_source_access import _current_auth_grant,OpenLawAccessError
+        PostgresOperationsTelemetryRepository._authorize(connection,context)
+        if context.scope=="workspace_visible":
+            try:_current_auth_grant(context,connection,Action.POLICY_MANAGE)
+            except OpenLawAccessError:raise AuthorizationError("CURRENT_ACCESS_DENIED",403) from None
+
+    @staticmethod
+    def _visible_sources(connection,context):
+        rows=connection.execute(
+            "SELECT DISTINCT n.notebook_id,n.created_by,sv.record_id,sv.object_id FROM notebooks n JOIN notebook_bindings b ON "
+            "(b.tenant_id,b.workspace_id,b.notebook_id)=(n.tenant_id,n.workspace_id,n.notebook_id) AND b.binding_kind='source' "
+            "JOIN source_versions sv ON (sv.tenant_id,sv.workspace_id,sv.record_id,sv.source_id)=(b.tenant_id,b.workspace_id,b.version_id,b.record_id) "
+            "JOIN sources s ON (s.tenant_id,s.workspace_id,s.record_id)=(sv.tenant_id,sv.workspace_id,sv.source_id) "
+            "WHERE n.tenant_id=%s AND n.workspace_id=%s AND (%s='workspace_visible' OR n.created_by=%s) "
+            "AND s.state NOT IN ('expired','disabled','deleting','deleted') "
+            "AND NOT EXISTS(SELECT 1 FROM notebook_deletion_requests d WHERE (d.tenant_id,d.workspace_id,d.notebook_id)=(n.tenant_id,n.workspace_id,n.notebook_id) AND d.state IN ('accepted','deleting','completed')) "
+            "AND NOT EXISTS(SELECT 1 FROM notebook_source_unbindings u WHERE (u.tenant_id,u.workspace_id,u.notebook_id,u.source_id,u.source_version_id)=(b.tenant_id,b.workspace_id,b.notebook_id,b.record_id,b.version_id)) "
+            "AND NOT EXISTS(SELECT 1 FROM deletion_requests d WHERE (d.tenant_id,d.workspace_id,d.source_id)=(s.tenant_id,s.workspace_id,s.record_id) AND (d.source_active=false OR d.state='purged'))",
+            (context.tenant_id,context.workspace_id,context.scope,context.actor_id)).fetchall()
+        visible={}
+        for notebook,owner,version,obj in rows:
+            if context.scope=="self" and owner!=context.actor_id:continue
+            scoped=SimpleNamespace(tenant_id=context.tenant_id,workspace_id=context.workspace_id,actor_id=context.actor_id,
+                notebook_id=notebook,trace_id=context.trace_id,policy_version=context.policy_version)
+            if _source_access_allowed(connection,scoped,version) and _special_source_access_allowed(connection,scoped,version):
+                visible.setdefault(version,set()).add((notebook,owner,obj))
+        return visible
+
+    @staticmethod
+    def _event_metric(key,value,when,*,window_start=None):
+        stamp=when.isoformat().replace("+00:00","Z")
+        return dict(state="measured",observed_at=stamp,received_at=stamp,coverage="actor_accessible_records",
+            safe_code="TELEMETRY_MEASURED",metric_id=key,value=value,unit="count",
+            window_start=None if window_start is None else window_start.isoformat().replace("+00:00","Z"),
+            window_end=None if window_start is None else stamp)
+
+    def read_pending_events(self,context):
+        from .authorization import AuthorizationError
+        from .operations_telemetry import _utc
+        with self._transaction(context) as connection:
+            self._authorize_telemetry(connection,context)
+            when=_utc(connection.execute("SELECT clock_timestamp()").fetchone()[0])
+            visible=self._visible_sources(connection,context)
+            allowed_objects={obj for values in visible.values() for _,_,obj in values if obj is not None}
+            eligible=lambda actor:context.scope=="workspace_visible" or actor==context.actor_id
+            docs=connection.execute("SELECT j.job_id,j.created_by,j.source_version_id,j.state,p.trigger_type,j.next_attempt_at "
+                "FROM document_processing_jobs j JOIN processing_runs p ON (p.tenant_id,p.workspace_id,p.record_id)=(j.tenant_id,j.workspace_id,j.processing_run_id) "
+                "WHERE j.tenant_id=%s AND j.workspace_id=%s AND j.state IN ('pending','leased','retry_wait')",
+                (context.tenant_id,context.workspace_id)).fetchall()
+            manual=set();retry=set();backoff=set()
+            for job,actor,version,state,trigger,next_at in docs:
+                if not eligible(actor) or version not in visible:continue
+                if trigger=="manual_request" and state in {"pending","leased","retry_wait"}:manual.add(job)
+                if state=="retry_wait":retry.add(("document",job))
+                if state in {"pending","retry_wait"} and _utc(next_at)>when:backoff.add(("document",job))
+            objects=connection.execute("SELECT j.job_id,j.created_by,e.object_id,j.state,j.next_attempt_at FROM durable_jobs j "
+                "JOIN object_outbox_events e ON (e.tenant_id,e.workspace_id,e.event_id)=(j.tenant_id,j.workspace_id,j.event_id) "
+                "WHERE j.tenant_id=%s AND j.workspace_id=%s AND j.state IN ('pending','retry_wait')",
+                (context.tenant_id,context.workspace_id)).fetchall()
+            for job,actor,obj,state,next_at in objects:
+                if not eligible(actor) or obj not in allowed_objects:continue
+                if state=="retry_wait":retry.add(("object",job))
+                if _utc(next_at)>when:backoff.add(("object",job))
+            studio=connection.execute("SELECT job_id,actor_id,request_json->>'notebook_id',request_json->'source_version_ids',state,next_attempt_at "
+                "FROM studio_generation_jobs WHERE tenant_id=%s AND workspace_id=%s AND state='queued' AND next_attempt_at>%s",
+                (context.tenant_id,context.workspace_id,when)).fetchall()
+            for job,actor,notebook,versions,state,next_at in studio:
+                if (not eligible(actor) or type(versions) is not list or not versions
+                    or any(type(v) is not str or v not in visible or not any(n==notebook for n,_,_ in visible[v]) for v in versions)):continue
+                if state=="queued" and _utc(next_at)>when:backoff.add(("studio",job))
+            self._authorize_telemetry(connection,context)
+            if self._visible_sources(connection,context)!=visible:raise AuthorizationError("CURRENT_ACCESS_DENIED",403)
+        missing=unknown_telemetry()["event_counts"][1]
+        return (self._event_metric("manual_reprocess_pending",len(manual),when),missing,
+            self._event_metric("retry_wait",len(retry),when),self._event_metric("backoff_wait",len(backoff),when))
+
+    def read_workspace_telemetry(self,context):
+        from .operations_status import SystemOperationsStatusService,validate_telemetry
+        with self._transaction(context) as connection:self._authorize_telemetry(connection,context)
+        result=unknown_telemetry()
+        system=SystemOperationsStatusService(self).read(api_ready=True,database_ready=True,object_storage_ready=True,
+            checked_at=datetime.now(timezone.utc).isoformat().replace("+00:00","Z"))
+        for key in ("worker_samples","resource_samples"):
+            result[key]=[dict(row,coverage="workspace_operational_counts") for row in system[key]]
+        result["deployment_summary"]=dict(system["deployment_summary"],coverage="actor_accessible_records")
+        result["unimplemented"]=[r for r in result["unimplemented"] if r["producer_id"] not in {"cost_receipt_writer","deployment_receipt_writer"}]
+        try:result["event_counts"][:4]=self.read_pending_events(context)
+        except (CloudDatabaseError,Error,ValueError,OverflowError):
+            result["event_counts"][:4]=unknown_telemetry("unavailable")["event_counts"][:4]
+        except NotificationError as error:
+            if error.code!="DATABASE_UNAVAILABLE" or error.http_status!=503:raise
+            result["event_counts"][:4]=unknown_telemetry("unavailable")["event_counts"][:4]
+        try:result["event_counts"][4:9]=self.read_decision_events(context)
+        except (CloudDatabaseError,Error,ValueError,OverflowError):
+            result["event_counts"][4:9]=unknown_telemetry("unavailable")["event_counts"][4:9]
+        except NotificationError as error:
+            if error.code!="DATABASE_UNAVAILABLE" or error.http_status!=503:raise
+            result["event_counts"][4:9]=unknown_telemetry("unavailable")["event_counts"][4:9]
+        from .operations_telemetry import TelemetryUnavailable
+        try:result["cost_summary"]=self.read_cost_summary(context)
+        except (CloudDatabaseError,Error,ValueError,OverflowError,TelemetryUnavailable):
+            result["cost_summary"]=unknown_telemetry("unavailable")["cost_summary"]
+        except NotificationError as error:
+            if error.code!="DATABASE_UNAVAILABLE" or error.http_status!=503:raise
+            result["cost_summary"]=unknown_telemetry("unavailable")["cost_summary"]
+        with self._transaction(context) as connection:self._authorize_telemetry(connection,context)
+        return validate_telemetry(result)
+
+    def _telemetry_reader(self,context):
+        from .operations_telemetry_postgres import PostgresOperationsTelemetryRepository
+        return PostgresOperationsTelemetryRepository.using_transaction(lambda:self._transaction(context))
+
+    def read_cost_summary(self,context):
+        from decimal import Decimal,localcontext
+        from .authorization import AuthorizationError
+        from .operations_telemetry import _utc
+        with self._transaction(context) as connection:
+            self._authorize_telemetry(connection,context)
+            when=_utc(connection.execute("SELECT clock_timestamp()").fetchone()[0])
+            visible=self._visible_sources(connection,context)
+            query=("SELECT /* operations-summary:runs */ r.record_id,r.created_by,n.notebook_id,"
+                "rs.canonical_json->'source_version_ids',r.state,r.created_at,m.record_id "
+                "FROM runs r JOIN run_snapshots rs ON (rs.tenant_id,rs.workspace_id,rs.run_id)=(r.tenant_id,r.workspace_id,r.record_id) "
+                "JOIN notebook_bindings b ON (b.tenant_id,b.workspace_id,b.record_id)=(r.tenant_id,r.workspace_id,r.conversation_id) AND b.binding_kind='conversation_thread' "
+                "JOIN notebooks n ON (n.tenant_id,n.workspace_id,n.notebook_id)=(b.tenant_id,b.workspace_id,b.notebook_id) "
+                "LEFT JOIN routing_decisions rd ON (rd.tenant_id,rd.workspace_id,rd.run_id)=(r.tenant_id,r.workspace_id,r.record_id) "
+                "LEFT JOIN model_attempts m ON (m.tenant_id,m.workspace_id,m.routing_decision_id)=(rd.tenant_id,rd.workspace_id,rd.record_id) "
+                "WHERE r.tenant_id=%s AND r.workspace_id=%s AND (%s='workspace_visible' OR r.created_by=%s) "
+                "AND NOT EXISTS(SELECT 1 FROM notebook_deletion_requests d WHERE "
+                "(d.tenant_id,d.workspace_id,d.notebook_id)=(n.tenant_id,n.workspace_id,n.notebook_id) AND d.state IN ('accepted','deleting','completed'))")
+            params=(context.tenant_id,context.workspace_id,context.scope,context.actor_id)
+            rows=connection.execute(query,params).fetchall()
+            runs={};attempts=set();starts=[]
+            for run,actor,notebook,versions,state,created,attempt in rows:
+                if context.scope=="self" and actor!=context.actor_id:continue
+                if type(versions) is not list or any(type(v) is not str or not any(n==notebook for n,_,_ in visible.get(v,())) for v in versions):continue
+                if run in runs and runs[run]!=(actor,state):raise ValueError("OPERATIONS_COST_INVALID")
+                runs[run]=(actor,state);starts.append(_utc(created))
+                if attempt is not None:attempts.add((run,attempt))
+            before=tuple(rows)
+        unknown=unknown_telemetry()["cost_summary"]
+        if not runs:return unknown
+        receipts=self._telemetry_reader(context).read_cost_receipts(context,tuple(sorted(runs)))
+        amounts={};known=set();uncertain=set();seen=set()
+        with localcontext() as decimal_context:
+            decimal_context.prec=50
+            for row in receipts:
+                run=row["run_id"];attempt=row["model_attempt_id"];key=(run,attempt)
+                if run not in runs or row["actor_id"]!=runs[run][0] or key in seen:raise ValueError("OPERATIONS_COST_INVALID")
+                if attempt is not None and key not in attempts:raise ValueError("OPERATIONS_COST_INVALID")
+                seen.add(key)
+                if row["state"]=="known":
+                    from .operations_telemetry import ReportedCost
+                    ReportedCost(row["amount"],row["currency"],"summary-cost")
+                    amounts[row["currency"]]=amounts.get(row["currency"],Decimal(0))+row["amount"]
+                    known.add(key)
+                elif row["state"] in {"unknown","uncertain"}:
+                    if row["amount"] is not None or row["currency"] is not None:raise ValueError("OPERATIONS_COST_INVALID")
+                    uncertain.add(run)
+                else:raise ValueError("OPERATIONS_COST_INVALID")
+            missing=len(attempts-known)
+            unconfirmed=sum(state in {"failed","cancelled","canceled"} and (run in uncertain or not any(k[0]==run for k in known)) for run,(_,state) in runs.items())
+            if not amounts and not missing and not unconfirmed:
+                return dict(unknown,state="not_reported",safe_code="TELEMETRY_NOT_REPORTED")
+            result=dict(state="partial" if missing or unconfirmed else "measured",observed_at=when.isoformat().replace("+00:00","Z"),
+                received_at=when.isoformat().replace("+00:00","Z"),coverage="actor_accessible_records",
+                safe_code="TELEMETRY_PARTIAL" if missing or unconfirmed else "TELEMETRY_MEASURED",
+                known_amounts=[dict(currency=key,amount=format(amounts[key],"f")) for key in sorted(amounts)],
+                unknown_attempt_count=missing,unconfirmed_run_count=unconfirmed,
+                coverage_start=min(starts).isoformat().replace("+00:00","Z"),coverage_end=when.isoformat().replace("+00:00","Z"))
+        with self._transaction(context) as connection:
+            self._authorize_telemetry(connection,context)
+            if self._visible_sources(connection,context)!=visible:raise AuthorizationError("CURRENT_ACCESS_DENIED",403)
+            normalize=lambda values:sorted(json.dumps(row,sort_keys=True,default=str,separators=(",",":")) for row in values)
+            if normalize(connection.execute(query,params).fetchall())!=normalize(before):raise AuthorizationError("CURRENT_ACCESS_DENIED",403)
+        return result
+
+    def read_decision_events(self,context):
+        from .authorization import AuthorizationError
+        from .operations_telemetry import _utc
+        with self._transaction(context) as connection:
+            self._authorize_telemetry(connection,context)
+            when=_utc(connection.execute("SELECT clock_timestamp()").fetchone()[0]);start=when-timedelta(days=1)
+            visible=self._visible_sources(connection,context)
+            eligible=lambda actor:context.scope=="workspace_visible" or actor==context.actor_id
+            audits=connection.execute("SELECT event_id,actor_id,action,metadata FROM security_audit_events "
+                "WHERE tenant_id=%s AND outcome='denied' AND action IN "
+                "('identity.step_up.binding_denied','identity.step_up.reuse_denied','identity.step_up.expired') "
+                "AND occurred_at>%s AND occurred_at<=%s AND metadata->'operations_scope'->>'workspace_id'=%s "
+                "AND (%s='workspace_visible' OR actor_id=%s)",
+                (context.tenant_id,start,when,context.workspace_id,context.scope,context.actor_id)).fetchall()
+            step_denied=set();step_expired=set();step_attributed=set()
+            from .operations_audit_scope import VerifiedOperationsScope
+            fields={"version","workspace_id","scope_basis","resource_type","resource_id","notebook_id","source_version_ids"}
+            for event,actor,action,metadata in audits:
+                if not eligible(actor) or type(metadata) is not dict:continue
+                raw=metadata.get("operations_scope")
+                if type(raw) is not dict or set(raw)!=fields or type(raw["source_version_ids"]) is not list:continue
+                try:
+                    value=VerifiedOperationsScope(context.tenant_id,actor,"audit-scope","audit-scope",raw["workspace_id"],
+                        raw["scope_basis"],raw["resource_type"],raw["resource_id"],raw["notebook_id"],tuple(raw["source_version_ids"]),raw["version"])
+                except (ValueError,TypeError):continue
+                if value.workspace_id!=context.workspace_id:continue
+                # 현재 producer는 Workspace 인가만 기록한다. 자료 귀속을 추정하지 않는다.
+                if value.scope_basis!="workspace_grant":continue
+                if action not in {"identity.step_up.binding_denied","identity.step_up.reuse_denied","identity.step_up.expired"}:continue
+                step_attributed.add(event)
+                (step_expired if action=="identity.step_up.expired" else step_denied).add(event)
+            decisions=connection.execute("SELECT d.decision_id,d.actor_id,d.state,h.source_version_ids FROM identity_auth_access_decisions d "
+                "LEFT JOIN identity_auth_historical_results h ON (h.tenant_id,h.workspace_id,h.result_id)=(d.tenant_id,d.workspace_id,d.resource_id) "
+                "WHERE d.tenant_id=%s AND d.workspace_id=%s AND d.state IN ('access_blocked','partially_redacted') "
+                "AND d.evaluated_at>%s AND d.evaluated_at<=%s AND (%s='workspace_visible' OR d.actor_id=%s)",
+                (context.tenant_id,context.workspace_id,start,when,context.scope,context.actor_id)).fetchall()
+            blocked=set();masked=set();attributed=set()
+            for event,actor,state,raw in decisions:
+                if not eligible(actor) or state not in {"access_blocked","partially_redacted"}:continue
+                try:versions=json.loads(raw) if isinstance(raw,str) else raw
+                except (ValueError,TypeError):continue
+                if type(versions) is not list or not versions or any(type(v) is not str or v not in visible for v in versions):continue
+                attributed.add(event)
+                (blocked if state=="access_blocked" else masked).add(event)
+            from .operations_audit_scope import egress_denial_correlation,workspace_grant_metadata
+            early=connection.execute("SELECT event_id,actor_id,metadata,occurred_at FROM audit_events "
+                "WHERE tenant_id=%s AND workspace_id=%s AND action='operations.egress.denied' AND outcome='denied' "
+                "AND occurred_at<=%s AND (%s='workspace_visible' OR actor_id=%s)",
+                (context.tenant_id,context.workspace_id,when,context.scope,context.actor_id)).fetchall()
+            first={}
+            for event,actor,metadata,occurred in early:
+                if not eligible(actor) or type(metadata) is not dict or set(metadata)!={"operations_scope","deny_correlation_id","safe_error_code"}:continue
+                correlation=metadata["deny_correlation_id"]
+                if (type(correlation) is not str or re.fullmatch(r"egress-denial-[0-9a-f]{64}",correlation) is None
+                    or event!=correlation or metadata["safe_error_code"]!="EGRESS_POLICY_DENIED"
+                    or metadata["operations_scope"]!=workspace_grant_metadata(context.workspace_id)):continue
+                instant=_utc(occurred)
+                first[correlation]=min(first.get(correlation,instant),instant)
+            egress=connection.execute("SELECT e.record_id,r.created_by,r.canonical_json->>'source_version_id',r.record_id,e.created_at FROM egress_decisions e "
+                "JOIN runs r ON (r.tenant_id,r.workspace_id,r.record_id)=(e.tenant_id,e.workspace_id,e.run_id) "
+                "WHERE e.tenant_id=%s AND e.workspace_id=%s AND e.canonical_json->'allowed'='false'::jsonb "
+                "AND e.created_by=r.created_by AND e.created_at<=%s AND (%s='workspace_visible' OR r.created_by=%s)",
+                (context.tenant_id,context.workspace_id,when,context.scope,context.actor_id)).fetchall()
+            for event,actor,version,run,occurred in egress:
+                if not eligible(actor) or type(version) is not str or version not in visible:continue
+                try:correlation=egress_denial_correlation(context.tenant_id,context.workspace_id,actor,run)
+                except ValueError:continue
+                instant=_utc(occurred)
+                first[correlation]=min(first.get(correlation,instant),instant)
+            denied={key for key,instant in first.items() if start<instant<=when}
+            self._authorize_telemetry(connection,context)
+            if self._visible_sources(connection,context)!=visible:raise AuthorizationError("CURRENT_ACCESS_DENIED",403)
+        # 성공 snapshot/binding을 요구하지 않는다. 귀속 없는 과거·조기 거부의 coverage를 합성하지 않는다.
+        unknown=unknown_telemetry()["event_counts"]
+        result=[]
+        for index,key,value,observed in ((4,"step_up_denied_24h",len(step_denied),bool(step_attributed)),
+                (5,"step_up_expired_24h",len(step_expired),bool(step_attributed)),(6,"access_blocked_24h",len(blocked),bool(attributed)),
+                (7,"access_masked_24h",len(masked),bool(attributed)),(8,"egress_denied_24h",len(denied),bool(first))):
+            if not observed:result.append(unknown[index]);continue
+            row=self._event_metric(key,value,when,window_start=start)
+            row.update(state="partial",safe_code="TELEMETRY_PARTIAL");result.append(row)
+        return tuple(result)
 
     @staticmethod
     def _metric(metric_id, value, when, state="measured"):

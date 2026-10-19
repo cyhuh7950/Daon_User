@@ -2038,6 +2038,26 @@ def _provider_settings_context(
     )
 
 
+def _operations_workspace_scope(principal,workspace_id,dependencies):
+    """보안 판단을 대신하지 않는 optional 관측. 실제 현재 VIEW가 확인된 Workspace만 기록한다."""
+    from .operations_audit_scope import VerifiedOperationsScope
+    try:
+        value=VerifiedOperationsScope.for_workspace(principal.tenant_id,principal.user_id,
+            principal.session_id,principal.device_id,workspace_id)
+        with dependencies.authorization_service._repository.transaction() as connection:
+            workspace=connection.execute("SELECT * FROM auth_workspaces WHERE tenant_id=? AND workspace_id=?",
+                (principal.tenant_id,workspace_id)).fetchone()
+            if workspace is None:return None
+            dependencies.authorization_service._assert_organization_active(connection,principal,workspace)
+            binding=dependencies.authorization_service._role_binding(connection,principal,workspace)
+            if dependencies.authorization_service._action_grant(connection,principal=principal,workspace=workspace,
+                    binding=binding,action=Action.VIEW,requested_permissions=()) is None:return None
+        return value
+    except Exception:
+        _runtime_logger.warning("OPERATIONS_SCOPE_UNAVAILABLE")
+        return None
+
+
 def _egress_policy_context(
     principal: IdentityPrincipal, workspace_id: str, request: Request,
     dependencies: RuntimeDependencies,
@@ -4871,6 +4891,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                         target_id=run_id, policy_version=request_fingerprint,
                         trace_id=request.state.trace_id, operation="question.external_transfer",
                         idempotency_key=idempotency_key,
+                        operations_scope=_operations_workspace_scope(principal,id,dependencies),
                     )
                 approved_authorization = {
                     "request_fingerprint": request_fingerprint,
@@ -5145,7 +5166,8 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         dependencies.identity_service.consume_step_up(step_up_authorization=body.get("step_up_authorization"),access_token=access_token,
             action_group="organization_security_or_connector_policy_change",target_id=policy["step_up_target_id"],
             policy_version=dependencies.settings.policy_version,trace_id=request.state.trace_id,
-            operation="studio.approval.policy.save",idempotency_key=idempotency_key)
+            operation="studio.approval.policy.save",idempotency_key=idempotency_key,
+            operations_scope=_operations_workspace_scope(principal,id,dependencies))
         result,replayed=await asyncio.to_thread(studio_approval_lifecycle_repository.save_policy,ctx,body["ttl_days"],body["expected_policy_version"],idempotency_key)
         return lifecycle_response(request,id,result,replayed)
 
@@ -5214,6 +5236,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 policy_version=dependencies.settings.policy_version,
                 trace_id=request.state.trace_id,
                 operation=f"studio.{action_name}", idempotency_key=idempotency_key,
+                operations_scope=_operations_workspace_scope(principal,body.workspace_id,dependencies),
             )
         result, replayed = await asyncio.to_thread(
             studio_workspace_service.action,
@@ -5258,6 +5281,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             target_id=target, policy_version=dependencies.settings.policy_version,
             trace_id=request.state.trace_id, operation=f"studio.export.{format_name}",
             idempotency_key=idempotency_key,
+            operations_scope=_operations_workspace_scope(principal,workspace_id,dependencies),
         )
         exported = await asyncio.to_thread(
             studio_workspace_service.export,
@@ -6195,6 +6219,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             policy_version=dependencies.settings.policy_version,
             trace_id=request.state.trace_id,
             operation="knowledge.offline_copy", idempotency_key=idempotency_key,
+            operations_scope=_operations_workspace_scope(principal,id,dependencies),
         )
         grant = knowledge_package_service.create_offline_copy(
             _knowledge_package_context(principal, id, request, dependencies),
@@ -6312,6 +6337,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             policy_version=dependencies.settings.policy_version,
             trace_id=request.state.trace_id,
             operation="sync.approve", idempotency_key=idempotency_key,
+            operations_scope=_operations_workspace_scope(principal,workspace_id,dependencies),
         )
         view = sync_service.approve(
             _sync_context(principal, workspace_id, request, dependencies),
@@ -6437,6 +6463,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             policy_version=dependencies.settings.policy_version,
             trace_id=request.state.trace_id,
             operation="retention.source.delete", idempotency_key=authorization_key,
+            operations_scope=_operations_workspace_scope(principal,workspace_id,dependencies),
         )
         view = await asyncio.to_thread(
             retention_request_service.create_request,
@@ -6520,6 +6547,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             policy_version=dependencies.settings.policy_version,
             trace_id=request.state.trace_id,
             operation="retention.purge", idempotency_key=idempotency_key,
+            operations_scope=_operations_workspace_scope(principal,workspace_id,dependencies),
         )
         view = retention_service.purge(
             _retention_context(
@@ -6557,6 +6585,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             policy_version=dependencies.settings.policy_version,
             trace_id=request.state.trace_id,
             operation="retention.legal_hold.apply", idempotency_key=idempotency_key,
+            operations_scope=_operations_workspace_scope(principal,workspace_id,dependencies),
         )
         source_etag, source_version = retention_service.source_etag(principal.tenant_id, id)
         if if_match != source_etag:
@@ -6597,6 +6626,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             policy_version=dependencies.settings.policy_version,
             trace_id=request.state.trace_id,
             operation="retention.legal_hold.release", idempotency_key=idempotency_key,
+            operations_scope=_operations_workspace_scope(principal,workspace_id,dependencies),
         )
         hold = retention_service.release_legal_hold(
             _retention_context(
@@ -6981,15 +7011,31 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         response.headers["Cache-Control"] = "no-store"
         return response
 
+    def require_operations_read(principal,workspace_id,scope):
+        # 기존 grant 계산의 읽기 경로만 사용한다. 상태 조회로 audit/권한을 생성하지 않는다.
+        with dependencies.authorization_service._repository.transaction() as connection:
+            workspace=connection.execute("SELECT * FROM auth_workspaces WHERE tenant_id=? AND workspace_id=?",
+                (principal.tenant_id,workspace_id)).fetchone()
+            if workspace is None:raise AuthorizationError("CURRENT_ACCESS_DENIED",403)
+            dependencies.authorization_service._assert_organization_active(connection,principal,workspace)
+            binding=dependencies.authorization_service._role_binding(connection,principal,workspace)
+            action=Action.POLICY_MANAGE if scope=="workspace_visible" else Action.VIEW
+            if dependencies.authorization_service._action_grant(connection,principal=principal,workspace=workspace,
+                    binding=binding,action=action,requested_permissions=()) is None:
+                raise AuthorizationError("CURRENT_ACCESS_DENIED",403)
+
     @app.get("/api/v1/workspaces/{id}/operations/status")
     async def get_workspace_operations_status(id: str, request: Request) -> JSONResponse:
-        _require_query_keys(request, frozenset())
+        _require_query_keys(request, frozenset({"scope"}))
+        if len(request.query_params.getlist("scope"))>1 or await request.body():
+            raise HTTPException(status_code=400,detail="OPERATIONS_STATUS_INPUT_INVALID")
+        scope=request.query_params.get("scope","self")
         principal = _principal(request, dependencies)
-        dependencies.authorization_service.authorize_action(
-            principal=principal, workspace_id=id, action=Action.VIEW,
-            trace_id=request.state.trace_id,
-            policy_version=dependencies.settings.policy_version,
-        )
+        try:
+            context=OperationsStatusContext(principal.tenant_id,id,principal.user_id,
+                request.state.trace_id,dependencies.settings.policy_version,scope)
+        except ValueError:raise HTTPException(status_code=400,detail="OPERATIONS_STATUS_INPUT_INVALID") from None
+        require_operations_read(principal,id,scope)
         if operations_status_service is None:
             raise OperationsStatusError()
         try:
@@ -7008,8 +7054,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             )
             view = await asyncio.to_thread(
                 operations_status_service.read,
-                OperationsStatusContext(principal.tenant_id, id, principal.user_id,
-                    request.state.trace_id, dependencies.settings.policy_version),
+                context,
                 active_providers=sum(
                     1 for item in snapshot.profiles
                     if item.active and item.credential_configured
@@ -7032,20 +7077,13 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         if (current.tenant_id, current.user_id, current.session_id, current.device_id) != (
                 principal.tenant_id, principal.user_id, principal.session_id, principal.device_id):
             raise AuthorizationError("CURRENT_ACCESS_DENIED", 403)
-        # 기존 VIEW 판정의 읽기만 재사용한다. authorize_action을 반복해 감사 쓰기를 늘리지 않는다.
-        with dependencies.authorization_service._repository.transaction() as connection:
-            workspace = connection.execute("SELECT * FROM auth_workspaces WHERE tenant_id=? AND workspace_id=?",
-                (current.tenant_id, id)).fetchone()
-            if workspace is None: raise AuthorizationError("CURRENT_ACCESS_DENIED", 403)
-            dependencies.authorization_service._assert_organization_active(connection, current, workspace)
-            binding = dependencies.authorization_service._role_binding(connection, current, workspace)
-            if dependencies.authorization_service._action_grant(connection, principal=current, workspace=workspace,
-                    binding=binding, action=Action.VIEW, requested_permissions=()) is None:
-                raise AuthorizationError("CURRENT_ACCESS_DENIED", 403)
-        return _json_with_etag({
+        require_operations_read(current,id,scope)
+        response = _json_with_etag({
             "data": _dataclass_json(view),
             "meta": {"trace_id": request.state.trace_id, "workspace_id": id},
-        }, f"{id}|{view.overall_status}|{view.checked_at}")
+        }, f"{id}|{scope}|{view.overall_status}|{view.checked_at}")
+        response.headers["Cache-Control"]="no-store"
+        return response
 
     @app.get("/api/v1/workspaces/{id}/output-version-settings")
     async def get_workspace_output_version_settings(id: str, request: Request) -> JSONResponse:
@@ -7654,6 +7692,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             policy_version=dependencies.settings.policy_version,
             trace_id=request.state.trace_id,
             operation="recovery.restore_preview", idempotency_key=idempotency_key,
+            operations_scope=_operations_workspace_scope(principal,workspace_id,dependencies),
         )
         context=_recovery_context(principal,workspace_id,request,dependencies)
         if isinstance(body,RegisteredRestorePreviewBody):
@@ -7727,6 +7766,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             policy_version=dependencies.settings.policy_version,
             trace_id=request.state.trace_id,
             operation="recovery.restore_execute", idempotency_key=idempotency_key,
+            operations_scope=_operations_workspace_scope(principal,workspace_id,dependencies),
         )
         if isinstance(current_view.preview,RegisteredRestorePreviewView):
             if not isinstance(recovery_service,PostgresRecoveryService):raise RecoveryError("RESOURCE_UNAVAILABLE",503)

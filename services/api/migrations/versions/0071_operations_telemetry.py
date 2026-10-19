@@ -28,6 +28,10 @@ def downgrade():
         RAISE EXCEPTION 'OPERATIONS_TELEMETRY_FORWARD_RECOVERY_REQUIRED' USING ERRCODE='55000'; END IF;
     END $$;
     DROP FUNCTION public.read_operations_worker_samples(text[]);
+    DROP FUNCTION public.record_operations_cost_receipt(text,text,text,text,text,text,text,text,numeric,text,text,text,text,timestamptz,text);
+    DROP FUNCTION public.read_operations_cost_receipts(text[],text);
+    DROP FUNCTION public.read_operations_deployment_receipt();
+    DROP FUNCTION public.record_operations_deployment_receipt(text,text,text,text,text,text,timestamptz,text,text);
     DROP FUNCTION public.record_operations_worker_sample(text,text,text,timestamptz,bigint,timestamptz,timestamptz,timestamptz,timestamptz,text,bigint,bigint,bigint,bigint,integer);
     DROP TABLE public.operations_cost_receipts;
     DROP TABLE public.operations_deployment_receipts;

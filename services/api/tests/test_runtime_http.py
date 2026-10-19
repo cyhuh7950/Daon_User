@@ -67,6 +67,63 @@ class UnreadyObjectStorage:
 
 
 class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
+    async def test_m2a_operations_scope_requires_real_current_workspace_view_and_never_writes_audit(self):
+        from daon_user_api.runtime import _operations_workspace_scope
+        principal=self.identity.validate_access(self.web.access_token,trace_id="trace-m2a",policy_version=self.settings.policy_version)
+        with patch.object(self.authorization,"authorize_action",side_effect=AssertionError("OBSERVATION_MUST_NOT_WRITE_AUDIT")):
+            scope=_operations_workspace_scope(principal,"workspace-001",self.dependencies)
+            self.assertIsNotNone(scope)
+            self.assertEqual(scope.actor_id,self.web.user_id)
+            self.assertEqual(scope.resource_id,"workspace-001")
+            self.assertIsNone(_operations_workspace_scope(principal,"unknown-workspace",self.dependencies))
+            with self.authorization_repository.transaction() as connection:
+                connection.execute("UPDATE auth_tenant_roles SET state='inactive' WHERE tenant_id=? AND user_id=?",(self.web.tenant_id,self.web.user_id))
+                connection.execute("DELETE FROM auth_memberships WHERE tenant_id=? AND user_id=?",(self.web.tenant_id,self.web.user_id))
+            self.assertIsNone(_operations_workspace_scope(principal,"workspace-001",self.dependencies))
+
+    async def test_m2a_optional_scope_database_failure_does_not_interrupt_original_step_up(self):
+        from daon_user_api.runtime import _operations_workspace_scope
+        from daon_user_api.identity import IdentityError
+        principal=self.identity.validate_access(self.web.access_token,trace_id="trace-m2a",policy_version=self.settings.policy_version)
+        with patch.object(self.authorization_repository,"transaction",side_effect=RuntimeError("PRIVATE_DB_SCOPE_FAILURE")):
+            with self.assertLogs("daon_user_api.runtime",level="WARNING") as captured:
+                scope=_operations_workspace_scope(principal,"workspace-001",self.dependencies)
+                self.assertIsNone(scope)
+        self.assertIn("OPERATIONS_SCOPE_UNAVAILABLE",str(captured.output))
+        self.assertNotIn("PRIVATE",str(captured.output))
+        args=dict(access_token=self.web.access_token,action_group="permanent_delete_or_restore_rollback",
+            policy_version=self.settings.policy_version,trace_id="trace-m2a")
+        issued=self.identity.issue_step_up(**args,target_id="source-a")
+        with self.assertRaises(IdentityError) as error:
+            self.identity.consume_step_up(**args,target_id="source-b",step_up_authorization=issued.authorization,operations_scope=scope)
+        self.assertEqual(error.exception.code,"STEP_UP_BINDING_DENIED")
+
+    async def test_m2_workspace_scope_is_current_permission_bound_and_status_get_is_read_only(self):
+        from types import SimpleNamespace
+        from daon_user_api.operations_status import OperationsStatusService,OperationsCounts
+        scopes=[]
+        def counts(context):scopes.append(context.scope);return OperationsCounts(0,0,0)
+        deps=replace(self.dependencies,operations_status_service=OperationsStatusService(SimpleNamespace(read_counts=counts)))
+        client=httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(deps)),base_url="http://127.0.0.1")
+        headers={"cookie":f"{WEB_SESSION_COOKIE}={self.web.access_token}"}
+        path="/api/v1/workspaces/workspace-001/operations/status"
+        try:
+            with patch.object(self.authorization,"authorize_action",side_effect=AssertionError("STATUS_GET_MUST_NOT_WRITE_AUTH_AUDIT")):
+                response=await client.get(path,headers=headers)
+                self.assertEqual(response.status_code,200)
+                self.assertEqual(scopes,["self"])
+                response=await client.get(path+"?scope=workspace_visible",headers=headers)
+                self.assertEqual(response.status_code,200)
+                self.assertEqual(scopes,["self","workspace_visible"])
+            self.assertEqual((await client.get(path+"?scope=all",headers=headers)).status_code,400)
+            self.assertEqual((await client.get(path+"?scope=self&scope=workspace_visible",headers=headers)).status_code,400)
+            with self.authorization_repository.transaction() as connection:
+                connection.execute("UPDATE auth_tenant_roles SET state='inactive' WHERE tenant_id=? AND user_id=?",(self.web.tenant_id,self.web.user_id))
+                connection.execute("INSERT INTO auth_memberships VALUES(?,?,?,'viewer','active',1,?)",(self.web.tenant_id,"workspace-001",self.web.user_id,self.clock().isoformat()))
+            self.assertEqual((await client.get(path+"?scope=workspace_visible",headers=headers)).status_code,403)
+            self.assertEqual((await client.get(path,headers=headers)).status_code,200)
+        finally:await client.aclose()
+
     async def test_m2s_real_session_without_workspace_reaches_system_home_without_creating_scope(self):
         # 이 시험의 폐기 SQLite에서만 실제 Workspace 부재를 구성한다.
         with self.authorization_repository.transaction() as connection:

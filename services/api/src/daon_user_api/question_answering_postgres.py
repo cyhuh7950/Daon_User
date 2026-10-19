@@ -22,6 +22,8 @@ from .document_index_postgres import IndexedEvidenceChunk, _source_access_allowe
 from .document_processing import text_source_format
 from .document_understanding_adapter import DocumentUnderstandingError
 from .question_answering import GroundedTextResult, TextModelSelection
+from .operations_telemetry import make_cost_receipt, TelemetryUnavailable
+from .operations_telemetry_postgres import record_cost_in_transaction
 
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
@@ -1194,6 +1196,23 @@ class PostgresQuestionAnsweringRepository:
             pdf.content, "application/pdf",
         ), {"kind": "page", "value": str(pdf_page)}
 
+    @staticmethod
+    def _record_run_cost(connection, context, run_id, selection, *, result=None, model_attempt_id=None):
+        # 0071 적용 전 기존 질문 저장은 보존. 미래/불명 revision은 성공으로 숨기지 않는다.
+        rows=connection.execute('SELECT version_num FROM public.alembic_version').fetchall()
+        if len(rows)!=1:
+            raise QuestionRepositoryError('QUESTION_DATABASE_UNAVAILABLE',status=503)
+        revision=rows[0][0]
+        if revision in {'0062','0063','0064','0066','0067','0068','0069','0070'}:return
+        if revision!='0071':raise QuestionRepositoryError('QUESTION_DATABASE_UNAVAILABLE',status=503)
+        try:
+            receipt=make_cost_receipt(result.reported_cost if result is not None else None,
+                result.usage if result is not None else {},provider_connection_id=selection.connection_id,
+                outcome='succeeded' if result is not None else 'failed',observed_at=datetime.now(timezone.utc))
+            record_cost_in_transaction(connection,context,run_id,receipt,model_attempt_id=model_attempt_id)
+        except (TelemetryUnavailable,ValueError,TypeError):
+            raise QuestionRepositoryError('QUESTION_DATABASE_UNAVAILABLE',status=503) from None
+
     def persist_failed(
         self, context: QuestionContext, *, run_id: str, request_fingerprint: str,
         context_sources: tuple[object, ...], selection: TextModelSelection,
@@ -1429,6 +1448,7 @@ class PostgresQuestionAnsweringRepository:
                 if bound!=(context.actor_id,):
                     raise QuestionRepositoryError('NOTEBOOK_SCOPE_MISMATCH',status=409)
                 self._transition(connection,context,run_id,int(current[1]),'failed')
+                self._record_run_cost(connection,context,run_id,selection)
                 if getattr(self._cloud_store,'_notification_inbox_enabled',False):
                     from .notification_events import enqueue_completed_event
                     enqueue_completed_event(connection,context,
@@ -1700,6 +1720,8 @@ class PostgresQuestionAnsweringRepository:
                     }, extra_columns=("run_result_id", "source_version_id", "evidence_span_id"),
                         extra_values=(run_result_id, citation.source_version_id, citation.evidence_span_id))
                 self._transition(connection, context, run_id, version, "completed")
+                if provider_called:
+                    self._record_run_cost(connection,context,run_id,selection,result=result,model_attempt_id=attempt_id)
                 if context.notebook_id is not None:
                     connection.execute(
                         "WITH inserted AS (INSERT INTO notebook_bindings "

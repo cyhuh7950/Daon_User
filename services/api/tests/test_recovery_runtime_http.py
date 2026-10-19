@@ -355,6 +355,11 @@ class RecoveryRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
                 # 다른 request-ID ETag는 기존 IF_MATCH_INVALID 형식 계약400을 유지한다.
                 self.assertEqual(result.status_code,dict(normal=200,**{"preview-token":403},changed=403,expired=401,denied=403,etag=400)[mode])
                 if mode in {"preview-token","etag"}:self.assertEqual(calls,[])
+                if mode=="preview-token":
+                    denial=[e for e in self.audit.list(tenant_id=self.credentials.tenant_id).items if e.action=="identity.step_up.binding_denied"][-1]
+                    observed=denial.metadata["operations_scope"]
+                    self.assertEqual((observed["workspace_id"],observed["resource_type"],observed["resource_id"]),(self.workspace_id,"workspace",self.workspace_id))
+                    self.assertEqual(observed["source_version_ids"],())
                 if mode=="normal":self.assertEqual(result.headers["etag"],'"restore:request-a:6"')
 
     async def test_r4_registered_preview_real_step_up_exact_body_session_and_off(self):

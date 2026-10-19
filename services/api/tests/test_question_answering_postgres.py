@@ -50,6 +50,9 @@ class FakeConnection:
         self.source_binding_active = True
         self.audio_understanding_row = None
         self.source_access_allowed = True
+        self.revision = '0069'
+        self.cost_calls = []
+        self.cost_error = False
 
     def execute(self, sql, params=()):  # type: ignore[no-untyped-def]
         if sql.startswith('SELECT canonical_json FROM source_versions'):
@@ -63,6 +66,14 @@ class FakeConnection:
         if sql.startswith('SELECT record_id,canonical_json FROM understanding_results'):
             return Cursor(self.audio_understanding_row)
         self.queries.append(sql)
+        if sql == 'SELECT version_num FROM public.alembic_version':
+            return Cursor(rows=[(self.revision,)])
+        if sql.startswith('SELECT public.record_operations_cost_receipt('):
+            self.cost_calls.append(params)
+            if self.cost_error:
+                from psycopg.errors import InsufficientPrivilege
+                raise InsufficientPrivilege('PRIVATE_COST_CANARY')
+            return Cursor((params[-1],))
         if sql.startswith("SELECT s.record_id,sv.record_id,s.state"):
             if "nb.binding_kind='source'" in sql and not self.source_binding_active:
                 return Cursor()
@@ -114,6 +125,102 @@ class FakeObjectStorage:
 
 
 class PostgresQuestionAnsweringRepositoryTests(unittest.TestCase):
+    def test_cost_failed_run_records_uncertain_without_fabricated_attempt_and_rolls_back_on_error(self):
+        from test_recovery_lineage import Ledger
+        from daon_user_api.question_answering_service import question_request_fingerprint
+        from types import SimpleNamespace
+        ledger=Ledger();ctx=QuestionContext(ledger.context.tenant_id,ledger.context.workspace_id,ledger.context.actor_id,
+            ledger.context.trace_id,ledger.context.policy_version,'notebook-a')
+        selection=TextModelSelection('OLLAMA','https://models.example','profile','deployment','model',1,connection_id='connection-a')
+        run='run-failed-cost';payload={'question':'합성 질문','context_mode':'general_ungrounded'}
+        fingerprint=question_request_fingerprint(ctx,run_id=run,idempotency_key=run,request_payload=payload)
+        frozen={'fingerprint':'sha256:'+'a'*64,'payload_fingerprint':'sha256:'+'b'*64}
+        ids=self.repository._opaque_id
+        egress=ids('egress',run,frozen['fingerprint'],frozen['payload_fingerprint']);routing=ids('routing',run)
+        policy=ids('routing-policy','1','deployment')
+        authorization=dict(provider_owner=True,policy_fingerprint=frozen['fingerprint'],frozen_routing_context=frozen,
+            egress_decision_id=egress,routing_decision_id=routing,routing_policy_version_id=policy)
+        expected=self.repository._run_canonical_payload(question=payload['question'],source_id=None,source_version_id=None,
+            context_mode='general_ungrounded',request_fingerprint=fingerprint,selection=selection,frozen_scope=frozen)
+        pending={};receipts=[];events=[];fail=[False];queries=[]
+        class Connection:
+            info=ledger.info
+            def execute(inner,sql,params=()):
+                queries.append(sql)
+                if sql.startswith('SELECT pg_advisory_xact_lock'):return Cursor()
+                if sql.startswith('SELECT state,version,created_by'):return Cursor(('generating',4,ctx.actor_id,ctx.trace_id,expected,ids('conversation',run)))
+                if sql.startswith('SELECT e.canonical_json'):return Cursor((dict(allowed=True,run_id=run,frozen_routing_context=frozen),
+                    dict(run_id=run,routing_status='selected',selected_deployment_id='deployment'),policy,ctx.actor_id,'succeeded',ctx.trace_id,ctx.policy_version))
+                if sql.startswith(('SELECT 1 FROM identity_memberships','SELECT 1 FROM notebooks n')):return Cursor((1,))
+                if sql.startswith('INSERT INTO '):
+                    table=sql.split()[2];pending[table]=(params[6].obj,params[9],params[10],*params[11:]);return Cursor()
+                if sql.startswith('SELECT canonical_json,created_by,trace_id'):
+                    table=sql.split(' FROM ',1)[1].split()[0];return Cursor(pending[table])
+                if sql.startswith('WITH inserted AS (INSERT INTO notebook_bindings'):return Cursor()
+                if sql.startswith('SELECT created_by FROM notebook_bindings'):return Cursor((ctx.actor_id,))
+                if sql.startswith('SELECT state,version,outcome,error_code FROM transition_canon_state'):return Cursor(('failed',5,'succeeded',None))
+                if sql=='SELECT version_num FROM public.alembic_version':return Cursor(rows=[('0071',)])
+                if sql.startswith('SELECT public.record_operations_cost_receipt('):
+                    if fail[0]:
+                        from psycopg.errors import CheckViolation
+                        raise CheckViolation('PRIVATE_COST_CANARY')
+                    receipts.append(params);return Cursor((params[-1],))
+                return ledger.execute(sql,params)
+        @contextmanager
+        def transaction(context):
+            old=list(receipts)
+            try:yield Connection()
+            except BaseException:
+                receipts[:]=old;events.append('rollback');raise
+            else:events.append('commit')
+        repository=PostgresQuestionAnsweringRepository(SimpleNamespace(_transaction=transaction),FakeObjectStorage())
+        args=dict(run_id=run,request_fingerprint=fingerprint,context_sources=(),selection=selection,
+            egress_authorization=authorization,request_payload=payload,idempotency_key=run)
+        repository.persist_failed(ctx,**args)
+        self.assertEqual(len(receipts),1);self.assertEqual((receipts[0][6],receipts[0][8:10],receipts[0][12]),(None,(None,None),'uncertain'))
+        self.assertFalse(any(sql.startswith('INSERT INTO model_attempts') for sql in queries))
+        fail[0]=True
+        with self.assertRaises(QuestionRepositoryError) as failed:repository.persist_failed(ctx,**args)
+        self.assertEqual((failed.exception.status,str(failed.exception)),(503,'QUESTION_DATABASE_UNAVAILABLE'))
+        self.assertEqual((len(receipts),events),(1,['commit','rollback']))
+
+    def _complete_cost(self, *, provider_called=True):
+        from decimal import Decimal
+        from daon_user_api.operations_telemetry import ReportedCost
+        self.repository.persist_completed(self.context, run_id='run-cost', source_id='source-cp3',
+            source_version_id='source-version-cp3', question='cost?',
+            selection=TextModelSelection('OLLAMA', 'https://models.example', 'profile', 'deployment', 'model', 1,
+                connection_id='connection-a'), evidence=(), provider_called=provider_called,
+            result=GroundedTextResult('', (), False, {'total_tokens': 3}, ReportedCost(Decimal('1.25'),'KRW','receipt-a')))
+
+    def test_cost_completed_is_in_real_run_transaction_and_old_revision_unchanged(self):
+        self.cloud.connection.revision='0071'
+        self._complete_cost()
+        calls=self.cloud.connection.cost_calls
+        self.assertEqual(len(calls),1)
+        self.assertEqual(calls[0][:4],('tenant-cp3','workspace-cp3','run-cost','actor-cp3'))
+        self.assertEqual(calls[0][6],self.repository._opaque_id('attempt','run-cost','deployment'))
+        self.assertEqual((str(calls[0][8]),calls[0][9],calls[0][12]),('1.25','KRW','known'))
+        self.assertEqual(self.cloud.capabilities,['question.execute'])
+        self.cloud.connection.cost_calls.clear();self.cloud.connection.revision='0070'
+        self._complete_cost();self.assertEqual(self.cloud.connection.cost_calls,[])
+        self.cloud.connection.revision='0071'
+        self._complete_cost(provider_called=False);self.assertEqual(self.cloud.connection.cost_calls,[])
+
+    def test_cost_append_failure_aborts_run_transaction_without_retry_or_secret(self):
+        events=[]
+        @contextmanager
+        def transaction(context):
+            try:yield self.cloud.connection
+            except BaseException:
+                events.append('rollback');raise
+            else:events.append('commit')
+        self.cloud._transaction=transaction
+        self.cloud.connection.revision='0071';self.cloud.connection.cost_error=True
+        with self.assertRaises(QuestionRepositoryError) as failed:self._complete_cost()
+        self.assertEqual((failed.exception.status,str(failed.exception)),(503,'QUESTION_DATABASE_UNAVAILABLE'))
+        self.assertEqual(events,['rollback']);self.assertEqual(len(self.cloud.connection.cost_calls),1)
+
     def test_commit_rechecks_selected_source_before_any_result_write(self):
         # Revocation occurs after the service recheck but before this transaction.
         execute = self.cloud.connection.execute
@@ -406,6 +513,7 @@ class PostgresQuestionAnsweringRepositoryTests(unittest.TestCase):
                     CREATE TABLE deletion_requests(tenant_id,workspace_id,source_id,source_active);
                     CREATE TABLE notebook_bindings(tenant_id,workspace_id,notebook_id,binding_kind,record_id,version_id);
                     CREATE TABLE notebook_source_unbindings(tenant_id,workspace_id,notebook_id,source_id,source_version_id);
+                    CREATE TABLE identity_auth_source_access(tenant_id,workspace_id,user_id,source_version_id,allowed);
                 ''')
                 scope = ('tenant-cp3', 'workspace-cp3')
                 self.db.execute('INSERT INTO sources VALUES(?,?,?,?,?)', (*scope, 'source-cp3', 'ready', json.dumps({'kind': 'uploaded'})))
@@ -415,6 +523,9 @@ class PostgresQuestionAnsweringRepositoryTests(unittest.TestCase):
                 self.db.execute('INSERT INTO notebook_bindings VALUES(?,?,?,?,?,?)', (*scope, 'notebook-cp3', 'source', 'source-cp3', 'source-version-cp3'))
             def execute(self, sql, params=()):
                 cursor = self.db.execute(sql.replace('%s', '?'), params)
+                if sql.startswith('SELECT NOT EXISTS (SELECT 1 FROM identity_auth_source_access'):
+                    # 실제 ACL SELECT를 실행하되 이 시험의 source DTO 열 진단과 분리한다.
+                    return Cursor(cursor.fetchone())
                 if sql.startswith('SELECT canonical_json FROM source_versions'):
                     row=cursor.fetchone()
                     return Cursor((json.loads(row[0]),) if row else None)
@@ -422,7 +533,7 @@ class PostgresQuestionAnsweringRepositoryTests(unittest.TestCase):
                 row = cursor.fetchone(); self.rows.append(row)
                 return Cursor(row)
         context = replace(self.context, notebook_id='notebook-cp3')
-        scenarios = ('ready', 'wrong-mime', 'incomplete', 'missing-manifest', 'other-object-scope', 'unbound', 'old-version', 'deleted', 'other-notebook')
+        scenarios = ('ready', 'wrong-mime', 'incomplete', 'missing-manifest', 'other-object-scope', 'unbound', 'old-version', 'deleted', 'other-notebook', 'acl-denied')
         for scenario in (*scenarios, *('docx-' + s for s in scenarios), *('pptx-' + s for s in scenarios)):
             with self.subTest(scenario=scenario):
                 connection = SqlConnection(); self.cloud.connection = connection
@@ -444,6 +555,7 @@ class PostgresQuestionAnsweringRepositoryTests(unittest.TestCase):
                     if scenario == 'unbound': connection.db.execute('DELETE FROM notebook_bindings')
                     if scenario == 'old-version': connection.db.execute("INSERT INTO source_versions SELECT tenant_id,workspace_id,'new-version',source_id,object_id,2,canonical_json FROM source_versions")
                     if scenario == 'deleted': connection.db.execute("INSERT INTO deletion_requests VALUES('tenant-cp3','workspace-cp3','source-cp3',false)")
+                    if scenario == 'acl-denied': connection.db.execute("INSERT INTO identity_auth_source_access VALUES('tenant-cp3','workspace-cp3','actor-cp3','source-version-cp3',0)")
                     selected_context = replace(context, notebook_id='notebook-other') if scenario == 'other-notebook' else context
                     if scenario == 'ready':
                         source = self.repository.load_ready_source(selected_context, 'source-cp3', 'source-version-cp3')

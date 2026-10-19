@@ -18,6 +18,19 @@ async function loadContract() {
   return JSON.parse(await readFile(contractPath, "utf8"));
 }
 
+test("M2 workspace telemetry contract rejects weakened scope and missing typed groups",async()=>{
+  const doc=await loadContract();
+  assert.doesNotThrow(()=>validateOpenApiDocument(doc));
+  for(const mutate of [
+    d=>{d.components.schemas.OperationsStatus.required=d.components.schemas.OperationsStatus.required.filter(k=>k!=="worker_samples");},
+    d=>{d.components.schemas.OperationsStatus.properties.resource_samples.maxItems=13;},
+    d=>{d.components.schemas.WorkspaceCostSummary.properties.known_amounts.items.properties.amount.type="number";},
+    d=>{d.paths["/api/v1/workspaces/{id}/operations/status"].get.parameters[1].schema.enum.push("all");},
+    d=>{d.components.schemas.WorkspaceEventCount.additionalProperties=true;},
+    d=>{d.components.schemas.WorkspaceResourceSample.properties.value.maximum=1e20;},
+  ]){const changed=structuredClone(doc);mutate(changed);assert.throws(()=>validateOpenApiDocument(changed));}
+});
+
 test("M2-S exact system path and closed observation schemas reject mutations",async()=>{
   const doc=await loadContract();
   assert.doesNotThrow(()=>validateOpenApiDocument(doc));

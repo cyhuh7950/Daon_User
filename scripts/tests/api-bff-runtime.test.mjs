@@ -13,6 +13,18 @@ import {
   parsePublicGatewayOrigin,
 } from "../../apps/web/lib/bff-api-proxy.js";
 
+test("M2 workspace status BFF preserves only exact self or workspace_visible scope",async()=>{
+  const calls=[];
+  const proxy=createBffProxy({baseUrl:new URL("https://api.example.com"),fetchImpl:async(url)=>{calls.push(String(url));return Response.json({data:{}});}});
+  const url="https://app.example.com/bff/api/workspaces/workspace-a/operations/status",parts=["workspaces","workspace-a","operations","status"];
+  assert.equal((await proxy(new Request(url+"?scope=workspace_visible"),parts)).status,200);
+  assert.deepEqual(calls,["https://api.example.com/api/v1/workspaces/workspace-a/operations/status?scope=workspace_visible"]);
+  for(const query of ["?scope=all","?scope=","?scope=self&scope=workspace_visible","?workspace_id=foreign"]){
+    assert.equal((await proxy(new Request(url+query),parts)).status,400);
+  }
+  assert.equal(calls.length,1);
+});
+
 test("M2-S system status GET literal is closed in web and native",async()=>{
   const {createNativeBffProxy}=await import("../../apps/web/lib/bff-api-proxy.js");
   for(const native of [false,true]){

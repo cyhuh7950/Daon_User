@@ -44,6 +44,30 @@ def text_snapshot() -> ProviderSettingsSnapshot:
     )
 
 
+class ReportedTransportCostTests(unittest.TestCase):
+    def test_unreported_usage_or_cost_stays_unknown(self):
+        from daon_user_api import question_answering as module
+        self.assertTrue(callable(getattr(module,"reported_cost_from_usage",None)),"M2-3 cost transport consumer missing")
+        for usage in (None,{}, {"total_tokens":100},{"cost":"1.2"},{"cost":1.2,"currency":"USD"},
+            {"cost":True,"currency":"KRW"},{"cost":"NaN","currency":"USD"},{"cost":"-1","currency":"USD"},
+            {"cost":"0.0000000001","currency":"USD"},{"cost":"1","currency":"usd"}):
+            with self.subTest(usage=usage):self.assertIsNone(module.reported_cost_from_usage(usage))
+
+    def test_reported_cost_transport_is_separate_from_answer_and_preserves_exact_decimal(self):
+        from decimal import Decimal
+        from daon_user_api import question_answering as module
+        class Transport:
+            def post_json(self,**kwargs):
+                return {"choices":[{"message":{"content":json.dumps({"answer":"응답 본문 999 USD는 비용 근거가 아닙니다."})}}],
+                    "usage":{"cost":"0.123456789","currency":"KRW","total_tokens":3}}
+        adapter=OpenAICompatibleTextGenerationAdapter(api_key="synthetic-transport-only",transport=Transport())
+        result=adapter.generate_general(GeneralConversationRequest("안녕","trace-cost"),resolve_text_model_selection(text_snapshot()))
+        self.assertIsNotNone(getattr(result,"reported_cost",None),"actual transport usage must reach GroundedTextResult")
+        self.assertEqual((result.reported_cost.amount,result.reported_cost.currency),(Decimal("0.123456789"),"KRW"))
+        self.assertEqual(result.usage,{"total_tokens":3})
+        self.assertNotIn("999",result.reported_cost.receipt_id)
+
+
 def external_text_snapshot(provider_code: str, base_url: str) -> ProviderSettingsSnapshot:
     return ProviderSettingsSnapshot(
         workspace_id="workspace-cp3",

@@ -27,6 +27,262 @@ class Sink:
 
 
 class OperationsTelemetryTests(unittest.TestCase):
+    def test_using_transaction_dict_cursor_is_scoped_and_never_owns_api_pool(self):
+        from contextlib import contextmanager
+        from psycopg.rows import dict_row,tuple_row
+        import psycopg
+        pg=importlib.import_module('daon_user_api.operations_telemetry_postgres')
+        events=[];fail=[False]
+        class Cursor:
+            def __enter__(self):events.append('cursor-enter');return self
+            def __exit__(self,*args):events.append('cursor-exit')
+            def execute(self,sql,params=None):
+                self_test.assertEqual(sql,'SELECT * FROM public.read_operations_deployment_receipt()')
+                if fail[0]:raise psycopg.OperationalError('PRIVATE_BORROWED_CONNECTION_CANARY')
+                return SimpleNamespace(fetchall=lambda:[])
+        class Connection:
+            def __init__(self):self.row_factory=tuple_row
+            def cursor(self,*,row_factory):
+                self_test.assertIs(row_factory,dict_row);return Cursor()
+            def execute(self,*args):raise AssertionError('BORROWED_DEFAULT_CURSOR_MUST_NOT_CHANGE')
+            def transaction(self):raise AssertionError('NESTED_TRANSACTION_NOT_OWNED')
+            def commit(self):raise AssertionError('CALLER_COMMIT_NOT_OWNED')
+            def rollback(self):raise AssertionError('CALLER_ROLLBACK_NOT_OWNED')
+            def close(self):raise AssertionError('API_CONNECTION_CLOSE_NOT_OWNED')
+        connection=Connection();self_test=self
+        @contextmanager
+        def factory():
+            events.append('transaction-enter')
+            try:yield connection
+            except BaseException:
+                events.append('caller-rollback');raise
+            else:events.append('caller-commit')
+        with patch.object(pg,'ConnectionPool',side_effect=AssertionError('NEW_POOL_FORBIDDEN')):
+            self.assertTrue(callable(getattr(pg.PostgresOperationsTelemetryRepository,'using_transaction',None)),'borrowed transaction adapter missing')
+            repo=pg.PostgresOperationsTelemetryRepository.using_transaction(factory)
+            self.assertIsNone(repo.read_deployment_receipt())
+            self.assertEqual(events,['transaction-enter','cursor-enter','cursor-exit','caller-commit'])
+            events.clear();fail[0]=True
+            with self.assertRaises(api().TelemetryUnavailable) as failed:repo.read_deployment_receipt()
+            self.assertEqual(str(failed.exception),'OPERATIONS_TELEMETRY_UNAVAILABLE')
+            self.assertEqual(events,['transaction-enter','cursor-enter','cursor-exit','caller-rollback'])
+            self.assertIs(connection.row_factory,tuple_row)
+            repo.close();repo.close();events.clear()
+            with self.assertRaises(api().TelemetryUnavailable):repo.read_deployment_receipt()
+            self.assertEqual(events,[])
+
+    def test_operator_concrete_preinspect_postinspect_smoke_and_owner_sql_no_secret_argv(self):
+        import json
+        from pathlib import Path
+        path=Path(__file__).resolve().parents[3]/'deploy/daon-user/record-operation-receipt.py'
+        spec=importlib.util.spec_from_file_location('operation_receipt_concrete_test',path);writer=importlib.util.module_from_spec(spec);spec.loader.exec_module(writer)
+        pg=importlib.import_module('daon_user_api.operations_telemetry_postgres')
+        phase=[0];calls=[];smoke_fail=[False];clock=[NOW];stored=[]
+        def runner(args,**kwargs):
+            self.assertIs(kwargs['shell'],False);calls.append(args)
+            if args[:2]==('git','rev-parse'):raw=('a' if phase[0]==0 else 'd')*40
+            elif args[:2]==('git','ls-tree'):raw='100644 blob '+'e'*40+'\tservices/api/src/daon_user_api/__init__.py'
+            elif args[0:2]==('docker','compose'):raw=('b' if phase[0]==0 else 'c')*64
+            elif args[:2]==('docker','inspect'):
+                raw=' '.join(json.dumps(v) for v in [('b' if phase[0]==0 else 'c')*64,
+                    'sha256:'+('1' if phase[0]==0 else '2')*64,True,
+                    (NOW-timedelta(seconds=10) if phase[0]==0 else NOW+timedelta(seconds=1)).isoformat()])
+            elif args[-1]==writer._BLOBS:raw=json.dumps({'services/api/src/daon_user_api/__init__.py':'e'*40})
+            elif args[-1]==writer._SMOKE:
+                if smoke_fail[0]:return SimpleNamespace(returncode=1,stdout=b'',stderr=b'PRIVATE_OPERATION_CANARY')
+                raw='READY'
+            else:raise AssertionError('UNEXPECTED_OPERATOR_COMMAND')
+            return SimpleNamespace(returncode=0,stdout=raw.encode(),stderr=b'')
+        def applied(seconds):self.assertEqual(seconds,300);phase[0]=1;clock[0]=NOW+timedelta(seconds=2)
+        for fail in (False,True):
+            phase[0]=0;clock[0]=NOW;smoke_fail[0]=fail
+            receipt=writer.record_operation('operation-a','deploy',observer=writer.FixedOperatorObserver(run=runner),wait_applied=applied,
+                sink=stored.append,clock=lambda:clock[0],monotonic=lambda:0)
+            self.assertEqual(receipt.state,'uncertain' if fail else 'succeeded')
+            self.assertEqual(receipt.previous_image_digest,'sha256:'+'1'*64)
+        self.assertNotIn('PRIVATE_OPERATION_CANARY',str(stored)+str(calls))
+        sql_calls=[];role=['daon_app',False]
+        class Connection:
+            def execute(self,sql,params=()):
+                sql_calls.append((sql,params))
+                return SimpleNamespace(fetchone=lambda:tuple(role) if sql.startswith('SELECT current_user') else (params[-1],))
+        with self.assertRaises(api().TelemetryUnavailable):pg.record_deployment_in_operator_transaction(Connection(),stored[0])
+        self.assertEqual(len(sql_calls),1)
+        role[:]=['operator-owner',True]
+        self.assertEqual(pg.record_deployment_in_operator_transaction(Connection(),stored[0]),stored[0].digest())
+
+    def test_latest_deployment_is_none_until_real_append_and_validates_protected_digest(self):
+        from contextlib import contextmanager
+        from dataclasses import asdict
+        pg=importlib.import_module('daon_user_api.operations_telemetry_postgres');rows=[]
+        repo=object.__new__(pg.PostgresOperationsTelemetryRepository)
+        class Connection:
+            def execute(self,sql):
+                self_test.assertEqual(sql,'SELECT * FROM public.read_operations_deployment_receipt()')
+                return SimpleNamespace(fetchall=lambda:rows)
+        self_test=self
+        @contextmanager
+        def transaction():yield Connection()
+        repo._transaction=transaction
+        self.assertIsNone(repo.read_deployment_receipt())
+        receipt=api().DeploymentReceipt('operation-a','deploy','a'*40,'sha256:'+'b'*64,'sha256:'+'c'*64,'succeeded',NOW,'DEPLOYMENT_SUCCEEDED')
+        rows.append(dict(asdict(receipt),received_at=NOW,receipt_digest=receipt.digest()))
+        self.assertEqual(repo.read_deployment_receipt()['image_digest'],'sha256:'+'b'*64)
+        rows[0]['receipt_digest']='0'*64
+        with self.assertRaises(api().TelemetryUnavailable):repo.read_deployment_receipt()
+
+    def test_tag_only_is_not_deployment_evidence(self):
+        module=api()
+        self.assertTrue(callable(getattr(module,'DeploymentReceipt',None)),'M2-3 deployment receipt missing')
+        with self.assertRaises(ValueError):module.DeploymentReceipt('operation-a','deploy','a'*40,'web:latest',None,'succeeded',NOW,'DEPLOYMENT_SUCCEEDED')
+
+    def test_rollback_not_executed_is_not_success(self):
+        from pathlib import Path
+        path=Path(__file__).resolve().parents[3]/'deploy/daon-user/record-operation-receipt.py'
+        self.assertTrue(path.is_file(),'M2-3 concrete operator consumer missing')
+        spec=importlib.util.spec_from_file_location('operation_receipt_test',path);writer=importlib.util.module_from_spec(spec);spec.loader.exec_module(writer)
+        before=dict(code_revision='a'*40,image_digest='sha256:'+'b'*64,container_id='c'*64,started_at=NOW-timedelta(seconds=10))
+        calls=[]
+        observer=SimpleNamespace(inspect=lambda:dict(before),smoke=lambda container:True)
+        with self.assertRaises(api().TelemetryUnavailable):
+            writer.record_operation('operation-a','rollback',observer=observer,wait_applied=lambda seconds:None,
+                sink=lambda receipt:calls.append(receipt),clock=lambda:NOW,monotonic=lambda:0)
+        self.assertEqual(calls,[])
+
+    def test_uncertain_receipt_not_ready(self):
+        module=api();self.assertTrue(callable(getattr(module,'DeploymentReceipt',None)))
+        receipt=module.DeploymentReceipt('operation-a','deploy','a'*40,'sha256:'+'b'*64,'sha256:'+'c'*64,'uncertain',NOW,'DEPLOYMENT_UNCERTAIN')
+        self.assertEqual(receipt.state,'uncertain');self.assertEqual(len(receipt.digest()),64)
+
+    def test_user_cannot_register_deployment(self):
+        pg=importlib.import_module('daon_user_api.operations_telemetry_postgres')
+        self.assertFalse(hasattr(pg.PostgresOperationsTelemetryRepository,'record_deployment_receipt'))
+        self.assertTrue(callable(getattr(pg,'record_deployment_in_operator_transaction',None)),'operator-only writer missing')
+
+    def test_cost_read_rechecks_current_actor_scope_source_and_does_not_bypass_rls(self):
+        self._cost_read_case(borrowed=False)
+
+    def test_using_transaction_cost_read_keeps_actual_auth_and_source_rechecks(self):
+        self._cost_read_case(borrowed=True)
+
+    def _cost_read_case(self,*,borrowed):
+        from contextlib import contextmanager,nullcontext
+        from test_recovery_lineage import Ledger
+        from daon_user_api.authorization import AuthorizationError
+        from decimal import Decimal
+        pg=importlib.import_module('daon_user_api.operations_telemetry_postgres');ledger=Ledger()
+        ledger.auth.auth_role='organization_admin'
+        context=SimpleNamespace(**vars(ledger.context) if hasattr(ledger.context,'__dict__') else dict(
+            tenant_id=ledger.context.tenant_id,workspace_id=ledger.context.workspace_id,actor_id=ledger.context.actor_id,
+            trace_id=ledger.context.trace_id,policy_version=ledger.context.policy_version))
+        context.scope='workspace_visible'
+        log=[];deny=[False];after=[lambda:None]
+        self.assertTrue(callable(getattr(pg.PostgresOperationsTelemetryRepository,'read_cost_receipts',None)),'M2-3 cost read missing')
+        class Connection:
+            info=ledger.info
+            def cursor(inner,**kwargs):
+                if not borrowed:return inner
+                class Cursor:
+                    def __enter__(self):return self
+                    def __exit__(self,*args):pass
+                    def execute(self,sql,params=()):return inner._execute(sql,params)
+                return Cursor()
+            def transaction(self):return nullcontext()
+            def execute(inner,sql,params=()):
+                if borrowed:raise AssertionError('BORROWED_DEFAULT_CURSOR_MUST_NOT_CHANGE')
+                return inner._execute(sql,params)
+            def _execute(self,sql,params=()):
+                log.append((sql,params))
+                if sql.startswith(('SET LOCAL ','SELECT set_config')):return SimpleNamespace()
+                if '/* operations-cost:run */' in sql:return SimpleNamespace(fetchall=lambda:[('run-a','other-actor','notebook-a',['version-a'])])
+                if '/* operations-cost:binding */' in sql:return SimpleNamespace(fetchone=lambda:(1,))
+                if sql.startswith('SELECT NOT EXISTS (SELECT 1 FROM identity_auth_source_access'):return SimpleNamespace(fetchone=lambda:(not deny[0],))
+                if sql.startswith(('SELECT canonical_json FROM source_versions','SELECT canonical_json FROM public.source_versions')):return SimpleNamespace(fetchone=lambda:({},))
+                if sql.startswith("SELECT current_setting('app.notebook_id'"):return SimpleNamespace(fetchone=lambda:('',))
+                if sql=='SELECT * FROM public.read_operations_cost_receipts(%s,%s)':
+                    after[0]()
+                    return SimpleNamespace(fetchall=lambda:[dict(run_id='run-a',actor_id='other-actor',model_attempt_id='attempt-a',
+                        state='known',amount=Decimal('1.25'),currency='KRW',observed_at=NOW,received_at=NOW)])
+                return ledger.execute(sql,params)
+        class Pool:
+            closed=False
+            @contextmanager
+            def connection(self,**kwargs):yield Connection()
+            def close(self):pass
+        with patch.object(pg,'ConnectionPool',return_value=Pool()):
+            if borrowed:
+                @contextmanager
+                def transaction():yield Connection()
+                self.assertTrue(callable(getattr(pg.PostgresOperationsTelemetryRepository,'using_transaction',None)),'borrowed transaction adapter missing')
+                repo=pg.PostgresOperationsTelemetryRepository.using_transaction(transaction)
+                pg.ConnectionPool.assert_not_called()
+            else:repo=pg.PostgresOperationsTelemetryRepository('host=pg.invalid dbname=daon_user_s44_cost_test')
+            self.addCleanup(repo.close)
+            rows=repo.read_cost_receipts(context,('run-a',));self.assertEqual(rows[0]['amount'],Decimal('1.25'))
+            self.assertEqual(set(rows[0]),{'run_id','actor_id','model_attempt_id','state','amount','currency','observed_at','received_at'})
+            for mode in ('self','source','late-source','organization','non-manager','late-manager'):
+                deny[0]=False;after[0]=lambda:None;context.scope='workspace_visible';ledger.workflow_state='active';ledger.auth.auth_role='organization_admin'
+                if mode=='self':context.scope='self'
+                if mode=='source':deny[0]=True
+                if mode=='late-source':after[0]=lambda:deny.__setitem__(0,True)
+                if mode=='organization':ledger.workflow_state='suspended'
+                if mode=='non-manager':ledger.auth.auth_role='viewer'
+                if mode=='late-manager':after[0]=lambda:setattr(ledger.auth,'auth_role','viewer')
+                with self.subTest(mode=mode),self.assertRaises(AuthorizationError):repo.read_cost_receipts(context,('run-a',))
+        self.assertFalse(any('row_security' in sql or 'bypass' in sql.lower() for sql,_ in log))
+
+    def test_cost_sql_writers_and_manager_select_are_closed_without_changing_self_policy(self):
+        from pathlib import Path
+        sql=(Path(__file__).resolve().parents[1]/'migrations/versions/0071_operations_telemetry.sql').read_text(encoding='utf-8')
+        for name in ('record_operations_cost_receipt','read_operations_cost_receipts','read_operations_deployment_receipt','record_operations_deployment_receipt'):
+            self.assertIn('CREATE FUNCTION public.'+name+'(',sql)
+        self.assertIn('CREATE POLICY operations_cost_receipts_manager_select',sql)
+        self.assertIn('FOR SELECT TO daon_notebook_delete',sql)
+        self.assertIn("public.registered_restore_actor_allowed(tenant_id,workspace_id,nullif(current_setting('app.actor_id',true),''))",sql)
+        self.assertNotIn('CREATE OR REPLACE FUNCTION public.registered_restore_actor_allowed',sql)
+        self.assertIn('OPERATIONS_COST_REPLAY',sql)
+        self.assertNotIn('GRANT INSERT ON',sql)
+
+    def test_receipt_replay_or_changed_attempt_rejected_in_same_transaction_port(self):
+        module=api();pg=importlib.import_module("daon_user_api.operations_telemetry_postgres")
+        self.assertTrue(callable(getattr(pg,"record_cost_in_transaction",None)),"M2-3 protected append missing")
+        from decimal import Decimal
+        import psycopg
+        context=SimpleNamespace(tenant_id="tenant-a",workspace_id="workspace-a",actor_id="actor-a")
+        receipt=module.make_cost_receipt(module.ReportedCost(Decimal("1.25"),"USD","reported-a"),{},provider_connection_id="provider-a",outcome="succeeded",observed_at=NOW)
+        calls=[];seen=[]
+        class Connection:
+            def execute(self,sql,params=()):
+                calls.append((sql,params))
+                if seen:raise psycopg.errors.UniqueViolation("PRIVATE_SECRET_CANARY")
+                seen.append(params);return SimpleNamespace(fetchone=lambda:(params[-1],))
+        connection=Connection()
+        pg.record_cost_in_transaction(connection,context,"run-a",receipt,model_attempt_id="attempt-a")
+        for attempt in ("attempt-a","attempt-b"):
+            with self.subTest(attempt=attempt),self.assertRaises(module.TelemetryUnavailable) as failed:
+                pg.record_cost_in_transaction(connection,context,"run-a",receipt,model_attempt_id=attempt)
+            self.assertEqual(str(failed.exception),"OPERATIONS_TELEMETRY_UNAVAILABLE")
+        self.assertEqual(len(calls),3)
+        self.assertTrue(all(sql.startswith("SELECT public.record_operations_cost_receipt(") for sql,_ in calls))
+        self.assertEqual(calls[0][1][:4],("tenant-a","workspace-a","run-a","actor-a"))
+        self.assertNotEqual(calls[0][1][-1],calls[-1][1][-1],"attempt도 receipt digest에 결속")
+
+    def test_failure_or_cancellation_cost_not_zero(self):
+        module=api();self.assertTrue(callable(getattr(module,"make_cost_receipt",None)),"M2-3 cost receipt producer missing")
+        from decimal import Decimal
+        reported=module.ReportedCost(Decimal("1.25"),"USD","reported-a")
+        for outcome in ("failed","cancelled"):
+            receipt=module.make_cost_receipt(reported,{"total_tokens":7},provider_connection_id="provider-a",outcome=outcome,observed_at=NOW)
+            self.assertEqual((receipt.state,receipt.amount,receipt.currency),("uncertain",None,None))
+
+    def test_currency_separated_and_price_version_required(self):
+        module=api();self.assertTrue(callable(getattr(module,"make_cost_receipt",None)),"M2-3 cost receipt producer missing")
+        from decimal import Decimal
+        for currency in ("USD","KRW"):
+            result=module.make_cost_receipt(module.ReportedCost(Decimal("1.000000001"),currency,"reported-a"),{},provider_connection_id="provider-a",outcome="succeeded",observed_at=NOW)
+            self.assertEqual((result.amount,result.currency),(Decimal("1.000000001"),currency))
+        with self.assertRaises(ValueError):module.CostReceipt("receipt-a","provider-a","price_card",Decimal("1"),"USD","a"*64,None,"known",NOW)
+
     def publisher(self,*,sink=None,reader=None):
         module=api();self.clock=[NOW];self.sink=sink or Sink(module,lambda:self.clock[0])
         publisher=module.WorkerObservationPublisher(self.sink,clock=lambda:self.clock[0],resources=reader or SimpleNamespace(read=lambda:module.ResourceValues()))

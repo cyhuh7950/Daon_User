@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import ctypes
+import hashlib
+import json
 import logging
 import os
 import re
@@ -12,6 +14,7 @@ import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime,timedelta,timezone
+from decimal import Decimal
 
 
 KINDS=("document","studio","object")
@@ -23,6 +26,100 @@ _CODES={None,"WORKER_STOPPED","WORKER_POLL_FAILED"}
 
 class TelemetryUnavailable(RuntimeError):
     def __init__(self):super().__init__("OPERATIONS_TELEMETRY_UNAVAILABLE")
+
+
+@dataclass(frozen=True,slots=True,repr=False)
+class ReportedCost:
+    amount:Decimal
+    currency:str
+    receipt_id:str
+
+    def __post_init__(self):
+        if (type(self.amount) is not Decimal or not self.amount.is_finite() or self.amount<0
+            or self.amount>=Decimal("1000000000000000") or self.amount.as_tuple().exponent < -9
+            or type(self.currency) is not str or re.fullmatch(r"[A-Z]{3}",self.currency) is None):
+            raise ValueError("COST_RECEIPT_INVALID")
+        _id(self.receipt_id)
+
+
+def reported_cost_from_usage(usage):
+    """명시된 transport usage만 소비. 본문/float/통화 추정·가격표 계산0."""
+    if not isinstance(usage,dict):return None
+    raw=usage.get("cost");currency=usage.get("currency")
+    if type(raw) is int:raw=str(raw)
+    if type(raw) is not str or re.fullmatch(r"(?:0|[1-9][0-9]{0,14})(?:\.[0-9]{1,9})?",raw) is None:return None
+    if type(currency) is not str or re.fullmatch(r"[A-Z]{3}",currency) is None:return None
+    amount=Decimal(raw)
+    safe_usage={name:usage[name] for name in ("prompt_tokens","completion_tokens","total_tokens")
+        if type(usage.get(name)) is int and 0<=usage[name]<=2**63-1}
+    digest=hashlib.sha256(json.dumps(["provider-reported-cost-v1",format(amount,"f"),currency,safe_usage],sort_keys=True,separators=(",",":")).encode()).hexdigest()
+    return ReportedCost(amount,currency,"cost-"+digest)
+
+
+@dataclass(frozen=True,slots=True,repr=False)
+class CostReceipt:
+    receipt_id:str
+    provider_connection_id:str|None
+    basis:str
+    amount:Decimal|None
+    currency:str|None
+    usage_digest:str|None
+    price_version:str|None
+    state:str
+    observed_at:datetime
+
+    def __post_init__(self):
+        _id(self.receipt_id);_utc(self.observed_at)
+        if self.provider_connection_id is not None:_id(self.provider_connection_id)
+        if (self.basis!="provider_reported" or self.price_version is not None or self.state not in {"known","unknown","uncertain"}
+            or self.usage_digest is not None and (type(self.usage_digest) is not str or re.fullmatch(r"[a-f0-9]{64}",self.usage_digest) is None)):
+            raise ValueError("COST_RECEIPT_INVALID")
+        if self.state=="known":
+            ReportedCost(self.amount,self.currency,self.receipt_id)
+            if self.provider_connection_id is None:raise ValueError("COST_RECEIPT_INVALID")
+        elif self.amount is not None or self.currency is not None:raise ValueError("COST_RECEIPT_INVALID")
+
+
+def make_cost_receipt(reported,usage,*,provider_connection_id,outcome,observed_at):
+    if reported is not None and type(reported) is not ReportedCost:raise ValueError("COST_RECEIPT_INVALID")
+    if outcome not in {"succeeded","failed","cancelled"}:raise ValueError("COST_RECEIPT_INVALID")
+    tokens={name:usage[name] for name in ("prompt_tokens","completion_tokens","total_tokens")
+        if isinstance(usage,dict) and type(usage.get(name)) is int and 0<=usage[name]<=2**63-1}
+    usage_digest=hashlib.sha256(json.dumps(tokens,sort_keys=True,separators=(",",":")).encode()).hexdigest()
+    state="uncertain" if outcome!="succeeded" else "known" if reported is not None and provider_connection_id is not None else "unknown"
+    identifier=hashlib.sha256(json.dumps(["run-cost-receipt-v1",reported.receipt_id if reported else None,usage_digest,state],separators=(",",":")).encode()).hexdigest()
+    return CostReceipt("cost-"+identifier,provider_connection_id,"provider_reported",reported.amount if state=="known" else None,
+        reported.currency if state=="known" else None,usage_digest,None,state,observed_at)
+
+
+@dataclass(frozen=True,slots=True,repr=False)
+class DeploymentReceipt:
+    operation_id:str
+    operation:str
+    code_revision:str|None
+    image_digest:str|None
+    previous_image_digest:str|None
+    state:str
+    observed_at:datetime
+    safe_code:str
+
+    def __post_init__(self):
+        _id(self.operation_id);_utc(self.observed_at)
+        if self.operation not in {'deploy','rollback'} or self.state not in {'succeeded','failed','uncertain'}:
+            raise ValueError('DEPLOYMENT_RECEIPT_INVALID')
+        if self.code_revision is not None and (type(self.code_revision) is not str or re.fullmatch('[a-f0-9]{40}',self.code_revision) is None):
+            raise ValueError('DEPLOYMENT_RECEIPT_INVALID')
+        for value in (self.image_digest,self.previous_image_digest):
+            if value is not None and (type(value) is not str or re.fullmatch('sha256:[a-f0-9]{64}',value) is None):raise ValueError('DEPLOYMENT_RECEIPT_INVALID')
+        if self.state=='succeeded' and (self.code_revision is None or self.image_digest is None or self.previous_image_digest is None):
+            raise ValueError('DEPLOYMENT_RECEIPT_INVALID')
+        if self.safe_code!=('DEPLOYMENT_' if self.operation=='deploy' else 'ROLLBACK_')+self.state.upper():
+            raise ValueError('DEPLOYMENT_RECEIPT_INVALID')
+
+    def digest(self):
+        self.__post_init__()
+        values=[getattr(self,name) for name in self.__dataclass_fields__]
+        return hashlib.sha256(json.dumps(['operations-deployment-receipt-v1',*[v.isoformat() if isinstance(v,datetime) else v for v in values]],separators=(',',':')).encode()).hexdigest()
 
 
 def _utc(value):

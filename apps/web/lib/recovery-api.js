@@ -197,8 +197,8 @@ export const recoveryApi = Object.freeze({
       workspace_id: input.workspace_id, notebook_id: input.notebook_id, trigger: "manual", source_version_ids: [...input.source_version_ids].sort(),
     }, headers: { "Idempotency-Key": idempotencyKey } });
   },
-  getOperationsStatus(workspaceId, { signal } = {}) {
-    return getWorkspaceOperationsStatus(workspaceId, { signal, fetchImpl: async (path, init) => {
+  getOperationsStatus(workspaceId, { signal, scope="self" } = {}) {
+    return getWorkspaceOperationsStatus(workspaceId, { signal, scope, fetchImpl: async (path, init) => {
       const response = await fetch(path, init);
       if (!response.ok) throw requestError(response, await response.json().catch(() => null));
       return response;

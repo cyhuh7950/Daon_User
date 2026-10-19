@@ -30,6 +30,153 @@ DEFAULT_DENY_DIGEST = "caf695f3de7e3e05feb024b3ff4b8b14cbfad5318b885ac15d8e4da25
 
 
 class CloudStorageContractTests(unittest.TestCase):
+    def test_m2_readiness_0071_requires_parent_and_telemetry_protection_without_changing_flags(self):
+        from types import SimpleNamespace
+        for closed in (False,True):
+            for revision in ("0071","0072","9999"):
+                for flags in ((False,False),(True,False),(False,True),(True,True)):
+                    for missing in (None,"organization","notification","registered","telemetry"):
+                        with self.subTest(closed=closed,revision=revision,flags=flags,missing=missing):
+                            calls=[]
+                            class Connection:
+                                def execute(self,sql,params=()):
+                                    return SimpleNamespace(fetchone=lambda:(revision,) if "alembic_version" in sql else ("0.8.2",))
+                            class Pool:
+                                @contextmanager
+                                def connection(self,**kwargs):yield Connection()
+                            pool=Pool();pool.closed=closed
+                            @contextmanager
+                            def connect(*args,**kwargs):yield Connection()
+                            store=object.__new__(PostgresCloudStore);store._dsn="synthetic-no-network";store._pool=pool
+                            store._organization_admin_v2_enabled,store._notification_inbox_enabled=flags
+                            store._organization_storage_is_protected=lambda c:missing!="organization"
+                            store._notification_storage_is_protected=lambda c:missing!="notification"
+                            def registered(c,*,expected_revision="0070"):
+                                calls.append(expected_revision);return missing!="registered" and expected_revision=="0071"
+                            store._registered_restore_storage_is_protected=registered
+                            store._telemetry_storage_is_protected=lambda c:missing!="telemetry"
+                            store._ensure_pool_open=lambda:None
+                            with patch("daon_user_api.cloud_storage.connect",connect):actual=store.readiness()
+                            self.assertEqual(actual.ready,revision=="0071" and missing is None)
+                            if calls:self.assertEqual(calls,["0071"])
+
+    def test_m2_telemetry_catalog_exact_sql_and_each_tampered_protection_rejected(self):
+        from daon_user_api import cloud_storage as api
+        import hashlib,re
+        self.assertTrue(callable(getattr(PostgresCloudStore,"_telemetry_storage_is_protected",None)),"0071 exact consumer missing")
+        migration=(MIGRATION.parent/"0071_operations_telemetry.sql").read_text(encoding="utf-8")
+        # M2-3 protected cost/operator consumer 추가 exact draft. 기존 4함수/6trigger는 불변.
+        self.assertEqual(hashlib.sha256(migration.encode()).hexdigest(),"d9c92de37fd7cd2db9dd069272dfc0830e8c7da369c7f988b565429bf41c4a79")
+        # 이 CHECK는 제품 기대값을 복사하지 않고 실제 고정 SQL에서 읽어 누락을 검출한다.
+        usage_check=re.search(r"\busage_digest text CHECK\((usage_digest [^\n)]+)\)",migration)
+        self.assertIsNotNone(usage_check)
+        for signature,expected in api._TELEMETRY_FUNCTIONS.items():
+            body=re.search(r"CREATE FUNCTION public\."+signature.split("(")[0]+r"\([^$]+?AS \$\$(.*?)\$\$;",migration,re.S)
+            self.assertIsNotNone(body);self.assertEqual(hashlib.md5(body[1].encode()).hexdigest(),expected[0])
+        bad_values=(None,"role","table","columns","constraints","checks","policy","function","trigger","parents",
+            "owner","table-acl","column-acl","column-type","column-default","rls-force","body","exec","search-path","return-set",
+            "check-changed","check-precedence","fk-not-validated","fk-wrong-parent","disabled-trigger","policy-extra","parent-guard","out-signature",
+            "usage-check-missing","usage-check-changed")
+        for bad in bad_values:
+            log=[]
+            class Result:
+                def __init__(self,rows):self.rows=rows
+                def fetchone(self):return self.rows[0] if self.rows else None
+                def fetchall(self):return self.rows
+            class Reader:
+                def execute(inner,sql,params=()):
+                    log.append((sql,params));facet=sql.split("/* m2:",1)[1].split(" */",1)[0]
+                    if bad==facet:return Result([])
+                    if facet=="table" and bad in {"owner","table-acl","rls-force"}:return Result([(False,)])
+                    if facet=="columns":
+                        rows=list(api._TELEMETRY_COLUMNS[params[0]])
+                        if bad=="column-acl":rows[0]=(*rows[0][:4],False)
+                        if bad=="column-type":rows[0]=(rows[0][0],"jsonb",*rows[0][2:])
+                        if bad=="column-default":rows[0]=(*rows[0][:3],"0",True)
+                        return Result(rows)
+                    if facet=="constraints":
+                        rows=list(api._TELEMETRY_KEYS[params[0]])
+                        if bad=="fk-not-validated":rows[0]=(*rows[0][:4],False,*rows[0][5:])
+                        if bad=="fk-wrong-parent" and params[0]==api._TM_COST:rows[1]=(*rows[1][:2],"public.runs",*rows[1][3:])
+                        return Result(rows)
+                    if facet=="checks":
+                        expressions=list(api._TELEMETRY_CHECKS[params[0]])
+                        if params[0]==api._TM_COST:
+                            expressions=[e for e in expressions if not e.startswith('usage_digest ')]
+                            if bad!='usage-check-missing':
+                                expressions.append(usage_check[1].replace('{64}','{63}') if bad=='usage-check-changed' else usage_check[1])
+                        if bad=="check-changed":expressions[0]="true"
+                        if bad=="check-precedence" and params[0]==api._TM_COST:
+                            index=next(i for i,e in enumerate(expressions) if e.startswith("(state='known'"))
+                            expressions[index]="state='known' AND (amount IS NOT NULL OR (state IN ('unknown','uncertain') AND amount IS NULL AND currency IS NULL))"
+                        return Result([(expression,True,False) for expression in expressions])
+                    if facet=="policy":
+                        rows=list(api._TELEMETRY_POLICIES[params[0]])
+                        if bad=="policy-extra":rows.append(("extra","*",True,["PUBLIC"],"true","true"))
+                        return Result(rows)
+                    if facet=="function":
+                        expected=api._TELEMETRY_FUNCTIONS[params[1].removeprefix("public.")]
+                        self.assertEqual(params[0],expected[3])
+                        return Result([("0"*32 if bad=="body" else expected[0],expected[1],not expected[2] if bad=="return-set" else expected[2],
+                            True,not expected[4] if bad=="exec" else expected[4],bad!="out-signature",bad!="search-path",True)])
+                    if facet=="trigger":return Result([(*r[:3],"D",*r[4:]) for r in api._TELEMETRY_TRIGGERS] if bad=="disabled-trigger" else api._TELEMETRY_TRIGGERS)
+                    if facet=="parents" and bad=="parent-guard":return Result([(False,)])
+                    return Result([(True,)])
+            with self.subTest(facet=bad):self.assertEqual(PostgresCloudStore._telemetry_storage_is_protected(Reader()),bad is None)
+            self.assertTrue(all("pg_catalog" in sql and not re.match(r"\s*(INSERT|UPDATE|DELETE|ALTER|GRANT|CREATE)",sql) for sql,_ in log))
+            if bad is None:
+                self.assertTrue(any('p.proallargtypes' in sql and 'p.proargmodes' in sql and 'p.proargnames' in sql for sql,_ in log),
+                    'record 반환형만으로 비용 8필드 TABLE signature를 검증했다고 할 수 없음')
+
+    def test_m2_check_normalization_preserves_boolean_precedence_and_postgres_printing(self):
+        from daon_user_api.cloud_storage import _telemetry_expression as normalized
+        self.assertEqual(normalized("(state = ANY (ARRAY['unknown'::text, 'uncertain'::text]))"),normalized("state IN ('unknown','uncertain')"))
+        self.assertEqual(normalized("(a IS NULL) OR ((b>=c) AND (b<=d))"),normalized("a IS NULL OR (b>=c AND b<=d)"))
+        self.assertNotEqual(normalized("(a OR b) AND c"),normalized("a OR (b AND c)"))
+
+    def test_m2_api_doc_studio_assembly_reuses_the_same_supported_cloud_revision(self):
+        # 실제 생성자/서버 readiness consumer + SQL 포트 대역. HTTP·실PG/job 실행 증거 아님.
+        from types import SimpleNamespace
+        from daon_user_api import runtime
+        from daon_user_api.organization_access import OrganizationAccessBridge
+        from daon_user_api.document_processing_postgres import PostgresDocumentProcessingRepository
+        from daon_user_api.studio_workspace_postgres import PostgresStudioWorkspaceRepository
+        revision=["0071"];vector=["0.8.2"];checked=[]
+        class Connection:
+            def execute(self,sql,params=()):
+                return SimpleNamespace(fetchone=lambda:(revision[0],) if "alembic_version" in sql else None if vector[0] is None else (vector[0],))
+        class Pool:
+            closed=False
+            @contextmanager
+            def connection(self,**kwargs):yield Connection()
+            def close(self,*args,**kwargs):pass
+        class PoolFactory:
+            def __new__(cls,*args,**kwargs):return Pool()
+            @classmethod
+            def __class_getitem__(cls,item):return cls
+        with patch("daon_user_api.cloud_storage.ConnectionPool",PoolFactory),patch("daon_user_api.studio_generation_queue.ConnectionPool",PoolFactory):
+            store=PostgresCloudStore("synthetic-no-network",organization_admin_v2_enabled=True,notification_inbox_enabled=True)
+            store._organization_storage_is_protected=lambda c:True
+            store._notification_storage_is_protected=lambda c:True
+            def registered(c,*,expected_revision="0070"):
+                checked.append(expected_revision);return expected_revision==revision[0]
+            store._registered_restore_storage_is_protected=registered;store._telemetry_storage_is_protected=lambda c:True
+            repositories=[object.__new__(kind) for kind in (runtime.PostgresIdentityRepository,runtime.PostgresAuthorizationRepository,runtime.PostgresOrganizationRepository)]
+            for repository in repositories:repository._dsn=store._dsn
+            repositories[2]._access_bridge=OrganizationAccessBridge(postgres=True)
+            dependencies=SimpleNamespace(settings=SimpleNamespace(organization_admin_v2_enabled=True),cloud_store=store,
+                identity_repository=repositories[0],authorization_repository=repositories[1],organization_repository=repositories[2])
+            document=PostgresDocumentProcessingRepository(store,object())
+            studio=PostgresStudioWorkspaceRepository(store)
+            self.assertIs(document._cloud_store,store);self.assertIs(studio._cloud_store,store);self.assertIs(studio._generation_queue._cloud_store,store)
+            for value in ("0069","0070","0071","0072"):
+                revision[0]=value
+                with self.subTest(revision=value):self.assertEqual(runtime._organization_management_ready(dependencies),value!="0072")
+            revision[0]="0071";vector[0]=None
+            self.assertFalse(runtime._organization_management_ready(dependencies))
+            self.assertEqual(checked,["0070","0071"])
+            studio._generation_queue._pool.close();store.close()
+
     def test_r4_readiness_0070_requires_all_protections_in_both_pool_states(self):
         class Result:
             def __init__(self,row):self.row=row

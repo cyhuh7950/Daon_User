@@ -194,3 +194,82 @@ CREATE TRIGGER operations_cost_receipts_guard BEFORE INSERT OR UPDATE OR DELETE 
   FOR EACH ROW EXECUTE FUNCTION public.guard_operations_receipt();
 CREATE TRIGGER operations_cost_receipts_no_truncate BEFORE TRUNCATE ON public.operations_cost_receipts
   FOR EACH STATEMENT EXECUTE FUNCTION public.guard_operations_receipt();
+
+-- 기존 self ALL 정책은 그대로. 현재 관리자/자료 접근은 서버에서 전후 재검증하고
+-- owner의 SELECT 한정 범위만 추가한다. app 직접 SELECT/쓰기·RLS 우회는 허용하지 않는다.
+CREATE POLICY operations_cost_receipts_manager_select ON public.operations_cost_receipts FOR SELECT TO daon_notebook_delete
+  USING(tenant_id=nullif(current_setting('app.tenant_id',true),'')
+    AND workspace_id=nullif(current_setting('app.workspace_id',true),'')
+    AND current_setting('app.operations_cost_scope',true)='workspace_visible'
+    AND public.registered_restore_actor_allowed(tenant_id,workspace_id,nullif(current_setting('app.actor_id',true),'')));
+
+CREATE FUNCTION public.record_operations_cost_receipt(
+  t text,w text,r text,a text,i text,c text,m text,b text,n numeric,u text,h text,p text,s text,o timestamptz,d text
+) RETURNS text LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+DECLARE result text;
+BEGIN
+  IF t IS DISTINCT FROM nullif(current_setting('app.tenant_id',true),'')
+    OR w IS DISTINCT FROM nullif(current_setting('app.workspace_id',true),'')
+    OR a IS DISTINCT FROM nullif(current_setting('app.actor_id',true),'')
+    OR b IS DISTINCT FROM 'provider_reported' OR p IS NOT NULL THEN
+    RAISE EXCEPTION 'OPERATIONS_RECEIPT_SCOPE_INVALID' USING ERRCODE='42501'; END IF;
+  PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('operations-cost-v1:'||t||':'||w||':'||r,0));
+  IF EXISTS(SELECT 1 FROM public.operations_cost_receipts x WHERE x.tenant_id=t AND x.workspace_id=w AND x.run_id=r
+      AND (x.receipt_id=i OR x.model_attempt_id IS NOT DISTINCT FROM m)) THEN
+    RAISE EXCEPTION 'OPERATIONS_COST_REPLAY' USING ERRCODE='23505'; END IF;
+  INSERT INTO public.operations_cost_receipts(tenant_id,workspace_id,run_id,actor_id,receipt_id,provider_connection_id,
+    model_attempt_id,basis,amount,currency,usage_digest,price_version,state,observed_at,receipt_digest)
+    VALUES(t,w,r,a,i,c,m,b,n,u,h,p,s,o,d) RETURNING receipt_digest INTO result;
+  RETURN result;
+END $$;
+ALTER FUNCTION public.record_operations_cost_receipt(text,text,text,text,text,text,text,text,numeric,text,text,text,text,timestamptz,text) OWNER TO daon_notebook_delete;
+REVOKE ALL ON FUNCTION public.record_operations_cost_receipt(text,text,text,text,text,text,text,text,numeric,text,text,text,text,timestamptz,text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.record_operations_cost_receipt(text,text,text,text,text,text,text,text,numeric,text,text,text,text,timestamptz,text) TO daon_app;
+
+CREATE FUNCTION public.read_operations_cost_receipts(ids text[],scope text)
+RETURNS TABLE(run_id text,actor_id text,model_attempt_id text,state text,amount numeric,currency text,observed_at timestamptz,received_at timestamptz)
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+DECLARE previous_scope text;
+BEGIN
+  IF scope IS NULL OR scope NOT IN ('self','workspace_visible') OR ids IS NULL
+    OR EXISTS(SELECT 1 FROM unnest(ids) v WHERE v IS NULL OR v !~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$')
+    OR cardinality(ids)<>(SELECT count(DISTINCT v) FROM unnest(ids) v) THEN
+    RAISE EXCEPTION 'OPERATIONS_RECEIPT_SCOPE_INVALID' USING ERRCODE='42501'; END IF;
+  IF scope='workspace_visible' AND NOT public.registered_restore_actor_allowed(
+    nullif(current_setting('app.tenant_id',true),''),nullif(current_setting('app.workspace_id',true),''),
+    nullif(current_setting('app.actor_id',true),'')) THEN
+    RAISE EXCEPTION 'OPERATIONS_RECEIPT_SCOPE_INVALID' USING ERRCODE='42501'; END IF;
+  previous_scope=current_setting('app.operations_cost_scope',true);
+  PERFORM set_config('app.operations_cost_scope',scope,true);
+  RETURN QUERY SELECT x.run_id,x.actor_id,x.model_attempt_id,x.state,x.amount,x.currency,x.observed_at,x.received_at
+    FROM public.operations_cost_receipts x WHERE x.tenant_id=nullif(current_setting('app.tenant_id',true),'')
+    AND x.workspace_id=nullif(current_setting('app.workspace_id',true),'') AND x.run_id=ANY(ids)
+    AND (scope='workspace_visible' OR x.actor_id=nullif(current_setting('app.actor_id',true),''))
+    ORDER BY x.run_id,x.model_attempt_id NULLS FIRST,x.receipt_id;
+  PERFORM set_config('app.operations_cost_scope',coalesce(previous_scope,''),true);
+END $$;
+ALTER FUNCTION public.read_operations_cost_receipts(text[],text) OWNER TO daon_notebook_delete;
+REVOKE ALL ON FUNCTION public.read_operations_cost_receipts(text[],text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.read_operations_cost_receipts(text[],text) TO daon_app;
+
+CREATE FUNCTION public.read_operations_deployment_receipt() RETURNS SETOF public.operations_deployment_receipts
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+BEGIN
+  RETURN QUERY SELECT * FROM public.operations_deployment_receipts ORDER BY observed_at DESC,received_at DESC,operation_id DESC LIMIT 1;
+END
+$$;
+ALTER FUNCTION public.read_operations_deployment_receipt() OWNER TO daon_notebook_delete;
+REVOKE ALL ON FUNCTION public.read_operations_deployment_receipt() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.read_operations_deployment_receipt() TO daon_app;
+
+-- 운영자 연결 전용. daon_app/PUBLIC의 실행 권한은 없으며 기존 role/membership 추가0.
+CREATE FUNCTION public.record_operations_deployment_receipt(i text,o text,c text,h text,p text,s text,t timestamptz,k text,d text)
+RETURNS text LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+DECLARE result text;
+BEGIN
+  INSERT INTO public.operations_deployment_receipts(operation_id,operation,code_revision,image_digest,previous_image_digest,
+    state,observed_at,safe_code,receipt_digest) VALUES(i,o,c,h,p,s,t,k,d) RETURNING receipt_digest INTO result;
+  RETURN result;
+END $$;
+ALTER FUNCTION public.record_operations_deployment_receipt(text,text,text,text,text,text,timestamptz,text,text) OWNER TO daon_notebook_delete;
+REVOKE ALL ON FUNCTION public.record_operations_deployment_receipt(text,text,text,text,text,text,timestamptz,text,text) FROM PUBLIC,daon_app;

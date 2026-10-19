@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from typing import Mapping
 from urllib.parse import urlsplit
 
@@ -18,6 +19,8 @@ from .question_answering_postgres import (
 )
 from .question_answering_service import QuestionAnsweringError, question_request_fingerprint
 from .routing import CandidateDeployment, RoutingContext, route_single_model
+
+_LOG=logging.getLogger(__name__)
 
 
 class _FrozenRunMismatch(RuntimeError):
@@ -63,6 +66,28 @@ class PostgresQuestionEgressAuthorizer:
     @staticmethod
     def _id(prefix: str, *values: str) -> str:
         return PostgresQuestionAnsweringRepository._opaque_id(prefix, *values)
+
+    @staticmethod
+    def _observation_scope(connection,context,run_id):
+        from .operations_audit_scope import workspace_grant_metadata,egress_denial_correlation
+        from .operations_telemetry_postgres import PostgresOperationsTelemetryRepository
+        PostgresOperationsTelemetryRepository._authorize(connection,context)
+        return dict(operations_scope=workspace_grant_metadata(context.workspace_id),
+            deny_correlation_id=egress_denial_correlation(context.tenant_id,context.workspace_id,context.actor_id,run_id))
+
+    def _record_early_denial(self,context,run_id):
+        """선택적 관측 실패는 필수 보안 판단을 바꾸지 않는다. 원403은 호출자가 유지한다."""
+        try:
+            cloud_context=PostgresQuestionAnsweringRepository._cloud_context(context,"question.egress.observation")
+            with self._cloud_store._transaction(cloud_context) as connection:
+                metadata=self._observation_scope(connection,context,run_id)
+                connection.execute("INSERT INTO audit_events (event_id,tenant_id,workspace_id,actor_id,action,"
+                    "target_type,target_id,outcome,trace_id,policy_version,metadata) "
+                    "VALUES (%s,%s,%s,%s,'operations.egress.denied','workspace',%s,'denied',%s,%s,%s) "
+                    "ON CONFLICT (tenant_id,event_id) DO NOTHING",
+                    (metadata["deny_correlation_id"],context.tenant_id,context.workspace_id,context.actor_id,
+                        context.workspace_id,context.trace_id,context.policy_version,Jsonb(dict(metadata,safe_error_code="EGRESS_POLICY_DENIED"))))
+        except Exception:_LOG.warning("OPERATIONS_EGRESS_OBSERVATION_UNAVAILABLE")
 
     @staticmethod
     def _safe_model_context(selection: TextModelSelection) -> Mapping[str, object]:
@@ -283,6 +308,7 @@ class PostgresQuestionEgressAuthorizer:
         if external and (
             not external_scope_allowed or transformation_unavailable or approver_unavailable
         ):
+            self._record_early_denial(context,run_id)
             raise QuestionAnsweringError("EGRESS_POLICY_DENIED", status=403)
         policy_allowed = not external or external_scope_allowed
         routing = route_single_model(
@@ -439,6 +465,12 @@ class PostgresQuestionEgressAuthorizer:
                     "selected_deployment_id": routing.deployment_id,
                 }, extra_columns=("run_id", "routing_policy_version_id", "egress_decision_id"),
                     extra_values=(run_id, routing_policy_id, egress_decision_id))
+                observation={}
+                if not allowed:
+                    # SAVEPOINT 격리: 선택적 인가 조회 오류가 기존 필수 감사 Tx를 오염시키지 않는다.
+                    try:
+                        with connection.transaction():observation=self._observation_scope(connection,context,run_id)
+                    except Exception:_LOG.warning("OPERATIONS_EGRESS_OBSERVATION_UNAVAILABLE")
                 connection.execute(
                     "INSERT INTO audit_events (event_id,tenant_id,workspace_id,actor_id,action,"
                     "target_type,target_id,outcome,trace_id,policy_version,metadata) "
@@ -453,6 +485,7 @@ class PostgresQuestionEgressAuthorizer:
                             "policy_fingerprint": effective.fingerprint,
                             "safe_reason": reason,
                             **self._safe_model_context(selection),
+                            **observation,
                         }),
                     ),
                 )

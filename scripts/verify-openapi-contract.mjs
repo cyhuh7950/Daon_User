@@ -866,6 +866,45 @@ function validateOrganizationContract(document) {
   }
 }
 
+function validateWorkspaceOperationsContract(document){
+  const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b),require=ok=>{if(!ok)fail("M2 workspace operations exact contract");};
+  const s=document.components?.schemas,op=document.paths?.["/api/v1/workspaces/{id}/operations/status"]?.get;
+  require(op?.parameters?.length===2&&op.parameters[0].$ref==="#/components/parameters/ResourceId"&&!op.requestBody);
+  require(same(op.parameters[1],{name:"scope",in:"query",required:false,schema:{type:"string",enum:["self","workspace_visible"],default:"self"}}));
+  const exact=(name,keys)=>{const r=s?.[name];require(r?.type==="object"&&r.additionalProperties===false&&same(r.required,keys)&&same(Object.keys(r.properties).sort(),[...keys].sort()));return r;};
+  const common=["state","observed_at","received_at","coverage","safe_code"];
+  const data=exact("OperationsStatus",["workspace_id","overall_status","checked_at","components","observations","worker_samples","resource_samples","event_counts","cost_summary","deployment_summary","unimplemented"]);
+  const worker=exact("WorkspaceWorkerSample",[...common,"worker_kind","process_state","poll_started_at","poll_finished_at","active_started_at"]);
+  const resource=exact("WorkspaceResourceSample",[...common,"worker_kind","metric_id","value","unit"]);
+  const event=exact("WorkspaceEventCount",[...common,"metric_id","value","unit","window_start","window_end"]);
+  const cost=exact("WorkspaceCostSummary",[...common,"known_amounts","unknown_attempt_count","unconfirmed_run_count","coverage_start","coverage_end"]);
+  const deployment=exact("WorkspaceDeploymentSummary",[...common,"operation","code_revision","image_digest","previous_image_digest","result"]);
+  for(const [row,coverage] of [[worker,"workspace_operational_counts"],[resource,"workspace_operational_counts"],[event,"actor_accessible_records"],[cost,"actor_accessible_records"],[deployment,"actor_accessible_records"]]){
+    require(row.properties.coverage.const===coverage&&row.allOf?.[0]?.$ref==="#/components/schemas/SystemObservationTiming");
+  }
+  require(same(worker.properties.state.enum,["fresh","stale","not_collected","unavailable"])&&same(resource.properties.state.enum,worker.properties.state.enum));
+  for(const row of [resource,event])require(same(row.properties.value.type,["integer","null"])&&row.properties.value.minimum===0&&row.properties.value.maximum===Number.MAX_SAFE_INTEGER);
+  const tuples=(key,properties,name)=>{const r=data.properties[key];require(r.type==="array"&&r.minItems===properties.length&&r.maxItems===properties.length&&r.items===false&&r.prefixItems?.length===properties.length);
+    require(same(r.prefixItems,properties.map(p=>({allOf:[{$ref:`#/components/schemas/${name}`},{properties:p}]}))));};
+  const kinds=["document","studio","object"],metrics=["cpu_quota_millicores","memory_limit_bytes","memory_current_bytes","runtime_available_bytes"];
+  tuples("worker_samples",kinds.map(worker_kind=>({worker_kind:{const:worker_kind}})),"WorkspaceWorkerSample");
+  tuples("resource_samples",kinds.flatMap(worker_kind=>metrics.map((metric_id,i)=>({worker_kind:{const:worker_kind},metric_id:{const:metric_id},unit:{const:i===0?"millicores":"bytes"}}))),"WorkspaceResourceSample");
+  const ids=["manual_reprocess_pending","readiness_reprocess_pending","retry_wait","backoff_wait","step_up_denied_24h","step_up_expired_24h","access_blocked_24h","access_masked_24h","egress_denied_24h"];
+  tuples("event_counts",ids.map((metric_id,i)=>({metric_id:{const:metric_id},...(i<4?{window_start:{type:"null"},window_end:{type:"null"}}:{})})),"WorkspaceEventCount");
+  require(same(event.properties.metric_id.enum,ids)&&event.properties.unit.const==="count");
+  const amounts=cost.properties.known_amounts;
+  require(amounts.type==="array"&&amounts.items.additionalProperties===false&&same(amounts.items.required,["currency","amount"])
+    &&amounts.items.properties.currency.type==="string"&&amounts.items.properties.currency.pattern==="^[A-Z]{3}$"
+    &&amounts.items.properties.amount.type==="string"&&amounts.items.properties.amount.pattern==="^(?:0|[1-9][0-9]{0,23})(?:\\.[0-9]{1,9})?$");
+  require(data.properties.cost_summary.$ref==="#/components/schemas/WorkspaceCostSummary"&&data.properties.deployment_summary.$ref==="#/components/schemas/WorkspaceDeploymentSummary");
+  require(cost.allOf[1].then.properties.known_amounts.maxItems===0&&cost.allOf[2].then.properties.unknown_attempt_count.type==="integer");
+  require(same(deployment.properties.state.enum,["measured","not_collected","unavailable"])&&deployment.allOf[2].then.properties.image_digest.type==="string"&&deployment.allOf[3].then.properties.previous_image_digest.type==="string");
+  const u=data.properties.unimplemented;
+  require(u.type==="array"&&u.maxItems===7&&u.uniqueItems===true&&u.items.additionalProperties===false&&same(u.items.required,["producer_id","safe_code","impact_code"])
+    &&same(u.items.properties.producer_id.enum,["waiting_role_producer","readiness_event_producer","retry_suppression_receipt","node_capacity_producer","provider_capacity_reporter","deployment_receipt_writer","cost_receipt_writer"])
+    &&u.items.properties.safe_code.const==="PRODUCER_NOT_IMPLEMENTED"&&u.items.oneOf?.length===7);
+}
+
 function validateSystemOperationsContract(document) {
   const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b),require=(ok)=>{if(!ok)fail("M2-S system operations exact contract");};
   const path=document.paths?.["/api/v1/system/operations/status"],op=path?.get,s=document.components?.schemas;
@@ -958,6 +997,7 @@ export function validateOpenApiDocument(document) {
   for (const requiredPath of REQUIRED_PATHS) if (!(requiredPath in document.paths)) fail(`required path missing ${requiredPath}`);
   for (const actualPath of actualPaths) if (!REQUIRED_PATHS.includes(actualPath)) fail(`unapproved path ${actualPath}`);
   validateSystemOperationsContract(document);
+  validateWorkspaceOperationsContract(document);
   validateOrganizationContract(document);
   validateWebsiteContract(document);
   validateOpenLawContract(document);
