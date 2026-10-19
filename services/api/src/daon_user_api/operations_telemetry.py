@@ -71,9 +71,14 @@ class CostReceipt:
     def __post_init__(self):
         _id(self.receipt_id);_utc(self.observed_at)
         if self.provider_connection_id is not None:_id(self.provider_connection_id)
-        if (self.basis!="provider_reported" or self.price_version is not None or self.state not in {"known","unknown","uncertain"}
+        if (self.basis not in {"provider_reported","price_card"} or self.state not in {"known","unknown","uncertain"}
             or self.usage_digest is not None and (type(self.usage_digest) is not str or re.fullmatch(r"[a-f0-9]{64}",self.usage_digest) is None)):
             raise ValueError("COST_RECEIPT_INVALID")
+        if self.basis=="provider_reported":
+            if self.price_version is not None:raise ValueError("COST_RECEIPT_INVALID")
+        else:
+            _id(self.price_version)
+            if self.state=="known" and self.usage_digest is None:raise ValueError("COST_RECEIPT_INVALID")
         if self.state=="known":
             ReportedCost(self.amount,self.currency,self.receipt_id)
             if self.provider_connection_id is None:raise ValueError("COST_RECEIPT_INVALID")
@@ -90,6 +95,21 @@ def make_cost_receipt(reported,usage,*,provider_connection_id,outcome,observed_a
     identifier=hashlib.sha256(json.dumps(["run-cost-receipt-v1",reported.receipt_id if reported else None,usage_digest,state],separators=(",",":")).encode()).hexdigest()
     return CostReceipt("cost-"+identifier,provider_connection_id,"provider_reported",reported.amount if state=="known" else None,
         reported.currency if state=="known" else None,usage_digest,None,state,observed_at)
+
+
+def make_price_card_cost_receipt(charge,*,price_version,provider_connection_id,outcome,observed_at):
+    """승인 가격과 실측 usage의 산정 근거. Provider 청구/사전 견적과 구분한다."""
+    from .operations_run_cost import PriceCardCharge
+    _id(price_version);_id(provider_connection_id);_utc(observed_at)
+    if (outcome not in {"succeeded","failed","cancelled"}
+        or charge is not None and (type(charge) is not PriceCardCharge or charge.price_version!=price_version)):
+        raise ValueError("COST_RECEIPT_INVALID")
+    state="uncertain" if outcome!="succeeded" else "known" if charge is not None else "unknown"
+    usage_digest=None if charge is None else charge.usage_digest
+    identity=["measured-price-card-cost-v1",price_version,provider_connection_id,usage_digest,state]
+    receipt_id="cost-"+hashlib.sha256(json.dumps(identity,separators=(",",":")).encode()).hexdigest()
+    return CostReceipt(receipt_id,provider_connection_id,"price_card",charge.amount if state=="known" else None,
+        charge.currency if state=="known" else None,usage_digest,price_version,state,observed_at)
 
 
 @dataclass(frozen=True,slots=True,repr=False)
