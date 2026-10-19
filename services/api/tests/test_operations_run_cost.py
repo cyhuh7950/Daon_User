@@ -129,3 +129,28 @@ def test_price_card_receipt_rejects_missing_or_different_price_identity():
         with pytest.raises(ValueError):
             telemetry.make_price_card_cost_receipt(charge,price_version=version,
                 provider_connection_id='provider-upstage',outcome='succeeded',observed_at=NOW)
+
+def test_full_text_request_bound_uses_verified_model_context_not_bytes_as_tokens():
+    from daon_user_api import operations_run_cost as cost
+    evidence=cost.UpstageModelContextEvidence('solar-pro4','solar-pro4-260806',524288,
+        'https://console.upstage.ai/docs/models/solar-pro-4',NOW)
+    payload={'model':'solar-pro4','messages':[{'role':'system','content':'system instructions'},
+        {'role':'user','content':'QA source'}],'response_format':{'type':'json_object'},'max_tokens':512}
+    assert cost.verified_upstage_input_bound(scope(),payload,evidence,now=NOW)==524288
+    assert cost.verified_upstage_input_bound(scope(),{**payload,'max_tokens':513},evidence,now=NOW) is None
+    assert cost.verified_upstage_input_bound(scope(),{**payload,'tools':[]},evidence,now=NOW) is None
+    assert cost.verified_upstage_input_bound(scope(),{**payload,'messages':[{'role':'user','content':[{'type':'image_url'}]}]},evidence,now=NOW) is None
+    assert cost.verified_upstage_input_bound(scope(),payload,evidence,now=NOW+timedelta(hours=24)) is None
+    assert cost.verified_upstage_input_bound(scope(),{**payload,'messages':[{'role':'user','content':'a'*65536}]},evidence,now=NOW) is None
+
+def test_actual_upstage_usage_requires_exact_model_nested_cache_and_token_totals():
+    from daon_user_api import operations_run_cost as cost
+    evidence=cost.UpstageModelContextEvidence('solar-pro4','solar-pro4-260806',524288,
+        'https://console.upstage.ai/docs/models/solar-pro-4',NOW)
+    response={'model':'solar-pro4-260806','usage':{'prompt_tokens':1000,'completion_tokens':100,
+        'total_tokens':1100,'prompt_tokens_details':{'cached_tokens':200}}}
+    assert cost.normalize_upstage_usage(response,evidence)=={'prompt_tokens':1000,'completion_tokens':100,'cached_input_tokens':200}
+    assert cost.normalize_upstage_usage({**response,'model':'different-version'},evidence) is None
+    assert cost.normalize_upstage_usage({**response,'usage':{**response['usage'],'total_tokens':1101}},evidence) is None
+    assert cost.normalize_upstage_usage({**response,'usage':{**response['usage'],'prompt_tokens_details':{}}},evidence) is None
+    assert cost.normalize_upstage_usage({**response,'usage':{**response['usage'],'completion_tokens':True}},evidence) is None

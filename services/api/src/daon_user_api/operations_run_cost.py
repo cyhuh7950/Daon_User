@@ -207,3 +207,61 @@ def price_actual_usage(price_card,*,usage,now):
         return PriceCardCharge(value.quantize(_NANO,rounding=ROUND_CEILING),price_card.currency,'price_card',price_card.version,digest)
     except (ValueError,ArithmeticError,TypeError):
         return None
+
+
+@dataclass(frozen=True,slots=True)
+class UpstageModelContextEvidence:
+    model_alias:str
+    resolved_model:str
+    context_tokens:int
+    source_url:str
+    checked_at:datetime
+
+    def __post_init__(self):
+        _utc(self.checked_at)
+        if (self.model_alias!='solar-pro4' or self.resolved_model!='solar-pro4-260806'
+            or type(self.context_tokens) is not int or self.context_tokens!=524288
+            or self.source_url!='https://console.upstage.ai/docs/models/solar-pro-4'):
+            raise ValueError('UPSTAGE_CONTEXT_EVIDENCE_INVALID')
+
+
+def verified_upstage_input_bound(scope,payload,evidence,*,now):
+    """검증 문서의 전체 context 상한. bytes를 실제 token 수로 환산하지 않는다."""
+    if (type(scope) is not RunCostScope or scope.model_id!='solar-pro4' or scope.base_url!=_USD_ENDPOINT
+        or type(evidence) is not UpstageModelContextEvidence or type(payload) is not dict):
+        return None
+    try:
+        if not timedelta(0)<=_utc(now)-evidence.checked_at<timedelta(hours=24):return None
+        allowed={'model','messages','max_tokens','response_format','temperature','top_p','reasoning_effort'}
+        if (set(payload)-allowed or not {'model','messages','max_tokens'}<=set(payload)
+            or payload['model']!=evidence.model_alias or type(payload['max_tokens']) is not int
+            or not 1<=payload['max_tokens']<=512 or type(payload['messages']) is not list
+            or not 1<=len(payload['messages'])<=256):return None
+        for message in payload['messages']:
+            if (type(message) is not dict or set(message)!={'role','content'}
+                or message['role'] not in {'system','user','assistant'} or type(message['content']) is not str):return None
+        # ASCII escaping은 비ASCII wire보다 같거나 크다. system/schema/전체messages를 포함한다.
+        wire=json.dumps(payload,ensure_ascii=True,separators=(',',':'),allow_nan=False).encode('utf-8')
+        if len(wire)>65536:return None
+        if 'response_format' in payload and type(payload['response_format']) is not dict:return None
+        for name,maximum in (('temperature',2),('top_p',1)):
+            if name in payload and (type(payload[name]) not in {int,float} or not 0<=payload[name]<=maximum):return None
+        if 'reasoning_effort' in payload and payload['reasoning_effort'] not in {'none','low','medium','high'}:return None
+        # Provider context에는 입력/출력이 함께 포함된다. 전체context를입력한도로잡고
+        # 출력은별도가산해프레이밍을누락하지않는보수상한으로만사용한다.
+        return evidence.context_tokens
+    except (ValueError,TypeError,OverflowError,UnicodeError):
+        return None
+
+
+def normalize_upstage_usage(response,evidence):
+    """공식 raw 응답의 버전·명시 nested cache만 소비한다. 누락=0 아님."""
+    if type(response) is not dict or type(evidence) is not UpstageModelContextEvidence or response.get('model')!=evidence.resolved_model:
+        return None
+    usage=response.get('usage')
+    if type(usage) is not dict or type(usage.get('prompt_tokens_details')) is not dict:return None
+    prompt=usage.get('prompt_tokens');completion=usage.get('completion_tokens');total=usage.get('total_tokens')
+    cached=usage['prompt_tokens_details'].get('cached_tokens')
+    if (any(type(x) is not int or x<0 for x in (prompt,completion,total,cached))
+        or cached>prompt or completion>512 or total!=prompt+completion or total>evidence.context_tokens):return None
+    return {'prompt_tokens':prompt,'completion_tokens':completion,'cached_input_tokens':cached}

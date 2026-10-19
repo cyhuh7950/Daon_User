@@ -221,6 +221,17 @@ class PostgresQuestionAnsweringRepositoryTests(unittest.TestCase):
         self.assertEqual((failed.exception.status,str(failed.exception)),(503,'QUESTION_DATABASE_UNAVAILABLE'))
         self.assertEqual(events,['rollback']);self.assertEqual(len(self.cloud.connection.cost_calls),1)
 
+    def test_cost_receipts_support_exact_0072_0073_but_reject_unknown_future_revision(self):
+        for revision in ('0072','0073'):
+            with self.subTest(revision=revision):
+                self.cloud.connection.revision=revision
+                self.cloud.connection.cost_calls.clear()
+                self._complete_cost()
+                self.assertEqual(len(self.cloud.connection.cost_calls),1)
+        self.cloud.connection.revision='0074'
+        with self.assertRaisesRegex(QuestionRepositoryError,'QUESTION_DATABASE_UNAVAILABLE'):
+            self._complete_cost()
+
     def test_commit_rechecks_selected_source_before_any_result_write(self):
         # Revocation occurs after the service recheck but before this transaction.
         execute = self.cloud.connection.execute
