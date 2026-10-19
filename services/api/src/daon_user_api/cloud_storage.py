@@ -149,7 +149,13 @@ def _telemetry_expression(expression):
             for index,token in enumerate(parts):
                 depth+=1 if token=="(" else -1 if token==")" else 0
                 if depth==0 and token.upper()==operator:groups.append(parse(parts[start:index]));start=index+1
-            if groups:return operator,tuple([*groups,parse(parts[start:])])
+            if groups:
+                children=[]
+                for child in [*groups,parse(parts[start:])]:
+                    # 같은 Boolean 연산자의 결합만 펼친다. 순서/개수/원자식은 유지.
+                    if isinstance(child,tuple) and child[0]==operator:children.extend(child[1])
+                    else:children.append(child)
+                return operator,tuple(children)
         return _normalize_expression("".join(parts).replace("public.",""))
     # 단어 경계를 보존한 tokenization으로 식별자의 'or'를 연산자로 오인하지 않는다.
     tokens=re.findall(r"'(?:''|[^'])*'|[A-Za-z_][A-Za-z_0-9]*|[()]|[^A-Za-z_'()]",expression)

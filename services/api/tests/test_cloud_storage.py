@@ -134,6 +134,40 @@ class CloudStorageContractTests(unittest.TestCase):
         self.assertEqual(normalized("(a IS NULL) OR ((b>=c) AND (b<=d))"),normalized("a IS NULL OR (b>=c AND b<=d)"))
         self.assertNotEqual(normalized("(a OR b) AND c"),normalized("a OR (b AND c)"))
 
+    def test_m2_postgres_nested_same_operator_check_is_associative_only(self):
+        from daon_user_api.cloud_storage import _telemetry_expression as normalized,_TELEMETRY_CHECKS,_TM_WORKER,_TM_COST
+        checks=_TELEMETRY_CHECKS[_TM_WORKER]
+        poll='poll_finished_at IS NULL OR (poll_started_at IS NOT NULL AND poll_finished_at>=process_started_at AND poll_finished_at<=observed_at)'
+        active='active_started_at IS NULL OR (poll_started_at IS NOT NULL AND active_started_at>=poll_started_at AND active_started_at<=observed_at)'
+        self.assertIn(poll,checks);self.assertIn(active,checks)
+        # poll 식은 MAIN이 실제 PG pg_get_expr로 관측한 문자열이다.
+        pg_poll='(poll_finished_at IS NULL) OR ((poll_started_at IS NOT NULL) AND ((poll_finished_at >= process_started_at) AND (poll_finished_at <= observed_at)))'
+        # active는 같은 PG 괄호 패턴의 합성 회귀이며 별도 실PG 관측 주장이 아니다.
+        pg_active='(active_started_at IS NULL) OR ((poll_started_at IS NOT NULL) AND ((active_started_at >= poll_started_at) AND (active_started_at <= observed_at)))'
+        # MAIN의 실제 cost CHECK AST 차이를 SQL 식으로 재구성한 독립 회귀.
+        pg_cost="(basis <> 'price_card') OR ((price_version IS NOT NULL) AND ((length(price_version) >= 1) AND (length(price_version) <= 128)))"
+        cost="basis<>'price_card' OR (price_version IS NOT NULL AND length(price_version)>=1 AND length(price_version)<=128)"
+        self.assertIn(cost,_TELEMETRY_CHECKS[_TM_COST])
+        equal=((pg_poll,poll),(pg_active,active),('a OR (b OR c)','a OR b OR c'),
+            ('(a AND b) AND (c AND d)','a AND b AND c AND d'),
+            ('a AND (a AND b)','a AND a AND b'),
+            ("(state='AND OR') AND (a AND b)","state='AND OR' AND a AND b"),(pg_cost,cost))
+        for actual,expected in equal:
+            with self.subTest(association=actual):self.assertEqual(normalized(actual),normalized(expected))
+        different=(('(a OR b) AND c','a OR (b AND c)'),
+            ('a AND (b OR c)','(a AND b) OR c'),
+            (poll,poll.replace('>=','>')),
+            (poll,poll.replace('poll_started_at IS NOT NULL AND ','')),
+            ('counter::integer>=0','counter::numeric>=0'),
+            ("state='known' OR state='unknown'","state='known' OR state='uncertain'"),
+            ('a AND b','b AND a'),('a AND (a AND b)','a AND b'),
+            ('NOT (a OR b)','(NOT a) OR b'),('a AND NOT (b AND c)','a AND NOT b AND c'),
+            ('counter BETWEEN 1 AND 128','counter BETWEEN 1 AND 127'),
+            ("state='a AND b'","state='a OR b'"),('a AND (b AND true)','a AND b'),
+            ('a AND (b AND c)','a AND (b OR c)'))
+        for original,changed in different:
+            with self.subTest(rejected=changed):self.assertNotEqual(normalized(original),normalized(changed))
+
     def test_m2_api_doc_studio_assembly_reuses_the_same_supported_cloud_revision(self):
         # 실제 생성자/서버 readiness consumer + SQL 포트 대역. HTTP·실PG/job 실행 증거 아님.
         from types import SimpleNamespace
