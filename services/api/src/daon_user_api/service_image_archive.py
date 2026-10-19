@@ -1,4 +1,4 @@
-"""운영자 전용 service-image-archive-v1. 비압축 legacy Docker-save만 지원.
+"""운영자 전용 service-image-archive-v1. 닫힌 legacy/native Docker-save만 지원.
 
 호스트에 tar를 추출하지 않는다. 실제 Docker 호출은 FixedDockerCLI의 고정 명령만
 소비한다. 암호화 보존/실제 load 검증과 단순 daemon cache 존재를 구분한다.
@@ -36,6 +36,19 @@ KIND = "service-image-archive-v1"
 MAGIC = b"DAON-SERVICE-IMAGE-ARCHIVE-V1\n"
 _ROLES = {"api", "web", "postgres", "object_storage", "asr"}
 _PROOF_SEAL = object()
+_JSON_LIMIT = 1048576
+_NATIVE_JSON_LIMIT = 4 * _JSON_LIMIT
+_OCI = "application/vnd.oci.image."
+# Moby api/types/container/config.go 선언 순서와 Go nil/zero 구분.
+_CONTAINER_FIELDS = (
+    ("Hostname", "str", False), ("Domainname", "str", False), ("User", "str", False),
+    ("AttachStdin", "bool", False), ("AttachStdout", "bool", False), ("AttachStderr", "bool", False),
+    ("ExposedPorts", "map", True), ("Tty", "bool", False), ("OpenStdin", "bool", False),
+    ("StdinOnce", "bool", False), ("Env", "list", False), ("Cmd", "list", False),
+    ("Healthcheck", "health", True), ("ArgsEscaped", "bool", True), ("Image", "str", False),
+    ("Volumes", "map", False), ("WorkingDir", "str", False), ("Entrypoint", "list", False),
+    ("NetworkDisabled", "bool", True), ("OnBuild", "list", True), ("Labels", "labels", False),
+    ("StopSignal", "str", True), ("StopTimeout", "pointer", True), ("Shell", "list", True))
 
 
 def _private_stat(info, uid, *, root=False):
@@ -150,15 +163,171 @@ def _safe_member(name):
     return name.rstrip("/")
 
 
-def _validate_tar(source, spec):
+def _go_json(value):
+    """Go encoding/json의 HTML/JS separator escape. Map 정렬은 호출자가 명시한다."""
+    try:
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False).replace(
+            "&", "\\u0026").replace("<", "\\u003c").replace(">", "\\u003e").replace(
+            "\u2028", "\\u2028").replace("\u2029", "\\u2029").encode("utf-8")
+    except Exception: raise SnapshotError("SNAPSHOT_IMAGE_INVALID") from None
+
+
+def _container_config(value):
+    if type(value) is not dict or set(value) - {field[0] for field in _CONTAINER_FIELDS}:
+        raise SnapshotError("SNAPSHOT_IMAGE_INVALID")
+    result = {}
+    for name, kind, optional in _CONTAINER_FIELDS:
+        default = "" if kind == "str" else False if kind == "bool" else None
+        item = value.get(name, default)
+        if kind == "str": valid = type(item) is str
+        elif kind == "bool": valid = type(item) is bool
+        elif kind == "pointer": valid = item is None or type(item) is int and 0 <= item <= 2147483647
+        elif kind == "list": valid = item is None or type(item) is list and all(type(v) is str for v in item)
+        elif kind in {"map", "labels"}:
+            valid = item is None or type(item) is dict and all(type(k) is str and (
+                type(v) is str if kind == "labels" else type(v) is dict and not v) for k, v in item.items())
+            if valid and item is not None: item = dict(sorted(item.items()))
+        else:
+            valid = item is None or type(item) is dict and not set(item) - {
+                "Test", "Interval", "Timeout", "StartPeriod", "StartInterval", "Retries"}
+            if valid and item is not None:
+                health = {}
+                for key in ("Test", "Interval", "Timeout", "StartPeriod", "StartInterval", "Retries"):
+                    if key not in item: continue
+                    part = item[key]
+                    if key == "Test":
+                        if part is not None and (type(part) is not list or any(type(v) is not str for v in part)): valid = False
+                    elif type(part) is not int or not 0 <= part <= 9223372036854775807: valid = False
+                    if part: health[key] = part
+                item = health
+        if not valid: raise SnapshotError("SNAPSHOT_IMAGE_INVALID")
+        # pointer가 가리키는 0/빈 struct와 nil은 Go omitempty에서 서로 다르다.
+        if optional and (item is None or kind not in {"pointer", "health"} and not item): continue
+        result[name] = item
+    return result
+
+
+def _v1_config(config):
+    string_fields = {"comment", "container", "docker_version", "author", "architecture", "variant", "os"}
+    allowed = string_fields | {"created", "container_config", "config", "Size", "rootfs", "history"}
+    if type(config) is not dict or set(config) - allowed: raise SnapshotError("SNAPSHOT_IMAGE_INVALID")
+    created = config.get("created")
+    if created is not None:
+        if type(created) is not str or re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?(?:Z|[+-]\d\d:\d\d)", created) is None:
+            raise SnapshotError("SNAPSHOT_IMAGE_INVALID")
+        try: datetime.fromisoformat(created)
+        except ValueError: raise SnapshotError("SNAPSHOT_IMAGE_INVALID") from None
+    result = {"created": created, "container_config": _container_config(config.get("container_config", {}))}
+    for name in string_fields:
+        value = config.get(name, "")
+        if type(value) is not str: raise SnapshotError("SNAPSHOT_IMAGE_INVALID")
+        if value: result[name] = value
+    size = config.get("Size", 0)
+    if type(size) is not int or not 0 <= size <= 9223372036854775807: raise SnapshotError("SNAPSHOT_IMAGE_INVALID")
+    if size: result["Size"] = size
+    if config.get("config") is not None: result["config"] = _container_config(config["config"])
+    return result
+
+
+def _native_graph(manifest, members, small, digests, spec, check):
+    def document(name):
+        if name not in members or members[name][1]: raise SnapshotError("SNAPSHOT_IMAGE_INVALID")
+        return _exact_json(small.get(name, b""))
+    def descriptor(value, media):
+        if (type(value) is not dict or set(value) != {"mediaType", "digest", "size"}
+                or value["mediaType"] != _OCI + media or type(value["digest"]) is not str
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", value["digest"]) is None
+                or type(value["size"]) is not int or not 0 < value["size"] <= spec.maximum_archive_bytes):
+            raise SnapshotError("SNAPSHOT_IMAGE_INVALID")
+        name = "blobs/sha256/" + value["digest"][7:]
+        if members.get(name) != (value["size"], False) or digests.get(name) != value["digest"][7:]:
+            raise SnapshotError("SNAPSHOT_IMAGE_MISMATCH")
+        return name
+    if document("oci-layout") != {"imageLayoutVersion": "1.0.0"}: raise SnapshotError("SNAPSHOT_IMAGE_INVALID")
+    index = document("index.json")
+    if (type(index) is not dict or set(index) != {"schemaVersion", "mediaType", "manifests"}
+            or type(index["schemaVersion"]) is not int or index["schemaVersion"] != 2
+            or index["mediaType"] != _OCI + "index.v1+json" or type(index["manifests"]) is not list
+            or len(index["manifests"]) != 1): raise SnapshotError("SNAPSHOT_IMAGE_INVALID")
+    manifest_name = descriptor(index["manifests"][0], "manifest.v1+json")
+    image = document(manifest_name)
+    if (type(image) is not dict or set(image) != {"schemaVersion", "mediaType", "config", "layers"}
+            or type(image["schemaVersion"]) is not int or image["schemaVersion"] != 2
+            or image["mediaType"] != _OCI + "manifest.v1+json" or type(image["layers"]) is not list
+            or len(image["layers"]) != len(manifest["Layers"])): raise SnapshotError("SNAPSHOT_IMAGE_INVALID")
+    config_name = descriptor(image["config"], "config.v1+json")
+    if config_name != "blobs/sha256/" + spec.image_digest[7:] or manifest["Config"] != config_name:
+        raise SnapshotError("SNAPSHOT_IMAGE_MISMATCH")
+    layers = [descriptor(item, "layer.v1.tar") for item in image["layers"]]
+    if layers != manifest["Layers"]: raise SnapshotError("SNAPSHOT_IMAGE_MISMATCH")
+    sources = manifest["LayerSources"]
+    expected_sources = {item["digest"]: item for item in image["layers"]}
+    if type(sources) is not dict or set(sources) != set(expected_sources): raise SnapshotError("SNAPSHOT_IMAGE_INVALID")
+    for digest, item in sources.items():
+        descriptor(item, "layer.v1.tar")
+        if item != expected_sources[digest]: raise SnapshotError("SNAPSHOT_IMAGE_MISMATCH")
+    config = document(config_name)
+    final_v1 = _v1_config(config)
+    if config.get("os") != "linux" or config.get("architecture") not in {"amd64", "arm64"}:
+        raise SnapshotError("SNAPSHOT_IMAGE_MISMATCH")
+    history = config.get("history")
+    if (type(history) is not list or not history or len(history) > 4096
+            or any(type(item) is not dict or set(item) - {"created", "created_by", "author", "comment", "empty_layer"}
+                or any(type(v) is not str for k, v in item.items() if k != "empty_layer")
+                or ("empty_layer" in item and type(item["empty_layer"]) is not bool) for item in history)
+            or sum(not item.get("empty_layer", False) for item in history) != len(layers)):
+        raise SnapshotError("SNAPSHOT_IMAGE_INVALID")
+    if type(config.get("rootfs")) is not dict or set(config["rootfs"]) != {"type", "diff_ids"}:
+        raise SnapshotError("SNAPSHOT_IMAGE_INVALID")
+    allowed = {"manifest.json", "index.json", "oci-layout", config_name, manifest_name, *layers}
+    directories = {"blobs", "blobs/sha256"}
+    compatibility = {}
+    for name in set(members) - allowed - directories:
+        check()
+        if re.fullmatch(r"blobs/sha256/[0-9a-f]{64}", name) is None or members[name][1] or digests[name] != name.rsplit("/", 1)[1]:
+            raise SnapshotError("SNAPSHOT_IMAGE_TAR_UNSUPPORTED")
+        value = document(name)
+        if (type(value) is not dict or type(value.get("id")) is not str or re.fullmatch(r"[0-9a-f]{64}", value["id"]) is None
+                or value["id"] in compatibility): raise SnapshotError("SNAPSHOT_IMAGE_INVALID")
+        compatibility[value["id"]] = value
+    if len(compatibility) != len(layers): raise SnapshotError("SNAPSHOT_IMAGE_INVALID")
+    for name in directories & set(members):
+        if members[name] != (0, True): raise SnapshotError("SNAPSHOT_IMAGE_INVALID")
+    if sum(len(raw) for name, raw in small.items() if name not in layers) > _NATIVE_JSON_LIMIT:
+        raise SnapshotError("SNAPSHOT_LIMIT_EXCEEDED")
+    previous, chain = None, None
+    for index, name in enumerate(layers):
+        check()
+        diff = "sha256:" + digests[name]
+        chain = diff if chain is None else "sha256:" + hashlib.sha256((chain + " " + diff).encode()).hexdigest()
+        final = index == len(layers) - 1
+        body = final_v1 if final else {"created": "1970-01-01T00:00:00Z", "container_config": _container_config({})}
+        preimage = {**body, "layer_id": chain}
+        if previous is not None: preimage["parent"] = "sha256:" + previous
+        identity = hashlib.sha256(_go_json(dict(sorted(preimage.items())))).hexdigest()
+        expected = {"id": identity, **body, "os": config["os"]}
+        if previous is not None: expected["parent"] = previous
+        actual = compatibility.get(identity)
+        # typed JSON 비교로 bool/int 혼동 및 raw Config 생략값의 오인을 막는다.
+        if actual is None or _go_json(dict(sorted(actual.items()))) != _go_json(dict(sorted(expected.items()))):
+            raise SnapshotError("SNAPSHOT_IMAGE_MISMATCH")
+        previous = identity
+    return config_name, config, layers
+
+
+def _validate_tar(source, spec, *, deadline=None, cancelled=lambda: False):
     """512-byte header를 직접 검사해 PAX/GNU longname/link/device를 자동 해석하지 않는다."""
     members, small, digests = {}, {}, {}
-    count = 0
+    count, native_metadata = 0, 0
+    deadline = time.monotonic() + spec.duration_seconds if deadline is None else deadline
+    def check(): _check(deadline, cancelled)
     while True:
+        check()
         header = _read_exact(source, 512)
         if header == bytes(512):
             if _read_exact(source, 512) != bytes(512): raise SnapshotError("SNAPSHOT_IMAGE_TAR_UNSAFE")
             while value := source.read(65536):
+                check()
                 if value.strip(b"\0"): raise SnapshotError("SNAPSHOT_IMAGE_TAR_UNSAFE")
             break
         try: item = tarfile.TarInfo.frombuf(header, "utf-8", "strict")
@@ -170,11 +339,18 @@ def _validate_tar(source, spec):
                 or (item.isdir() and item.size != 0)): raise SnapshotError("SNAPSHOT_IMAGE_TAR_UNSAFE")
         members[name] = (item.size, item.isdir())
         digest, remaining = hashlib.sha256(), item.size
-        metadata = bytearray() if name.endswith(".json") or name == "repositories" else None
+        blob = re.fullmatch(r"blobs/sha256/[0-9a-f]{64}", name) is not None
+        metadata = bytearray() if name.endswith(".json") or name in {"repositories", "oci-layout"} else None
         while remaining:
+            check()
             value = _read_exact(source, min(65536, remaining)); remaining -= len(value); digest.update(value)
+            if blob and metadata is None and remaining == item.size - len(value) and value[:1] in {b"{", b"["} and b"\0" not in value:
+                metadata = bytearray()
             if metadata is not None:
-                if len(metadata) + len(value) > 1048576: raise SnapshotError("SNAPSHOT_IMAGE_TAR_UNSAFE")
+                if len(metadata) + len(value) > _JSON_LIMIT: raise SnapshotError("SNAPSHOT_IMAGE_TAR_UNSAFE")
+                if blob or name in {"index.json", "oci-layout", "manifest.json"}:
+                    native_metadata += len(value)
+                    if native_metadata > _NATIVE_JSON_LIMIT: raise SnapshotError("SNAPSHOT_LIMIT_EXCEEDED")
                 metadata.extend(value)
         padding = (-item.size) % 512
         if padding and _read_exact(source, padding) != bytes(padding): raise SnapshotError("SNAPSHOT_IMAGE_TAR_UNSAFE")
@@ -182,26 +358,39 @@ def _validate_tar(source, spec):
         if metadata is not None: small[name] = bytes(metadata)
     manifest = _exact_json(small.get("manifest.json", b""))
     if (type(manifest) is not list or len(manifest) != 1 or type(manifest[0]) is not dict
-            or set(manifest[0]) != {"Config", "RepoTags", "Layers"}): raise SnapshotError("SNAPSHOT_IMAGE_INVALID")
+            or set(manifest[0]) not in ({"Config", "RepoTags", "Layers"}, {"Config", "RepoTags", "Layers", "LayerSources"})):
+        raise SnapshotError("SNAPSHOT_IMAGE_INVALID")
     manifest = manifest[0]
-    config_name = spec.image_digest[7:] + ".json"
+    native = "LayerSources" in manifest
+    config_name = "blobs/sha256/" + spec.image_digest[7:] if native else spec.image_digest[7:] + ".json"
     layers, tags = manifest["Layers"], manifest["RepoTags"]
     if (manifest["Config"] != config_name or digests.get(config_name) != spec.image_digest[7:]
-            or type(layers) is not list or not 1 <= len(layers) <= 128 or len(set(layers)) != len(layers)
-            or any(type(v) is not str or _safe_member(v) != v or not v.endswith("/layer.tar") for v in layers)
-            or (tags is not None and (type(tags) is not list or len(tags) > 64 or len(set(tags)) != len(tags)
-                or any(type(t) is not str or not t or len(t) > 256 or any(ord(c) < 33 for c in t) for t in tags)))):
+            or type(layers) is not list or not 1 <= len(layers) <= 128
+            or any(type(v) is not str or _safe_member(v) != v or not (re.fullmatch(r"blobs/sha256/[0-9a-f]{64}", v) if native else v.endswith("/layer.tar")) for v in layers)
+            or len(set(layers)) != len(layers)
+            or (tags is not None and (type(tags) is not list or len(tags) > 64
+                or any(type(t) is not str or not t or len(t) > 256 or any(ord(c) < 33 for c in t) for t in tags)
+                or len(set(tags)) != len(tags)))):
         raise SnapshotError("SNAPSHOT_IMAGE_INVALID")
-    config = _exact_json(small.get(config_name, b""))
+    if native: config_name, config, layers = _native_graph(manifest, members, small, digests, spec, check)
+    else: config = _exact_json(small.get(config_name, b""))
     try:
         if config["rootfs"]["type"] != "layers": raise SnapshotError("SNAPSHOT_IMAGE_INVALID")
         actual = ["sha256:" + digests[name] for name in layers]
         if config["rootfs"]["diff_ids"] != actual: raise SnapshotError("SNAPSHOT_IMAGE_MISMATCH")
-        revision = config.get("config", {}).get("Labels", {}).get("org.opencontainers.image.revision")
+        settings = config.get("config", {})
+        if type(settings) is not dict: raise SnapshotError("SNAPSHOT_IMAGE_INVALID")
+        labels = settings.get("Labels")
+        if labels is not None and (type(labels) is not dict or any(type(k) is not str or type(v) is not str for k, v in labels.items())):
+            raise SnapshotError("SNAPSHOT_IMAGE_INVALID")
+        revision = None if labels is None else labels.get("org.opencontainers.image.revision")
         identity = _identity({"id": "sha256:" + digests[config_name], "os": config["os"], "architecture": config["architecture"],
             "code_revision": revision if set(spec.roles) & {"api", "web"} else None, "layers": actual}, spec)
     except SnapshotError: raise
     except Exception: raise SnapshotError("SNAPSHOT_IMAGE_INVALID") from None
+    if native:
+        check()
+        return identity, tuple(tags or ())
     allowed = {config_name, "manifest.json"}
     for name in layers:
         parent = str(PurePosixPath(name).parent)
@@ -315,7 +504,7 @@ class ImageArchiveStore:
             owner = self._open(spec, "owner", self._read(folder / "owner.bin", 4096), _json([KIND, "owner"]), set())
             if owner.decode() != receipt.owner_id: raise SnapshotError()
             source = _PlainReader(self._chunks(spec, folder, receipt, deadline=deadline, cancelled=cancelled))
-            identity, tags = _validate_tar(source, spec)
+            identity, tags = _validate_tar(source, spec, deadline=deadline, cancelled=cancelled)
             if (identity["os"], identity["architecture"], tuple(identity["layers"]), tags) != (
                     receipt.os, receipt.architecture, receipt.layer_digests, receipt.repo_tags): raise SnapshotError()
             return receipt
@@ -352,7 +541,7 @@ class ImageArchiveStore:
                                 blob = self._seal(spec, "archive", bytes(block), _json([KIND, spec.archive_id, count]), nonces)
                                 output.write(struct.pack(">I", len(blob))); output.write(blob); count += 1
                     plain = _PlainReader(self._chunks(spec, folder, deadline=deadline, cancelled=cancelled))
-                    identity, tags = _validate_tar(plain, spec)
+                    identity, tags = _validate_tar(plain, spec, deadline=deadline, cancelled=cancelled)
                     if identity != before: raise SnapshotError("SNAPSHOT_IMAGE_MISMATCH")
                     if any(tags_before.get(tag) != spec.image_digest for tag in tags): raise SnapshotError("SNAPSHOT_IMAGE_TAG_CONFLICT")
                     if (_identity(cli.inspect(spec.image_digest, deadline=deadline, cancelled=cancelled), spec) != before
@@ -580,7 +769,7 @@ class FixedDockerCLI:
 
     def inspect(self, image, *, deadline, cancelled):
         if type(image) is not str or re.fullmatch("sha256:[0-9a-f]{64}", image) is None: raise SnapshotError()
-        projection = '{{json .Id}}\n{{json .Os}}\n{{json .Architecture}}\n{{json (index .Config.Labels "org.opencontainers.image.revision")}}\n{{json .RootFS.Layers}}'
+        projection = '{{json .Id}}\n{{json .Os}}\n{{json .Architecture}}\n{{with index .Config "Labels"}}{{json (index . "org.opencontainers.image.revision")}}{{else}}null{{end}}\n{{json .RootFS.Layers}}'
         with self._run(["image", "inspect", "--format", projection, image], deadline=deadline, cancelled=cancelled) as command:
             try:
                 rows = command.collect(1048576).splitlines()
