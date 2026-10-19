@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import httpx
+import pytest
 
 from test_identity_support import (
     FakeVerifiedOidcProvider,
@@ -37,6 +38,103 @@ from daon_user_api.runtime import (
     build_dependencies,
     create_app,
 )
+
+
+def test_document_readiness_runtime_default_off_and_active_requires_exact_ready_schema():
+    from types import SimpleNamespace
+    from daon_user_api import runtime as module
+    from daon_user_api.document_readiness import ReadinessDispatcherSettings
+    class Store:
+        checks = 0
+        revision = "0071"
+        def readiness(self):
+            self.checks += 1
+            return SimpleNamespace(ready=True, schema_revision=self.revision)
+    store = Store()
+    settings = SimpleNamespace(document_readiness_settings=ReadinessDispatcherSettings())
+    assert module._build_document_readiness_runtime(store, settings) is None
+    assert store.checks == 0
+    assert module._document_readiness_observer(None) is None
+    assert module._document_readiness_consumer(None) is None
+    settings.document_readiness_settings = ReadinessDispatcherSettings(scopes=frozenset({
+        ("tenant-a", "workspace-a", "actor-a", "version-a")}))
+    with pytest.raises(ValueError, match="DOCUMENT_READINESS_SCHEMA_REQUIRED"):
+        module._build_document_readiness_runtime(store, settings)
+    store.revision = "0072"
+    repository = module._build_document_readiness_runtime(store, settings)
+    assert repository.settings is settings.document_readiness_settings
+    assert callable(repository._current_policy_reader)
+    calls = []
+    repository.dispatch_ready = lambda **options: calls.append(options) or ()
+    assert module._document_readiness_consumer(repository)() == ()
+    assert calls == [{"max_items": 32, "max_seconds": 2}]
+
+
+def test_build_dependencies_preserves_shared_readiness_repository_wiring(tmp_path, monkeypatch):
+    from daon_user_api import runtime as module
+    marker, calls = object(), []
+    def build(store, settings):
+        calls.append((store, settings))
+        return marker
+    monkeypatch.setattr(module, "_build_document_readiness_runtime", build)
+    settings = RuntimeSettings.for_test(database_path=tmp_path / "runtime-wiring.sqlite3", policy_version=POLICY_VERSION)
+    dependencies = build_dependencies(settings)
+    try:
+        assert dependencies.document_readiness_repository is marker
+        assert calls == [(None, settings)]
+    finally:
+        dependencies.close()
+
+
+@pytest.mark.parametrize("changed", [None, "version", "adapter", "disabled", "personal", "status", "private_field"])
+def test_document_readiness_probe_binds_current_config_catalog_before_storage(monkeypatch, changed):
+    from types import SimpleNamespace
+    from contextlib import contextmanager
+    from datetime import datetime, timezone
+    from daon_user_api import runtime as module
+    from daon_user_api.document_readiness import ReadinessDispatcherSettings
+    from daon_user_api.document_understanding_adapter import DocumentUnderstandingError
+    from test_workspace_model_defaults import ReadinessMetadataDB
+    class Store:
+        def readiness(self): return SimpleNamespace(ready=True, schema_revision="0072")
+    settings = SimpleNamespace(document_readiness_settings=ReadinessDispatcherSettings(scopes=frozenset({
+        ("tenant-a", "workspace-a", "actor-a", "version-a")})))
+    repository = module._build_document_readiness_runtime(Store(), settings)
+    db = ReadinessMetadataDB()
+    config = [7, "OLLAMA", True, "public", "verified"]
+    original = db.execute
+    def execute(sql, params=()):
+        if "/* readiness-probe-current */" in sql:
+            assert tuple(params) == ("connection-a",)
+            return SimpleNamespace(fetchone=lambda: tuple(config))
+        return original(sql, params)
+    db.execute = execute
+    @contextmanager
+    def transaction(): yield db
+    repository._global_transaction = transaction
+    saved = []
+    repository.record_observation = lambda observation: saved.append(observation) or observation
+    probe = {"event_id": "rdy-" + "1" * 32, "connection_id": "connection-a", "adapter_type": "OLLAMA",
+        "configuration_version": 7, "observed_at": datetime(2026, 10, 19, tzinfo=timezone.utc),
+        "probe_kind": "provider_connection_check", "capability": None, "status": "healthy"}
+    if changed == "version": config[0] = 8
+    if changed == "adapter": config[1] = "other"
+    if changed == "disabled": config[2] = False
+    if changed == "personal": config[3] = "personal"
+    if changed == "status": config[4] = "failed"
+    if changed == "private_field": probe["response_body"] = "DO_NOT_PERSIST"
+    observe = module._document_readiness_observer(repository)
+    if changed is not None:
+        with pytest.raises(DocumentUnderstandingError): observe(probe)
+        assert saved == []
+    else:
+        observe(probe)
+        observe(probe)  # 같은 실제 검사 재전달은 같은 event ID; 새 Provider 호출/새 ID를 만들지 않는다.
+        assert [row.event_id for row in saved] == ["rdy-" + "1" * 32] * 2
+        assert saved[0].model_catalog_digest == saved[1].model_catalog_digest
+        assert saved[0].capability is None
+        assert len(saved[0].model_catalog_digest) == 64
+        assert all(sql.lstrip().startswith("SELECT ") for sql, _ in db.calls)
 
 
 class UnreadyCloudStore:

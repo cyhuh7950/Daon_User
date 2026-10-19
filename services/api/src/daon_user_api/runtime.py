@@ -824,6 +824,61 @@ class RuntimeState:
             return True
 
 
+def _build_document_readiness_runtime(cloud_store, settings):
+    configured = settings.document_readiness_settings
+    if cloud_store is None or not configured.scopes:
+        return None
+    status = cloud_store.readiness()
+    if status.ready is not True or status.schema_revision != "0072":
+        raise ValueError("DOCUMENT_READINESS_SCHEMA_REQUIRED")
+    from .document_readiness_postgres import PostgresDocumentReadinessRepository
+    from .workspace_model_defaults import read_document_readiness_policy
+    return PostgresDocumentReadinessRepository(cloud_store, settings=configured,
+        current_policy_reader=lambda connection, context, wait, grant:
+            read_document_readiness_policy(connection, context, wait, settings=configured))
+
+
+def _document_readiness_consumer(repository):
+    if repository is None:
+        return None
+    return lambda: repository.dispatch_ready(max_items=32, max_seconds=2)
+
+
+def _document_readiness_observer(repository):
+    if repository is None:
+        return None
+    from .document_readiness import ValidatedReadinessObservation
+    from .workspace_model_defaults import read_readiness_catalog
+    def observe(probe):
+        if (type(probe) is not dict or set(probe) != {"event_id", "connection_id", "adapter_type",
+                "configuration_version", "observed_at", "probe_kind", "capability", "status"}
+                or probe["probe_kind"] != "provider_connection_check" or probe["capability"] is not None
+                or probe["status"] not in {"healthy", "unavailable"}):
+            raise DocumentUnderstandingError("DOCUMENT_PROCESSING_CONTEXT_INVALID")
+        # 타입·UTC·safe ID를 공통 닫힌 타입으로 먼저 확인해 잘못된 값의 DB 접근을 막는다.
+        ValidatedReadinessObservation(1, probe["event_id"], probe["connection_id"], probe["adapter_type"],
+            None, "0" * 64, probe["configuration_version"], probe["observed_at"], probe["observed_at"],
+            probe["probe_kind"], probe["status"], 1, "0" * 64)
+        with repository._global_transaction() as connection:
+            current = connection.execute(
+                "SELECT /* readiness-probe-current */ version,adapter_type,enabled,access_mode,verification_status "
+                "FROM public.system_provider_connections WHERE connection_id=%s", (probe["connection_id"],)).fetchone()
+            expected_status = "verified" if probe["status"] == "healthy" else "failed"
+            if (current is None or (current[0], current[1], current[2], current[3], current[4]) !=
+                    (probe["configuration_version"], probe["adapter_type"], True, "public", expected_status)):
+                raise DocumentUnderstandingError("SOURCE_VERSION_CONFLICT", status=409)
+            catalog = read_readiness_catalog(connection, probe["connection_id"])
+        payload = {**probe, "schema_version": 1, "model_catalog_digest": catalog.digest_sha256,
+                   "observed_at": probe["observed_at"].isoformat()}
+        digest = hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
+        # received_at/sequence는 입력 구성용이며 R2 저장 port가 버리고 DB가 실제값을 배정한다.
+        observation = ValidatedReadinessObservation(1, probe["event_id"], probe["connection_id"], probe["adapter_type"],
+            None, catalog.digest_sha256, probe["configuration_version"], probe["observed_at"], probe["observed_at"],
+            probe["probe_kind"], probe["status"], 1, digest)
+        return repository.record_observation(observation)
+    return observe
+
+
 @dataclass(slots=True)
 class RuntimeDependencies:
     settings: RuntimeSettings
@@ -861,6 +916,7 @@ class RuntimeDependencies:
     open_law_import_service: Any | None = None
     open_law_repository: Any | None = None
     document_processing_service: DocumentProcessingSubmissionService | None = None
+    document_readiness_repository: Any | None = None
     question_answering_service: Any | None = None
     citation_content_repository: Any | None = None
     studio_report_service: Any | None = None
@@ -2400,6 +2456,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     ):
         provider_connection_service = PostgresProviderConnectionService(
             dependencies.cloud_store, provider_cipher,
+            readiness_observer=_document_readiness_observer(dependencies.document_readiness_repository),
         )
     if dependencies.cloud_store is not None and provider_cipher is not None:
         user_provider_credential_service = PostgresUserProviderCredentialService(
@@ -2557,6 +2614,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                     health_context, item.connection_id,
                 )["status"]
             ),
+            readiness_consumer=_document_readiness_consumer(dependencies.document_readiness_repository),
         )
         await monitor.run_with_settings(
             provider_health_stop,
@@ -8003,6 +8061,7 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         else PostgresCloudStore(settings.cloud_database_dsn, organization_admin_v2_enabled=settings.organization_admin_v2_enabled,
             notification_inbox_enabled=settings.notification_inbox_enabled)
     )
+    document_readiness_repository = _build_document_readiness_runtime(cloud_store, settings)
     provider_connection_service = None
     provider_health_settings_service = None
     workspace_model_defaults_service = None
@@ -8012,7 +8071,8 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         except OSError:
             raise ValueError("PROVIDER_CREDENTIAL_KEY_REFERENCE_UNAVAILABLE") from None
         provider_cipher = ProviderCredentialCipher(provider_key, encryption_key_version=1)
-        provider_connection_service = PostgresProviderConnectionService(cloud_store, provider_cipher)
+        provider_connection_service = PostgresProviderConnectionService(cloud_store, provider_cipher,
+            readiness_observer=_document_readiness_observer(document_readiness_repository))
         provider_health_settings_service = PostgresProviderHealthCheckSettingsService(
             PostgresProviderHealthSettingsRepository(cloud_store),
         )
@@ -8085,7 +8145,8 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
             ),
         )
         document_processing_service = DocumentProcessingSubmissionService(
-            PostgresDocumentProcessingRepository(cloud_store, object_storage)
+            PostgresDocumentProcessingRepository(cloud_store, object_storage,
+                readiness_port=document_readiness_repository, readiness_settings=settings.document_readiness_settings)
         )
     return RuntimeDependencies(
         settings=settings,
@@ -8113,6 +8174,7 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         source_upload_service=source_upload_service,
         website_storage=website_storage,
         document_processing_service=document_processing_service,
+        document_readiness_repository=document_readiness_repository,
         organization_repository=organization_repository,
         notebook_deletion_store=(
             None if cloud_store is None else PostgresNotebookDeletionStore(cloud_store, object_storage)
