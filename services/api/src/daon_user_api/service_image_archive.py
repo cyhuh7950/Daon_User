@@ -379,9 +379,13 @@ class ImageArchiveStore:
                 if isinstance(error, SnapshotError) or not isinstance(error, Exception): raise
                 raise SnapshotError("SNAPSHOT_IMAGE_UNAVAILABLE") from None
 
-    def verify(self, spec):
+    def verify(self, spec, *, deadline=None, cancelled=lambda: False):
+        limit = time.monotonic() + spec.duration_seconds
+        if deadline is not None:
+            if type(deadline) not in (int, float) or not __import__("math").isfinite(deadline): raise SnapshotError("SNAPSHOT_IMAGE_INVALID")
+            limit = min(limit, deadline)
         with self._operation(spec), self._files.pin(self.root / spec.archive_id):
-            return self._verify(spec, self.root / spec.archive_id, deadline=time.monotonic() + spec.duration_seconds, cancelled=lambda: False)
+            return self._verify(spec, self.root / spec.archive_id, deadline=limit, cancelled=cancelled)
 
     def reconstruct(self, spec, *, cli, cancelled):
         deadline, folder = time.monotonic() + spec.duration_seconds, self.root / spec.archive_id

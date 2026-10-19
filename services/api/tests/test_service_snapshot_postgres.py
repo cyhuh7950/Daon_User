@@ -1172,4 +1172,660 @@ def _native_safe_failure():
     return "ASSERTION_OR_CONFIG_OR_IO_FAILURE;AT=" + location
 
 
+def _operator_config_fixture():
+    base = Path("D:/synthetic-only") if os.name == "nt" else Path("/synthetic-only")
+    return {
+        "schema_version": 1,
+        "source": {"source_instance_ref": "source-a", "credential_ref": "credential-a", "client_ref": "pg15", "database_name": "synthetic_db",
+            "executable": str(base / "pg_dump"), "executable_sha256": "a" * 64, "client_major": 15, "service_name": "fixed-source",
+            "service_file": str(base / "service"), "password_file": str(base / "password")},
+        "spec": {"source_instance_ref": "source-a", "credential_ref": "credential-a", "client_ref": "pg15", "root_ref": "root-a",
+            "code_revision": "a" * 40, "image_digest": "sha256:" + "a" * 64, "runtime_allowlist": ["runtime-a", "api-image", "web-image", "pg-image", "object-image", "asr-image"],
+            "key_version": "v1", "key_reference": "existing-ref", "limits": {"archive_bytes": 1048576, "object_bytes": 1048576, "metadata_bytes": 1048576, "duration_seconds": 30}},
+        "capture": {"root": str(base / "captures"), "master_key_file": str(base / "key")},
+        "object_storage": {"endpoint": "object-fixed:9000", "bucket": "synthetic-bucket", "region": "us-east-1", "secure": False,
+            "access_key_file": str(base / "access"), "secret_key_file": str(base / "secret")},
+        "runtime_files": [{"ref_id": "runtime-a", "path": str(base / "runtime" / "identity.sqlite3"), "digest_sha256": "b" * 64, "byte_size": 4096}],
+        "image_archives": [{"ref_id": ref, "image_digest": "sha256:" + digest * 64, "code_revision": revision,
+            "image_role": role, "archive_id": ref, "archive_root": str(base / "images"), "maximum_archive_bytes": 1048576, "duration_seconds": 30,
+            "container_refs": ["daon_user-api-1", "daon_user-document-worker-1", "daon_user-studio-worker-1"] if role == "api" else ["fixed-" + role]}
+            for ref, role, digest, revision in (("api-image", "api", "a", "a" * 40), ("web-image", "web", "b", "b" * 40),
+                ("pg-image", "postgres", "c", None), ("object-image", "object_storage", "d", None), ("asr-image", "asr", "e", None))],
+        "docker": {"executable": str(base / "docker"), "executable_sha256": "c" * 64,
+            "source_binding": {"database_fingerprint": "d" * 64, "object_fingerprint": "e" * 64,
+                "containers": [{"container_id": hashlib.sha256(ref.encode()).hexdigest(), "compose_project": "fixed-project",
+                    "compose_service": service, "mounts": []} for ref, service in (
+                        ("daon_user-api-1", "api"), ("daon_user-document-worker-1", "document-worker"),
+                        ("daon_user-studio-worker-1", "studio-worker"), ("fixed-web", "web"),
+                        ("fixed-postgres", "postgres"), ("fixed-object_storage", "object_storage"), ("fixed-asr", "asr"))]}},
+    }
+
+
+class ServiceSnapshotOperatorTests(unittest.TestCase):
+    def module(self):
+        target = Path(__file__).resolve().parents[3] / "deploy/daon-user/capture-service-snapshot.py"
+        self.assertTrue(target.is_file(), "B2-O 고정 설정 consumer 미구현")
+        spec = importlib.util.spec_from_file_location("s44_snapshot_operator_test", target)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        return module
+
+    def test_operator_config_rejects_extra_duplicate_or_unprotected_reference(self):
+        import json
+        m = self.module()
+        raw = _operator_config_fixture()
+        self.assertEqual(m.parse_config(json.dumps(raw).encode()).spec.source_instance_ref, "source-a")
+        for value in ({**raw, "extra": True}, {k: v for k, v in raw.items() if k != "docker"}, {**raw, "schema_version": True},
+                {**raw, "runtime_files": raw["runtime_files"] * 65},
+                {**raw, "docker": {**raw["docker"], "executable": "relative-docker"}}):
+            with self.subTest(kind=tuple(value)), self.assertRaises(SnapshotError): m.parse_config(json.dumps(value).encode())
+        with self.assertRaises(SnapshotError): m.parse_config(b'{"schema_version":1,"schema_version":1}')
+        for mode, links, owner in ((0o644, 1, 123), (0o600, 2, 123), (0o600, 1, 456)):
+            with self.assertRaises(SnapshotError):
+                m.validate_private_stat(SimpleNamespace(st_mode=0o100000 | mode, st_nlink=links, st_uid=owner), 123)
+
+    def test_operator_assembly_requires_exact_source_code_schema_runtime(self):
+        import json
+        m = self.module()
+        raw = _operator_config_fixture()
+        config = m.parse_config(json.dumps(raw).encode())
+        # Web의 별도 revision은 정상이며 primary API와 같게 강제하지 않는다.
+        self.assertEqual(config.images[1]["code_revision"], "b" * 40)
+        for field, value in (("runtime_allowlist", ["runtime-a"]), ("code_revision", "f" * 40), ("source_instance_ref", "other-source")):
+            changed = json.loads(json.dumps(raw)); changed["spec"][field] = value
+            with self.subTest(field=field), self.assertRaises(SnapshotError): m.parse_config(json.dumps(changed).encode())
+
+    def test_operator_missing_image_proof_refuses_before_capture(self):
+        import json
+        m = self.module()
+        raw = _operator_config_fixture()
+        for role in ("api", "web", "postgres", "object_storage", "asr"):
+            changed = {**raw, "image_archives": [v for v in raw["image_archives"] if v["image_role"] != role]}
+            with self.subTest(role=role), self.assertRaises(SnapshotError): m.parse_config(json.dumps(changed).encode())
+        with self.assertRaises(SnapshotError): m.require_image_proofs(config=m.parse_config(json.dumps(raw).encode()), proofs={})
+
+    def test_operator_failure_closes_only_owned_resources(self):
+        m = self.module()
+        events = []
+        with self.assertRaises(SnapshotError):
+            with m.OwnedResources() as owned:
+                owned.callback(lambda: events.append("owned-close"))
+                raise SnapshotError("SNAPSHOT_SOURCE_UNAVAILABLE")
+        self.assertEqual(events, ["owned-close"])
+
+    def runtime_case(self):
+        import json
+        m = self.module(); config = m.parse_config(json.dumps(_operator_config_fixture()).encode())
+        rows = [{"id": "a" * 64, "name": "/daon_user-api-1", "image": config.spec.image_digest, "running": False, "exit_code": 0,
+            "started_at": "2026-10-19T00:00:00Z", "finished_at": "2026-10-19T00:01:00Z", "pid": 0,
+            "mounts": [{"Source": str(config.runtime_files[0]["path"].parent), "Destination": "/var/lib/daon-user", "RW": True, "Type": "volume", "Name": "fixed-runtime"}]}]
+        rows[0].update(id=hashlib.sha256(b"daon_user-api-1").hexdigest(), service="api", project="fixed-project",
+            paused=False, dead=False, restarting=False, networks={}, ports={})
+        config.docker["source_binding"]["containers"][0]["mounts"] = [{"type":"volume","name":"fixed-runtime",
+            "source":rows[0]["mounts"][0]["Source"],"destination":"/var/lib/daon-user","read_only":False}]
+        for image in config.images:
+            for ref in image["container_refs"]:
+                if ref=="daon_user-api-1": continue
+                expected = next(row for row in config.docker["source_binding"]["containers"] if row["container_id"]==hashlib.sha256(ref.encode()).hexdigest())
+                rows.append({**rows[0], "id":expected["container_id"], "name":"/"+ref, "image":image["image_digest"],
+                    "service":expected["compose_service"], "running":True,"pid":123,"mounts":[]})
+        events, state = [], [("identity.sqlite3", 1, 7, 4096, 12345, "b" * 64)]
+        class Probe:
+            @contextmanager
+            def hold(inner, files, mount):
+                events.append("pin-open")
+                try: yield lambda: tuple(state)
+                finally: events.append("pin-close")
+        @contextmanager
+        def run(args, **kwargs):
+            self.assertEqual(args[:3],["container","inspect","--format"])
+            row = next(row for row in rows if args[-1] in {row["id"],row["name"][1:]})
+            yield SimpleNamespace(collect=lambda maximum:json.dumps(row).encode())
+        cli = SimpleNamespace(containers=lambda **kwargs: tuple(rows), _run=run)
+        return m, config, rows, state, events, cli, Probe()
+
+    def test_quiescent_runtime_requires_stopped_normal_exit_and_no_other_writer(self):
+        for mode in ("normal", "running", "exit", "unfinished", "writer"):
+            m, config, rows, state, events, cli, probe = self.runtime_case()
+            if mode == "running": rows[0]["running"] = True
+            if mode == "exit": rows[0]["exit_code"] = 1
+            if mode == "unfinished": rows[0]["finished_at"] = "0001-01-01T00:00:00Z"
+            if mode == "writer": rows.append({**rows[0], "id": "b" * 64, "name": "/unrelated-live", "running": True})
+            if mode == "normal":
+                with m.QuiescentRuntime(config, cli, _probe=probe) as guard: guard.recheck()
+                self.assertEqual(events, ["pin-open", "pin-close"])
+            else:
+                with self.subTest(mode=mode), self.assertRaises(SnapshotError):
+                    with m.QuiescentRuntime(config, cli, _probe=probe): pass
+
+    def test_quiescent_runtime_mapping_wal_or_quickcheck_failure_is_unproven(self):
+        m, config, rows, state, events, cli, probe = self.runtime_case()
+        rows[0]["mounts"][0]["Source"] = str(config.runtime_files[0]["path"].parent / "wrong")
+        with self.assertRaises(SnapshotError):
+            with m.QuiescentRuntime(config, cli, _probe=probe): pass
+        for names in (("identity.sqlite3", "identity.sqlite3-wal"), ("identity.sqlite3", "identity.sqlite3-journal"), ("identity.sqlite3", "unlisted")):
+            with self.assertRaises(SnapshotError): m.require_runtime_names(set(names), {"identity.sqlite3"})
+        for result in ([], [("not ok",)], [("ok",), ("ok",)]):
+            with self.assertRaises(SnapshotError): m.require_quick_check(result)
+
+    def test_quiescent_runtime_restart_or_file_replacement_prevents_receipt(self):
+        for mode in ("restart", "replacement"):
+            m, config, rows, state, events, cli, probe = self.runtime_case()
+            with self.subTest(mode=mode), self.assertRaises(SnapshotError):
+                with m.QuiescentRuntime(config, cli, _probe=probe) as guard:
+                    if mode == "restart": rows[0]["running"] = True
+                    else: state[:] = [("identity.sqlite3", 1, 8, 4096, 12345, "b" * 64)]
+                    guard.recheck()
+            self.assertEqual(events, ["pin-open", "pin-close"])
+
+    def test_quiescent_runtime_probe_never_mutates_source(self):
+        m, config, rows, state, events, cli, probe = self.runtime_case()
+        original = tuple(state)
+        with m.QuiescentRuntime(config, cli, _probe=probe) as guard: guard.recheck()
+        self.assertEqual(tuple(state), original)
+        self.assertEqual(events, ["pin-open", "pin-close"])
+
+    def test_quiescent_runtime_approved_rename_and_mount_destination_are_not_constants(self):
+        m, config, rows, state, events, cli, probe = self.runtime_case()
+        api = rows[0]
+        api["name"] = "/approved-renamed-api"
+        api["mounts"][0]["Destination"] = "/approved/custom-runtime"
+        config.images[0]["container_refs"][0] = "approved-renamed-api"
+        config.docker["source_binding"]["containers"][0]["mounts"][0]["destination"] = "/approved/custom-runtime"
+        with m.QuiescentRuntime(config, cli, _probe=probe) as guard: guard.recheck()
+        self.assertEqual(events, ["pin-open", "pin-close"])
+
+    def test_runtime_writer_bind_alias_fd_mapping_and_unknown_are_refused(self):
+        from unittest.mock import patch
+        m = self.module(); process = Path("/proc/91"); descriptor = process / "fd/3"
+        def entries(path):
+            if path == Path("/proc"): return iter([process])
+            if path == process / "fd": return iter([descriptor])
+            raise AssertionError("UNEXPECTED_PROC_READ")
+        for mode in ("writable-fd", "shared-mapping", "unknown", "read-only"):
+            def read(path, *args, **kwargs):
+                if path == process / "fdinfo/3": return "flags:\t"+("02" if mode=="writable-fd" else "00")+"\n"
+                if path == process / "maps": return "1000-2000 rw-s 00000000 07:09 777 /different-bind/identity.bin\n" if mode=="shared-mapping" else ""
+                raise AssertionError("UNEXPECTED_PROC_TEXT")
+            def target_stat(path, *args, **kwargs):
+                self.assertEqual(path, descriptor)
+                if mode=="unknown": raise PermissionError("synthetic-private-detail")
+                return SimpleNamespace(st_dev=88, st_ino=777)
+            with self.subTest(mode=mode), patch.object(Path, "iterdir", entries), patch.object(Path, "read_text", read), \
+                    patch.object(m.os, "readlink", return_value="/different-bind/identity.bin"), patch.object(m.os, "stat", side_effect=target_stat), \
+                    patch.object(m.os, "O_ACCMODE", 3, create=True), \
+                    patch.object(m.os, "major", return_value=7, create=True), patch.object(m.os, "minor", return_value=9, create=True):
+                if mode=="read-only": m._RuntimeOSProbe._no_writers(Path("/approved/runtime"), {(88,777)})
+                else:
+                    with self.assertRaises(SnapshotError): m._RuntimeOSProbe._no_writers(Path("/approved/runtime"), {(88,777)})
+
+    def test_runtime_measure_block_cancel_and_unreaped_child_are_not_receipts(self):
+        import json
+        m = self.module(); config = m.parse_config(json.dumps(_operator_config_fixture()).encode())
+        for mode in ("timeout", "cancel", "unreaped"):
+            events = []; ticks = [0.0]; exited = [False]
+            class IO:
+                @staticmethod
+                def supported(): return True
+                def start(inner, work): events.append("owned-start"); return 771,772
+                def readable(inner, fd, duration): ticks[0]+=.05; return False
+                def poll(inner, pid): self.assertEqual(pid,771); return exited[0], 0 if exited[0] else None
+                def terminate(inner, pid):
+                    self.assertEqual(pid,771); events.append("owned-term")
+                    if mode!="unreaped": exited[0]=True
+                def kill(inner, pid): self.assertEqual(pid,771); events.append("owned-kill")
+                def close(inner, fd): self.assertEqual(fd,772); events.append("owned-close")
+                def pause(inner, duration): ticks[0]+=duration
+            probe = m.BoundedRuntimeProbe(deadline=.1, cancelled=lambda: mode=="cancel" and bool(events), _io=IO(), _clock=lambda:ticks[0])
+            with self.subTest(mode=mode), self.assertRaises(SnapshotError) as error:
+                with probe.hold(config.runtime_files, {"Source":str(config.runtime_files[0]["path"].parent)}) as measure: measure()
+            self.assertEqual(events[0], "owned-start"); self.assertIn("owned-term",events); self.assertIn("owned-close",events)
+            self.assertEqual(error.exception.code, "SNAPSHOT_WORKER_CLEANUP_UNCERTAIN" if mode=="unreaped" else "SNAPSHOT_CANCELLED" if mode=="cancel" else "SNAPSHOT_TIMEOUT")
+
+    def test_operator_container_refs_are_closed_and_bounded(self):
+        import json
+        m = self.module(); raw = _operator_config_fixture()
+        self.assertEqual(m.parse_config(json.dumps(raw).encode()).images[0]["container_refs"], ["daon_user-api-1", "daon_user-document-worker-1", "daon_user-studio-worker-1"])
+        for refs in ([], ["x"] * 17, ["same", "same"], ["-option"], ["a b"], ["/path"], ["https://host"], ["bad\nname"], [True]):
+            changed = json.loads(json.dumps(raw)); changed["image_archives"][0]["container_refs"] = refs
+            with self.subTest(refs=refs), self.assertRaises(SnapshotError): m.parse_config(json.dumps(changed).encode())
+
+    def test_operator_container_name_id_alias_and_replacement_are_refused(self):
+        import json
+        m = self.module(); raw = _operator_config_fixture()
+        config = m.parse_config(json.dumps(raw).encode())
+        def observation(ref):
+            role = next((r for r in config.images if ref in r["container_refs"]), None)
+            identity = hashlib.sha256(ref.encode()).hexdigest()
+            return {"id": identity, "name": "/" + ref, "image": role["image_digest"], "service": "api" if ref == "daon_user-api-1" else "document-worker" if ref == "daon_user-document-worker-1" else "studio-worker" if ref == "daon_user-studio-worker-1" else role["image_role"],
+                "project": "fixed-project", "running": ref != "daon_user-api-1", "exit_code": 0, "pid": 0 if ref == "daon_user-api-1" else 123,
+                "started_at": "2026-10-19T00:00:00Z", "finished_at": "2026-10-19T00:01:00Z" if ref == "daon_user-api-1" else "0001-01-01T00:00:00Z",
+                "paused": False, "dead": False, "restarting": False, "mounts": [], "networks": {}, "ports": {}}
+        observations = {ref: observation(ref) for row in config.images for ref in row["container_refs"]}
+        reads = []
+        class Probe:
+            def inspect_container(inner, ref, **kwargs):
+                reads.append(ref)
+                if ref in observations: return dict(observations[ref])
+                return dict(next(row for row in observations.values() if row["id"] == ref))
+        pins = m.PinnedContainers(config, Probe())
+        pins.pin(); reads.clear(); pins.recheck()
+        self.assertTrue(all(re.fullmatch("[0-9a-f]{64}", ref) for ref in reads), "후속 조회는 이름이 아닌 고정 ID만")
+        observations["daon_user-api-1"]["image"] = "sha256:" + "f" * 64
+        with self.assertRaises(SnapshotError): pins.recheck()
+        observations["daon_user-api-1"] = observation("daon_user-api-1")
+        # 같은 물리 container가 다른 entry의 ID 별칭으로 다시 등록된 경우.
+        raw["image_archives"][1]["container_refs"] = [observations["daon_user-api-1"]["id"]]
+        alias = m.parse_config(json.dumps(raw).encode())
+        with self.assertRaises(SnapshotError): m.PinnedContainers(alias, Probe()).pin()
+
+    def test_operator_explicit_inspect_never_lists_or_accepts_duplicate_json(self):
+        m = self.module(); calls = []
+        class Command:
+            def collect(inner, maximum):
+                self.assertEqual(maximum, 1048576)
+                return b'{"id":"one","id":"two"}'
+        class CLI:
+            @contextmanager
+            def _run(inner, args, **options):
+                calls.append(args)
+                yield Command()
+        with self.assertRaises(SnapshotError):
+            m.ExplicitContainerProbe(CLI()).inspect_container("fixed-api", deadline=time.monotonic()+1, cancelled=lambda: False)
+        self.assertEqual(calls[0][:3], ["container", "inspect", "--format"])
+        self.assertEqual(calls[0][-1], "fixed-api")
+        self.assertNotIn("ls", calls[0])
+
+    def test_operator_source_binding_is_closed_and_every_expected_container_is_required(self):
+        import json
+        m = self.module(); raw = _operator_config_fixture()
+        m.parse_config(json.dumps(raw).encode())
+        binding = raw["docker"]["source_binding"]
+        for changed in ({**binding, "verified": True}, {**binding, "containers": []},
+                {**binding, "database_fingerprint": "unknown"}, {**binding, "object_fingerprint": None},
+                {**binding, "containers": binding["containers"] * 10}):
+            with self.subTest(kind=set(changed)), self.assertRaises(SnapshotError):
+                m.parse_config(json.dumps({**raw, "docker": {**raw["docker"], "source_binding": changed}}).encode())
+        class Probe:
+            def inspect_container(inner, ref, **options):
+                expected = next(row for row in binding["containers"] if row["container_id"] == hashlib.sha256(ref.encode()).hexdigest())
+                image = next(row for row in raw["image_archives"] if ref in row["container_refs"])
+                return {"id": expected["container_id"], "name": "/" + ref, "image": image["image_digest"],
+                    "project": expected["compose_project"], "service": expected["compose_service"], "mounts": [],
+                    "running": ref != "daon_user-api-1", "exit_code": 0, "pid": 0 if ref == "daon_user-api-1" else 123,
+                    "started_at": "2026-10-19T00:00:00Z", "finished_at": "2026-10-19T00:01:00Z",
+                    "paused": False, "dead": False, "restarting": False, "networks": {}, "ports": {}}
+        for kind in ("project", "service", "missing", "mount"):
+            changed = json.loads(json.dumps(raw))
+            rows = changed["docker"]["source_binding"]["containers"]
+            if kind == "project": rows[0]["compose_project"] = "unapproved"
+            if kind == "service": rows[0]["compose_service"] = None
+            if kind == "missing": rows.pop()
+            if kind == "mount": rows[0]["mounts"] = [{"type": "volume", "name": "extra", "source": str(Path(raw["capture"]["root"])), "destination": "/extra", "read_only": False}]
+            with self.subTest(kind=kind), self.assertRaises(SnapshotError):
+                m.PinnedContainers(m.parse_config(json.dumps(changed).encode()), Probe()).pin()
+
+    def test_quiescent_sqlite_readonly_check_closes_after_inspection(self):
+        import sqlite3
+        import stat
+        from unittest.mock import patch
+        m, config, rows, state, events, cli, ignored = self.runtime_case()
+        raw = b"SQLite format 3\0" + b"synthetic"
+        item = {**config.runtime_files[0], "byte_size": len(raw), "digest_sha256": hashlib.sha256(raw).hexdigest()}
+        class Source(io.BytesIO):
+            def fileno(inner): return 917
+        source = Source(raw)
+        info = SimpleNamespace(st_dev=1, st_ino=2, st_size=len(raw), st_mtime_ns=3, st_ctime_ns=4,
+            st_mode=stat.S_IFREG | 0o600, st_uid=123, st_nlink=1)
+        database = sqlite3.connect(":memory:")
+        class Inputs:
+            @contextmanager
+            def pin(inner, path): yield 916
+            class files:
+                @staticmethod
+                @contextmanager
+                def file(path): yield source
+        probe = object.__new__(m._RuntimeOSProbe); probe.inputs = Inputs()
+        probe._namespace = lambda: ("synthetic-host",)
+        probe._no_writers = lambda path, identities: None
+        probe._names = lambda path: {"identity.sqlite3"}
+        with patch.object(m.os, "fstat", return_value=info), patch.object(m.os, "stat", return_value=info), \
+                patch.object(m.os, "geteuid", return_value=123, create=True), patch.object(m.sqlite3, "connect", return_value=database) as connect:
+            with probe.hold((item,), rows[0]["mounts"][0]) as measure:
+                self.assertEqual(measure()[0][-1], hashlib.sha256(raw).hexdigest())
+            self.assertEqual(connect.call_args.args, ("file:/proc/self/fd/917?mode=ro&immutable=1",))
+            self.assertEqual(connect.call_args.kwargs, {"uri": True})
+        with self.assertRaises(sqlite3.ProgrammingError): database.execute("SELECT 1")
+
+    def test_operator_physical_probe_requires_exact_measured_identity_and_owned_cleanup(self):
+        import json
+        import struct
+        m = self.module(); config = m.parse_config(json.dumps(_operator_config_fixture()).encode())
+        events = []
+        class IO:
+            @staticmethod
+            def supported(): return True
+            def start(inner, work):
+                raw = json.dumps({"database_fingerprint": "d" * 64, "object_fingerprint": "e" * 64}).encode()
+                inner.data = bytearray(b"D" + struct.pack(">I", len(raw)) + raw + b"E" + struct.pack(">I", 0))
+                events.append("owned-start"); return 901, 902
+            def readable(inner, fd, timeout): return True
+            def receive(inner, fd, size):
+                value = bytes(inner.data[:min(3, size)]); del inner.data[:len(value)]; return value
+            def poll(inner, pid): return True, 0
+            def close(inner, fd): events.append("owned-close")
+            def pause(inner, duration): pass
+        probe = m.SourceIdentityProbe(config, object(), _io=IO())
+        probe.recheck(deadline=time.monotonic()+2, cancelled=lambda: False)
+        self.assertEqual(events, ["owned-start", "owned-close"])
+        config.docker["source_binding"]["database_fingerprint"] = "a" * 64
+        with self.assertRaises(SnapshotError): probe.recheck(deadline=time.monotonic()+2, cancelled=lambda: False)
+        self.assertEqual(events.count("owned-close"), 2)
+        with self.assertRaises(SnapshotError): probe.recheck(deadline=time.monotonic()+2, cancelled=lambda: True)
+
+    def test_operator_final_file_verification_rechecks_before_receipt(self):
+        from unittest.mock import patch
+        m = self.module(); events = []
+        executor = object.__new__(m.CheckedSnapshotExecutor)
+        executor.final_check = lambda: events.append("current-recheck")
+        with patch.object(m.ServiceSnapshotExecutor, "_verify_data", side_effect=lambda *a, **kw: events.append("file-verify")):
+            executor._verify_data(None, None, None, None)
+        self.assertEqual(events, ["file-verify", "current-recheck"])
+        executor.final_check = lambda: (_ for _ in ()).throw(SnapshotError("SNAPSHOT_RUNTIME_UNPROVEN"))
+        with patch.object(m.ServiceSnapshotExecutor, "_verify_data", return_value=None), self.assertRaises(SnapshotError):
+            executor._verify_data(None, None, None, None)
+
+    def test_operator_quarantine_authenticates_only_bounded_receipt_and_owner(self):
+        import json
+        import shutil
+        from dataclasses import asdict
+        from unittest.mock import patch
+        from test_service_image_archive import _Reader
+        from daon_user_api import service_snapshot as snapshot
+        m = self.module()
+        root = Path(os.environ.get("DAON_SERVICE_SNAPSHOT_TEST_ROOT", "D:/tmp/daon-user-s44-d1-eoul2-20261019"))
+        self.assertTrue(root.is_absolute() and root.parent==Path("D:/tmp") and root.name in
+            {"daon-user-s44-d1-eoul2-20261019","daon-user-s44-d1-main-20261019"})
+        self.assertFalse(root.exists() or root.is_symlink())
+        for parent in (root.parent,*root.parent.parents):
+            self.assertFalse(parent.is_symlink() or getattr(parent.lstat(),"st_file_attributes",0)&0x400)
+        root.mkdir(mode=0o700)
+        try:
+            for mode in ("normal","owner","spec","ciphertext","receipt-race"):
+                with self.subTest(mode=mode):
+                    folder=root/mode; folder.mkdir(mode=0o700)
+                    config=m.parse_config(json.dumps(_operator_config_fixture()).encode())
+                    key=secrets.token_bytes(32); runtime=b"synthetic-runtime"
+                    class Ports:
+                        @contextmanager
+                        def open_snapshot(inner,spec,*,cancelled):
+                            refs=tuple(snapshot.SnapshotRuntimeRef(ref,"bytes",hashlib.sha256(runtime).hexdigest(),len(runtime)) for ref in spec.runtime_allowlist)
+                            yield snapshot.SnapshotLease("snapshot-a","0071",(),refs,{"roles":[],"memberships":[],"relations":[],"functions":[]})
+                        @contextmanager
+                        def dump_archive(inner,lease): yield _Reader(b"synthetic-dump",[])
+                        @contextmanager
+                        def open_runtime(inner,ref): yield _Reader(runtime,[])
+                    executor=snapshot.ServiceSnapshotExecutor(folder,master_key=key,ports=Ports())
+                    receipt=executor.capture(config.spec,capture_id="capture-a",cancelled=lambda:False)
+                    artifact=folder/"capture-a"; body=snapshot._json(asdict(receipt)); data_before=(artifact/"data.bin").read_bytes()
+                    if mode=="owner":
+                        (artifact/"owner.bin").write_bytes(executor._seal(config.spec,"capture-a","owner",secrets.token_bytes(32),[snapshot.KIND,"owner"],set()))
+                    if mode=="spec": config=replace(config,spec=replace(config.spec,code_revision="f"*40))
+                    if mode=="ciphertext":
+                        blob=(artifact/"receipt.bin").read_bytes(); (artifact/"receipt.bin").write_bytes(blob[:-1]+bytes([blob[-1]^1]))
+                    receipt_before=(artifact/"receipt.bin").read_bytes(); owner_before=(artifact/"owner.bin").read_bytes()
+                    completion=m._NewCaptureCompletion(config,"capture-a",key); completion.remember_new(executor,receipt)
+                    original_file=type(executor._files).file; original_read=snapshot.ServiceSnapshotExecutor._read
+                    reads=[]; data_reads=[]; receipt_reads=[0]
+                    @contextmanager
+                    def no_data(files,path,**options):
+                        if path.name=="data.bin": data_reads.append(path.name); raise AssertionError("QUARANTINE_DATA_READ_FORBIDDEN")
+                        with original_file(files,path,**options) as source: yield source
+                    def limited_read(verifier,path,limit):
+                        reads.append((path.name,limit))
+                        if path.name=="receipt.bin":
+                            receipt_reads[0]+=1
+                            if mode=="receipt-race" and receipt_reads[0]==2:
+                                path.write_bytes(receipt_before[:-1]+bytes([receipt_before[-1]^1]))
+                        return original_read(verifier,path,limit)
+                    with patch.object(snapshot.ServiceSnapshotExecutor,"verify",side_effect=AssertionError("FULL_VERIFY_FORBIDDEN")) as full_verify, \
+                            patch.object(type(executor._files),"file",no_data), patch.object(snapshot.ServiceSnapshotExecutor,"_read",limited_read):
+                        with self.assertRaises(SnapshotError) as error: completion.__exit__(SnapshotError,SnapshotError("SNAPSHOT_RUNTIME_UNPROVEN"),None)
+                    self.assertEqual(error.exception.code,"SNAPSHOT_OPERATOR_CLEANUP_UNCERTAIN")
+                    self.assertEqual(full_verify.call_count,0,"격리에는 전체 data verifier를 호출하지 않는다")
+                    self.assertEqual(data_reads,[])
+                    for name,limit in reads:
+                        self.assertIn(name,{"receipt.bin","owner.bin"})
+                        self.assertLessEqual(limit,len(body)+28 if name=="receipt.bin" else 60)
+                    self.assertEqual((artifact/"data.bin").read_bytes(),data_before)
+                    self.assertEqual((artifact/"owner.bin").read_bytes(),owner_before)
+                    if mode=="normal":
+                        self.assertFalse((artifact/"receipt.bin").exists())
+                        self.assertEqual((artifact/"receipt.uncertain").read_bytes(),receipt_before)
+                    else:
+                        self.assertTrue((artifact/"receipt.bin").exists())
+                        self.assertFalse((artifact/"receipt.uncertain").exists())
+        finally:
+            self.assertEqual(root.resolve(),root); shutil.rmtree(root); self.assertFalse(root.exists())
+
+    def test_operator_normal_assembly_consumes_image_proofs_and_schema_checked_ports(self):
+        m = self.module()
+        self.assertTrue(callable(getattr(m, "capture_service", None)), "실제 고정 port 조립 미구현")
+        self.assertEqual(m.current_schema_revision(), "0071")
+
+    def test_operator_pg_identity_is_bounded_readonly_and_closes_on_error(self):
+        import json
+        import threading
+        from unittest.mock import patch
+        m = self.module(); config = m.parse_config(json.dumps(_operator_config_fixture()).encode())
+        for fail in (False, True):
+            with self.subTest(query_error=fail):
+                events = []; active = [False]; readonly = [False]
+                class Connection:
+                    @contextmanager
+                    def transaction(inner):
+                        active[0] = True; events.append("begin")
+                        try: yield
+                        finally: active[0] = False; events.append("end")
+                    def execute(inner, sql, params=()):
+                        self.assertTrue(active[0], "identity query의 timeout은 실제 Tx 안에서만 유효")
+                        if sql == "SET TRANSACTION READ ONLY": readonly[0] = True
+                        else:
+                            self.assertTrue(readonly[0])
+                            if "set_config" in sql:
+                                self.assertIn("'statement_timeout'", sql); self.assertIn(",true)", sql)
+                                self.assertTrue(0 < int(params[0]) <= 10000); events.append("local-timeout")
+                            else:
+                                self.assertEqual(events[-1], "local-timeout"); events.append("identity-query")
+                                if fail: raise RuntimeError("synthetic-private-error")
+                        return SimpleNamespace(fetchone=lambda: ("synthetic_db", "123", 42))
+                    def close(inner): events.append("owned-close")
+                port = m.CheckedPostgresSnapshotPort(config.source, expected_schema="0071",
+                    expected_database=hashlib.sha256(b'["postgres-database-v1","123",42]').hexdigest())
+                port._deadline = time.monotonic()+10; port._external_cancel = lambda: False
+                port._cancel = threading.Event()
+                connection = Connection()
+                with patch.object(m.PostgresSnapshotPort, "_connect_service", return_value=connection):
+                    if fail:
+                        with self.assertRaises(RuntimeError): port._connect_service(config.source)
+                        self.assertEqual(events[-2:], ["end", "owned-close"])
+                    else:
+                        self.assertIs(port._connect_service(config.source), connection)
+                        self.assertEqual(events, ["begin", "local-timeout", "identity-query", "end"])
+                self.assertFalse(active[0])
+
+    def test_operator_real_files_assembly_and_late_runtime_change(self):
+        import json
+        import shutil
+        import struct
+        from unittest.mock import patch
+        from test_service_image_archive import _archive, _Reader
+        from daon_user_api import service_image_archive as image_module
+        from daon_user_api import service_snapshot as snapshot_module
+        from daon_user_api.recovery_capture import _WindowsFiles, _PosixFiles
+        m = self.module()
+        root = Path(os.environ.get("DAON_SERVICE_SNAPSHOT_TEST_ROOT", "D:/tmp/daon-user-s44-d1-eoul2-20261019"))
+        allowed = {"daon-user-s44-d1-eoul2-20261019", "daon-user-s44-d1-main-20261019"}
+        self.assertTrue(root.is_absolute() and root.name in allowed and root.parent == Path("D:/tmp"))
+        self.assertFalse(root.exists() or root.is_symlink())
+        for parent in (root.parent, *root.parent.parents):
+            self.assertFalse(parent.is_symlink() or getattr(parent.lstat(), "st_file_attributes", 0) & 0x400)
+        root.mkdir(mode=0o700)
+        try:
+            for mode in ("normal", "late-runtime", "schema", "late-image", "exit-runtime"):
+                with self.subTest(mode=mode):
+                    folder = root / mode; folder.mkdir(mode=0o700)
+                    for name in ("runtime", "capture", "images"): (folder / name).mkdir(mode=0o700)
+                    source = folder / "runtime" / "identity.bin"; original = b"synthetic-runtime"
+                    source.write_bytes(original); source.chmod(0o600)
+                    raw = _operator_config_fixture(); raw["capture"]["root"] = str(folder / "capture")
+                    raw["runtime_files"][0].update(path=str(source), byte_size=len(original), digest_sha256=hashlib.sha256(original).hexdigest())
+                    archives = {}; events = []; physical_reads = []
+                    for row in raw["image_archives"]:
+                        data, image, config_data = _archive(layer=("synthetic-" + row["image_role"]).encode())
+                        row.update(image_digest=image, archive_root=str(folder / "images"))
+                        if row["image_role"] in {"api", "web"}: row["code_revision"] = "a" * 40
+                        if row["image_role"] == "api": raw["spec"]["image_digest"] = image
+                        archives[image] = (data, config_data)
+                    mount = {"Type": "volume", "Name": "fixed-runtime", "Source": str(source.parent), "Destination": "/var/lib/daon-user", "RW": True}
+                    raw["docker"]["source_binding"]["containers"][0]["mounts"] = [{"type": "volume", "name": "fixed-runtime", "source": str(source.parent), "destination": "/var/lib/daon-user", "read_only": False}]
+                    config = m.parse_config(json.dumps(raw).encode())
+                    rows = []
+                    for entry in raw["image_archives"]:
+                        for ref in entry["container_refs"]:
+                            expected = next(r for r in raw["docker"]["source_binding"]["containers"] if r["container_id"] == hashlib.sha256(ref.encode()).hexdigest())
+                            api = ref == "daon_user-api-1"
+                            rows.append({"id": expected["container_id"], "name": "/"+ref, "image": entry["image_digest"],
+                                "service": expected["compose_service"], "project": expected["compose_project"],
+                                "running": not api, "exit_code": 0, "pid": 0 if api else 123,
+                                "started_at": "2026-10-19T00:00:00Z", "finished_at": "2026-10-19T00:01:00Z" if api else "0001-01-01T00:00:00Z",
+                                "paused": False, "dead": False, "restarting": False, "mounts": [mount] if api else [], "networks": {}, "ports": {}})
+                    class CLI:
+                        @contextmanager
+                        def _run(inner, args, **options):
+                            if args[:3] != ["container", "inspect", "--format"]: raise AssertionError("UNEXPECTED_DOCKER_COMMAND")
+                            matches = [row for row in rows if args[-1] in {row["id"], row["name"][1:]}]
+                            self.assertEqual(len(matches), 1)
+                            yield SimpleNamespace(collect=lambda maximum: json.dumps(matches[0]).encode())
+                        def containers(inner, **options): return tuple(rows)
+                        def inspect(inner, image, **options):
+                            _, value = archives[image]
+                            return {"id": image, "os": "linux", "architecture": "amd64", "code_revision": "a"*40, "layers": value["rootfs"]["diff_ids"]}
+                        def tag_inventory(inner, **options): return {}
+                        @contextmanager
+                        def save(inner, image, **options):
+                            events.append(("save", image)); yield _Reader(archives[image][0], events)
+                        def load(inner, reader, **options):
+                            while reader.read(65536): pass
+                            events.append("load")
+                    class RuntimeProbe:
+                        @contextmanager
+                        def hold(inner, refs, actual_mount):
+                            self.assertEqual(actual_mount, mount)
+                            def measure():
+                                actual = source.stat()
+                                return ((actual.st_ino, actual.st_size, actual.st_mtime_ns, hashlib.sha256(source.read_bytes()).hexdigest()),)
+                            events.append("runtime-pin")
+                            try: yield measure
+                            finally: events.append("runtime-close")
+                    class IdentityIO:
+                        @staticmethod
+                        def supported(): return True
+                        def start(inner, work):
+                            physical_reads.append("read-only")
+                            value = json.dumps({"database_fingerprint": "d"*64, "object_fingerprint": "e"*64}).encode()
+                            inner.data = bytearray(b"D"+struct.pack(">I", len(value))+value+b"E"+struct.pack(">I", 0)); return 981, 982
+                        def readable(inner, fd, timeout): return True
+                        def receive(inner, fd, count): value=bytes(inner.data[:count]); del inner.data[:count]; return value
+                        def poll(inner, pid): return True, 0
+                        def close(inner, fd): events.append("identity-close")
+                        def pause(inner, duration): pass
+                    key = secrets.token_bytes(32)
+                    memory = {config.capture["master_key_file"]: key, config.object_storage["access_key_file"]: secrets.token_hex(16).encode(),
+                        config.object_storage["secret_key_file"]: secrets.token_hex(32).encode()}
+                    class Inputs:
+                        files = _WindowsFiles() if os.name == "nt" else _PosixFiles()
+                        @contextmanager
+                        def root(inner, path):
+                            with inner.files.pin(path): yield
+                        def read(inner, path, maximum):
+                            self.assertLessEqual(len(memory[path]), maximum); return memory[path]
+                    @contextmanager
+                    def open_snapshot(port, spec, *, cancelled):
+                        object_ref = snapshot_module.SnapshotObjectRef("tenant-a", "workspace-a", "source", "a"*32, "completed",
+                            hashlib.sha256(b"synthetic-object").hexdigest(), len(b"synthetic-object"))
+                        port._active = snapshot_module.SnapshotLease("snapshot-a", "0070" if mode=="schema" else "0071", (object_ref,), port._runtime_inventory,
+                            {"roles": [], "memberships": [], "relations": [], "functions": []})
+                        port._deadline, port._external_cancel = time.monotonic()+30, cancelled
+                        try: yield port._active
+                        finally: port._active = None; events.append("pg-close")
+                    @contextmanager
+                    def dump(port, lease):
+                        try: yield _Reader(b"PGDMP synthetic", events)
+                        finally:
+                            if mode == "late-runtime": source.write_bytes(b"changed-runtime")
+                            if mode == "late-image":
+                                archive = folder / "images" / "api-image" / "data.bin"
+                                data = archive.read_bytes(); archive.write_bytes(data[:-1] + bytes([data[-1] ^ 1]))
+                    @contextmanager
+                    def open_runtime(port, ref):
+                        self.assertEqual(ref.ref_id, "runtime-a")
+                        yield _Reader(source.read_bytes(), events)
+                    @contextmanager
+                    def open_object(port, ref):
+                        self.assertIn(ref, port._active.object_inventory)
+                        yield _Reader(b"synthetic-object", events)
+                    real_physical, real_runtime = m.SourceIdentityProbe, m.QuiescentRuntime
+                    original_runtime_exit = real_runtime.__exit__; fail_existing_exit = [False]
+                    def runtime_exit(guard, kind, error, traceback):
+                        if (mode=="exit-runtime" or fail_existing_exit[0]) and kind is None and (folder/"capture/capture-a/receipt.bin").exists():
+                            source.write_bytes(b"changed-after-receipt")
+                        return original_runtime_exit(guard, kind, error, traceback)
+                    with patch.object(image_module, "FixedDockerCLI", return_value=CLI()), \
+                            patch.object(m, "SourceIdentityProbe", side_effect=lambda cfg, storage: real_physical(cfg, storage, _io=IdentityIO())), \
+                            patch.object(m, "QuiescentRuntime", side_effect=lambda *args, **kw: real_runtime(*args, **kw, _probe=RuntimeProbe())), \
+                            patch.object(m.PostgresSnapshotPort, "open_snapshot", open_snapshot), \
+                            patch.object(m.PostgresSnapshotPort, "dump_archive", dump), patch.object(m.PostgresSnapshotPort, "open_runtime", open_runtime), \
+                            patch.object(m.PostgresSnapshotPort, "open_object", open_object), patch.object(real_runtime,"__exit__",runtime_exit):
+                        if mode == "normal":
+                            result = m.capture_service(config, "capture-a", inputs=Inputs())
+                            before_receipt = (folder/"capture/capture-a/receipt.bin").read_bytes()
+                            fail_existing_exit[0] = True
+                            with self.assertRaises(SnapshotError): m.capture_service(config, "capture-a", inputs=Inputs())
+                            self.assertEqual((folder/"capture/capture-a/receipt.bin").read_bytes(), before_receipt)
+                            self.assertFalse((folder/"capture/capture-a/receipt.uncertain").exists())
+                            source.write_bytes(original); fail_existing_exit[0] = False
+                        else:
+                            with self.assertRaises(SnapshotError): m.capture_service(config, "capture-a", inputs=Inputs())
+                    self.assertEqual((folder / "capture" / "operator-snapshot.lock").exists(), mode=="exit-runtime")
+                    self.assertIn("runtime-close", events); self.assertIn("pg-close", events)
+                    if mode == "normal":
+                        self.assertEqual(sum(isinstance(event, tuple) and event[0]=="save" for event in events), 5, "API/doc/Studio 동일 image는 archive 한 개")
+                        self.assertEqual(events.count("load"), 10)
+                        self.assertEqual(len(physical_reads), 4)
+                        self.assertEqual(result.schema_revision, "0071")
+                        source.unlink()  # 본인 합성 원본만 제거한 뒤 실제 보존본 readback.
+                        verifier = snapshot_module.ServiceSnapshotExecutor(folder / "capture", master_key=key, ports=None)
+                        readback = io.BytesIO(); verifier.read_stream(config.spec, "capture-a", "runtime:runtime-a", readback)
+                        self.assertEqual(readback.getvalue(), original)
+                        object_readback = io.BytesIO()
+                        verifier.read_stream(config.spec, "capture-a", "object:tenant-a:workspace-a:source:"+"a"*32, object_readback)
+                        self.assertEqual(object_readback.getvalue(), b"synthetic-object")
+                        dump_readback = io.BytesIO(); verifier.read_stream(config.spec, "capture-a", "archive", dump_readback)
+                        self.assertEqual(dump_readback.getvalue(), b"PGDMP synthetic")
+                    else:
+                        self.assertFalse((folder / "capture" / "capture-a" / "receipt.bin").exists())
+                        if mode=="exit-runtime":
+                            self.assertTrue((folder/"capture/capture-a/receipt.uncertain").exists())
+                            self.assertTrue((folder/"capture/capture-a/data.bin").exists())
+                            self.assertTrue((folder/"capture/capture-a/owner.bin").exists())
+                            verifier = snapshot_module.ServiceSnapshotExecutor(folder/"capture",master_key=key,ports=None)
+                            with self.assertRaises(Exception): verifier.verify(config.spec,"capture-a")
+        finally:
+            self.assertEqual(root.resolve(), root)
+            shutil.rmtree(root)
+            self.assertFalse(root.exists())
+
+
 if __name__ == "__main__": unittest.main()

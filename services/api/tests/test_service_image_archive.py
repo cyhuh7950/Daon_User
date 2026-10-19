@@ -183,12 +183,19 @@ class ServiceImageArchiveTests(unittest.TestCase):
         self.assertEqual(cli.loads, 1)
         cli.tags["approved:tag"] = "sha256:" + "c" * 64
         with self.assertRaises(SnapshotError): self.store.reconstruct(self.spec, cli=cli, cancelled=lambda: False)
+
         self.assertEqual(cli.loads, 1, "다른 image의 태그 점유는 load 전에 거부")
         del cli.tags["approved:tag"]
         def changed_load(source, **options):
             load(source, **options); cli.tags["unrelated:fixed"] = image
         cli.load = changed_load
         with self.assertRaises(SnapshotError): self.store.reconstruct(self.spec, cli=cli, cancelled=lambda: False)
+
+    def test_image_archive_verify_honors_callers_deadline_and_cancel(self):
+        self.capture()
+        with self.assertRaises(SnapshotError): self.store.verify(self.spec, deadline=time.monotonic()-1)
+        with self.assertRaises(SnapshotError): self.store.verify(self.spec, cancelled=lambda: True)
+        self.assertEqual(self.store.verify(self.spec, deadline=time.monotonic()+2).archive_bytes, len(self.raw))
 
     def test_image_archive_concrete_command_timeout_cancel_and_cleanup_uncertain(self):
         from types import SimpleNamespace
