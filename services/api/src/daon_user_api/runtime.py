@@ -852,12 +852,14 @@ def _document_readiness_observer(repository):
     def observe(probe):
         if (type(probe) is not dict or set(probe) != {"event_id", "connection_id", "adapter_type",
                 "configuration_version", "observed_at", "probe_kind", "capability", "status"}
-                or probe["probe_kind"] != "provider_connection_check" or probe["capability"] is not None
-                or probe["status"] not in {"healthy", "unavailable"}):
+                or not ((probe["probe_kind"] == "provider_connection_check" and probe["capability"] is None
+                         and probe["status"] in {"healthy", "unavailable"})
+                    or (probe["probe_kind"] == "native_asr_ready" and probe["capability"] == "speech_to_text"
+                        and probe["adapter_type"] == "asr_base_native" and probe["status"] == "healthy"))):
             raise DocumentUnderstandingError("DOCUMENT_PROCESSING_CONTEXT_INVALID")
         # 타입·UTC·safe ID를 공통 닫힌 타입으로 먼저 확인해 잘못된 값의 DB 접근을 막는다.
         ValidatedReadinessObservation(1, probe["event_id"], probe["connection_id"], probe["adapter_type"],
-            None, "0" * 64, probe["configuration_version"], probe["observed_at"], probe["observed_at"],
+            probe["capability"], "0" * 64, probe["configuration_version"], probe["observed_at"], probe["observed_at"],
             probe["probe_kind"], probe["status"], 1, "0" * 64)
         with repository._global_transaction() as connection:
             current = connection.execute(
@@ -868,12 +870,18 @@ def _document_readiness_observer(repository):
                     (probe["configuration_version"], probe["adapter_type"], True, "public", expected_status)):
                 raise DocumentUnderstandingError("SOURCE_VERSION_CONFLICT", status=409)
             catalog = read_readiness_catalog(connection, probe["connection_id"])
+            if probe["probe_kind"] == "native_asr_ready":
+                model = next((item for item in json.loads(catalog.canonical_json)["models"]
+                              if item["model_id"] == "faster-whisper-base"), None)
+                if (model is None or model["allowed"] is not True or model["catalog_status"] != "ready"
+                        or model["effective_capabilities"] != ["speech_to_text"]):
+                    raise DocumentUnderstandingError("SOURCE_VERSION_CONFLICT", status=409)
         payload = {**probe, "schema_version": 1, "model_catalog_digest": catalog.digest_sha256,
                    "observed_at": probe["observed_at"].isoformat()}
         digest = hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
         # received_at/sequence는 입력 구성용이며 R2 저장 port가 버리고 DB가 실제값을 배정한다.
         observation = ValidatedReadinessObservation(1, probe["event_id"], probe["connection_id"], probe["adapter_type"],
-            None, catalog.digest_sha256, probe["configuration_version"], probe["observed_at"], probe["observed_at"],
+            probe["capability"], catalog.digest_sha256, probe["configuration_version"], probe["observed_at"], probe["observed_at"],
             probe["probe_kind"], probe["status"], 1, digest)
         return repository.record_observation(observation)
     return observe

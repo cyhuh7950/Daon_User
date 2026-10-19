@@ -329,13 +329,19 @@ class PostgresProviderConnectionService:
         self.readiness_observation_status = "not_collected"
 
     def _health_probe(self, row, status):
+        # 이 adapter의 verify는 논리 catalog만 읽는다. 성공/실패 모두 실제 런타임 검사 근거가 아니다.
+        if str(row[1]) == "SENTENCE_TRANSFORMERS":
+            return None
+        return self._readiness_probe(str(row[0]), str(row[16]), int(row[12]), status)
+
+    def _readiness_probe(self, connection_id, adapter_type, version, status, *, probe_kind="provider_connection_check", capability=None):
         if self._readiness_observer is None:
             return None
         try:
-            return {"event_id": "rdy-" + uuid.uuid4().hex, "connection_id": str(row[0]),
-                "adapter_type": str(row[16]), "configuration_version": int(row[12]),
-                "observed_at": datetime.now(timezone.utc), "probe_kind": "provider_connection_check",
-                "capability": None, "status": status}
+            return {"event_id": "rdy-" + uuid.uuid4().hex, "connection_id": connection_id,
+                "adapter_type": adapter_type, "configuration_version": version,
+                "observed_at": datetime.now(timezone.utc), "probe_kind": probe_kind,
+                "capability": capability, "status": status}
         except Exception:
             self.readiness_observation_status = "unavailable"
             return None
@@ -545,6 +551,7 @@ class PostgresProviderConnectionService:
         adapter_type: str = "", verified_model_ids: Sequence[str] | None = None,
         auto_probe_model_id: str | None = None,
         test_credential: str | None = None, rejected_model_ids: list[str] | None = None,
+        readiness_probe_sink=None,
     ) -> tuple[ProviderConnection, EncryptedCredential | None, tuple[object, ...]]:
         try:
             if provider_code == "CUSTOM" and adapter_type == "asr_base_native":
@@ -612,6 +619,13 @@ class PostgresProviderConnectionService:
                     sealed = self._cipher.encrypt(connection_id, provider_code, next_version, bytes(secret_buffer))
                 finally:
                     secret_buffer[:] = b"\0" * len(secret_buffer)
+            if (readiness_probe_sink is not None and provider_code == "CUSTOM" and adapter_type == "asr_base_native"
+                    and tuple(getattr(model, "model_id", None) for model in models) == ("faster-whisper-base",)
+                    and tuple(getattr(models[0], "reported_capabilities", ())) == ("speech_to_text",)):
+                probe = self._readiness_probe(connection_id, adapter_type, version, "healthy",
+                    probe_kind="native_asr_ready", capability="speech_to_text")
+                if probe is not None:
+                    readiness_probe_sink(probe)
             return profile, sealed, models
         except (AdapterError, ProviderCatalogError, ProviderCredentialError, ProviderSettingsError) as error:
             raise ProviderConnectionAdminError(
@@ -755,6 +769,7 @@ class PostgresProviderConnectionService:
             ),
         )
 
+        readiness_probes = []
         def mutation(connection: Connection[tuple[Any, ...]]) -> dict[str, object]:
             if command.expected_version != 0 or connection.execute(
                 "SELECT 1 FROM system_provider_connections WHERE connection_id=%s", (command.connection_id,),
@@ -775,6 +790,7 @@ class PostgresProviderConnectionService:
                 verified_model_ids=command.allowed_model_ids if command.provider_code == "CUSTOM" and not pending_custom else None,
                 auto_probe_model_id=auto_model_id if command.provider_code == "CUSTOM" and not pending_custom else None,
                 test_credential=command.test_credential,
+                readiness_probe_sink=readiness_probes.append if command.access_mode == "public" and command.enabled else None,
             )
             connection.execute(
                 "INSERT INTO system_provider_connections (connection_id,provider_code,display_name,base_url,"
@@ -800,11 +816,15 @@ class PostgresProviderConnectionService:
             self._set_allowed_models(connection, context, command.connection_id, route_models)
             return self._safe_by_id(connection, command.connection_id)
 
-        return self._mutations.run(
+        result = self._mutations.run(
             context, operation="provider_connection.create", idempotency_key=idempotency_key,
             fingerprint_payload=payload, mutation=mutation,
             audit=ProviderAdminAudit("provider_connection.created", "provider_connection", command.connection_id, 1),
         )
+        if not result[1]:
+            for probe in readiness_probes:
+                self._observe_health_probe(probe)
+        return result
 
     def update_connection(
         self, context: ProviderConnectionAdminContext, connection_id: str,
@@ -1124,6 +1144,7 @@ class PostgresProviderConnectionService:
         self, context: ProviderConnectionAdminContext, connection_id: str,
         expected_version: int, idempotency_key: str,
     ) -> tuple[dict[str, object], bool]:
+        readiness_probes = []
         def mutation(connection: Connection[tuple[Any, ...]]) -> dict[str, object]:
             current = self._load(connection, connection_id)
             if int(current[12]) != expected_version:
@@ -1141,6 +1162,7 @@ class PostgresProviderConnectionService:
                 logical_model_ids=[str(row[0]) for row in model_rows], enabled=bool(current[9]),
                 version=expected_version + 1, previous_sealed=self._sealed(current),
                 adapter_type=str(current[16]), rejected_model_ids=rejected_model_ids,
+                readiness_probe_sink=readiness_probes.append if bool(current[9]) else None,
             )
             verification_sql = (
                 "" if str(current[1]) in {"CUSTOM", "OMNIROUTE"}
@@ -1169,12 +1191,16 @@ class PostgresProviderConnectionService:
             )
             return self._safe_by_id(connection, connection_id)
 
-        return self._mutations.run(
+        result = self._mutations.run(
             context, operation="provider_catalog.refresh", idempotency_key=idempotency_key,
             fingerprint_payload={"connection_id": connection_id, "expected_version": expected_version},
             mutation=mutation,
             audit=ProviderAdminAudit("provider_catalog.refreshed", "provider_connection", connection_id, expected_version + 1),
         )
+        if not result[1]:
+            for probe in readiness_probes:
+                self._observe_health_probe(probe)
+        return result
 
     def correct_capabilities(
         self, context: ProviderConnectionAdminContext, connection_id: str, model_id: str,

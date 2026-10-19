@@ -105,6 +105,60 @@ def test_native_asr_connection_policy_keeps_fixed_internal_endpoint_without_key(
             validate_connection_policy("CUSTOM", mode, requirement, "AS", "asr_base_native", endpoint)
 
 
+def test_native_asr_actual_metadata_ready_create_refresh_and_replay_emit_after_commit(monkeypatch):
+    from test_provider_connection_adapters import FakeTransport
+    transport, database, probes = FakeTransport(), CompatibleDatabase(), []
+    transport.responses["http://asr-base:8080/v1/metadata"] = TransportResponse(200, {
+        "model_id": "faster-whisper-base", "model_digest": "d01c3014881c9c6f3133c182f3d2887eb6ca1c789a7538c5c007196857a0a6a9",
+        "revision": "ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66", "capability": "speech_to_text", "runtime": "cpu-int8-local"})
+    transport.responses["http://asr-base:8080/health/ready"] = TransportResponse(200, {"status": "ready"})
+    monkeypatch.setattr(provider_connection_admin_module, "AdapterRegistry",
+                        lambda **kwargs: AdapterRegistry(transport=transport, **kwargs))
+    monkeypatch.setenv("DAON_QA_STRUCTURED_OLLAMA_WORKSPACE_ID", "qa-workspace")
+    class TrackedStore(CompatibleStore):
+        active = False
+        fail_commit = False
+        @contextmanager
+        def _transaction(self, context):
+            self.active = True
+            try:
+                with super()._transaction(context) as connection:
+                    yield connection
+                    if self.fail_commit:
+                        raise RuntimeError("QA_COMMIT_FAILURE")
+            finally:
+                self.active = False
+    store = TrackedStore(database)
+    def observe(probe):
+        assert not store.active
+        assert database.system_connection["verification_status"] == "verified"
+        probes.append(probe)
+    service = PostgresProviderConnectionService(store,
+        ProviderCredentialCipher(b"p" * 32, encryption_key_version=1), readiness_observer=observe)
+    command = ProviderConnectionCreateCommand(connection_id="asr-qa", provider_code="CUSTOM",
+        display_name="QA CPU base ASR", base_url="http://asr-base:8080", credential=None,
+        logical_model_ids=(), enabled=True, expected_version=0, adapter_type="asr_base_native",
+        access_mode="public", credential_requirement="none", short_code="AS", provider_name="QA Native ASR",
+        allowed_model_ids=("faster-whisper-base",))
+    service.create_connection(context(), command, "native-asr-observer-create")
+    assert len(probes) == 1
+    assert (probes[0]["probe_kind"], probes[0]["capability"], probes[0]["configuration_version"], probes[0]["status"]) == (
+        "native_asr_ready", "speech_to_text", 1, "healthy")
+    assert service.create_connection(context(), command, "native-asr-observer-create")[1] is True
+    assert len(probes) == 1 and len(transport.requests) == 2
+    service.refresh_catalog(context(), "asr-qa", 1, "native-asr-observer-refresh")
+    assert len(probes) == 2 and len(transport.requests) == 4
+    assert probes[1]["configuration_version"] == 2 and probes[1]["event_id"] != probes[0]["event_id"]
+    assert all(request.method == "GET" for request in transport.requests)
+    assert service.refresh_catalog(context(), "asr-qa", 1, "native-asr-observer-refresh")[1] is True
+    assert len(probes) == 2 and len(transport.requests) == 4
+    store.fail_commit = True
+    with pytest.raises(RuntimeError, match="QA_COMMIT_FAILURE"):
+        service.refresh_catalog(context(), "asr-qa", 2, "native-asr-observer-rollback")
+    assert len(probes) == 2 and database.system_connection["version"] == 2
+    assert len(transport.requests) == 6  # 실제 새 검사 대역은 수행됐으나 rollback 결과를 관측으로 내보내지 않음.
+
+
 def test_native_asr_create_binds_sql_columns_and_reads_metadata_without_inference(monkeypatch):
     from test_provider_connection_adapters import FakeTransport
     transport = FakeTransport()
@@ -2154,3 +2208,22 @@ def test_existing_ollama_public_health_still_checks_and_updates(
     assert [(item[0], item[1]) for item in transport.requests] == [
         ("GET", "http://ollama.internal:11434/api/tags"),
     ]
+
+
+def test_logical_embedding_catalog_without_runtime_request_is_not_readiness_observation(monkeypatch):
+    transport, probes = FixtureTransport(), []
+    service, database = compatible_service(monkeypatch, transport)
+    database.system_connection = {
+        "connection_id": "embedding-local", "provider_code": "SENTENCE_TRANSFORMERS", "display_name": "QA embedding",
+        "base_url": "http://embedding.internal:8500", "encrypted_credential": None, "credential_nonce": None,
+        "encryption_key_version": None, "credential_schema_version": None, "credential_version": 0,
+        "enabled": True, "verification_status": "unverified", "verified_at": None, "version": 1,
+        "access_mode": "public", "credential_requirement": "none", "short_code": "EM",
+        "adapter_type": "SENTENCE_TRANSFORMERS", "provider_name": "QA embedding"}
+    database.health_updates = []
+    service._store = HealthStore(database)
+    service._readiness_observer = probes.append
+    result = service.check_active_connection(context(), "embedding-local")
+    assert result["status"] == "failed"  # 기존 health 경로에는 논리 목록 주입이 없어 실패하며 이 판정은 유지한다.
+    assert transport.requests == []
+    assert probes == []  # 실제 런타임 호출 없는 논리 catalog를 연결 복귀로 승격하지 않는다.

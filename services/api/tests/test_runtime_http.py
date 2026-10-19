@@ -137,6 +137,44 @@ def test_document_readiness_probe_binds_current_config_catalog_before_storage(mo
         assert all(sql.lstrip().startswith("SELECT ") for sql, _ in db.calls)
 
 
+@pytest.mark.parametrize("changed", [None, "role", "adapter", "catalog"])
+def test_native_asr_readiness_probe_keeps_exact_adapter_role_and_current_catalog(changed):
+    from types import SimpleNamespace
+    from contextlib import contextmanager
+    from datetime import datetime, timezone
+    from daon_user_api import runtime as module
+    from daon_user_api.document_readiness import ReadinessDispatcherSettings
+    from daon_user_api.document_understanding_adapter import DocumentUnderstandingError
+    from test_workspace_model_defaults import ReadinessMetadataDB
+    settings = SimpleNamespace(document_readiness_settings=ReadinessDispatcherSettings(scopes=frozenset({
+        ("tenant-a", "workspace-a", "actor-a", "version-a")})))
+    store = SimpleNamespace(readiness=lambda: SimpleNamespace(ready=True, schema_revision="0072"))
+    repository = module._build_document_readiness_runtime(store, settings)
+    db = ReadinessMetadataDB()
+    db.catalog[0].update(model_id="faster-whisper-base", effective_capabilities=["speech_to_text"])
+    if changed == "catalog": db.catalog[0]["effective_capabilities"] = ["text_generation"]
+    original = db.execute
+    def execute(sql, params=()):
+        if "/* readiness-probe-current */" in sql:
+            return SimpleNamespace(fetchone=lambda: (7, "OLLAMA" if changed == "adapter" else "asr_base_native", True, "public", "verified"))
+        return original(sql, params)
+    db.execute = execute
+    @contextmanager
+    def transaction(): yield db
+    repository._global_transaction = transaction
+    saved = []
+    repository.record_observation = lambda observation: saved.append(observation) or observation
+    probe = {"event_id": "rdy-" + "3" * 32, "connection_id": "asr-a", "adapter_type": "asr_base_native",
+        "configuration_version": 7, "observed_at": datetime(2026, 10, 19, tzinfo=timezone.utc),
+        "probe_kind": "native_asr_ready", "capability": "text_generation" if changed == "role" else "speech_to_text", "status": "healthy"}
+    if changed is not None:
+        with pytest.raises(DocumentUnderstandingError): module._document_readiness_observer(repository)(probe)
+        assert saved == []
+    else:
+        module._document_readiness_observer(repository)(probe)
+        assert len(saved) == 1 and saved[0].capability == "speech_to_text"
+
+
 class UnreadyCloudStore:
     def readiness(self):  # type: ignore[no-untyped-def]
         return type("Status", (), {"ready": False})()
