@@ -18,6 +18,8 @@ OBSERVATION_STATES = {"measured": "METRIC_RECORDED", "partial": "METRIC_PARTIAL"
     "not_collected": "METRIC_NOT_COLLECTED", "unavailable": "METRIC_UNAVAILABLE"}
 EVENT_IDS = ("manual_reprocess_pending", "readiness_reprocess_pending", "retry_wait", "backoff_wait",
     "step_up_denied_24h", "step_up_expired_24h", "access_blocked_24h", "access_masked_24h", "egress_denied_24h")
+READINESS_EVENT_IDS = ("waiting_text_generation", "waiting_image_understanding", "waiting_document_parsing",
+    "waiting_speech_to_text", "waiting_role_unknown", "retry_suppressed_contexts_24h")
 UNIMPLEMENTED_PRODUCERS = {
     "waiting_role_producer": "ROLE_READINESS_UNKNOWN", "readiness_event_producer": "AUTOMATIC_REPROCESS_UNOBSERVED",
     "retry_suppression_receipt": "DEDUP_NOT_OBSERVED", "node_capacity_producer": "CAPACITY_UNKNOWN",
@@ -27,9 +29,9 @@ UNIMPLEMENTED_PRODUCERS = {
 TELEMETRY_FIELDS = ("worker_samples", "resource_samples", "event_counts", "cost_summary", "deployment_summary", "unimplemented")
 
 
-def unknown_telemetry(state="not_collected"):
+def unknown_telemetry(state="not_collected", *, include_readiness=False):
     from .operations_telemetry import KINDS, project_worker, project_resources
-    if state not in {"not_collected", "unavailable"}: raise ValueError("OPERATIONS_TELEMETRY_INVALID")
+    if state not in {"not_collected", "unavailable"} or type(include_readiness) is not bool: raise ValueError("OPERATIONS_TELEMETRY_INVALID")
     now=datetime.now(timezone.utc)
     common=dict(state=state,observed_at=None,received_at=None,coverage="actor_accessible_records",
         safe_code="TELEMETRY_"+state.upper())
@@ -40,7 +42,8 @@ def unknown_telemetry(state="not_collected"):
         for row in project_resources(None,now=now,worker_kind=kind):
             row.update(state=state,safe_code=common["safe_code"]);resources.append(row)
     return dict(worker_samples=workers,resource_samples=resources,
-        event_counts=[dict(common,metric_id=key,value=None,unit="count",window_start=None,window_end=None) for key in EVENT_IDS],
+        event_counts=[dict(common,metric_id=key,value=None,unit="count",window_start=None,window_end=None)
+                      for key in EVENT_IDS + (READINESS_EVENT_IDS if include_readiness else ())],
         cost_summary=dict(common,known_amounts=[],unknown_attempt_count=None,unconfirmed_run_count=None,coverage_start=None,coverage_end=None),
         deployment_summary=dict(common,operation=None,code_revision=None,image_digest=None,previous_image_digest=None,result=None),
         unimplemented=[dict(producer_id=key,safe_code="PRODUCER_NOT_IMPLEMENTED",impact_code=value) for key,value in UNIMPLEMENTED_PRODUCERS.items()])
@@ -61,11 +64,13 @@ def project_deployment_receipt(row):
         previous_image_digest=receipt.previous_image_digest,result=receipt.state)
 
 
-def validate_telemetry(data):
+def validate_telemetry(data, *, include_readiness=False):
     """서버 경계에서도 추가 필드·내부 식별자와 불확정을 성공 값으로 반환하지 않는다."""
     from decimal import Decimal
     def require(condition):
         if not condition:raise ValueError("OPERATIONS_TELEMETRY_INVALID")
+    require(type(include_readiness) is bool)
+    event_ids = EVENT_IDS + (READINESS_EVENT_IDS if include_readiness else ())
     def stamp(value):
         require(type(value) is str and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z",value) is not None)
         return datetime.fromisoformat(value.replace("Z","+00:00"))
@@ -93,14 +98,14 @@ def validate_telemetry(data):
         require((row["worker_kind"],row["metric_id"],row["unit"])==(kind,key,"millicores" if key==resource_ids[0] else "bytes"))
         if row["state"] in {"not_collected","unavailable"}:require(row["value"] is None)
         else:integer(row["value"])
-    require(type(data["event_counts"]) in {list,tuple} and len(data["event_counts"])==9)
-    for number,(key,row) in enumerate(zip(EVENT_IDS,data["event_counts"])):
+    require(type(data["event_counts"]) in {list,tuple} and len(data["event_counts"])==len(event_ids))
+    for number,(key,row) in enumerate(zip(event_ids,data["event_counts"])):
         base(row,{"metric_id","value","unit","window_start","window_end"},"actor_accessible_records",{"measured","partial","not_collected","unavailable"})
         require(row["metric_id"]==key and row["unit"]=="count")
         if row["state"] in {"not_collected","unavailable"}:require(row["value"] is None and row["window_start"] is None and row["window_end"] is None)
         else:
             integer(row["value"])
-            if number<4:require(row["window_start"] is None and row["window_end"] is None)
+            if number<4 or 9<=number<14:require(row["window_start"] is None and row["window_end"] is None)
             else:require(row["window_end"]==row["observed_at"] and (stamp(row["window_end"])-stamp(row["window_start"])).total_seconds()==86400)
     row=data["cost_summary"]
     base(row,{"known_amounts","unknown_attempt_count","unconfirmed_run_count","coverage_start","coverage_end"},"actor_accessible_records",{"measured","partial","not_collected","not_reported","unavailable"})
@@ -186,9 +191,10 @@ class OperationsStatusContext:
     trace_id: str | None = None
     policy_version: str | None = None
     scope: str = "self"
+    include_readiness: bool = False
 
     def __post_init__(self) -> None:
-        if type(self.scope) is not str or self.scope not in {"self","workspace_visible"}:
+        if type(self.scope) is not str or self.scope not in {"self","workspace_visible"} or type(self.include_readiness) is not bool:
             raise ValueError("OPERATIONS_STATUS_CONTEXT_INVALID")
         if any(not isinstance(value, str) or not _SAFE_ID.fullmatch(value) for value in (self.tenant_id, self.workspace_id, self.actor_id)):
             raise ValueError("OPERATIONS_STATUS_CONTEXT_INVALID")
@@ -262,9 +268,9 @@ class OperationsStatusService:
         except ValueError:
             observations = unknown_observations("unavailable")
         telemetry_reader=getattr(self._repository,"read_workspace_telemetry",None)
-        telemetry=unknown_telemetry() if telemetry_reader is None else telemetry_reader(context)
-        try:telemetry=validate_telemetry(telemetry)
-        except (ValueError,TypeError,KeyError,OverflowError):telemetry=unknown_telemetry("unavailable")
+        telemetry=unknown_telemetry(include_readiness=context.include_readiness) if telemetry_reader is None else telemetry_reader(context)
+        try:telemetry=validate_telemetry(telemetry,include_readiness=context.include_readiness)
+        except (ValueError,TypeError,KeyError,OverflowError):telemetry=unknown_telemetry("unavailable",include_readiness=context.include_readiness)
         return OperationsStatusView(context.workspace_id, overall, checked_at, components, observations,
             tuple(telemetry["worker_samples"]),tuple(telemetry["resource_samples"]),tuple(telemetry["event_counts"]),
             telemetry["cost_summary"],telemetry["deployment_summary"],tuple(telemetry["unimplemented"]))

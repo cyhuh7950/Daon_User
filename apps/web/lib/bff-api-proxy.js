@@ -574,7 +574,7 @@ function routeFor(method, segments) {
     && segments[3] === "status"
   ) {
     return method === "GET"
-      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/operations/status`, query: new Set(["scope"]), strictQuery: true, operationsStatus: true }
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/operations/status`, query: new Set(["scope","include_readiness"]), strictQuery: true, operationsStatus: true }
       : { methodRejected: true };
   }
   if (
@@ -1239,7 +1239,8 @@ export function createBffProxy({
       if ([...query.keys()].some((key) => !route.query.has(key) || query.getAll(key).length !== 1)) {
         return createBffSafeError(400, "INVALID_REQUEST", trace);
       }
-      if (route.operationsStatus && query.has("scope") && !["self","workspace_visible"].includes(query.get("scope"))) {
+      if (route.operationsStatus && ((query.has("scope") && !["self","workspace_visible"].includes(query.get("scope")))
+          || (query.has("include_readiness") && query.get("include_readiness")!=="1"))) {
         return createBffSafeError(400, "INVALID_REQUEST", trace);
       }
     }

@@ -4359,12 +4359,12 @@
       "get": {
         "operationId": "getWorkspaceOperationsStatus", "tags": ["Operations"],
         "summary": "Workspace Provider API Storage Sync Queue 안전 운영상태", "x-implementation-owner": "R1-M8-10",
-        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }, { "name": "scope", "in": "query", "required": false, "schema": { "type": "string", "enum": ["self", "workspace_visible"], "default": "self" } }],
+        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }, { "name": "scope", "in": "query", "required": false, "schema": { "type": "string", "enum": ["self", "workspace_visible"], "default": "self" } }, { "name": "include_readiness", "in": "query", "required": false, "schema": { "type": "string", "enum": ["1"] } }],
         "responses": {
           "200": {
-            "description": "Workspace operations status",
+            "description": "Workspace 운영 상태. include_readiness 미지정은 기존 event_counts 9행, 정확한 값 1을 지정한 요청만 Readiness 포함 15행을 반환한다. 서버와 클라이언트가 요청별 분기를 검증한다.",
             "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } },
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OperationsStatusEnvelope" } } }
+            "content": { "application/json": { "schema": { "oneOf": [{ "$ref": "#/components/schemas/OperationsStatusEnvelope" }, { "$ref": "#/components/schemas/OperationsStatusReadinessEnvelope" }] } } }
           },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "401": { "$ref": "#/components/responses/Unauthorized" },
@@ -8886,6 +8886,63 @@
             "type": "object", "additionalProperties": false, "required": ["trace_id", "workspace_id"],
             "properties": { "trace_id": { "$ref": "#/components/schemas/OpaqueId" }, "workspace_id": { "$ref": "#/components/schemas/OpaqueId" } }
           }
+        }
+      },
+      "WorkspaceReadinessEventCount": {
+        "type": "object", "additionalProperties": false,
+        "required": ["state","observed_at","received_at","coverage","safe_code","metric_id","value","unit","window_start","window_end"],
+        "properties": {
+          "state": {"$ref":"#/components/schemas/WorkspaceEventCount/properties/state"},
+          "observed_at": {"$ref":"#/components/schemas/WorkspaceEventCount/properties/observed_at"},
+          "received_at": {"$ref":"#/components/schemas/WorkspaceEventCount/properties/received_at"},
+          "coverage": {"$ref":"#/components/schemas/WorkspaceEventCount/properties/coverage"},
+          "safe_code": {"$ref":"#/components/schemas/WorkspaceEventCount/properties/safe_code"},
+          "metric_id": {"enum":["waiting_text_generation","waiting_image_understanding","waiting_document_parsing","waiting_speech_to_text","waiting_role_unknown","retry_suppressed_contexts_24h"]},
+          "value": {"$ref":"#/components/schemas/WorkspaceEventCount/properties/value"},
+          "unit": {"$ref":"#/components/schemas/WorkspaceEventCount/properties/unit"},
+          "window_start": {"$ref":"#/components/schemas/WorkspaceEventCount/properties/window_start"},
+          "window_end": {"$ref":"#/components/schemas/WorkspaceEventCount/properties/window_end"}
+        },
+        "allOf": [{"$ref":"#/components/schemas/WorkspaceEventCount/allOf/0"},{"$ref":"#/components/schemas/WorkspaceEventCount/allOf/1"},{"$ref":"#/components/schemas/WorkspaceEventCount/allOf/2"}]
+      },
+      "OperationsStatusWithReadiness": {
+        "type":"object", "additionalProperties":false,
+        "required":["workspace_id","overall_status","checked_at","components","observations","worker_samples","resource_samples","event_counts","cost_summary","deployment_summary","unimplemented"],
+        "properties": {
+          "workspace_id":{"$ref":"#/components/schemas/OperationsStatus/properties/workspace_id"},
+          "overall_status":{"$ref":"#/components/schemas/OperationsStatus/properties/overall_status"},
+          "checked_at":{"$ref":"#/components/schemas/OperationsStatus/properties/checked_at"},
+          "components":{"$ref":"#/components/schemas/OperationsStatus/properties/components"},
+          "observations":{"$ref":"#/components/schemas/OperationsStatus/properties/observations"},
+          "worker_samples":{"$ref":"#/components/schemas/OperationsStatus/properties/worker_samples"},
+          "resource_samples":{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples"},
+          "event_counts": {"type":"array","minItems":15,"maxItems":15,"items":false,"prefixItems":[
+            {"$ref":"#/components/schemas/OperationsStatus/properties/event_counts/prefixItems/0"},
+            {"$ref":"#/components/schemas/OperationsStatus/properties/event_counts/prefixItems/1"},
+            {"$ref":"#/components/schemas/OperationsStatus/properties/event_counts/prefixItems/2"},
+            {"$ref":"#/components/schemas/OperationsStatus/properties/event_counts/prefixItems/3"},
+            {"$ref":"#/components/schemas/OperationsStatus/properties/event_counts/prefixItems/4"},
+            {"$ref":"#/components/schemas/OperationsStatus/properties/event_counts/prefixItems/5"},
+            {"$ref":"#/components/schemas/OperationsStatus/properties/event_counts/prefixItems/6"},
+            {"$ref":"#/components/schemas/OperationsStatus/properties/event_counts/prefixItems/7"},
+            {"$ref":"#/components/schemas/OperationsStatus/properties/event_counts/prefixItems/8"},
+            {"allOf":[{"$ref":"#/components/schemas/WorkspaceReadinessEventCount"},{"properties":{"metric_id":{"const":"waiting_text_generation"},"window_start":{"type":"null"},"window_end":{"type":"null"}}}]},
+            {"allOf":[{"$ref":"#/components/schemas/WorkspaceReadinessEventCount"},{"properties":{"metric_id":{"const":"waiting_image_understanding"},"window_start":{"type":"null"},"window_end":{"type":"null"}}}]},
+            {"allOf":[{"$ref":"#/components/schemas/WorkspaceReadinessEventCount"},{"properties":{"metric_id":{"const":"waiting_document_parsing"},"window_start":{"type":"null"},"window_end":{"type":"null"}}}]},
+            {"allOf":[{"$ref":"#/components/schemas/WorkspaceReadinessEventCount"},{"properties":{"metric_id":{"const":"waiting_speech_to_text"},"window_start":{"type":"null"},"window_end":{"type":"null"}}}]},
+            {"allOf":[{"$ref":"#/components/schemas/WorkspaceReadinessEventCount"},{"properties":{"metric_id":{"const":"waiting_role_unknown"},"window_start":{"type":"null"},"window_end":{"type":"null"}}}]},
+            {"allOf":[{"$ref":"#/components/schemas/WorkspaceReadinessEventCount"},{"properties":{"metric_id":{"const":"retry_suppressed_contexts_24h"}}}],"x-window-seconds":86400}
+          ]},
+          "cost_summary":{"$ref":"#/components/schemas/OperationsStatus/properties/cost_summary"},
+          "deployment_summary":{"$ref":"#/components/schemas/OperationsStatus/properties/deployment_summary"},
+          "unimplemented":{"$ref":"#/components/schemas/OperationsStatus/properties/unimplemented"}
+        }
+      },
+      "OperationsStatusReadinessEnvelope": {
+        "type":"object", "additionalProperties":false, "required":["data","meta"],
+        "properties": {
+          "data":{"$ref":"#/components/schemas/OperationsStatusWithReadiness"},
+          "meta":{"$ref":"#/components/schemas/OperationsStatusEnvelope/properties/meta"}
         }
       },
       "OutputFormatDefaults": {

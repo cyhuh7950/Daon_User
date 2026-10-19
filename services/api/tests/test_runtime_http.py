@@ -203,6 +203,34 @@ class UnreadyObjectStorage:
 
 
 class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
+    async def test_readiness_status_query_is_exact_opt_in_and_keeps_real_auth_boundary(self):
+        from types import SimpleNamespace
+        from daon_user_api.operations_status import OperationsStatusService, OperationsCounts
+        flags = []
+        def counts(context):
+            flags.append((context.scope, context.include_readiness))
+            return OperationsCounts(0, 0, 0)
+        dependencies = replace(self.dependencies,
+            operations_status_service=OperationsStatusService(SimpleNamespace(read_counts=counts)))
+        path = "/api/v1/workspaces/workspace-001/operations/status"
+        headers = {"cookie": f"{WEB_SESSION_COOKIE}={self.web.access_token}"}
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(dependencies)), base_url="http://127.0.0.1") as client:
+            self.assertEqual((await client.get(path+"?include_readiness=1")).status_code, 401)
+            old = await client.get(path, headers=headers)
+            self.assertEqual(old.status_code, 200)
+            self.assertEqual(len(old.json()["data"]["event_counts"]), 9)
+            new = await client.get(path+"?include_readiness=1", headers=headers)
+            self.assertEqual(new.status_code, 200)
+            self.assertEqual(len(new.json()["data"]["event_counts"]), 15)
+            self.assertTrue(all(row["value"] is None for row in new.json()["data"]["event_counts"][9:]))
+            self.assertEqual(new.headers["cache-control"], "no-store")
+            self.assertEqual(flags, [("self", False), ("self", True)])
+            for query in ("include_readiness=0", "include_readiness=true", "include_readiness=",
+                          "include_readiness=1&include_readiness=1", "scope=self&scope=self&include_readiness=1",
+                          "scope=all&include_readiness=1", "include_readiness=1&actor_id=other"):
+                self.assertEqual((await client.get(path+"?"+query, headers=headers)).status_code, 400, query)
+            self.assertEqual(flags, [("self", False), ("self", True)])
+
     def mode_dependencies(self):
         from test_document_processing_postgres import ReprocessingModeStore
         from daon_user_api.document_processing import DocumentProcessingSubmissionService

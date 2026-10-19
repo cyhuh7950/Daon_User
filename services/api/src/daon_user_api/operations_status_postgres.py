@@ -12,7 +12,7 @@ from psycopg import Error
 
 from .cloud_storage import CloudAccessContext, CloudDatabaseError, PostgresCloudStore
 from .operations_status import (OperationsCounts, OperationsStatusContext, OperationsObservation,
-    OBSERVATION_IDS, OBSERVATION_STATES, observation_scope, unknown_observations, unknown_telemetry)
+    OBSERVATION_IDS, OBSERVATION_STATES, READINESS_EVENT_IDS, observation_scope, unknown_observations, unknown_telemetry)
 from .document_index_postgres import _source_access_allowed
 from .notification_source_access import _special_source_access_allowed
 from .notification import NotificationError
@@ -171,7 +171,7 @@ class PostgresOperationsStatusRepository:
     def read_workspace_telemetry(self,context):
         from .operations_status import SystemOperationsStatusService,validate_telemetry
         with self._transaction(context) as connection:self._authorize_telemetry(connection,context)
-        result=unknown_telemetry()
+        result=unknown_telemetry(include_readiness=context.include_readiness)
         system=SystemOperationsStatusService(self).read(api_ready=True,database_ready=True,object_storage_ready=True,
             checked_at=datetime.now(timezone.utc).isoformat().replace("+00:00","Z"))
         for key in ("worker_samples","resource_samples"):
@@ -197,8 +197,64 @@ class PostgresOperationsStatusRepository:
         except NotificationError as error:
             if error.code!="DATABASE_UNAVAILABLE" or error.http_status!=503:raise
             result["cost_summary"]=unknown_telemetry("unavailable")["cost_summary"]
+        if context.include_readiness:
+            try:result["event_counts"][9:]=self.read_readiness_metrics(context)
+            except (CloudDatabaseError,Error,ValueError,OverflowError):
+                result["event_counts"][9:]=unknown_telemetry("unavailable",include_readiness=True)["event_counts"][9:]
         with self._transaction(context) as connection:self._authorize_telemetry(connection,context)
-        return validate_telemetry(result)
+        return validate_telemetry(result,include_readiness=context.include_readiness)
+
+    def read_readiness_metrics(self,context):
+        """개별 원장을 읽지 않고 현재 인가된 보호 함수의 7필드/6행만 투영한다."""
+        from .authorization import AuthorizationError
+        from .operations_telemetry import _utc
+        if context.include_readiness is not True:
+            raise ValueError("OPERATIONS_STATUS_CONTEXT_INVALID")
+        unknown = unknown_telemetry(include_readiness=True)["event_counts"][9:]
+        with self._transaction(context) as connection:
+            self._authorize_telemetry(connection,context)
+            visible = self._visible_sources(connection,context)
+        # 기존 인가 helper의 FOR SHARE는 앞/뒤 별도 Tx에 유지한다.
+        # scope GUC 설정 뒤 첫 업무 조회 전에 읽기 전용을 강제한다.
+        with self._transaction(context) as connection:
+            connection.execute("SET TRANSACTION READ ONLY")
+            rows = connection.execute(
+                "SELECT metric_id,value,has_records,coverage_partial,checked_at,window_start,window_end "
+                "FROM public.read_document_readiness_metrics(%s,%s,%s,%s)",
+                (context.tenant_id,context.workspace_id,context.actor_id,context.scope)).fetchall()
+            if len(rows)!=6 or any(type(row) not in {tuple,list} or len(row)!=7 for row in rows):
+                raise ValueError("OPERATIONS_READINESS_METRICS_INVALID")
+            indexed={}
+            checked_at=None
+            for row in rows:
+                key,value,has_records,partial,when,start,end=row
+                if (type(key) is not str or key not in READINESS_EVENT_IDS or key in indexed
+                        or type(has_records) is not bool or type(partial) is not bool):
+                    raise ValueError("OPERATIONS_READINESS_METRICS_INVALID")
+                when=_utc(when)
+                if checked_at is not None and when!=checked_at:raise ValueError("OPERATIONS_READINESS_METRICS_INVALID")
+                checked_at=when
+                if not has_records:
+                    if value is not None or start is not None or end is not None:
+                        raise ValueError("OPERATIONS_READINESS_METRICS_INVALID")
+                    projected=dict(unknown[READINESS_EVENT_IDS.index(key)])
+                else:
+                    if type(value) is not int or not 0<=value<=9007199254740991:
+                        raise ValueError("OPERATIONS_READINESS_METRICS_INVALID")
+                    if key==READINESS_EVENT_IDS[-1]:
+                        if _utc(end)!=when or (_utc(end)-_utc(start))!=timedelta(days=1):
+                            raise ValueError("OPERATIONS_READINESS_METRICS_INVALID")
+                    elif start is not None or end is not None:
+                        raise ValueError("OPERATIONS_READINESS_METRICS_INVALID")
+                    projected=self._event_metric(key,value,when,window_start=start)
+                    # 구 Run/비활성·부분 scope의 미추적 자료를 완전 수집으로 올리지 않는다.
+                    projected.update(state="partial",safe_code="TELEMETRY_PARTIAL")
+                indexed[key]=projected
+        with self._transaction(context) as connection:
+            self._authorize_telemetry(connection,context)
+            if self._visible_sources(connection,context)!=visible:
+                raise AuthorizationError("CURRENT_ACCESS_DENIED",403)
+        return tuple(indexed[key] for key in READINESS_EVENT_IDS)
 
     def _telemetry_reader(self,context):
         from .operations_telemetry_postgres import PostgresOperationsTelemetryRepository

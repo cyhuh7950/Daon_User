@@ -18,6 +18,35 @@ async function loadContract() {
   return JSON.parse(await readFile(contractPath, "utf8"));
 }
 
+test("R4 readiness query and response branch stay exact while default9 remains closed",async()=>{
+  const doc=await loadContract(),path="/api/v1/workspaces/{id}/operations/status",op=doc.paths[path].get,s=doc.components.schemas;
+  assert.equal(op.parameters.length,3);
+  assert.deepEqual(op.parameters[2],{name:"include_readiness",in:"query",required:false,schema:{type:"string",enum:["1"]}});
+  assert.equal(s.OperationsStatus.properties.event_counts.maxItems,9);
+  assert.equal(s.OperationsStatusWithReadiness.properties.event_counts.maxItems,15);
+  assert.deepEqual(op.responses["200"].content["application/json"].schema.oneOf,
+    [{$ref:"#/components/schemas/OperationsStatusEnvelope"},{$ref:"#/components/schemas/OperationsStatusReadinessEnvelope"}]);
+  assert.doesNotThrow(()=>validateOpenApiDocument(doc));
+  for(const mutate of [
+    d=>d.paths[path].get.parameters.pop(),d=>d.paths[path].get.parameters.push({in:"query",name:"actor_id"}),
+    d=>d.paths[path].get.parameters[2].schema.enum.push("0"),d=>{d.paths[path].get.parameters[2].required=true;},
+    d=>{d.components.schemas.OperationsStatus.properties.event_counts.maxItems=15;},
+    d=>{d.components.schemas.OperationsStatusWithReadiness.properties.event_counts.maxItems=16;},
+    d=>{d.components.schemas.OperationsStatusWithReadiness.properties.event_counts.prefixItems[9].allOf[1].properties.window_start={type:["string","null"]};},
+    d=>{d.components.schemas.WorkspaceReadinessEventCount.additionalProperties=true;},
+    d=>{d.components.schemas.OperationsStatusWithReadiness.properties.event_counts.prefixItems[14]["x-window-seconds"]=3600;},
+    d=>{d.paths[path].get.responses["200"].content["application/json"].schema={oneOf:[{$ref:"#/components/schemas/OperationsStatusEnvelope"}]};},
+    d=>{d.components.schemas.OperationsStatusReadinessEnvelope.properties.data.$ref="#/components/schemas/OperationsStatus";},
+    d=>{d.components.schemas.OperationsStatusWithReadiness.properties.event_counts.prefixItems[9].allOf[1].properties.metric_id.const="waiting_role_unknown";},
+    d=>{d.components.schemas.WorkspaceReadinessEventCount.required.pop();},
+    d=>{d.components.schemas.WorkspaceReadinessEventCount.properties.actor_id={type:"string"};},
+    d=>{d.components.schemas.WorkspaceReadinessEventCount.allOf[0].$ref="#/components/schemas/WorkspaceEventCount/allOf/length";},
+    d=>{d.components.schemas.WorkspaceReadinessEventCount.allOf[0].$ref="#/components/schemas/WorkspaceEventCount/allOf/00";},
+    d=>{d.components.schemas.WorkspaceReadinessEventCount.allOf[0].$ref="#/components/schemas/WorkspaceEventCount/allOf/3";},
+    d=>{d.components.schemas.WorkspaceReadinessEventCount.allOf[0].$ref="#/components/schemas/WorkspaceEventCount/__proto__";},
+  ]){const changed=structuredClone(doc);mutate(changed);assert.throws(()=>validateOpenApiDocument(changed));}
+});
+
 test("M2 workspace telemetry contract rejects weakened scope and missing typed groups",async()=>{
   const doc=await loadContract();
   assert.doesNotThrow(()=>validateOpenApiDocument(doc));
@@ -406,7 +435,8 @@ test("Knowledge Package 세 경계와 versioned Sync item은 exact 계약이다"
   assert.equal(outputSettings.properties.version_save_mode.const, "append_only");
   assert.deepEqual(document.components.schemas.OutputVersionSettingsRequest.required, ["default_formats", "expected_version"]);
   const operationsSchema = document.components.schemas.OperationsStatus;
-  assert.deepEqual(operationsSchema.required, ["workspace_id", "overall_status", "checked_at", "components", "observations"]);
+  assert.deepEqual(operationsSchema.required, ["workspace_id", "overall_status", "checked_at", "components", "observations",
+    "worker_samples", "resource_samples", "event_counts", "cost_summary", "deployment_summary", "unimplemented"]);
   assert.deepEqual(operationsSchema.properties.components.items.required, ["component_id", "status", "safe_code", "pending_count", "recovery_action"]);
   assert.deepEqual(Object.keys(document.paths["/api/v1/workspaces/{id}/knowledge-packages/{package_id}/offline-copies"]), ["post"]);
   assert.deepEqual(

@@ -7118,14 +7118,17 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
 
     @app.get("/api/v1/workspaces/{id}/operations/status")
     async def get_workspace_operations_status(id: str, request: Request) -> JSONResponse:
-        _require_query_keys(request, frozenset({"scope"}))
-        if len(request.query_params.getlist("scope"))>1 or await request.body():
+        _require_query_keys(request, frozenset({"scope","include_readiness"}))
+        if (len(request.query_params.getlist("scope"))>1 or len(request.query_params.getlist("include_readiness"))>1
+                or ("include_readiness" in request.query_params and request.query_params["include_readiness"]!="1")
+                or await request.body()):
             raise HTTPException(status_code=400,detail="OPERATIONS_STATUS_INPUT_INVALID")
         scope=request.query_params.get("scope","self")
+        include_readiness=request.query_params.get("include_readiness")=="1"
         principal = _principal(request, dependencies)
         try:
             context=OperationsStatusContext(principal.tenant_id,id,principal.user_id,
-                request.state.trace_id,dependencies.settings.policy_version,scope)
+                request.state.trace_id,dependencies.settings.policy_version,scope,include_readiness=include_readiness)
         except ValueError:raise HTTPException(status_code=400,detail="OPERATIONS_STATUS_INPUT_INVALID") from None
         require_operations_read(principal,id,scope)
         if operations_status_service is None:
@@ -7173,7 +7176,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         response = _json_with_etag({
             "data": _dataclass_json(view),
             "meta": {"trace_id": request.state.trace_id, "workspace_id": id},
-        }, f"{id}|{scope}|{view.overall_status}|{view.checked_at}")
+        }, f"{id}|{scope + '|readiness' if include_readiness else scope}|{view.overall_status}|{view.checked_at}")
         response.headers["Cache-Control"]="no-store"
         return response
 

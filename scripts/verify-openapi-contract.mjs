@@ -184,7 +184,8 @@ function resolveRef(document, reference) {
   if (typeof reference !== "string" || !reference.startsWith("#/")) fail(`unsupported $ref ${String(reference)}`);
   let current = document;
   for (const token of reference.slice(2).split("/").map(decodePointerToken)) {
-    if (!isObject(current) || !(token in current)) fail(`missing $ref ${reference}`);
+    const arrayIndex=Array.isArray(current)&&/^(?:0|[1-9][0-9]*)$/.test(token)&&Number.isSafeInteger(Number(token))&&Number(token)<current.length;
+    if ((!isObject(current)&&!arrayIndex)||!Object.hasOwn(current,token)) fail(`missing $ref ${reference}`);
     current = current[token];
   }
   return current;
@@ -869,8 +870,11 @@ function validateOrganizationContract(document) {
 function validateWorkspaceOperationsContract(document){
   const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b),require=ok=>{if(!ok)fail("M2 workspace operations exact contract");};
   const s=document.components?.schemas,op=document.paths?.["/api/v1/workspaces/{id}/operations/status"]?.get;
-  require(op?.parameters?.length===2&&op.parameters[0].$ref==="#/components/parameters/ResourceId"&&!op.requestBody);
+  require(op?.parameters?.length===3&&op.parameters[0].$ref==="#/components/parameters/ResourceId"&&!op.requestBody);
   require(same(op.parameters[1],{name:"scope",in:"query",required:false,schema:{type:"string",enum:["self","workspace_visible"],default:"self"}}));
+  require(same(op.parameters[2],{name:"include_readiness",in:"query",required:false,schema:{type:"string",enum:["1"]}}));
+  require(same(op.responses?.["200"]?.content?.["application/json"]?.schema,{oneOf:[
+    {$ref:"#/components/schemas/OperationsStatusEnvelope"},{$ref:"#/components/schemas/OperationsStatusReadinessEnvelope"}]}));
   const exact=(name,keys)=>{const r=s?.[name];require(r?.type==="object"&&r.additionalProperties===false&&same(r.required,keys)&&same(Object.keys(r.properties).sort(),[...keys].sort()));return r;};
   const common=["state","observed_at","received_at","coverage","safe_code"];
   const data=exact("OperationsStatus",["workspace_id","overall_status","checked_at","components","observations","worker_samples","resource_samples","event_counts","cost_summary","deployment_summary","unimplemented"]);
@@ -892,6 +896,27 @@ function validateWorkspaceOperationsContract(document){
   const ids=["manual_reprocess_pending","readiness_reprocess_pending","retry_wait","backoff_wait","step_up_denied_24h","step_up_expired_24h","access_blocked_24h","access_masked_24h","egress_denied_24h"];
   tuples("event_counts",ids.map((metric_id,i)=>({metric_id:{const:metric_id},...(i<4?{window_start:{type:"null"},window_end:{type:"null"}}:{})})),"WorkspaceEventCount");
   require(same(event.properties.metric_id.enum,ids)&&event.properties.unit.const==="count");
+  // The opt-in branch is separate: never widen the default nine-row response.
+  const readinessIds=["waiting_text_generation","waiting_image_understanding","waiting_document_parsing","waiting_speech_to_text","waiting_role_unknown","retry_suppressed_contexts_24h"];
+  const readinessEvent=exact("WorkspaceReadinessEventCount",event.required);
+  for(const key of event.required){
+    require(same(readinessEvent.properties[key],key==="metric_id"?{enum:readinessIds}:{$ref:`#/components/schemas/WorkspaceEventCount/properties/${key}`}));
+  }
+  require(same(readinessEvent.allOf,[0,1,2].map(i=>({$ref:`#/components/schemas/WorkspaceEventCount/allOf/${i}`}))));
+  // The referenced safety constraints must remain closed, too.
+  require(same(event.properties.state.enum,["measured","partial","not_collected","unavailable"]));
+  require(same(event.allOf,[{$ref:"#/components/schemas/SystemObservationTiming"},
+    {if:{properties:{state:{enum:["not_collected","not_reported","unavailable"]}}},then:{properties:{value:{type:"null"},window_start:{type:"null"},window_end:{type:"null"}}}},
+    {if:{properties:{state:{enum:["measured","partial"]}}},then:{properties:{value:{type:"integer"}}}}]));
+  const extended=exact("OperationsStatusWithReadiness",data.required);
+  for(const key of data.required.filter(key=>key!=="event_counts"))require(same(extended.properties[key],{$ref:`#/components/schemas/OperationsStatus/properties/${key}`}));
+  const readinessTuple={type:"array",minItems:15,maxItems:15,items:false,prefixItems:[
+    ...ids.map((_,i)=>({$ref:`#/components/schemas/OperationsStatus/properties/event_counts/prefixItems/${i}`})),
+    ...readinessIds.map((metric_id,i)=>({allOf:[{$ref:"#/components/schemas/WorkspaceReadinessEventCount"},
+      {properties:{metric_id:{const:metric_id},...(i<5?{window_start:{type:"null"},window_end:{type:"null"}}:{})}}],...(i===5?{"x-window-seconds":86400}:{})}))]};
+  require(same(extended.properties.event_counts,readinessTuple));
+  const envelope=exact("OperationsStatusReadinessEnvelope",["data","meta"]);
+  require(same(envelope.properties,{data:{$ref:"#/components/schemas/OperationsStatusWithReadiness"},meta:{$ref:"#/components/schemas/OperationsStatusEnvelope/properties/meta"}}));
   const amounts=cost.properties.known_amounts;
   require(amounts.type==="array"&&amounts.items.additionalProperties===false&&same(amounts.items.required,["currency","amount"])
     &&amounts.items.properties.currency.type==="string"&&amounts.items.properties.currency.pattern==="^[A-Z]{3}$"

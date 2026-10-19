@@ -17,6 +17,124 @@ from daon_user_api.operations_status import (
 from daon_user_api.operations_status_postgres import PostgresOperationsStatusRepository
 
 
+READINESS_IDS = ("waiting_text_generation", "waiting_image_understanding", "waiting_document_parsing",
+                 "waiting_speech_to_text", "waiting_role_unknown", "retry_suppressed_contexts_24h")
+
+
+def test_readiness_event_counts_are_opt_in_exact15_with_missing_producer_null_not_zero():
+    repository = SimpleNamespace(read_counts=lambda context: OperationsCounts(0, 0, 0))
+    service = OperationsStatusService(repository)
+    options = dict(active_providers=0, selected_deployments=0, api_ready=True,
+                   database_ready=True, object_storage_ready=True, checked_at="2026-10-19T00:00:00Z")
+    old = service.read(OperationsStatusContext("tenant-1", "workspace-1", "actor-1"), **options)
+    new = service.read(OperationsStatusContext("tenant-1", "workspace-1", "actor-1", include_readiness=True), **options)
+    assert len(old.event_counts) == 9 and len(new.event_counts) == 15
+    assert tuple(row["metric_id"] for row in new.event_counts[9:]) == READINESS_IDS
+    assert all(row["value"] is None and row["state"] == "not_collected" for row in new.event_counts[9:])
+    for value in (None, 1, "1", [], {}):
+        with pytest.raises(ValueError):
+            OperationsStatusContext("tenant-1", "workspace-1", "actor-1", include_readiness=value)
+
+
+def test_readiness_telemetry_validator_keeps_roles_without_window_and_first_suppression24h():
+    from copy import deepcopy
+    from daon_user_api.operations_status import unknown_telemetry, validate_telemetry
+    data = unknown_telemetry()
+    common = dict(state="partial", observed_at="2026-10-19T00:00:00Z", received_at="2026-10-19T00:00:00Z",
+                  coverage="actor_accessible_records", safe_code="TELEMETRY_PARTIAL", value=0, unit="count",
+                  window_start=None, window_end=None)
+    data["event_counts"] += [dict(common, metric_id=key) for key in READINESS_IDS]
+    data["event_counts"][-1].update(window_start="2026-10-18T00:00:00Z", window_end="2026-10-19T00:00:00Z")
+    with pytest.raises(ValueError): validate_telemetry(data)
+    assert validate_telemetry(data, include_readiness=True) is data
+    for index, field, value in ((9, "window_start", "2026-10-18T00:00:00Z"),
+                               (14, "window_start", None), (9, "actor_id", "PRIVATE_ACTOR"),
+                               (10, "value", True), (14, "window_start", "2026-10-17T00:00:00Z")):
+        changed = deepcopy(data)
+        changed["event_counts"][index][field] = value
+        with pytest.raises(ValueError): validate_telemetry(changed, include_readiness=True)
+
+
+@pytest.fixture
+def readiness_metric_port(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    now = datetime(2026, 10, 19, tzinfo=timezone.utc)
+    rows = [(key, value, True, False, now, now-timedelta(days=1) if i == 5 else None, now if i == 5 else None)
+            for i, (key, value) in enumerate(zip(READINESS_IDS, (2, 0, 0, 0, 1, 0)))]
+    calls, auth, transactions = [], [], []
+    class Store:
+        @contextmanager
+        def _transaction(self, context):
+            transaction = {"number": len(transactions), "read_only": False}
+            transactions.append(transaction)
+            self.current = transaction
+            try: yield self
+            finally: self.current = None
+        def execute(self, sql, params=()):
+            if sql == "SET TRANSACTION READ ONLY":
+                self.current["read_only"] = True
+                return SimpleNamespace()
+            assert sql.lstrip().startswith("SELECT ") and "public.read_document_readiness_metrics(" in sql
+            assert params == ("tenant-1", "workspace-1", "actor-1", "self")
+            assert self.current["read_only"], "집계 함수는 별도 READ ONLY transaction에서만 호출"
+            calls.append(sql)
+            return SimpleNamespace(fetchall=lambda: rows)
+    repository = PostgresOperationsStatusRepository(Store())
+    def authorize(connection, context):
+        assert not connection.current["read_only"], "기존 인가의 row lock을 READ ONLY 안으로 옮기지 않음"
+        auth.append(True)
+    monkeypatch.setattr(repository, "_authorize_telemetry", authorize)
+    monkeypatch.setattr(repository, "_visible_sources", lambda *args: {"version-a": {("notebook-a", "actor-1", "object-a")}})
+    context = OperationsStatusContext("tenant-1", "workspace-1", "actor-1", include_readiness=True)
+    return SimpleNamespace(repository=repository, context=context, rows=rows, now=now, calls=calls, auth=auth, transactions=transactions)
+
+
+def test_readiness_metrics_project_only_closed_aggregate_and_preserve_partial_lower_bound(readiness_metric_port):
+    f = readiness_metric_port
+    rows = f.repository.read_readiness_metrics(f.context)
+    assert len(f.calls) == 1 and len(f.auth) == 2
+    assert [row["read_only"] for row in f.transactions] == [False, True, False]
+    assert tuple(row["metric_id"] for row in rows) == READINESS_IDS
+    assert [row["value"] for row in rows] == [2, 0, 0, 0, 1, 0]
+    assert all(row["state"] == "partial" for row in rows)  # 미추적 구 Run·부분 활성화는 완전 집계로 올리지 않음.
+    assert all(set(row) == {"metric_id", "state", "value", "unit", "observed_at", "received_at",
+                           "coverage", "safe_code", "window_start", "window_end"} for row in rows)
+
+
+def test_readiness_metrics_no_records_stays_null_not_invented_zero(readiness_metric_port):
+    f = readiness_metric_port
+    f.rows[:] = [(key, None, False, True, f.now, None, None) for key in READINESS_IDS]
+    result = f.repository.read_readiness_metrics(f.context)
+    assert all(row["value"] is None and row["state"] == "not_collected" and row["observed_at"] is None for row in result)
+
+
+@pytest.mark.parametrize("invalid", ["missing", "extra", "duplicate", "bool", "null", "time", "role_window", "suppression_window", "unknown_zero"])
+def test_readiness_metrics_reject_malformed_internal_aggregate(readiness_metric_port, invalid):
+    f = readiness_metric_port
+    if invalid == "missing": f.rows.pop()
+    if invalid == "extra": f.rows[0] += ("PRIVATE_ACTOR",)
+    if invalid == "duplicate": f.rows[1] = f.rows[0]
+    if invalid == "bool": f.rows[0] = (f.rows[0][0], True, *f.rows[0][2:])
+    if invalid == "null": f.rows[0] = (f.rows[0][0], None, *f.rows[0][2:])
+    if invalid == "time": f.rows[0] = (*f.rows[0][:4], f.now.replace(tzinfo=None), None, None)
+    if invalid == "role_window": f.rows[0] = (*f.rows[0][:5], f.now, f.now)
+    if invalid == "suppression_window": f.rows[5] = (*f.rows[5][:5], None, None)
+    if invalid == "unknown_zero": f.rows[0] = (f.rows[0][0], 0, False, True, f.now, None, None)
+    with pytest.raises(ValueError): f.repository.read_readiness_metrics(f.context)
+
+
+def test_readiness_metrics_current_revoke_is_not_hidden_as_empty_count(readiness_metric_port, monkeypatch):
+    from daon_user_api.authorization import AuthorizationError
+    f = readiness_metric_port
+    reads = 0
+    def authorize(*args):
+        nonlocal reads
+        reads += 1
+        if reads == 2: raise AuthorizationError("CURRENT_ACCESS_DENIED", 403)
+    monkeypatch.setattr(f.repository, "_authorize_telemetry", authorize)
+    with pytest.raises(AuthorizationError): f.repository.read_readiness_metrics(f.context)
+
+
 def test_m2_workspace_missing_telemetry_is_exact_unknown_not_zero():
     context=OperationsStatusContext("tenant-1","workspace-1","actor-1",scope="self")
     service=OperationsStatusService(SimpleNamespace(read_counts=lambda context:OperationsCounts(0,0,0)))

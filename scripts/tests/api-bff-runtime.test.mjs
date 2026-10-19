@@ -13,6 +13,23 @@ import {
   parsePublicGatewayOrigin,
 } from "../../apps/web/lib/bff-api-proxy.js";
 
+test("R4 readiness workspace BFF forwards only literal1 without duplicate or hidden scope",async()=>{
+  const calls=[];
+  const proxy=createBffProxy({baseUrl:new URL("https://api.example.com"),fetchImpl:async url=>{
+    calls.push(String(url));return Response.json({data:{}});
+  }});
+  const root="https://app.example.com/bff/api/workspaces/workspace-a/operations/status";
+  const parts=["workspaces","workspace-a","operations","status"];
+  assert.equal((await proxy(new Request(root+"?scope=workspace_visible&include_readiness=1"),parts)).status,200);
+  assert.deepEqual(calls,["https://api.example.com/api/v1/workspaces/workspace-a/operations/status?scope=workspace_visible&include_readiness=1"]);
+  for(const query of ["include_readiness=0","include_readiness=true","include_readiness=",
+    "include_readiness=1&include_readiness=1","scope=self&scope=self&include_readiness=1",
+    "scope=all&include_readiness=1","include_readiness=1&actor_id=foreign"]){
+    assert.equal((await proxy(new Request(root+"?"+query),parts)).status,400,query);
+  }
+  assert.equal(calls.length,1);
+});
+
 test("M2 workspace status BFF preserves only exact self or workspace_visible scope",async()=>{
   const calls=[];
   const proxy=createBffProxy({baseUrl:new URL("https://api.example.com"),fetchImpl:async(url)=>{calls.push(String(url));return Response.json({data:{}});}});
