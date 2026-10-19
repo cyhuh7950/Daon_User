@@ -501,7 +501,9 @@ function validObservations(rows) {
 
 const TELEMETRY_FIELDS=["worker_samples","resource_samples","event_counts","cost_summary","deployment_summary","unimplemented"];
 const EVENT_METRICS=["manual_reprocess_pending","readiness_reprocess_pending","retry_wait","backoff_wait","step_up_denied_24h","step_up_expired_24h","access_blocked_24h","access_masked_24h","egress_denied_24h"];
-function validWorkspaceTelemetry(data){
+const READINESS_EVENT_METRICS=["waiting_text_generation","waiting_image_understanding","waiting_document_parsing","waiting_speech_to_text","waiting_role_unknown","retry_suppressed_contexts_24h"];
+function validWorkspaceTelemetry(data,includeReadiness=false){
+  const eventMetrics=includeReadiness?[...EVENT_METRICS,...READINESS_EVENT_METRICS]:EVENT_METRICS;
   const common=["state","observed_at","received_at","coverage","safe_code"],unknown=r=>["not_collected","not_reported","unavailable"].includes(r.state);
   const number=v=>Number.isSafeInteger(v)&&v>=0,nullable=v=>v===null||observationTime(v);
   const base=(r,fields,coverage,states)=>exact(r,[...common,...fields])&&states.includes(r.state)&&r.coverage===coverage
@@ -516,10 +518,10 @@ function validWorkspaceTelemetry(data){
   if(!Array.isArray(data.resource_samples)||data.resource_samples.length!==12||!data.resource_samples.every((r,i)=>
     base(r,["worker_kind","metric_id","value","unit"],"workspace_operational_counts",fresh)&&r.worker_kind===kinds[Math.floor(i/4)]
     &&r.metric_id===metrics[i%4]&&r.unit===(i%4===0?"millicores":"bytes")&&(unknown(r)?r.value===null:number(r.value))))return false;
-  if(!Array.isArray(data.event_counts)||data.event_counts.length!==9||!data.event_counts.every((r,i)=>
+  if(!Array.isArray(data.event_counts)||data.event_counts.length!==eventMetrics.length||!data.event_counts.every((r,i)=>
     base(r,["metric_id","value","unit","window_start","window_end"],"actor_accessible_records",["measured","partial","not_collected","unavailable"])
-    &&r.metric_id===EVENT_METRICS[i]&&r.unit==="count"&&(unknown(r)?r.value===null&&r.window_start===null&&r.window_end===null:
-      number(r.value)&&(i<4?r.window_start===null&&r.window_end===null:observationTime(r.window_start)&&r.window_end===r.observed_at&&Date.parse(r.window_end)-Date.parse(r.window_start)===86400000))))return false;
+    &&r.metric_id===eventMetrics[i]&&r.unit==="count"&&(unknown(r)?r.value===null&&r.window_start===null&&r.window_end===null:
+      number(r.value)&&((i<4||i>=9&&i<14)?r.window_start===null&&r.window_end===null:observationTime(r.window_start)&&r.window_end===r.observed_at&&Date.parse(r.window_end)-Date.parse(r.window_start)===86400000))))return false;
   const c=data.cost_summary;
   if(!base(c,["known_amounts","unknown_attempt_count","unconfirmed_run_count","coverage_start","coverage_end"],"actor_accessible_records",["measured","partial","not_collected","not_reported","unavailable"])
     ||!Array.isArray(c.known_amounts)||!c.known_amounts.every(r=>exact(r,["currency","amount"])&&typeof r.currency==="string"&&/^[A-Z]{3}$/u.test(r.currency)
@@ -545,12 +547,15 @@ function validWorkspaceTelemetry(data){
 }
 
 export async function getWorkspaceOperationsStatus(
-  workspaceId, { fetchImpl = fetch, signal, scope="self" } = {},
+  workspaceId, { fetchImpl = fetch, signal, scope="self", includeReadiness=false } = {},
 ) {
   const workspace = requiredWorkspace(workspaceId, "OPERATIONS_STATUS_INPUT_INVALID");
-  if(!["self","workspace_visible"].includes(scope))throw new Error("OPERATIONS_STATUS_INPUT_INVALID");
+  if(!["self","workspace_visible"].includes(scope)||typeof includeReadiness!=="boolean")throw new Error("OPERATIONS_STATUS_INPUT_INVALID");
+  const query=new URLSearchParams();
+  if(scope!=="self")query.set("scope",scope);
+  if(includeReadiness)query.set("include_readiness","1");
   const response = await fetchImpl(
-    `/bff/api/workspaces/${encodeURIComponent(workspace)}/operations/status${scope==="self"?"":"?scope=workspace_visible"}`,
+    `/bff/api/workspaces/${encodeURIComponent(workspace)}/operations/status${query.size?`?${query}`:""}`,
     { method: "GET", credentials: "same-origin", cache: "no-store", signal },
   );
   const payload = await json(response, "OPERATIONS_STATUS_RESPONSE_INVALID");
@@ -575,7 +580,7 @@ export async function getWorkspaceOperationsStatus(
       && typeof item.safe_code === "string" && /^[A-Z][A-Z0-9_]{2,63}$/u.test(item.safe_code)
       && Number.isSafeInteger(item.pending_count) && item.pending_count >= 0
       && new Set(["none", "open_llm_settings", "open_sync_settings", "refresh_status"]).has(item.recovery_action))
-    && validObservations(data.observations) && validWorkspaceTelemetry(data) && validMeta(payload.meta, workspace);
+    && validObservations(data.observations) && validWorkspaceTelemetry(data,includeReadiness) && validMeta(payload.meta, workspace);
   if (!valid) throw new Error("OPERATIONS_STATUS_RESPONSE_INVALID");
   return data;
 }

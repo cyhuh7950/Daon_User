@@ -3,6 +3,7 @@ import test from "node:test";
 import { readFile } from "node:fs/promises";
 
 import { getWorkspaceOperationsStatus } from "../../apps/web/lib/product-workspace-api.js";
+import { recoveryApi } from "../../apps/web/lib/recovery-api.js";
 
 const ids = ["document_pending", "document_retry_wait", "document_leased", "document_dead_letter", "object_pending", "object_retry_wait", "object_leased", "object_dead_letter", "object_oldest_pending_seconds", "source_waiting_model", "index_records_current", "source_storage_bytes", "reported_prompt_tokens", "reported_completion_tokens", "reported_total_tokens", "attempts_without_reported_usage"];
 const observations = () => ids.map((metric_id, index) => ({ metric_id, state: "not_collected", value: null,
@@ -36,6 +37,63 @@ const payload = {
   },
   meta: { trace_id: "trace-1", workspace_id: "workspace-1" },
 };
+
+const readinessIds=["waiting_text_generation","waiting_image_understanding","waiting_document_parsing",
+  "waiting_speech_to_text","waiting_role_unknown","retry_suppressed_contexts_24h"];
+function readinessPayload(){const result=structuredClone(payload);
+  result.data.event_counts.push(...readinessIds.map(metric_id=>({...common("actor_accessible_records"),
+    metric_id,value:null,unit:"count",window_start:null,window_end:null})));return result;}
+
+test("R4 readiness opt-in alone accepts exact15 and leaves default9 wire unchanged",async()=>{
+  const calls=[];
+  for(const scope of ["self","workspace_visible"]){
+    const result=await getWorkspaceOperationsStatus("workspace-1",{scope,includeReadiness:true,
+      fetchImpl:async(url,init)=>{calls.push([url,init.credentials,init.cache]);return Response.json(readinessPayload());}});
+    assert.equal(result.event_counts.length,15);assert.deepEqual(result.event_counts.slice(9).map(row=>row.metric_id),readinessIds);
+  }
+  assert.deepEqual(calls,[["/bff/api/workspaces/workspace-1/operations/status?include_readiness=1","same-origin","no-store"],
+    ["/bff/api/workspaces/workspace-1/operations/status?scope=workspace_visible&include_readiness=1","same-origin","no-store"]]);
+  await assert.rejects(getWorkspaceOperationsStatus("workspace-1",{fetchImpl:async()=>Response.json(readinessPayload())}),/OPERATIONS_STATUS_RESPONSE_INVALID/u);
+  await assert.rejects(getWorkspaceOperationsStatus("workspace-1",{includeReadiness:true,fetchImpl:async()=>Response.json(payload)}),/OPERATIONS_STATUS_RESPONSE_INVALID/u);
+  for(const includeReadiness of [1,"1",null,[],{}]){
+    let fetched=false;
+    await assert.rejects(getWorkspaceOperationsStatus("workspace-1",{includeReadiness,fetchImpl:()=>{fetched=true;}}),/OPERATIONS_STATUS_INPUT_INVALID/u);
+    assert.equal(fetched,false);
+  }
+});
+
+test("R4 readiness role counts keep null and suppression alone has exact24h window",async()=>{
+  const value=readinessPayload(),end="2026-10-19T00:00:00Z",start="2026-10-18T00:00:00Z";
+  value.data.event_counts[9]={...value.data.event_counts[9],state:"partial",safe_code:"TELEMETRY_PARTIAL",value:2,observed_at:end,received_at:end};
+  value.data.event_counts[14]={...value.data.event_counts[14],state:"partial",safe_code:"TELEMETRY_PARTIAL",value:0,
+    observed_at:end,received_at:end,window_start:start,window_end:end};
+  const result=await getWorkspaceOperationsStatus("workspace-1",{includeReadiness:true,fetchImpl:async()=>Response.json(value)});
+  assert.equal(result.event_counts[10].value,null);assert.equal(result.event_counts[14].value,0);
+  for(const mutate of [p=>p.data.event_counts.pop(),p=>{p.data.event_counts[10]=p.data.event_counts[9];},
+    p=>{p.data.event_counts[10].value=0;},p=>{p.data.event_counts[9].value=true;},
+    p=>{p.data.event_counts[9].window_start=start;p.data.event_counts[9].window_end=end;},
+    p=>{p.data.event_counts[14].window_start=null;},p=>{p.data.event_counts[14].window_start="2026-10-17T00:00:00Z";},
+    p=>{p.data.event_counts[9].actor_id="PRIVATE_ACTOR";}]){
+    const bad=structuredClone(value);mutate(bad);
+    await assert.rejects(getWorkspaceOperationsStatus("workspace-1",{includeReadiness:true,fetchImpl:async()=>Response.json(bad)}),/OPERATIONS_STATUS_RESPONSE_INVALID/u);
+  }
+});
+
+test("R4 recovery wrapper forwards opt-in signal and preserves old default and errors",async()=>{
+  const original=globalThis.fetch,calls=[],controller=new AbortController();
+  try{
+    globalThis.fetch=async(url,init)=>{calls.push([url,init]);return Response.json(url.includes("include_readiness")?readinessPayload():payload);};
+    assert.equal((await recoveryApi.getOperationsStatus("workspace-1",{signal:controller.signal,includeReadiness:true})).event_counts.length,15);
+    assert.equal(calls[0][1].signal,controller.signal);
+    await recoveryApi.getOperationsStatus("workspace-1");
+    assert.equal(calls[1][0],"/bff/api/workspaces/workspace-1/operations/status");
+    await assert.rejects(recoveryApi.getOperationsStatus("workspace-1",{includeReadiness:"yes"}),/OPERATIONS_STATUS_INPUT_INVALID/u);
+    assert.equal(calls.length,2);
+    globalThis.fetch=async()=>Response.json({error:{code:"OPERATIONS_STATUS_DENIED",trace_id:"trace-denied"}},{status:403});
+    await assert.rejects(recoveryApi.getOperationsStatus("workspace-1",{includeReadiness:true}),
+      error=>error.code==="OPERATIONS_STATUS_DENIED"&&error.status===403&&error.traceId==="trace-denied");
+  }finally{globalThis.fetch=original;}
+});
 
 test("M2 workspace telemetry is closed, exact and only explicit supported scope reaches same-origin",async()=>{
   const calls=[];
