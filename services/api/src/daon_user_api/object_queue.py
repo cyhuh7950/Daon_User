@@ -19,6 +19,7 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool, PoolTimeout
 
 from daon_user_api.cloud_storage import CloudAccessContext, classify_database_error
+from daon_user_api.operations_telemetry import observe_poll,safe_hook,start_worker_observation
 
 
 UTC = timezone.utc
@@ -919,6 +920,8 @@ class DurableObjectWorker:
         *,
         lease_seconds: float = 30.0,
         retry_policy: RetryPolicy | None = None,
+        telemetry=None,
+        telemetry_worker_id: str | None = None,
     ) -> None:
         self._store = store
         self._storage = storage
@@ -927,6 +930,8 @@ class DurableObjectWorker:
         self._retry_policy = retry_policy or RetryPolicy()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._telemetry=telemetry
+        self._telemetry_worker_id=telemetry_worker_id or worker_id
 
     @property
     def running(self) -> bool:
@@ -973,13 +978,15 @@ class DurableObjectWorker:
     ) -> ObjectJob | None:
         if self._stop.is_set():
             return None
-        current = now or datetime.now(UTC)
-        job = self._store.claim(
-            context, self._worker_id, now=current, lease_seconds=self._lease_seconds
-        )
-        if job is None:
-            return None
-        return self.process_claimed(context, job, now=current, jitter_unit=jitter_unit)
+        with observe_poll(self._telemetry):
+            current = now or datetime.now(UTC)
+            job = self._store.claim(
+                context, self._worker_id, now=current, lease_seconds=self._lease_seconds
+            )
+            if job is None:
+                return None
+            safe_hook(self._telemetry,"processing_started")
+            return self.process_claimed(context, job, now=current, jitter_unit=jitter_unit)
 
     def start(self, scopes: Sequence[CloudAccessContext], *, poll_seconds: float = 0.2) -> None:
         if self.running or poll_seconds <= 0:
@@ -987,19 +994,22 @@ class DurableObjectWorker:
         self._stop.clear()
 
         def run() -> None:
-            while not self._stop.is_set():
-                processed = False
-                for scope in scopes:
-                    if self._stop.is_set():
-                        break
-                    try:
-                        processed = self.run_once(scope) is not None or processed
-                    except ObjectQueueError as error:
-                        if not error.retryable:
-                            raise
+            try:
+                start_worker_observation(self._telemetry,"object",self._telemetry_worker_id)
+                while not self._stop.is_set():
+                    processed = False
+                    for scope in scopes:
+                        if self._stop.is_set():
+                            break
+                        try:
+                            processed = self.run_once(scope) is not None or processed
+                        except ObjectQueueError as error:
+                            if not error.retryable:
+                                raise
+                            self._stop.wait(poll_seconds)
+                    if not processed:
                         self._stop.wait(poll_seconds)
-                if not processed:
-                    self._stop.wait(poll_seconds)
+            finally:safe_hook(self._telemetry,"stop")
 
         self._thread = threading.Thread(target=run, name=f"object-worker-{self._worker_id}", daemon=True)
         self._thread.start()
@@ -1009,4 +1019,6 @@ class DurableObjectWorker:
         if self._thread is not None:
             self._thread.join(timeout)
             if self._thread.is_alive():
+                # 기존 job drain 실패는 그대로. 별도 publisher만 join하며 stopped를 합성하지 않는다.
+                safe_hook(self._telemetry,"stop",publish_stopped=False)
                 raise ObjectQueueError("WORKER_SHUTDOWN_TIMEOUT", retryable=True)
