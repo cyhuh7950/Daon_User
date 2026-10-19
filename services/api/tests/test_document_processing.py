@@ -60,6 +60,31 @@ class ReprocessingModeSubmissionTests(unittest.TestCase):
 
 
 class FailureEvidenceServiceTests(unittest.TestCase):
+    def test_pdf_current_guard_is_connected_after_semantic_response_before_parser_send(self):
+        from test_document_understanding_adapter import RecordingTransport
+        from daon_user_api.document_understanding_adapter import UpstageDocumentUnderstandingAdapter
+        revoked = False
+        class Repository(RecordingRepository):
+            def authorize_readiness_run(inner, *args, **kwargs):
+                if revoked and kwargs.get("capability") == "document_parsing":
+                    raise DocumentUnderstandingError("READINESS_ACCESS_DENIED", status=403)
+                return True
+        class Transport(RecordingTransport):
+            def post_json(inner, **kwargs):
+                nonlocal revoked
+                response = super().post_json(**kwargs)
+                revoked = True
+                return response
+        repository, transport = Repository(), Transport()
+        adapter = UpstageDocumentUnderstandingAdapter(transport=transport, api_key="synthetic-only")
+        service = DocumentProcessingService(repository, ModelResolver(), AdapterFactory(adapter),
+                                            egress_guard=FixtureOutboundGuard())
+        context = DocumentProcessingContext("tenant-cp3", "workspace-cp3", "actor-cp3", "trace-cp3", "policy-v1")
+        with self.assertRaisesRegex(DocumentUnderstandingError, "READINESS_ACCESS_DENIED"):
+            service.process_existing(context, source_id="source-cp3", processing_run_id="run-bound")
+        self.assertEqual([row[0] for row in transport.calls], ["semantic"])
+        self.assertEqual(repository.events[-1], ("fail", ("run-bound", "READINESS_ACCESS_DENIED", False)))
+
     def test_readiness_guard_denial_happens_before_original_or_model_access(self):
         class Repository(RecordingRepository):
             def authorize_readiness_run(inner, *args, **kwargs):

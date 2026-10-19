@@ -400,6 +400,8 @@ class DocumentProcessingService:
                         document.source_id, document.source_version_id, document.filename,
                         document.content, context.trace_id, "document-understanding-v1",
                         context.policy_version,
+                        before_send=(lambda role: check(model={"image_understanding": semantic,
+                            "document_parsing": parser}[role], capability=role)) if readiness_guard is not None else None,
                     ),
                     selection,
                 )

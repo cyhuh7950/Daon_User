@@ -29,6 +29,25 @@ PDF = b"%PDF-1.4\n% synthetic contract fixture\n%%EOF\n"
 
 
 class FailureEvidenceTransportTests(unittest.TestCase):
+    def test_pdf_guard_runs_before_each_actual_transport_and_denial_is_not_provider_failure(self):
+        for denied_role, expected_calls in (("image_understanding", []), ("document_parsing", ["semantic"])):
+            with self.subTest(denied_role=denied_role):
+                roles = []
+                def guard(role):
+                    roles.append(role)
+                    if role == denied_role:
+                        raise DocumentUnderstandingError("READINESS_ACCESS_DENIED", status=403)
+                request = DocumentUnderstandingRequest("source-a", "version-a", "qa.pdf", PDF,
+                    "trace-a", "prompt-a", "policy-a", before_send=guard)
+                transport = RecordingTransport()
+                adapter = UpstageDocumentUnderstandingAdapter(transport=transport, api_key="synthetic-memory-key")
+                with self.assertRaisesRegex(DocumentUnderstandingError, "READINESS_ACCESS_DENIED") as caught:
+                    adapter.understand(request, resolve_document_model_selection(provider_snapshot()))
+                self.assertEqual([call[0] for call in transport.calls], expected_calls)
+                self.assertIsNone(caught.exception.failure_evidence)
+                self.assertEqual(roles[-1], denied_role)
+                self.assertNotIn("guard", repr(request))
+
     def test_runtime_unknown_and_typed_connect_failures_do_not_confuse_null_health_requeue(self):
         # 실제 DB 현재 인가/비용 producer가 아닌 R1 순수 판정 경계의 합성 입력이다.
         from daon_user_api.document_readiness import (CurrentReprocessEligibility, ReadinessModeProof,

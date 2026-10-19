@@ -11,8 +11,8 @@ import socket
 import unicodedata
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
-from typing import Mapping, Protocol, cast
+from dataclasses import dataclass, field
+from typing import Callable, Mapping, Protocol, cast
 from urllib.parse import urlsplit
 
 from .provider_settings import ProviderSettingsSnapshot
@@ -163,8 +163,11 @@ class DocumentUnderstandingRequest:
     trace_id: str
     prompt_version: str
     policy_version: str
+    before_send: Callable[[str], None] | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
+        if self.before_send is not None and not callable(self.before_send):
+            raise DocumentUnderstandingError("UNDERSTANDING_REQUEST_INVALID")
         identifiers = (
             self.source_id, self.source_version_id, self.trace_id,
             self.prompt_version, self.policy_version,
@@ -528,6 +531,8 @@ class UpstageDocumentUnderstandingAdapter:
         )) != parser_base_url.rstrip("/"):
             raise DocumentUnderstandingError("UPSTAGE_ENDPOINT_INVALID", status=409)
         encoded = base64.b64encode(request.content).decode("ascii")
+        if request.before_send is not None:
+            request.before_send("image_understanding")
         semantic_response = _failure_call("image_understanding", selection.semantic_connection_id, lambda: self._transport.post_json(
             url=f"{semantic_base_url.rstrip('/')}/information-extraction",
             api_key=self._api_key,
@@ -545,6 +550,8 @@ class UpstageDocumentUnderstandingAdapter:
         ))
         semantic, semantic_revision = _failure_call("image_understanding", selection.semantic_connection_id,
             lambda: self._semantic(semantic_response), default_kind="non_availability")
+        if request.before_send is not None:
+            request.before_send("document_parsing")
         parser_response = _failure_call("document_parsing", selection.parser_connection_id, lambda: self._transport.post_multipart(
             url=f"{parser_base_url.rstrip('/')}/document-digitization", api_key=self._parser_api_key,
             fields={
