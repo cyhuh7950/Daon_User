@@ -1,4 +1,4 @@
-import { getWorkspaceOperationsStatus } from "./product-workspace-api.js";
+import { getWorkspaceOperationsStatus, listWorkspaceSources } from "./product-workspace-api.js";
 import { getNotebookContext, listNotebooks } from "./notebook-api.js";
 
 const JSON_HEADERS = Object.freeze({ "Content-Type": "application/json" });
@@ -182,10 +182,29 @@ export const recoveryApi = Object.freeze({
     return payload.data.map(item => ({ id: item.notebook_id, title: item.title }));
   },
   async getSelectionSources(workspaceId, notebookId, { signal } = {}) {
-    const payload = await getNotebookContext(workspaceId, notebookId, { signal, fetchImpl: selectionFetch });
+    if (signal?.aborted) throw new DOMException("Selection cancelled", "AbortError");
+    const [payload, rows] = await Promise.all([
+      getNotebookContext(workspaceId, notebookId, { signal, fetchImpl: selectionFetch }),
+      listWorkspaceSources(workspaceId, { notebookId, signal, fetchImpl: selectionFetch }),
+    ]);
+    if (signal?.aborted) throw new DOMException("Selection cancelled", "AbortError");
     if (payload.meta.workspace_id !== workspaceId || new Set(payload.data.sources.map(item => item.source_version_id)).size !== payload.data.sources.length) throw sessionFailure();
+    const pair = (sourceId, versionId) => JSON.stringify([sourceId, versionId]);
+    const contextVersions = new Map(payload.data.sources.map(item => [item.source_version_id, item.source_id]));
+    const contextSources = new Set(payload.data.sources.map(item => item.source_id));
+    const byPair = new Map(), byVersion = new Map();
+    for (const row of rows) {
+      const key = pair(row.source_id, row.source_version_id);
+      if (byPair.has(key) || byVersion.has(row.source_version_id)
+        || (contextVersions.has(row.source_version_id) && contextVersions.get(row.source_version_id) !== row.source_id)
+        || (contextSources.has(row.source_id) && contextVersions.get(row.source_version_id) !== row.source_id)) throw sessionFailure();
+      byPair.set(key, row); byVersion.set(row.source_version_id, row);
+    }
     return { notebookId, bindingEtag: payload.data.bindingEtag,
-      sources: payload.data.sources.map(item => ({ sourceId: item.source_id, versionId: item.source_version_id })) };
+      sources: payload.data.sources.map(item => {
+        const row = byPair.get(pair(item.source_id, item.source_version_id));
+        return { sourceId: item.source_id, versionId: item.source_version_id, ...(row ? { filename: row.filename } : {}) };
+      }) };
   },
   createBackupSelection(input, idempotencyKey, { signal } = {}) {
     if (!input || Object.keys(input).length !== 4 || !["workspace_id", "notebook_id", "trigger", "source_version_ids"].every(key => Object.hasOwn(input, key))

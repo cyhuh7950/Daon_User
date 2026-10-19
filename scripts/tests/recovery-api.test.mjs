@@ -15,6 +15,110 @@ test("M2-S system API uses same-origin signal and rejects malformed DTO",async()
 import { createBffProxy } from "../../apps/web/lib/bff-api-proxy.js";
 import { parseRecoverySessionContext, recoveryApi, resolveRecoverySession } from "../../apps/web/lib/recovery-api.js";
 
+function labelContext(sources) {
+  return Response.json({ data: { notebook_id: "notebook-a", sources,
+    knowledge_context_ids: [], conversation_thread_ids: [], studio_output_ids: [], output_version_ids: [], generation_settings_ids: [],
+    source_deletion_requests: [], conversation: null }, meta: { workspace_id: "workspace-a", trace_id: "trace-label" } },
+  { headers: { ETag: '"notebook-binding:7"' } });
+}
+const labelSource = (source_id, source_version_id, filename = "동일이름.txt") => ({
+  source_id, source_version_id, filename, source_state: "ready", processing_state: "completed", job_state: "completed",
+});
+const labelList = (sources, workspace_id = "workspace-a") => Response.json({ data: { sources }, meta: { workspace_id, trace_id: "trace-label" } });
+
+test("S44 label 정확 두ID만 filename 보강하고 Context 집합 순서 bindingEtag를 보존한다", async () => {
+  const previous = globalThis.fetch, calls = [], controller = new AbortController();
+  globalThis.fetch = async (url, init) => {
+    calls.push([url, init]);
+    return url.endsWith("/context") ? labelContext([
+      { source_id: "source-b", source_version_id: "version-b" }, { source_id: "source-a", source_version_id: "version-a" },
+    ]) : labelList([labelSource("source-a", "version-a"), labelSource("source-extra", "version-extra", "추가금지.txt"), labelSource("source-b", "version-b")]);
+  };
+  try {
+    assert.deepEqual(await recoveryApi.getSelectionSources("workspace-a", "notebook-a", { signal: controller.signal }), {
+      notebookId: "notebook-a", bindingEtag: '"notebook-binding:7"', sources: [
+        { sourceId: "source-b", versionId: "version-b", filename: "동일이름.txt" },
+        { sourceId: "source-a", versionId: "version-a", filename: "동일이름.txt" },
+      ],
+    });
+    assert.deepEqual(calls.map(([url]) => url).sort(), ["/bff/api/workspaces/workspace-a/notebooks/notebook-a/context",
+      "/bff/api/workspaces/workspace-a/sources?notebook_id=notebook-a"]);
+    for (const [, init] of calls) assert.deepEqual([init.method, init.credentials, init.cache, init.signal], ["GET", "same-origin", "no-store", controller.signal]);
+  } finally { globalThis.fetch = previous; }
+});
+
+test("S44 label 목록누락만 ID fallback하며 목록만 있는 자료는 선택에 추가하지 않는다", async () => {
+  const previous = globalThis.fetch;
+  globalThis.fetch = async url => url.endsWith("/context") ? labelContext([{ source_id: "source-a", source_version_id: "version-a" }])
+    : labelList([labelSource("source-other", "version-other")]);
+  try {
+    assert.deepEqual(await recoveryApi.getSelectionSources("workspace-a", "notebook-a"), {
+      notebookId: "notebook-a", bindingEtag: '"notebook-binding:7"', sources: [{ sourceId: "source-a", versionId: "version-a" }],
+    });
+  } finally { globalThis.fetch = previous; }
+});
+
+test("S44 label Context 동일Source 복수Version과 최신목록은 정확pair만 보강한다", async () => {
+  const previous = globalThis.fetch;
+  globalThis.fetch = async url => url.endsWith("/context") ? labelContext([
+    { source_id: "source-a", source_version_id: "version-1" },
+    { source_id: "source-a", source_version_id: "version-2" },
+  ]) : labelList([labelSource("source-a", "version-2", "현재파일.txt")]);
+  try {
+    assert.deepEqual(await recoveryApi.getSelectionSources("workspace-a", "notebook-a"), {
+      notebookId: "notebook-a", bindingEtag: '"notebook-binding:7"', sources: [
+        { sourceId: "source-a", versionId: "version-1" },
+        { sourceId: "source-a", versionId: "version-2", filename: "현재파일.txt" },
+      ],
+    });
+  } finally { globalThis.fetch = previous; }
+});
+
+test("S44 label 중복 모호 다른Version Source불일치는 첫항목 채택 없이 거부한다", async () => {
+  const previous = globalThis.fetch;
+  try {
+    for (const rows of [
+      [labelSource("source-a", "version-a"), labelSource("source-a", "version-a")],
+      [labelSource("source-a", "version-new")], [labelSource("source-other", "version-a")],
+      [labelSource("source-a", "version-a"), labelSource("source-a", "version-new")],
+      [labelSource("source-a", "version-a"), labelSource("source-other", "version-a")],
+    ]) {
+      globalThis.fetch = async url => url.endsWith("/context") ? labelContext([{ source_id: "source-a", source_version_id: "version-a" }]) : labelList(rows);
+      await assert.rejects(() => recoveryApi.getSelectionSources("workspace-a", "notebook-a"));
+    }
+  } finally { globalThis.fetch = previous; }
+});
+
+test("S44 label 기존 filename validator와 Workspace 검증을 유지한다", async () => {
+  const previous = globalThis.fetch;
+  try {
+    for (const [filename, workspace] of [["../private.txt", "workspace-a"], ["bad\\path.txt", "workspace-a"],
+      ["bad\nname.txt", "workspace-a"], ["x".repeat(256), "workspace-a"], ["정상.txt", "workspace-other"]]) {
+      globalThis.fetch = async url => url.endsWith("/context") ? labelContext([{ source_id: "source-a", source_version_id: "version-a" }])
+        : labelList([labelSource("source-a", "version-a", filename)], workspace);
+      await assert.rejects(() => recoveryApi.getSelectionSources("workspace-a", "notebook-a"));
+    }
+  } finally { globalThis.fetch = previous; }
+});
+
+test("S44 label 목록401 403 취소는 filename 누락으로 삼키지 않는다", async () => {
+  const previous = globalThis.fetch;
+  try {
+    for (const status of [401, 403]) {
+      globalThis.fetch = async url => url.endsWith("/context") ? labelContext([{ source_id: "source-a", source_version_id: "version-a" }])
+        : Response.json({ error: { code: "SOURCE_ACCESS_DENIED" } }, { status });
+      await assert.rejects(() => recoveryApi.getSelectionSources("workspace-a", "notebook-a"), error => error.status === status);
+    }
+    const controller = new AbortController();
+    globalThis.fetch = async url => {
+      if (url.endsWith("/context")) return labelContext([{ source_id: "source-a", source_version_id: "version-a" }]);
+      controller.abort();
+      return labelList([labelSource("source-a", "version-a")]);
+    };
+    await assert.rejects(() => recoveryApi.getSelectionSources("workspace-a", "notebook-a", { signal: controller.signal }), error => error.name === "AbortError");
+  } finally { globalThis.fetch = previous; }
+});
+
 test("R4 v3 사전확인과 명시동의 exact6만 same-origin 전송하고 혼합/무동의는 fetch0", async () => {
   assert.equal(typeof recoveryApi.previewBackupSelection, "function");
   assert.equal(typeof recoveryApi.createLineageBackup, "function");
@@ -76,6 +180,7 @@ test("S44 L1 Web은 기존 Notebook/context를 읽고 새 정확4필드만 same-
     if (url.endsWith("/context")) return Response.json({ data: { notebook_id: "notebook-a", sources: [{ source_id: "source-a", source_version_id: "version-a" }],
       knowledge_context_ids: [], conversation_thread_ids: [], studio_output_ids: [], output_version_ids: [], generation_settings_ids: [],
       source_deletion_requests: [], conversation: null }, meta: { workspace_id: "workspace-a", trace_id: "trace-a" } }, { headers: { ETag: '"notebook-binding:1"' } });
+    if (url.endsWith("/sources?notebook_id=notebook-a")) return labelList([]);
     return Response.json({ error: { code: "RESOURCE_UNAVAILABLE" } }, { status: 503 });
   };
   try {
@@ -84,10 +189,11 @@ test("S44 L1 Web은 기존 Notebook/context를 읽고 새 정확4필드만 same-
       notebookId: "notebook-a", bindingEtag: '"notebook-binding:1"', sources: [{ sourceId: "source-a", versionId: "version-a" }] });
     const input = { workspace_id: "workspace-a", notebook_id: "notebook-a", trigger: "manual", source_version_ids: ["version-a"] };
     await assert.rejects(recoveryApi.createBackupSelection(input, "l1-create-key-00001", { signal: controller.signal }), e => e.status === 503);
-    assert.deepEqual(calls.map(([url]) => url), ["/bff/api/workspaces/workspace-a/notebooks", "/bff/api/workspaces/workspace-a/notebooks/notebook-a/context", "/bff/api/backups"]);
+    assert.deepEqual(calls.map(([url]) => url), ["/bff/api/workspaces/workspace-a/notebooks", "/bff/api/workspaces/workspace-a/notebooks/notebook-a/context",
+      "/bff/api/workspaces/workspace-a/sources?notebook_id=notebook-a", "/bff/api/backups"]);
     for (const [, init] of calls) assert.deepEqual([init.credentials, init.cache, init.signal], ["same-origin", "no-store", controller.signal]);
-    assert.deepEqual(JSON.parse(calls[2][1].body), input);
-    assert.equal(calls[2][1].headers["Idempotency-Key"], "l1-create-key-00001");
+    assert.deepEqual(JSON.parse(calls[3][1].body), input);
+    assert.equal(calls[3][1].headers["Idempotency-Key"], "l1-create-key-00001");
     const count = calls.length;
     for (const change of [{ schema_revision: "forged" }, { objects: [] }, { source_version_ids: [] },
       { source_version_ids: ["version-a", "version-a"] }, { source_version_ids: Array.from({ length: 101 }, (_, i) => `v-${i}`) },
@@ -174,11 +280,24 @@ test("S44 기존복구 정확 GET·Execute·Cancel의 optional AbortSignal과 �
 
 test("S44 상태 조회는 기존 엄격한 5component helper와 same-origin GET을 사용한다", async () => {
   const previous = globalThis.fetch, calls = [];
+  const unknown = { state: "not_collected", observed_at: null, received_at: null, safe_code: "TELEMETRY_NOT_COLLECTED" };
+  const personal = { ...unknown, coverage: "actor_accessible_records" };
   const data = { workspace_id: "workspace-a", overall_status: "ready", checked_at: "2026-10-18T00:00:00Z",
     components: ["provider", "api", "storage", "sync", "queue"].map(component_id => ({ component_id, status: "ready", safe_code: "COMPONENT_READY", pending_count: 0, recovery_action: "none" })),
     observations: ["document_pending", "document_retry_wait", "document_leased", "document_dead_letter", "object_pending", "object_retry_wait", "object_leased", "object_dead_letter", "object_oldest_pending_seconds", "source_waiting_model", "index_records_current", "source_storage_bytes", "reported_prompt_tokens", "reported_completion_tokens", "reported_total_tokens", "attempts_without_reported_usage"]
       .map((metric_id,index)=>({metric_id,state:"not_collected",value:null,unit:index===8?"seconds":index===11?"bytes":index>=12&&index<=14?"tokens":"count",
-        observed_at:null,coverage:index<9?"workspace_operational_counts":"actor_accessible_records",safe_code:"METRIC_NOT_COLLECTED"})) };
+        observed_at:null,coverage:index<9?"workspace_operational_counts":"actor_accessible_records",safe_code:"METRIC_NOT_COLLECTED"})),
+    worker_samples: ["document", "studio", "object"].map(worker_kind => ({ ...unknown, coverage: "workspace_operational_counts",
+      worker_kind, process_state: "unknown", poll_started_at: null, poll_finished_at: null, active_started_at: null })),
+    resource_samples: ["document", "studio", "object"].flatMap(worker_kind =>
+      ["cpu_quota_millicores", "memory_limit_bytes", "memory_current_bytes", "runtime_available_bytes"].map((metric_id, i) => ({
+        ...unknown, coverage: "workspace_operational_counts", worker_kind, metric_id, value: null, unit: i === 0 ? "millicores" : "bytes" }))),
+    event_counts: ["manual_reprocess_pending", "readiness_reprocess_pending", "retry_wait", "backoff_wait", "step_up_denied_24h", "step_up_expired_24h",
+      "access_blocked_24h", "access_masked_24h", "egress_denied_24h"].map(metric_id => ({ ...personal, metric_id, value: null, unit: "count", window_start: null, window_end: null })),
+    cost_summary: { ...personal, known_amounts: [], unknown_attempt_count: null, unconfirmed_run_count: null, coverage_start: null, coverage_end: null },
+    deployment_summary: { ...personal, operation: null, code_revision: null, image_digest: null, previous_image_digest: null, result: null },
+    unimplemented: [{ producer_id: "readiness_event_producer", safe_code: "PRODUCER_NOT_IMPLEMENTED", impact_code: "AUTOMATIC_REPROCESS_UNOBSERVED" }],
+  };
   const controller = new AbortController();
   let value = data;
   try {
@@ -187,8 +306,24 @@ test("S44 상태 조회는 기존 엄격한 5component helper와 same-origin GET
     assert.equal(calls[0][0], "/bff/api/workspaces/workspace-a/operations/status");
     assert.equal(calls[0][1].signal, controller.signal);
     assert.deepEqual([calls[0][1].method, calls[0][1].credentials, calls[0][1].cache], ["GET", "same-origin", "no-store"]);
+    assert.deepEqual(await recoveryApi.getOperationsStatus("workspace-a", { signal: controller.signal, scope: "workspace_visible" }), data);
+    assert.equal(calls[1][0], "/bff/api/workspaces/workspace-a/operations/status?scope=workspace_visible");
     for (value of [{ ...data, workspace_id: "workspace-b" }, { ...data, components: data.components.slice(1) },
       { ...data, components: data.components.map(c => ({ ...c, pending_count: -1 })) }]) {
+      await assert.rejects(recoveryApi.getOperationsStatus("workspace-a"), /OPERATIONS_STATUS_RESPONSE_INVALID/u);
+    }
+    for (const field of ["worker_samples", "resource_samples", "event_counts", "cost_summary", "deployment_summary", "unimplemented"]) {
+      value = structuredClone(data); delete value[field];
+      await assert.rejects(recoveryApi.getOperationsStatus("workspace-a"), /OPERATIONS_STATUS_RESPONSE_INVALID/u, `필수 ${field}`);
+    }
+    for (const change of [
+      row => { row.worker_samples[0].process_state = "alive"; },
+      row => { row.resource_samples[0].value = 0; },
+      row => { row.cost_summary.known_amounts = [{ currency: "USD", amount: "0" }]; },
+      row => { row.deployment_summary.result = "succeeded"; },
+      row => { row.unimplemented[0].safe_code = "PRODUCER_READY"; },
+    ]) {
+      value = structuredClone(data); change(value);
       await assert.rejects(recoveryApi.getOperationsStatus("workspace-a"), /OPERATIONS_STATUS_RESPONSE_INVALID/u);
     }
   } finally { globalThis.fetch = previous; }

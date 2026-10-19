@@ -284,6 +284,135 @@ async function l1Submit(view, count = 1) {
   await view.act(async () => { for (let i = 0; i < count; i++) form.dispatchEvent(new MinimalEvent("submit")); });
 }
 
+test("S44 label 실제 React는 동명 filename과 Version 보조표시로 정확 선택 POST를 유지한다", async () => {
+  const p = l1Port({ getSelectionSources: async () => l1Sources({ sources: [
+    { sourceId: "source-b", versionId: "version-b", filename: "동일이름.txt" },
+    { sourceId: "source-a", versionId: "version-a", filename: "동일이름.txt" },
+  ] }) }), view = await render("", p.api);
+  try {
+    await click(view, "백업 자료 선택"); await click(view, "Notebook · notebook-a");
+    const labels = findElements(view.container, n => n.tagName === "BUTTON" && n.textContent.startsWith("동일이름.txt"));
+    assert.deepEqual(labels.map(n => n.textContent), ["동일이름.txt · SourceVersion version-b", "동일이름.txt · SourceVersion version-a"]);
+    await click(view, "동일이름.txt · SourceVersion version-b"); await click(view, "동일이름.txt · SourceVersion version-a");
+    await l1Submit(view, 2);
+    const posts = p.selectionCalls.filter(c => c[0] === "post");
+    assert.equal(posts.length, 1);
+    assert.deepEqual(posts[0][1], { workspace_id: "workspace-a", notebook_id: "notebook-a", trigger: "manual", source_version_ids: ["version-a", "version-b"] });
+    assert.doesNotMatch(visibleText(view.container), /백업 생성 성공|백업 생성 완료/u);
+  } finally { await view.cleanup(); }
+});
+
+test("S44 label filename은 bounded React text만 표시하고 누락은 Version ID로 유지한다", async () => {
+  for (const filename of ['<img src=x onerror="alert(1)">.txt', "긴파일".repeat(70) + ".txt"]) {
+    const p = l1Port({ getSelectionSources: async () => l1Sources({ sources: [
+      { sourceId: "source-a", versionId: "version-a", filename }, { sourceId: "source-b", versionId: "version-b" },
+    ] }) }), view = await render("", p.api);
+    try {
+      await click(view, "백업 자료 선택"); await click(view, "Notebook · notebook-a");
+      const short = [...filename].slice(0, 60).join("") + ([...filename].length > 60 ? "…" : "");
+      await click(view, `${short} · SourceVersion version-a`); await click(view, "SourceVersion version-b");
+      assert.equal(findElements(view.container, n => ["IMG", "SCRIPT", "A"].includes(n.tagName)).length, 0);
+      if (filename.length > 60) assert.equal(view.container.textContent.includes(filename), false);
+      assert.deepEqual(p.selectionCalls.filter(c => c[0] === "post"), []);
+    } finally { await view.cleanup(); }
+  }
+});
+
+function labelHttpPort(sourceResponse, currentSession = () => session()) {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push([url, init]);
+    assert.equal(init.credentials, "same-origin"); assert.equal(init.cache, "no-store");
+    if (url === "/bff/api/session") return Response.json(currentSession().payload);
+    if (url.endsWith("/operations/status")) return Response.json({ data: operations(), meta: { workspace_id: "workspace-a", trace_id: "trace-label" } });
+    if (url.startsWith("/bff/api/backups?")) return Response.json(response([]).payload);
+    if (url === "/bff/api/restore-requests/restore-a") return Response.json(response(restore()).payload);
+    if (url.endsWith("/notebooks")) return Response.json({ data: [{ notebook_id: "notebook-a", title: "Notebook", source_count: 1, output_count: 0,
+      updated_at: "2026-10-18T00:00:00Z", status: "active", etag: '"notebook:1"' }], meta: { workspace_id: "workspace-a", trace_id: "trace-label" } });
+    if (url.endsWith("/context")) return Response.json({ data: { notebook_id: "notebook-a", sources: [{ source_id: "source-a", source_version_id: "version-a" }],
+      knowledge_context_ids: [], conversation_thread_ids: [], studio_output_ids: [], output_version_ids: [], generation_settings_ids: [],
+      source_deletion_requests: [], conversation: null }, meta: { workspace_id: "workspace-a", trace_id: "trace-label" } }, { headers: { ETag: '"notebook-binding:1"' } });
+    assert.equal(url, "/bff/api/workspaces/workspace-a/sources?notebook_id=notebook-a");
+    return sourceResponse(init);
+  };
+  return { calls, fetchImpl };
+}
+const labelHttpResponse = () => Response.json({ data: { sources: [{ source_id: "source-a", source_version_id: "version-a", filename: "늦은파일.txt",
+  source_state: "ready", processing_state: "completed", job_state: "completed" }] }, meta: { workspace_id: "workspace-a", trace_id: "trace-label" } });
+
+test("S44 label 실제 Context 복수Version 최신목록 fallback은 원래Version POST를 보존한다", async () => {
+  const previous = globalThis.fetch, posted = [];
+  const p = labelHttpPort(() => labelHttpResponse());
+  globalThis.fetch = async (url, init) => {
+    if (url.endsWith("/context")) return Response.json({ data: { notebook_id: "notebook-a", sources: [
+      { source_id: "source-a", source_version_id: "version-old" }, { source_id: "source-a", source_version_id: "version-a" },
+    ], knowledge_context_ids: [], conversation_thread_ids: [], studio_output_ids: [], output_version_ids: [], generation_settings_ids: [],
+    source_deletion_requests: [], conversation: null }, meta: { workspace_id: "workspace-a", trace_id: "trace-label" } }, { headers: { ETag: '"notebook-binding:1"' } });
+    if (url === "/bff/api/backups" && init.method === "POST") {
+      posted.push(JSON.parse(init.body));
+      return Response.json({ error: { code: "RESOURCE_UNAVAILABLE" } }, { status: 503 });
+    }
+    return p.fetchImpl(url, init);
+  };
+  let view;
+  try {
+    view = await render(""); await click(view, "백업 자료 선택"); await click(view, "Notebook · notebook-a");
+    await click(view, "SourceVersion version-old"); await click(view, "늦은파일.txt · SourceVersion version-a");
+    await l1Submit(view, 2);
+    assert.deepEqual(posted, [{ workspace_id: "workspace-a", notebook_id: "notebook-a", trigger: "manual", source_version_ids: ["version-a", "version-old"] }]);
+    assert.doesNotMatch(view.container.textContent, /백업 생성 성공|백업 생성 완료/u);
+  } finally { if (view) await view.cleanup(); globalThis.fetch = previous; }
+});
+
+test("S44 label 실제 adapter 목록권한 실패와 모호한 자료는 UI 선택을 거부한다", async () => {
+  const previous = globalThis.fetch;
+  try {
+    for (const mode of [401, 403, "duplicate", "mismatch"]) {
+      const p = labelHttpPort(() => {
+        if (typeof mode === "number") return Response.json({ error: { code: canary } }, { status: mode });
+        const row = { source_id: "source-a", source_version_id: mode === "mismatch" ? "version-new" : "version-a", filename: "채택금지.txt",
+          source_state: "ready", processing_state: "completed", job_state: "completed" };
+        return Response.json({ data: { sources: mode === "duplicate" ? [row, row] : [row] }, meta: { workspace_id: "workspace-a", trace_id: "trace-label" } });
+      });
+      globalThis.fetch = p.fetchImpl;
+      const view = await render("");
+      try {
+        await click(view, "백업 자료 선택"); await click(view, "Notebook · notebook-a");
+        assert.equal(findElements(view.container, n => n.tagName === "FORM").length, 0);
+        assert.doesNotMatch(view.container.textContent, /채택금지|S42_표시금지/u);
+        assert.equal(p.calls.filter(([, init]) => init.method === "POST").length, 0);
+        assert.match(visibleText(view.container), mode === 401 ? /로그인/u : mode === 403 ? /권한/u : /확인할 수 없습니다/u);
+      } finally { await view.cleanup(); }
+    }
+  } finally { globalThis.fetch = previous; }
+});
+
+test("S44 label 실제 adapter 지연목록은 취소 계정 Workspace API 주소교체 뒤 표시와 POST0이다", async () => {
+  const previous = globalThis.fetch;
+  try {
+    for (const mode of ["pagehide", "account", "workspace", "api", "target", "unmount"]) {
+      const gate = deferred(); let changed = false, signal;
+      const p = labelHttpPort(init => { signal = init.signal; return gate.promise; },
+        () => session(changed ? mode === "workspace" ? { workspace_id: "workspace-other" } : { user_id: "reader-other", session_id: "session-other" } : {}));
+      globalThis.fetch = p.fetchImpl;
+      const view = await render("");
+      try {
+        await click(view, "백업 자료 선택"); await click(view, "Notebook · notebook-a");
+        assert.ok(signal, "실제 filename 목록 요청 진입");
+        if (mode === "pagehide") await view.act(async () => view.browser.dispatchEvent(new MinimalEvent("pagehide")));
+        if (["account", "workspace"].includes(mode)) changed = true;
+        if (mode === "api") await view.rerender(homePort().api);
+        if (mode === "target") await view.navigate("?restore_request_id=restore-a");
+        if (mode === "unmount") await view.unmount();
+        if (!["account", "workspace"].includes(mode)) assert.equal(signal.aborted, true);
+        await view.act(async () => gate.resolve(labelHttpResponse()));
+        assert.doesNotMatch(view.container.textContent, /늦은파일|SourceVersion version-a/u);
+        assert.equal(p.calls.filter(([, init]) => init.method === "POST").length, 0);
+      } finally { gate.resolve(labelHttpResponse()); await view.cleanup(); }
+    }
+  } finally { globalThis.fetch = previous; }
+});
+
 test("S44 L1 실제 React는 선택 전 POST0·명시 선택 후 정확4필드1회·503 성공0이다", async () => {
   const p = l1Port(), view = await render("", p.api);
   try {
@@ -302,14 +431,14 @@ test("S44 L1 실제 React는 선택 전 POST0·명시 선택 후 정확4필드1�
 test("S44 L1 검증된 Notebook 제목은 짧은 React text이며 ID는 보조·없는 파일명은 생성0이다", async () => {
   for (const title of ["현재 접근 가능한 자료 Notebook", '<img src=x onerror="unsafe()">', "긴제목".repeat(30)]) {
     const p = l1Port({ listSelectionNotebooks: async () => [{ id: "notebook-a", title, raw_text: canary }],
-      getSelectionSources: async () => l1Sources({ sources: [{ sourceId: "source-a", versionId: "version-a", filename: canary }] }) });
+      getSelectionSources: async () => l1Sources({ sources: [{ sourceId: "source-a", versionId: "version-a", raw_text: canary }] }) });
     const view = await render("", p.api);
     try {
       await click(view, "백업 자료 선택");
       const short = [...title].slice(0, 60).join("") + ([...title].length > 60 ? "…" : "");
       assert.ok(visibleText(view.container).includes(short));
       await click(view, `${short} · notebook-a`);
-      assert.match(visibleText(view.container), /파일명을 제공하지.*SourceVersion ID/u);
+      assert.match(visibleText(view.container), /SourceVersion ID/u);
       assert.match(visibleText(view.container), /SourceVersion version-a/u);
       assert.equal(findElements(view.container, node => ["IMG", "SCRIPT"].includes(node.tagName)).length, 0);
       assert.doesNotMatch(view.container.textContent, /S42_표시금지/u);
@@ -395,6 +524,7 @@ test("S44 L1 기본adapter의 실제 React→HTTP 대역은 context선택·정�
     if (url.endsWith("/notebooks/notebook-a/context")) return Response.json({ data: { notebook_id: "notebook-a", sources: [{ source_id: "source-a", source_version_id: "version-a" }],
       knowledge_context_ids: [], conversation_thread_ids: [], studio_output_ids: [], output_version_ids: [], generation_settings_ids: [],
       source_deletion_requests: [], conversation: null }, meta: { workspace_id: "workspace-a", trace_id: "trace-a" } }, { headers: { ETag: '"notebook-binding:1"' } });
+    if (url.endsWith("/sources?notebook_id=notebook-a")) return Response.json({ data: { sources: [] }, meta: { workspace_id: "workspace-a", trace_id: "trace-a" } });
     assert.equal(url, "/bff/api/backups"); assert.equal(init.method, "POST");
     assert.deepEqual(JSON.parse(init.body), { workspace_id: "workspace-a", notebook_id: "notebook-a", trigger: "manual", source_version_ids: ["version-a"] });
     assert.ok(init.signal); assert.ok(init.headers["Idempotency-Key"].length >= 16);
@@ -944,14 +1074,30 @@ test("S44 기존복구 제출 전 입력은 visibility·대상·API 교체에서
 test("M1 운영 홈은 16관측의 partial/null과 남은 미수집 범위를 구분한다", async () => {
   const data = operations();
   data.observations[12] = { ...data.observations[12], state: "partial", value: 7, observed_at: "2026-10-19T00:00:00Z", safe_code: "METRIC_PARTIAL" };
-  const p = homePort({ getOperationsStatus: async () => data });
+  const p = homePort();
+  p.api.getOperationsStatus = async workspace => { p.calls.push(["status", workspace]); return data; };
   const view = await render("", p.api);
   try {
     const text = visibleText(view.container);
     assert.match(text, /기존 5종 상태/u);
     assert.match(text, /보고된 Prompt Token.*부분 기록.*7/u);
     assert.match(text, /보고된 Total Token.*미수집/u);
-    assert.match(text, /실제 비용.*heartbeat.*용량.*미수집/u);
+    assert.deepEqual(findElements(view.container, node => node.tagName === "LI" && /^(문서|Studio|Object) · /u.test(node.textContent))
+      .map(node => node.textContent), ["문서 · 미집계 · 실행 미확인", "Studio · 미집계 · 실행 미확인", "Object · 미집계 · 실행 미확인"]);
+    for (const kind of ["문서", "Studio", "Object"]) for (const metric of ["CPU 할당", "메모리 한도", "메모리 사용", "영속 저장 여유"]) {
+      const label = `${kind} · ${metric}`;
+      const term = findElements(view.container, node => node.tagName === "DT" && node.textContent === label);
+      assert.equal(term.length, 1, label);
+      assert.equal(term[0].parentNode.textContent, `${label}미집계 · 값 미확인`);
+    }
+    const paragraphs = findElements(view.container, node => node.tagName === "P").map(node => node.textContent);
+    assert.ok(paragraphs.includes("비용: 미집계 · 확정 금액 없음"));
+    assert.ok(paragraphs.includes("배포·Rollback: 확인된 기록 미수집"));
+    assert.ok(paragraphs.includes("미구현 수집: Readiness 자동 재처리"));
+    assert.ok(paragraphs.includes("lease와 Index 기록 수는 실제 생존이나 Build 진행률이 아닙니다. 미집계·미보고는 정상 0건이 아닙니다."));
+    assert.doesNotMatch(text, /처리 중|프로세스 관측|확정 금액 0|USD 0|0 bytes|0 millicores/u);
+    assert.deepEqual(p.calls, homeCalls);
+    assert.deepEqual(p.writes, []);
     assert.equal(findElements(view.container, node => node.getAttribute?.("data-metric-id")).length, 16);
     assert.doesNotMatch(text, /S42_표시금지/u);
   } finally { await view.cleanup(); }

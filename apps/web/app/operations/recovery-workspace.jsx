@@ -198,9 +198,11 @@ function selectionSources(value, notebookId) {
   if (value?.notebookId !== notebookId || typeof value.bindingEtag !== "string"
     || !/^"notebook-binding:[1-9][0-9]*"$/u.test(value.bindingEtag)
     || !Array.isArray(value.sources) || value.sources.length > 1000
-    || value.sources.some(item => !safeId(item?.sourceId) || !safeId(item?.versionId))
+    || value.sources.some(item => !safeId(item?.sourceId) || !safeId(item?.versionId)
+      || (item.filename !== undefined && (typeof item.filename !== "string" || !/^[^/\\\u0000-\u001f]{1,255}$/u.test(item.filename))))
     || new Set(value.sources.map(item => item.versionId)).size !== value.sources.length) throw new Error("INVALID_SELECTION");
-  return { notebookId, bindingEtag: value.bindingEtag, sources: value.sources.map(item => ({ sourceId: item.sourceId, versionId: item.versionId })) };
+  return { notebookId, bindingEtag: value.bindingEtag, sources: value.sources.map(item => ({ sourceId: item.sourceId, versionId: item.versionId,
+    ...(item.filename !== undefined ? { filename: item.filename } : {}) })) };
 }
 
 function BackupSelectionPane({ api, auth, scope, scopeRef, generation, paused, owner, actionRef, invalidate, onNavigate }) {
@@ -316,12 +318,13 @@ function BackupSelectionPane({ api, auth, scope, scopeRef, generation, paused, o
       onClick={() => { void load(item.id); }}><span>{[...item.title].slice(0, 60).join("")}{[...item.title].length > 60 ? "…" : ""}</span><small> · {item.id}</small></button>)}
     {pane.selection && <form onSubmit={event => { event.preventDefault(); void submit(); }}>
       <p>Notebook {pane.selection.notebookId} · 선택 {pane.ids.length}건</p>
-      <p>현재 Notebook context는 파일명을 제공하지 않아 SourceVersion ID로 구분합니다.</p>
+      <p>파일명이 없는 자료는 SourceVersion ID로 구분합니다.</p>
       {pane.selection.sources.length === 0 && <p>현재 연결된 SourceVersion이 없습니다.</p>}
       {pane.selection.sources.map(item => <button type="button" key={item.versionId} aria-pressed={pane.ids.includes(item.versionId)}
         disabled={pane.phase !== "ready"} onClick={() => setPane(value => ({ ...value,
           ids: value.ids.includes(item.versionId) ? value.ids.filter(id => id !== item.versionId) : [...value.ids, item.versionId],lineage:null,consent:false }))}>
-        SourceVersion {item.versionId}</button>)}
+        {item.filename ? <><span>{[...item.filename].slice(0, 60).join("")}{[...item.filename].length > 60 ? "…" : ""}</span><small> · SourceVersion {item.versionId}</small></>
+          : <>SourceVersion {item.versionId}</>}</button>)}
       <button type="submit" disabled={pane.phase !== "ready" || pane.ids.length < 1 || pane.ids.length > 100}>선택 자료 백업 요청</button>
       {typeof api.previewBackupSelection==="function"&&<button type="button" disabled={pane.phase!=="ready"||!pane.ids.length||pane.ids.length>100} onClick={()=>{void lineage(false);}}>계보 사전확인</button>}
       {pane.lineage&&<>
