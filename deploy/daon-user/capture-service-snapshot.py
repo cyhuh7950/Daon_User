@@ -504,31 +504,32 @@ class _RuntimeOSProbe:
         for process in Path("/proc").iterdir():
             if not process.name.isdecimal(): continue
             try:
-                for descriptor in (process / "fd").iterdir():
-                    try:
-                        target = os.readlink(descriptor)
-                        actual = os.stat(descriptor)  # /proc fd를 따라 실물 dev/inode를 본다. bind 이름과 독립.
-                        same_file = (actual.st_dev, actual.st_ino) in identities
-                        same_directory = target.startswith("/") and _inside(Path(target.removesuffix(" (deleted)")), directory)
-                        if not same_file and not same_directory: continue
-                        info = (process / "fdinfo" / descriptor.name).read_text()
-                        flags = [line.split(":", 1)[1].strip() for line in info.splitlines() if line.startswith("flags:")]
-                        if len(flags) != 1 or int(flags[0], 8) & os.O_ACCMODE in {os.O_WRONLY, os.O_RDWR}:
+                with os.scandir(process / "fd") as descriptors:
+                    for descriptor in descriptors:
+                        try:
+                            target = os.readlink(descriptor.path)
+                            actual = os.stat(descriptor.path)  # /proc fd를 따라 실물 dev/inode를 본다. bind 이름과 독립.
+                            same_file = (actual.st_dev, actual.st_ino) in identities
+                            same_directory = target.startswith("/") and _inside(Path(target.removesuffix(" (deleted)")), directory)
+                            if not same_file and not same_directory: continue
+                            info = (process / "fdinfo" / descriptor.name).read_text()
+                            flags = [line.split(":", 1)[1].strip() for line in info.splitlines() if line.startswith("flags:")]
+                            if len(flags) != 1 or int(flags[0], 8) & os.O_ACCMODE in {os.O_WRONLY, os.O_RDWR}:
+                                raise SnapshotError("SNAPSHOT_RUNTIME_UNPROVEN")
+                        except FileNotFoundError:
+                            if process.exists(): raise SnapshotError("SNAPSHOT_RUNTIME_UNPROVEN") from None
+                    for line in (process / "maps").read_text().splitlines():
+                        parts = line.split(maxsplit=5)
+                        if len(parts) < 5 or re.fullmatch(r"[r-][w-][x-][ps]",parts[1]) is None:
                             raise SnapshotError("SNAPSHOT_RUNTIME_UNPROVEN")
-                    except FileNotFoundError:
-                        if process.exists(): raise SnapshotError("SNAPSHOT_RUNTIME_UNPROVEN") from None
-                for line in (process / "maps").read_text().splitlines():
-                    parts = line.split(maxsplit=5)
-                    if len(parts) < 5 or re.fullmatch(r"[r-][w-][x-][ps]",parts[1]) is None:
-                        raise SnapshotError("SNAPSHOT_RUNTIME_UNPROVEN")
-                    if "w" not in parts[1] or "s" not in parts[1]: continue
-                    if re.fullmatch(r"[0-9a-fA-F]+:[0-9a-fA-F]+",parts[3]) is None or not parts[4].isdecimal():
-                        raise SnapshotError("SNAPSHOT_RUNTIME_UNPROVEN")
-                    major,minor = (int(value,16) for value in parts[3].split(":"))
-                    same_file = (major,minor,int(parts[4])) in mapped
-                    same_directory = len(parts)==6 and parts[5].startswith("/") and _inside(Path(parts[5].removesuffix(" (deleted)")), directory)
-                    if same_file or same_directory:
-                        raise SnapshotError("SNAPSHOT_RUNTIME_UNPROVEN")
+                        if "w" not in parts[1] or "s" not in parts[1]: continue
+                        if re.fullmatch(r"[0-9a-fA-F]+:[0-9a-fA-F]+",parts[3]) is None or not parts[4].isdecimal():
+                            raise SnapshotError("SNAPSHOT_RUNTIME_UNPROVEN")
+                        major,minor = (int(value,16) for value in parts[3].split(":"))
+                        same_file = (major,minor,int(parts[4])) in mapped
+                        same_directory = len(parts)==6 and parts[5].startswith("/") and _inside(Path(parts[5].removesuffix(" (deleted)")), directory)
+                        if same_file or same_directory:
+                            raise SnapshotError("SNAPSHOT_RUNTIME_UNPROVEN")
             except FileNotFoundError:
                 if process.exists(): raise SnapshotError("SNAPSHOT_RUNTIME_UNPROVEN") from None
             except SnapshotError: raise

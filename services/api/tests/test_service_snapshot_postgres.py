@@ -1341,24 +1341,73 @@ class ServiceSnapshotOperatorTests(unittest.TestCase):
         m = self.module(); process = Path("/proc/91"); descriptor = process / "fd/3"
         def entries(path):
             if path == Path("/proc"): return iter([process])
-            if path == process / "fd": return iter([descriptor])
             raise AssertionError("UNEXPECTED_PROC_READ")
+        @contextmanager
+        def descriptors(path):
+            self.assertEqual(path,process/"fd")
+            yield iter([SimpleNamespace(path=str(descriptor),name=descriptor.name)])
         for mode in ("writable-fd", "shared-mapping", "unknown", "read-only"):
             def read(path, *args, **kwargs):
                 if path == process / "fdinfo/3": return "flags:\t"+("02" if mode=="writable-fd" else "00")+"\n"
                 if path == process / "maps": return "1000-2000 rw-s 00000000 07:09 777 /different-bind/identity.bin\n" if mode=="shared-mapping" else ""
                 raise AssertionError("UNEXPECTED_PROC_TEXT")
             def target_stat(path, *args, **kwargs):
-                self.assertEqual(path, descriptor)
+                self.assertEqual(Path(path), descriptor)
                 if mode=="unknown": raise PermissionError("synthetic-private-detail")
                 return SimpleNamespace(st_dev=88, st_ino=777)
-            with self.subTest(mode=mode), patch.object(Path, "iterdir", entries), patch.object(Path, "read_text", read), \
+            with self.subTest(mode=mode), patch.object(Path, "iterdir", entries), patch.object(m.os,"scandir",descriptors), patch.object(Path, "read_text", read), \
                     patch.object(m.os, "readlink", return_value="/different-bind/identity.bin"), patch.object(m.os, "stat", side_effect=target_stat), \
                     patch.object(m.os, "O_ACCMODE", 3, create=True), \
                     patch.object(m.os, "major", return_value=7, create=True), patch.object(m.os, "minor", return_value=9, create=True):
                 if mode=="read-only": m._RuntimeOSProbe._no_writers(Path("/approved/runtime"), {(88,777)})
                 else:
                     with self.assertRaises(SnapshotError): m._RuntimeOSProbe._no_writers(Path("/approved/runtime"), {(88,777)})
+
+    def test_runtime_proc_scandir_stays_owned_until_process_scan_finishes(self):
+        from unittest.mock import patch
+        m=self.module(); process=Path("/proc/91"); enumeration=process/"fd/99"; other=process/"fd/3"
+        for mode in ("normal","missing-other","permission","unknown-maps"):
+            events=[]; opened=[False]
+            @contextmanager
+            def descriptors(path):
+                self.assertEqual(Path(path),process/"fd")
+                opened[0]=True; events.append("open")
+                try: yield iter([SimpleNamespace(path=str(item),name=item.name) for item in (enumeration,other)])
+                finally: opened[0]=False; events.append("close")
+            def entries(path):
+                if path==Path("/proc"): return iter([process])
+                if path==process/"fd":
+                    # Python3.14 Path.iterdir는 scandir를 닫고 수집한 이름을 반환한다.
+                    with descriptors(path) as items: return iter([Path(item.path) for item in items])
+                raise AssertionError("UNEXPECTED_PROC_DIRECTORY")
+            def readlink(path):
+                if Path(path)==enumeration:
+                    if not opened[0]: raise FileNotFoundError("synthetic-enumerator-already-closed")
+                    events.append("enumerator-readlink"); return str(process/"fd")
+                if Path(path)==other:
+                    if mode=="missing-other": raise FileNotFoundError("synthetic-other-fd-disappeared")
+                    return "/different-bind/identity.bin"
+                raise AssertionError("UNEXPECTED_PROC_LINK")
+            def target_stat(path,*args,**options):
+                self.assertTrue(opened[0],"stat동안 열거용 descriptor 수명 유지")
+                if Path(path)==enumeration: events.append("enumerator-stat"); return SimpleNamespace(st_dev=1,st_ino=999)
+                self.assertEqual(Path(path),other)
+                if mode=="permission": raise PermissionError("synthetic-private-error")
+                return SimpleNamespace(st_dev=88,st_ino=777)
+            def read(path,*args,**options):
+                if path==process/"fdinfo/3": return "flags:\t00\n"
+                self.assertEqual(path,process/"maps"); self.assertTrue(opened[0])
+                events.append("maps"); return "malformed" if mode=="unknown-maps" else ""
+            with self.subTest(mode=mode),patch.object(Path,"iterdir",entries),patch.object(Path,"read_text",read), \
+                    patch.object(Path,"exists",return_value=True),patch.object(m.os,"scandir",descriptors), \
+                    patch.object(m.os,"readlink",side_effect=readlink),patch.object(m.os,"stat",side_effect=target_stat), \
+                    patch.object(m.os,"major",return_value=7,create=True),patch.object(m.os,"minor",return_value=9,create=True), \
+                    patch.object(m.os,"O_ACCMODE",3,create=True):
+                if mode=="normal": m._RuntimeOSProbe._no_writers(Path("/approved/runtime"),{(88,777)})
+                else:
+                    with self.assertRaises(SnapshotError): m._RuntimeOSProbe._no_writers(Path("/approved/runtime"),{(88,777)})
+            self.assertFalse(opened[0]); self.assertEqual(events.count("close"),1)
+            if mode=="normal": self.assertEqual(events,["open","enumerator-readlink","enumerator-stat","maps","close"])
 
     def test_runtime_measure_block_cancel_and_unreaped_child_are_not_receipts(self):
         import json
