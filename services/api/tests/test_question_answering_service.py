@@ -960,6 +960,51 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
                     self.assertEqual(events,['reserve','post','known'])
                     self.assertEqual(repo.persisted['result'].price_card_receipt.basis,'price_card')
 
+    def test_answer_storage_failure_does_not_erase_settled_cost_or_send_again(self):
+        """정산을 답변 저장 뒤로 옮기거나 저장 실패에 fallback하면 실패해야 한다."""
+        from decimal import Decimal
+        from test_operations_run_cost import NOW,policy
+        from daon_user_api.operations_run_cost import UpstageModelContextEvidence
+        from daon_user_api.operations_run_cost_postgres import RunCostSessionFactory,CostReservation,settle_reserved_usage
+        context=QuestionContext('tenant-cp3','workspace-cp3','actor-cp3','trace-cp3','policy-v1')
+        p=replace(policy(),tenant_id=context.tenant_id,workspace_id=context.workspace_id,actor_id=context.actor_id)
+        events=[];receipts=[]
+        class Resolver(FakeProviderSettings):
+            supports_user_credential_fallback=True
+            @contextmanager
+            def resolve(self,context,capability):
+                with super().resolve(context,capability) as selected:yield replace(selected,connection_id='provider-upstage')
+        class Costs:
+            def reserve(self,ctx,scope,current,**kwargs):
+                events.append('reserve');return CostReservation(scope,current,kwargs['attempt_key'],1,Decimal('0.157900800'),NOW)
+            def settle(self,ctx,held,**kwargs):
+                receipt=settle_reserved_usage(held,**kwargs);receipts.append(receipt);events.append('settle');return receipt
+        class Transport(FakeTransport):
+            def post_json(self,**kwargs):
+                events.append('post')
+                return {**super().post_json(**kwargs),'model':'solar-pro4-260806','usage':{
+                    'prompt_tokens':1000,'completion_tokens':100,'total_tokens':1100,'prompt_tokens_details':{'cached_tokens':200}}}
+        class Repository(FakeRepository):
+            def persist_completed(self,ctx,**kwargs):
+                events.append('answer_store')
+                self.asserted_receipt=kwargs['result'].price_card_receipt
+                raise QuestionRepositoryError('QUESTION_DATABASE_UNAVAILABLE',status=503,retryable=True)
+        evidence=UpstageModelContextEvidence('solar-pro4','solar-pro4-260806',524288,
+            'https://console.upstage.ai/docs/models/solar-pro-4',NOW)
+        repository,resolver=Repository(),Resolver()
+        chunks=(IndexedEvidenceChunk('chunk-page-2','source-cp3','source-version-cp3',2,'ORANGE-COMPASS-42','span-page-2',1.0),)
+        service=QuestionAnsweringService(resolver,repository,FakeIndex(chunks),FakeCredential(),Transport(),FakeEgress(),
+            run_cost_sessions=RunCostSessionFactory(Costs(),policies=(p,),evidence=evidence,clock=lambda:NOW))
+        with self.assertRaises(QuestionRepositoryError) as failure:
+            service.ask(context,source_id='source-cp3',source_version_id='source-version-cp3',question='What code?',run_id='run-cost-answer-fail')
+        self.assertEqual(failure.exception.code,'QUESTION_DATABASE_UNAVAILABLE')
+        self.assertEqual(events,['reserve','post','settle','answer_store'])
+        self.assertEqual(resolver.calls,1)
+        self.assertIsNone(repository.persisted)
+        self.assertEqual(len(receipts),1)
+        self.assertIs(repository.asserted_receipt,receipts[0])
+        self.assertEqual((receipts[0].state,receipts[0].basis,receipts[0].amount),('known','price_card',Decimal('0.000372000')))
+
     def test_qa_workspace_xlsx_metadata_and_frozen_wire_are_scoped(self) -> None:
         cells = tuple(IndexedEvidenceChunk(
             f"cell-{i}", "source-cp3", "source-version-cp3", 1, text, f"span-{i}", 0.0,

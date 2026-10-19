@@ -213,3 +213,38 @@ def test_session_factory_matches_exact_configured_actor_model_and_rejects_duplic
     with pytest.raises(ValueError):storage.RunCostSessionFactory(object(),policies=(p,p),evidence=None,clock=lambda:NOW)
     for invalid in (replace(p,currency='KRW'),replace(p,price_card=replace(p.price_card,input_per_million=Decimal('0'),cached_input_per_million=Decimal('0'),output_per_million=Decimal('0')))):
         with pytest.raises(ValueError):storage.RunCostSessionFactory(object(),policies=(invalid,),evidence=None,clock=lambda:NOW)
+
+
+def test_settlement_database_timeout_never_reposts_or_retries_uncertain_commit():
+    """정산 전 finished 잠금을 제거하거나 실패 뒤 재호출하면 실패해야 한다."""
+    import pytest
+    from daon_user_api import operations_run_cost_postgres as storage
+    from daon_user_api.operations_run_cost import UpstageModelContextEvidence
+    from daon_user_api.cloud_storage import CloudAccessContext,CloudDatabaseError
+    calls=[]
+    class Repository:
+        def reserve(self,context,current,p,**kwargs):
+            calls.append('reserve')
+            return CostReservation(current,p,'attempt-first',1,Decimal('0.157900800'),NOW)
+        def settle(self,context,held,**kwargs):
+            calls.append('settle')
+            raise CloudDatabaseError('DATABASE_TIMEOUT',retryable=True)
+    class Transport:
+        def post_json(self,**kwargs):
+            calls.append('post')
+            return {'model':'solar-pro4-260806','usage':{'prompt_tokens':1000,'completion_tokens':100,
+                'total_tokens':1100,'prompt_tokens_details':{'cached_tokens':200}},'choices':[]}
+    evidence=UpstageModelContextEvidence('solar-pro4','solar-pro4-260806',524288,
+        'https://console.upstage.ai/docs/models/solar-pro-4',NOW)
+    session=storage.RunCostTransportSession(repository=Repository(),context=CloudAccessContext(
+        'tenant-qa','workspace-qa','usr-qa','view'),scope=scope(),policy=policy(),evidence=evidence,
+        attempt_key='attempt-first',transport=Transport(),clock=lambda:NOW)
+    request=dict(url='https://api.upstage.ai/v1/chat/completions',api_key='test-only-placeholder',
+        payload={'model':'solar-pro4','messages':[{'role':'user','content':'합성 질문'}],'max_tokens':512},timeout_seconds=60)
+    session.post_json(**request)
+    with pytest.raises(CloudDatabaseError) as failure:session.finish(outcome='succeeded')
+    assert failure.value.code=='DATABASE_TIMEOUT'
+    for outcome in ('succeeded','failed','cancelled'):
+        with pytest.raises(ValueError,match='RUN_COST_SETTLEMENT_UNCONFIRMED'):session.finish(outcome=outcome)
+    with pytest.raises(ValueError,match='RUN_COST_ATTEMPT_INVALID'):session.post_json(**request)
+    assert calls==['reserve','post','settle']
