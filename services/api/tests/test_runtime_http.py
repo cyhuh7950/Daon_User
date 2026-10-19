@@ -1563,6 +1563,44 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RuntimeSettingsTests(unittest.TestCase):
+    def test_s44_cost_and_host_configuration_defaults_off_and_rejects_invalid_values(self):
+        import os
+        from daon_user_api import runtime as module
+        with patch.dict(os.environ,{},clear=True):
+            settings=RuntimeSettings.from_env()
+            self.assertFalse(settings.operations_host_capacity_enabled)
+            self.assertEqual(settings.run_cost_policies_json,'[]')
+            self.assertEqual(settings.run_cost_model_context_json,'{}')
+            self.assertIsNone(module._build_run_cost_sessions(None,settings))
+        for value in ('TRUE','1','yes',''):
+            with patch.dict(os.environ,{'DAON_OPERATIONS_HOST_CAPACITY_ENABLED':value},clear=True):
+                with self.assertRaises(ValueError):RuntimeSettings.from_env()
+        with patch.dict(os.environ,{'DAON_RUN_COST_POLICIES_JSON':'[true]'},clear=True):
+            with self.assertRaises(ValueError):RuntimeSettings.from_env()
+
+    def test_s44_cost_activation_requires_exact_protected_0073_and_preserves_evidence_time(self):
+        import json
+        from types import SimpleNamespace
+        from test_operations_run_cost import policy,NOW
+        from daon_user_api.operations_run_cost_postgres import cost_policy_document
+        from daon_user_api import runtime as module
+        context={'model_alias':'solar-pro4','resolved_model':'solar-pro4-260806','context_tokens':524288,
+            'source_url':'https://console.upstage.ai/docs/models/solar-pro-4','checked_at':NOW.isoformat()}
+        settings=RuntimeSettings(profile='test',bind_host='127.0.0.1',port=8000,
+            run_cost_policies_json=json.dumps([cost_policy_document(policy())]),run_cost_model_context_json=json.dumps(context))
+        class Store:
+            revision='0072';ready=True
+            def readiness(self):return SimpleNamespace(ready=self.ready,schema_revision=self.revision)
+        store=Store()
+        for revision in ('0072','0074'):
+            store.revision=revision
+            with self.assertRaises(ValueError):module._build_run_cost_sessions(store,settings)
+        store.revision='0073';store.ready=False
+        with self.assertRaises(ValueError):module._build_run_cost_sessions(store,settings)
+        store.ready=True
+        factory=module._build_run_cost_sessions(store,settings)
+        self.assertEqual(factory._evidence.checked_at,NOW)
+
     def test_readiness_mode_scope_settings_default_off_and_closed_four_id_environment(self):
         from daon_user_api.document_understanding_adapter import DocumentUnderstandingError
         with patch.dict("os.environ", {}, clear=True):

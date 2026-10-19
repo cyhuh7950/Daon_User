@@ -18,6 +18,37 @@ def _id(value):
     if type(value) is not str or _ID.fullmatch(value) is None:
         raise ValueError('RUN_COST_INPUT_INVALID')
 
+
+def parse_run_cost_settings(policies_json,model_context_json):
+    """기동 설정만 파싱한다. 정책/확인 시각을 만들어 내거나 외부 조회하지 않는다."""
+    from .operations_run_cost_postgres import parse_cost_policy_document,RunCostSessionFactory
+    def pairs(items):
+        result={}
+        for key,value in items:
+            if key in result:raise ValueError('RUN_COST_CONFIGURATION_INVALID')
+            result[key]=value
+        return result
+    def constant(_value):raise ValueError('RUN_COST_CONFIGURATION_INVALID')
+    try:
+        if (type(policies_json) is not str or len(policies_json.encode('utf-8'))>65536
+            or type(model_context_json) is not str or len(model_context_json.encode('utf-8'))>8192):
+            raise ValueError('RUN_COST_CONFIGURATION_INVALID')
+        raw=json.loads(policies_json,object_pairs_hook=pairs,parse_constant=constant)
+        context=json.loads(model_context_json,object_pairs_hook=pairs,parse_constant=constant)
+        if type(raw) is not list or len(raw)>64 or type(context) is not dict:
+            raise ValueError('RUN_COST_CONFIGURATION_INVALID')
+        policies=tuple(parse_cost_policy_document(item) for item in raw)
+        evidence=None
+        if context:
+            if set(context)!={'model_alias','resolved_model','context_tokens','source_url','checked_at'} or type(context['checked_at']) is not str:
+                raise ValueError('RUN_COST_CONFIGURATION_INVALID')
+            evidence=UpstageModelContextEvidence(**{**context,'checked_at':_utc(datetime.fromisoformat(context['checked_at']))})
+        # 첫 adapter/요율의 닫힌 실행 계약·중복을 설정 시점에도 검증한다. DB/clock 호출0.
+        RunCostSessionFactory(None,policies=policies,evidence=evidence,clock=None)
+        return policies,evidence
+    except (ValueError,TypeError,KeyError,UnicodeError,ArithmeticError):
+        raise ValueError('RUN_COST_CONFIGURATION_INVALID') from None
+
 def _utc(value):
     if type(value) is not datetime or value.tzinfo is None or value.utcoffset()!=timedelta(0):
         raise ValueError('RUN_COST_TIME_INVALID')

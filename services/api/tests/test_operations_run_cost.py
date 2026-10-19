@@ -16,6 +16,21 @@ def card():
     return PriceCard('upstage-solar-pro4-20261020','https://api.upstage.ai/v1','solar-pro4','USD',
         Decimal('0.30'),Decimal('0.06'),Decimal('1.20'),NOW,NOW+timedelta(hours=24))
 
+
+def test_runtime_cost_configuration_is_closed_explicit_and_preserves_checked_timestamp():
+    import json
+    from daon_user_api import operations_run_cost as cost
+    from daon_user_api.operations_run_cost_postgres import cost_policy_document
+    raw=json.dumps([cost_policy_document(policy())])
+    context={'model_alias':'solar-pro4','resolved_model':'solar-pro4-260806','context_tokens':524288,
+        'source_url':'https://console.upstage.ai/docs/models/solar-pro-4','checked_at':NOW.isoformat()}
+    policies,evidence=cost.parse_run_cost_settings(raw,json.dumps(context))
+    assert policies==(policy(),) and evidence.checked_at==NOW
+    assert cost.parse_run_cost_settings('[]','{}')==((),None)
+    for broken,model in (('[{},{}]','{}'),('[true]','{}'),('[', '{}'),(raw,'{"context_tokens":1,"context_tokens":2}'),
+        (raw,json.dumps({**context,'legacy_cost_limit_cents':1000})),(raw,json.dumps({**context,'context_tokens':True}))):
+        with pytest.raises(ValueError):cost.parse_run_cost_settings(broken,model)
+
 def scope():
     return RunCostScope('tenant-qa','workspace-qa','usr-qa','provider-upstage','solar-pro4','question','run-qa','https://api.upstage.ai/v1')
 

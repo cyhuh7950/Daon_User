@@ -532,6 +532,19 @@ def _read_website_original(repo,context,version_id,storage):
     return text
 
 
+def _build_run_cost_sessions(store,settings):
+    from .operations_run_cost import parse_run_cost_settings
+    from .operations_run_cost_postgres import OperationsRunCostRepository,RunCostSessionFactory
+    policies,evidence=parse_run_cost_settings(settings.run_cost_policies_json,settings.run_cost_model_context_json)
+    if not policies:return None
+    if store is None:raise ValueError('RUN_COST_STORAGE_REQUIRED')
+    ready=store.readiness()
+    if ready.ready is not True or ready.schema_revision!='0073':
+        raise ValueError('RUN_COST_PROTECTED_STORAGE_REQUIRED')
+    return RunCostSessionFactory(OperationsRunCostRepository(store),policies=policies,evidence=evidence,
+        clock=lambda:datetime.now(timezone.utc))
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeSettings:
     profile: str
@@ -570,9 +583,16 @@ class RuntimeSettings:
     system_admin_user_ids: frozenset[str] = frozenset({"admin"})
     organization_admin_v2_enabled: bool = False
     notification_inbox_enabled: bool = False
+    operations_host_capacity_enabled: bool = False
+    run_cost_policies_json: str = field(default='[]',repr=False)
+    run_cost_model_context_json: str = field(default='{}',repr=False)
     document_readiness_settings: ReadinessDispatcherSettings = field(default_factory=ReadinessDispatcherSettings)
 
     def __post_init__(self) -> None:
+        from .operations_run_cost import parse_run_cost_settings
+        if type(self.operations_host_capacity_enabled) is not bool:
+            raise ValueError('HOST_CAPACITY_ENABLED_INVALID')
+        parse_run_cost_settings(self.run_cost_policies_json,self.run_cost_model_context_json)
         if type(self.document_readiness_settings) is not ReadinessDispatcherSettings:
             raise ValueError("DOCUMENT_PROCESSING_CONTEXT_INVALID")
         if self.recovery_restore_config_file is not None and (
@@ -673,6 +693,8 @@ class RuntimeSettings:
     @classmethod
     def from_env(cls) -> "RuntimeSettings":
         profile = os.environ.get("DAON_RUNTIME_PROFILE", "development")
+        host_flag=os.environ.get('DAON_OPERATIONS_HOST_CAPACITY_ENABLED','false')
+        if host_flag not in {'true','false'}:raise ValueError('HOST_CAPACITY_ENABLED_INVALID')
         organization_flag = os.environ.get("DAON_ORGANIZATION_ADMIN_V2_ENABLED", "false")
         if organization_flag not in {"true", "false"}:
             raise ValueError("ORGANIZATION_ADMIN_V2_FLAG_INVALID")
@@ -754,6 +776,9 @@ class RuntimeSettings:
             public_gateway_url=os.environ.get("DAON_PUBLIC_GATEWAY_URL"),
             android_auth_clients=android_clients,
             qa_structured_ollama_workspace_id=os.environ.get("DAON_QA_STRUCTURED_OLLAMA_WORKSPACE_ID", ""),
+            operations_host_capacity_enabled=host_flag=='true',
+            run_cost_policies_json=os.environ.get('DAON_RUN_COST_POLICIES_JSON','[]'),
+            run_cost_model_context_json=os.environ.get('DAON_RUN_COST_MODEL_CONTEXT_JSON','{}'),
             allow_private_http_gateway=(
                 os.environ.get("DAON_ALLOW_PRIVATE_HTTP_GATEWAY", "false").lower() == "true"
             ),
@@ -2583,6 +2608,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             ),
             adapter_registry=QuestionAdapterRegistry(),
             qa_structured_ollama_workspace_id=dependencies.settings.qa_structured_ollama_workspace_id,
+            run_cost_sessions=_build_run_cost_sessions(dependencies.cloud_store,dependencies.settings),
         )
     studio_report_repository = dependencies.studio_report_repository
     studio_report_service = dependencies.studio_report_service
