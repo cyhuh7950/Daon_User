@@ -34,6 +34,7 @@ from .notification_source_access import _special_source_access_allowed
 from .open_law_source_access import OpenLawAccessError, _AuthReadConnection, _current_auth_grant
 from .organization_access import OrganizationAccessBridge
 from .organization_membership import OrganizationWorkflowError
+from .workspace_model_defaults import ReadinessPolicySnapshot
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -303,10 +304,8 @@ class PostgresDocumentReadinessRepository:
         grant = self._authorize(connection, context, wait)
         context = replace(context, policy_version=grant.policy_version)
         parent = self._parent(connection, context, wait, grant)
-        current = self._current_policy_reader(connection, context, wait, grant)
-        if type(current) is not CurrentReprocessEligibility:
-            raise _error()
-        policy_current = current
+        policy_current = self._read_current_snapshot(connection, context, wait, grant)
+        current = policy_current.eligibility
         key = (wait.tenant_id, wait.workspace_id, wait.actor_id, wait.source_version_id,
                wait.capability or "unknown", current.frozen_context_digest)
         self._lock(connection, "document-readiness-context|" + "|".join(key))
@@ -336,7 +335,9 @@ class PostgresDocumentReadinessRepository:
         if completed is not None and completed["event_id"] == observation.event_id:
             return self._receipt(completed)
         now = connection.execute("SELECT clock_timestamp()").fetchone()[0]
-        current = replace(current, authorized=True, source_current=True, active_run=active,
+        # 기존 helper의 EDIT/ANALYZE 재검증은 완료됐지만 B1의 granular LLM deny를
+        # 그 grant로 덮어쓰지 않는다. snapshot bool 자체가 현재 DB 인가를 대신하지도 않는다.
+        current = replace(current, source_current=True, active_run=active,
             scope_enabled=(wait.tenant_id, wait.workspace_id, wait.actor_id, wait.source_version_id) in self.settings.scopes,
             context_already_decided=completed is not None,
             cost_blocked_context_exists=any(p["outcome"] == "blocked_cost" and p["new_run_id"] is not None for p in prior),
@@ -364,12 +365,13 @@ class PostgresDocumentReadinessRepository:
             final_grant = self._authorize(connection, context, wait)
             if final_grant != grant:
                 raise _error("CURRENT_ACCESS_DENIED", 403)
-            if self._current_policy_reader(connection, context, wait, final_grant) != policy_current:
+            final_snapshot = self._read_current_snapshot(connection, context, wait, final_grant)
+            if final_snapshot != policy_current:
                 raise _error("SOURCE_VERSION_CONFLICT", 409)
             latest = self._parent(connection, context, wait, grant)
             if latest != parent:
                 raise _error("SOURCE_VERSION_CONFLICT", 409)
-            run_id = self._create_run(connection, context, wait, parent, current, observation, decision, grant)
+            run_id = self._create_run(connection, context, wait, parent, current, observation, decision, grant, final_snapshot)
         outcome = {"enqueue": "enqueued", "block_cost": "blocked_cost", "block_policy": "blocked_policy",
                    "deny": "denied", "suppress": "suppressed", "expire": "expired", "defer": "deferred"}[decision.action]
         payload = {"tenant_id": wait.tenant_id, "workspace_id": wait.workspace_id, "actor_id": wait.actor_id,
@@ -382,6 +384,27 @@ class PostgresDocumentReadinessRepository:
         if row is None:
             raise _error("DOCUMENT_PROCESSING_DATABASE_UNAVAILABLE", 503)
         return self._receipt(row[0])
+
+    def _read_current_snapshot(self, connection, context, wait, grant):
+        result = self._current_policy_reader(connection, context, wait, grant)
+        if type(result) is not ReadinessPolicySnapshot:
+            raise _error("DOCUMENT_PROCESSING_DATABASE_UNAVAILABLE", 503)
+        # frozen dataclass도 잘못된 서버 port가 우회 구성할 수 있으므로 내용 결속을 재검증한다.
+        snapshot = ReadinessPolicySnapshot(result.eligibility, result.frozen_context_json)
+        current = snapshot.eligibility
+        body = json.loads(snapshot.frozen_context_json)
+        if ((current.tenant_id, current.workspace_id, current.actor_id, current.notebook_id,
+             current.source_version_id, current.prior_run_id, current.capability)
+                != (wait.tenant_id, wait.workspace_id, wait.actor_id, wait.notebook_id,
+                    wait.source_version_id, wait.processing_run_id, wait.capability)
+                or body["mode"] != {"mode": wait.mode.mode, "origin": wait.mode.origin}):
+            raise _error("DOCUMENT_PROCESSING_DATABASE_UNAVAILABLE", 503)
+        binding = body["binding"]
+        if ((current.dependency_connection_id is None and binding is not None)
+                or (current.dependency_connection_id is not None
+                    and (type(binding) is not dict or binding.get("connection_id") != current.dependency_connection_id))):
+            raise _error("DOCUMENT_PROCESSING_DATABASE_UNAVAILABLE", 503)
+        return snapshot
 
     @staticmethod
     def _receipt(payload):
@@ -421,7 +444,7 @@ class PostgresDocumentReadinessRepository:
                                 received_at)
 
     @staticmethod
-    def _create_run(connection, context, wait, parent, current, observation, decision, grant):
+    def _create_run(connection, context, wait, parent, current, observation, decision, grant, snapshot):
         run_id = "pr-rdy-" + _digest([wait.tenant_id, wait.workspace_id, wait.actor_id,
             wait.source_version_id, wait.capability, current.frozen_context_digest])[:32]
         blocked = decision.action != "enqueue"
@@ -430,11 +453,19 @@ class PostgresDocumentReadinessRepository:
             "WHERE tenant_id=%s AND workspace_id=%s", (context.tenant_id, context.workspace_id)).fetchone()
         if policy is None or policy[2] != grant.acl_version:
             raise _error("CURRENT_ACCESS_DENIED", 403)
+        frozen_policy = json.loads(snapshot.frozen_context_json)["workspace_policy"]
+        if (type(frozen_policy) is not dict
+                or (policy[0], policy[1]) != (frozen_policy.get("data_area"), frozen_policy.get("cost_limit_cents"))):
+            # 최종 snapshot 이후의 실제 정책 재조회도 같은 본문에 결속한다.
+            # 동일 ACL version만으로 비용/자료 영역의 동시 변경을 허용하지 않는다.
+            raise _error("SOURCE_VERSION_CONFLICT", 409)
         payload = {"source_version_id": wait.source_version_id, "notebook_id": wait.notebook_id,
             "modality": parent["modality"], "trigger_type": "readiness_event",
             "retry_of_processing_run_id": parent["run_id"], "trigger_event_id": observation.event_id,
             "readiness_context": {"version": 1, "mode": wait.mode.mode, "mode_origin": wait.mode.origin,
-                                  "frozen_context_digest": current.frozen_context_digest},
+                                  "frozen_context_digest": snapshot.eligibility.frozen_context_digest,
+                                  "frozen_context": json.loads(snapshot.frozen_context_json),
+                                  "wait_processing_run_id": wait.processing_run_id},
             "authorization_snapshot": {"role": grant.role.value, "role_scope": grant.role_scope.value,
                 "membership_version": grant.membership_version, "acl_version": grant.acl_version,
                 "policy_version": grant.policy_version},

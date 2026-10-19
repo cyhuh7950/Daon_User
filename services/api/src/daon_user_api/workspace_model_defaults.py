@@ -69,8 +69,7 @@ class ReadinessPolicySnapshot:
                     or type(body["schema_version"]) is not int or body["schema_version"] != 1
                     or body["scope"] != dict(zip(("tenant_id", "workspace_id", "actor_id", "notebook_id", "source_version_id"),
                         (current.tenant_id, current.workspace_id, current.actor_id, current.notebook_id, current.source_version_id)))
-                    or body["role"] != current.capability or body["cost"] != {"state": "unknown"}
-                    or current.cost_state != "unknown"):
+                    or body["role"] != current.capability or body["cost"] != {"state": current.cost_state}):
                 raise ValueError
         except (ValueError, TypeError, KeyError, RecursionError):
             raise WorkspaceModelDefaultsError("WORKSPACE_MODEL_RESOLUTION_UNAVAILABLE", 503) from None
@@ -554,10 +553,10 @@ def read_document_readiness_policy(connection, context, wait, *, settings=None) 
     비용 producer와 Source/Run별 외부 원문 승인은 없으므로 추론 허용을 발명하지 않는다.
     """
     from types import SimpleNamespace
-    from .authorization import Action, Role, _checked_id
+    from .authorization import Action, Role, Permission, _checked_id
     from .document_index_postgres import _source_access_allowed
     from .notification_source_access import _special_source_access_allowed
-    from .open_law_source_access import _current_auth_grant, _AuthReadConnection, OpenLawAccessError
+    from .open_law_source_access import _current_auth_grant, _AuthReadConnection, _CurrentAuthorizationRules, OpenLawAccessError
     from .organization_access import OrganizationAccessBridge
     from .organization_membership import OrganizationWorkflowError
     from .egress_policy import EgressPolicyPayload, resolve_effective_payload
@@ -731,6 +730,20 @@ def read_document_readiness_policy(connection, context, wait, *, settings=None) 
                     "daon_fallback_allowed": not asr and raw["provider_code"] not in _ROUTING_GATEWAYS | {"SENTENCE_TRANSFORMERS"},
                     "native_asr_contract": None if not asr else {
                         "revision": _ASR_REVISION, "model_digest": _ASR_DIGEST}}
+        execution_permission = None
+        if binding is not None:
+            permission = (Permission.LOCAL_INTERNAL_LLM if binding["provider_kind"] in
+                          {"local", "server_internal", "local_runtime"} else Permission.EXTERNAL_LLM)
+            execution_permission = _CurrentAuthorizationRules()._effective_permission(
+                _AuthReadConnection(connection), role=edit.role, tenant_id=wait.tenant_id,
+                workspace_id=wait.workspace_id, permission=permission, requested=True)
+        # binding 미확인은 LLM 허용이 아니다. EDIT/ANALYZE만 확인된 상태로서
+        # dependency=None/candidate=False이므로 기존 미확인 판정(새 Run0)을 유지한다.
+        execution_allowed = execution_permission is None or execution_permission.effective
+        execution_body = None if execution_permission is None else {
+            "permission": execution_permission.permission.value, "requested": execution_permission.requested,
+            "effective": execution_permission.effective, "locked_by": execution_permission.locked_by,
+            "reason_code": execution_permission.reason}
         egress_state = "allowed" if local else "blocked" if effective is not None and effective.mode == "deny_external" else "approval_missing"
         # 관측용 catalog digest와 재큐 억제용 semantic digest는 용도가 다르다.
         # 관측은 전체 DB catalog helper, 억제 조건은 현재 역할의 실제 허용 후보만 결속한다.
@@ -743,7 +756,8 @@ def read_document_readiness_policy(connection, context, wait, *, settings=None) 
         body = {"schema_version": 1, "scope": dict(zip(("tenant_id", "workspace_id", "actor_id", "notebook_id", "source_version_id"),
                 (wait.tenant_id, wait.workspace_id, wait.actor_id, wait.notebook_id, wait.source_version_id))),
             "mode": {"mode": wait.mode.mode, "origin": wait.mode.origin}, "role": wait.capability,
-            "authorization": {"role": edit.role.value, "role_scope": edit.role_scope.value, "rules": normalized_rules, "actions": actions},
+            "authorization": {"role": edit.role.value, "role_scope": edit.role_scope.value, "rules": normalized_rules,
+                              "actions": actions, "execution_permission": execution_body},
             "workspace_policy": workspace, "binding": binding, "catalog": semantic_catalog,
             "egress": {**{key: None if value is None else value.as_dict() for key, value in egress.items()},
                        "effective": None if effective is None else effective.as_dict()}, "cost": {"state": "unknown"}}
@@ -753,7 +767,8 @@ def read_document_readiness_policy(connection, context, wait, *, settings=None) 
             catalog_digest, configuration_version, 0,
             (wait.tenant_id, wait.workspace_id, wait.actor_id, wait.source_version_id) in settings.scopes,
             # EDIT/ANALYZE 실검사 결과다. egress 누락은 확정 policy 차단으로 꾸미지 않는다.
-            True, True, True, local, candidate, False, False, False, "unknown", egress_state, wait.processing_run_id)
+            execution_allowed, True, True, local and execution_allowed, candidate, False, False, False,
+            "unknown", egress_state, wait.processing_run_id)
         return ReadinessPolicySnapshot(current, canonical.decode("utf-8"))
     except WorkspaceModelDefaultsError:
         raise

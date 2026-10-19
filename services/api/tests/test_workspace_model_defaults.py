@@ -27,6 +27,7 @@ class ReadinessMetadataDB:
         self.catalog = [{"model_id": "model-a", "effective_capabilities": ["text_generation"],
                          "catalog_status": "ready", "catalog_version": 1, "allowed": True}]
         self.personal = None
+        self.policy_counter = 1
         self.egress = {"mode": "deny_external", "allowed_provider_kinds": [], "allowed_destinations": [],
             "classification": "confidential", "max_bytes": 0, "masking_required": True,
             "redaction_required": True, "required_approver": "organization_admin"}
@@ -34,6 +35,13 @@ class ReadinessMetadataDB:
     def execute(self, sql, params=()):
         assert sql.lstrip().startswith("SELECT "), "metadata reader의 업무 쓰기 금지"
         self.calls.append((sql, params))
+        if sql.startswith("SELECT version FROM identity_auth_tenant_policies") or sql.startswith("SELECT version FROM identity_auth_workspace_policies"):
+            return SimpleNamespace(fetchone=lambda: {"version": self.policy_counter})
+        if sql.startswith("SELECT effect,locked FROM identity_auth_tenant_permission_rules") or sql.startswith("SELECT effect,locked FROM identity_auth_workspace_permission_rules"):
+            scope = "tenant" if "identity_auth_tenant_permission_rules" in sql else "workspace"
+            rows = [row for row in self.rules if row[0] == scope and row[1] == params[-1]]
+            assert len(rows) <= 1
+            return SimpleNamespace(fetchone=lambda: None if not rows else {"effect": rows[0][2], "locked": rows[0][3]})
         if "/* readiness-metadata-source */" in sql:
             return SimpleNamespace(fetchone=lambda: None if self.source is None else (self.source,))
         if "/* readiness-metadata-workspace */" in sql:
@@ -274,6 +282,86 @@ def test_readiness_metadata_snapshot_type_binds_body_to_digest_without_mutable_c
         replace(result, frozen_context_json=result.frozen_context_json.replace('"unknown"', '"allowed"'))
     with pytest.raises(WorkspaceModelDefaultsError):
         replace(result, eligibility=replace(result.eligibility, frozen_context_digest="f" * 64))
+
+
+def test_readiness_snapshot_cost_state_must_match_body_without_changing_real_unknown_producer(readiness_metadata):
+    f = readiness_metadata
+    original = f.read(f.db, f.context, f.wait)
+    for state in ("allowed", "blocked", "unknown"):
+        body = json.loads(original.frozen_context_json)
+        body["cost"] = {"state": state}
+        canonical = json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        digest = hashlib.sha256(canonical.encode()).hexdigest()
+        # 합성 결정 대역용 일관성이다. 실제 B1 비용 producer를 allowed로 바꾸지 않는다.
+        snapshot = f.module.ReadinessPolicySnapshot(replace(original.eligibility, cost_state=state,
+            frozen_context_digest=digest), canonical)
+        assert snapshot.eligibility.cost_state == state
+        for wrong in ("allowed", "blocked", "unknown"):
+            if wrong != state:
+                with pytest.raises(WorkspaceModelDefaultsError):
+                    replace(snapshot, eligibility=replace(snapshot.eligibility, cost_state=wrong))
+    fresh = f.read(f.db, f.context, f.wait)
+    assert fresh.eligibility.cost_state == "unknown"
+    assert json.loads(fresh.frozen_context_json)["cost"] == {"state": "unknown"}
+
+
+@pytest.mark.parametrize("rules,allowed,reason", [
+    ([], True, "ROLE_DEFAULT_GRANT"),
+    ([("tenant", "local_internal_llm", "deny", 1), ("workspace", "local_internal_llm", "grant", 0)], False, "ORGANIZATION_LOCK"),
+    ([("tenant", "local_internal_llm", "deny", 0), ("workspace", "local_internal_llm", "grant", 0)], False, "ORGANIZATION_DENY"),
+    ([("tenant", "local_internal_llm", "grant", 0), ("workspace", "local_internal_llm", "deny", 0)], False, "WORKSPACE_DENY"),
+    ([("tenant", "local_internal_llm", "grant", 1), ("workspace", "local_internal_llm", "deny", 0)], True, "ORGANIZATION_LOCK"),
+])
+def test_readiness_execution_permission_uses_real_core_local_precedence(readiness_metadata, rules, allowed, reason):
+    f = readiness_metadata
+    f.db.rules = rules
+    wait = replace(f.wait, mode=type(f.wait.mode)("local_only", "request"))
+    snapshot = f.read(f.db, f.context, wait)
+    assert snapshot.eligibility.authorized is allowed
+    assert snapshot.eligibility.local_only_allowed is allowed
+    permission = json.loads(snapshot.frozen_context_json)["authorization"]["execution_permission"]
+    assert (permission["permission"], permission["requested"], permission["effective"], permission["reason_code"]) == (
+        "local_internal_llm", True, allowed, reason)
+    assert snapshot.eligibility.cost_state == "unknown"
+
+
+@pytest.mark.parametrize("role,rule,allowed,reason", [
+    ("editor", None, False, "ROLE_DEFAULT_DENY"),
+    ("organization_admin", None, True, "ROLE_DEFAULT_GRANT"),
+    ("editor", "grant", True, "WORKSPACE_GRANT"),
+    ("organization_admin", "deny", False, "WORKSPACE_DENY"),
+])
+def test_readiness_execution_permission_external_personal_key_cannot_override_deny(
+        readiness_metadata, role, rule, allowed, reason):
+    from daon_user_api.authorization import Role
+    f = readiness_metadata
+    f.grant.role = Role(role)
+    f.db.binding.update(provider_code="GROQ", adapter_type="GROQ", base_url="https://api.groq.com/openai/v1",
+        access_mode="personal", credential_requirement="required")
+    f.db.personal = {"provider_code": "GROQ", "verification_status": "verified", "has_credential": True,
+        "has_nonce": True, "nonce_size": 12, "encryption_key_version": 1, "credential_schema_version": 2, "credential_version": 4}
+    f.db.rules = [] if rule is None else [("workspace", "external_llm", rule, 0)]
+    snapshot = f.read(f.db, f.context, f.wait)
+    assert snapshot.eligibility.authorized is allowed
+    assert snapshot.eligibility.local_only_allowed is False
+    assert snapshot.eligibility.cost_state == "unknown"
+    assert snapshot.eligibility.egress_state == "blocked"
+    permission = json.loads(snapshot.frozen_context_json)["authorization"]["execution_permission"]
+    assert (permission["permission"], permission["effective"], permission["reason_code"]) == ("external_llm", allowed, reason)
+
+
+def test_readiness_execution_permission_digest_tracks_semantics_not_policy_counters(readiness_metadata, monkeypatch):
+    from daon_user_api.authorization import ROLE_PERMISSION_DEFAULTS, Role
+    f = readiness_metadata
+    first = f.read(f.db, f.context, f.wait)
+    f.db.policy_counter = 88
+    refreshed = f.read(f.db, f.context, f.wait)
+    assert refreshed.frozen_context_json == first.frozen_context_json
+    assert refreshed.eligibility.frozen_context_digest == first.eligibility.frozen_context_digest
+    monkeypatch.setitem(ROLE_PERMISSION_DEFAULTS, Role.EDITOR, frozenset())
+    changed = f.read(f.db, f.context, f.wait)
+    assert changed.eligibility.authorized is False
+    assert changed.eligibility.frozen_context_digest != first.eligibility.frozen_context_digest
 
 
 def test_readiness_metadata_data_area_preserves_authorization_safe_id_contract_not_new_enum(readiness_metadata):

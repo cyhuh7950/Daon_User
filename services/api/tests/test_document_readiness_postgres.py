@@ -21,9 +21,45 @@ from daon_user_api.document_readiness import (
     RoleWaitEvidence, ValidatedReadinessObservation,
 )
 from daon_user_api.document_understanding_adapter import DocumentUnderstandingError
+from daon_user_api.workspace_model_defaults import ReadinessPolicySnapshot
 
 
 NOW = datetime(2026, 10, 19, 10, tzinfo=timezone.utc)
+
+
+def synthetic_snapshot(current, *, mode, policy_values=("internal", 2000, 1), body=None):
+    """SQL 포트용 합성 결정이다. 실제 B1 비용 확인/외부 호출 성공 근거가 아니다."""
+    if body is None:
+        body = {"schema_version": 1,
+            "scope": {"tenant_id": current.tenant_id, "workspace_id": current.workspace_id,
+                      "actor_id": current.actor_id, "notebook_id": current.notebook_id,
+                      "source_version_id": current.source_version_id},
+            "mode": {"mode": mode.mode, "origin": mode.origin}, "role": current.capability,
+            "authorization": {"role": "editor", "role_scope": "workspace", "rules": [],
+                              "actions": [{"action": "edit", "permissions": []}, {"action": "analyze", "permissions": []}]},
+            "workspace_policy": {"workspace_kind": "organization", "data_area": policy_values[0],
+                                 "cost_limit_cents": policy_values[1]},
+            "binding": {"connection_id": current.dependency_connection_id, "model_id": "model-a", "provider_code": "CUSTOM",
+                "adapter_type": "openai_compatible", "endpoint": "https://synthetic.invalid", "enabled": True,
+                "verification_status": "verified", "access_mode": "public", "credential_requirement": "none",
+                "credential_reference": {"source": "system", "present": False, "nonce_present": False,
+                                         "valid_metadata": False, "version": 0, "schema_version": None, "key_version": None},
+                "provider_kind": "external_api", "qa_scope_enabled": None, "routing_owner": "provider",
+                "daon_fallback_allowed": True, "native_asr_contract": None},
+            "catalog": {"schema_version": 1, "connection_id": "connection-a",
+                        "models": [{"model_id": "model-a", "effective_capabilities": ["document_parsing"],
+                                    "catalog_status": "ready", "allowed": True}]},
+            "egress": {"organization": None, "workspace": None, "effective": None},
+            "cost": {"state": current.cost_state}}
+    canonical = json.dumps(body, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    return ReadinessPolicySnapshot(replace(current, frozen_context_digest=hashlib.sha256(canonical.encode()).hexdigest()), canonical)
+
+
+def with_synthetic_cost(snapshot, state):
+    body = json.loads(snapshot.frozen_context_json)
+    body["cost"] = {"state": state}
+    return synthetic_snapshot(replace(snapshot.eligibility, cost_state=state),
+                              mode=ReadinessModeProof(**body["mode"]), body=body)
 
 
 def api():
@@ -67,6 +103,7 @@ class SqlPort:
         self.attempted_waits = []
         self.elapsed = 0.0
         self.query_seconds = 0.0
+        self.policy_values = ("internal", 2000, 1)
         self.commits = self.rollbacks = 0
 
     @contextmanager
@@ -131,12 +168,12 @@ class SqlPort:
             return Result([] if self.event is None else [(self.event,)])
         if "/* readiness-parent */" in sql:
             return Result([] if self.deleted else [({"state": self.source_state, "version": 4,
-                "run_id": self.latest_run_id, "run_state": "failed", "source_version_id": "version-a",
+                "run_id": self.latest_run_id, "run_state": self.run_states.get(self.latest_run_id, "failed"), "source_version_id": "version-a",
                 "canonical_json": {"notebook_id": "notebook-a"}, "modality": "document"},)])
         if "/* readiness-active */" in sql:
             return Result([(1,)] if self.active else [])
         if "/* readiness-policy */" in sql:
-            return Result([("internal", 2000, 1)])
+            return Result([self.policy_values])
         if "/* readiness-history */" in sql:
             return Result([(r,) for r in self.receipts if r["frozen_context_digest"] == params[-1]])
         if "read_document_blocked_parent(" in sql:
@@ -186,6 +223,100 @@ class SqlPort:
 
 
 class DocumentReadinessPostgresTests(unittest.TestCase):
+    def test_new_auto_run_stores_full_frozen_context_and_original_wait_run(self):
+        self.seed()
+        result = self.repo.dispatch_ready()[0]
+        self.assertEqual(result.outcome, "enqueued")
+        proof = self.db.runs[0][4].obj["readiness_context"]
+        self.assertIn("frozen_context", proof, "digest만 저장하고 본문이 누락됨")
+        self.assertEqual(proof["wait_processing_run_id"], "run-a")
+        self.assertEqual(proof["frozen_context"]["scope"], {"tenant_id": "tenant-a", "workspace_id": "workspace-a",
+            "actor_id": "actor-a", "notebook_id": "notebook-a", "source_version_id": "version-a"})
+        self.assertEqual(proof["frozen_context"]["mode"], {"mode": "auto", "origin": "request"})
+        self.assertEqual(proof["frozen_context"]["role"], "document_parsing")
+        self.assertEqual(proof["frozen_context"]["cost"], {"state": "allowed"})
+        self.assertEqual(hashlib.sha256(self.db.runs[0][5].encode()).hexdigest(), self.db.runs[0][6])
+        self.assertEqual(self.db.receipts[0]["new_run_id"], result.new_run_id)
+        self.assertEqual(proof["frozen_context_digest"], self.db.receipts[0]["frozen_context_digest"])
+        frozen_text = json.dumps(proof["frozen_context"], sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+        self.assertEqual(hashlib.sha256(frozen_text.encode()).hexdigest(), proof["frozen_context_digest"])
+
+    def test_current_only_policy_port_is_not_a_full_snapshot_and_must_fail_closed(self):
+        self.seed()
+        def current_only(*args):
+            result = self.policy(*args)
+            return getattr(result, "eligibility", result)
+        with self.assertRaises(DocumentUnderstandingError):
+            self.repository(policy=current_only).dispatch_ready()
+        self.assertEqual((self.db.runs, self.db.jobs, self.db.receipts), ([], [], []))
+
+    def test_full_snapshot_must_match_wait_mode_role_scope_and_current_binding(self):
+        for changed in ("mode", "origin", "role", "scope", "binding", "binding_missing", "digest"):
+            with self.subTest(changed=changed):
+                self.setUp()
+                self.seed()
+                def invalid(*args):
+                    snapshot = self.policy(*args)
+                    current = snapshot.eligibility
+                    body = json.loads(snapshot.frozen_context_json)
+                    if changed == "mode": body["mode"]["mode"] = "pinned"
+                    if changed == "origin": body["mode"]["origin"] = "legacy_unknown"
+                    if changed == "role":
+                        current = replace(current, capability="speech_to_text")
+                        body["role"] = "speech_to_text"
+                    if changed == "scope":
+                        current = replace(current, actor_id="other-actor")
+                        body["scope"]["actor_id"] = "other-actor"
+                    if changed == "binding": body["binding"]["connection_id"] = "other-connection"
+                    if changed == "binding_missing": body["binding"] = None
+                    result = synthetic_snapshot(current, mode=self.wait.mode, body=body)
+                    if changed == "digest":
+                        object.__setattr__(result, "eligibility", replace(current, frozen_context_digest="f" * 64))
+                    return result
+                with self.assertRaises(DocumentUnderstandingError) as caught:
+                    self.repository(policy=invalid).dispatch_ready()
+                self.assertEqual(caught.exception.status, 503)
+                self.assertEqual((self.db.runs, self.db.jobs, self.db.receipts), ([], [], []))
+
+    def test_absent_reader_fails_closed_and_default_scope_never_reads_policy(self):
+        self.seed()
+        with self.assertRaises(DocumentUnderstandingError) as caught:
+            self.repository(policy=None).dispatch_ready()
+        self.assertEqual(caught.exception.status, 503)
+        self.assertEqual((self.db.runs, self.db.jobs, self.db.receipts), ([], [], []))
+        self.repo.settings = ReadinessDispatcherSettings()
+        self.assertEqual(self.repo.dispatch_ready(), ())
+        self.assertEqual(self.policy_calls, [])
+
+    def test_current_execution_permission_denial_is_not_overwritten_by_edit_analyze_grant(self):
+        self.seed()
+        def denied(*args):
+            snapshot = self.policy(*args)
+            return synthetic_snapshot(replace(snapshot.eligibility, authorized=False, local_only_allowed=False),
+                                      mode=self.wait.mode)
+        result = self.repository(policy=denied).dispatch_ready()[0]
+        self.assertEqual((result.outcome, result.safe_code, result.new_run_id), ("denied", "READINESS_ACCESS_DENIED", None))
+        self.assertEqual((self.db.runs, self.db.jobs, self.db.audits), ([], [], []))
+        self.assertEqual(self.db.source_state, "waiting_model")
+
+    def test_new_condition_after_block_preserves_original_wait_ref_and_latest_retry_parent(self):
+        self.seed()
+        blocked = self.repository(policy=lambda *args: with_synthetic_cost(self.policy(*args), "blocked")).dispatch_ready()[0]
+        self.db.latest_run_id = blocked.new_run_id
+        self.db.policy_values = ("internal", 3000, 1)
+        self.repo.record_observation(replace(self.observation, event_id="rdy-" + "2" * 32))
+        result = self.repository().dispatch_ready()[0]
+        self.assertEqual((result.outcome, len(self.db.runs), len(self.db.jobs)), ("enqueued", 2, 1))
+        payload = self.db.runs[1][4].obj
+        self.assertEqual(payload["retry_of_processing_run_id"], blocked.new_run_id)
+        self.assertEqual(payload["readiness_context"]["wait_processing_run_id"], "run-a")
+        self.assertEqual(payload["trigger_event_id"], "rdy-" + "2" * 32)
+        self.assertEqual(payload["readiness_context"]["frozen_context"]["workspace_policy"]["cost_limit_cents"], 3000)
+        before = json.dumps((self.db.runs, self.db.jobs, self.db.audits, self.db.receipts), sort_keys=True, default=lambda value: value.obj)
+        self.assertEqual(self.repository().dispatch_ready()[0], result)
+        self.assertEqual(json.dumps((self.db.runs, self.db.jobs, self.db.audits, self.db.receipts),
+                                   sort_keys=True, default=lambda value: value.obj), before)
+
     def setUp(self):
         self.m = api()
         self.db = SqlPort()
@@ -201,10 +332,11 @@ class DocumentReadinessPostgresTests(unittest.TestCase):
 
         def policy(connection, context, wait, grant):
             self.policy_calls.append((connection, context.actor_id, wait.source_version_id))
-            return CurrentReprocessEligibility("tenant-a", "workspace-a", "actor-a", "notebook-a",
+            current = CurrentReprocessEligibility("tenant-a", "workspace-a", "actor-a", "notebook-a",
                 "version-a", "document_parsing", "a" * 64, "connection-a", "b" * 64,
                 3, 41, True, True, True, True, True, True, False, False, False,
-                "allowed", "allowed", "run-a")
+                "allowed", "allowed", wait.processing_run_id)
+            return synthetic_snapshot(current, mode=wait.mode, policy_values=self.db.policy_values)
 
         self.policy = policy
         self.auth = patch.object(self.m, "_current_auth_grant", side_effect=self.grant)
@@ -289,7 +421,7 @@ class DocumentReadinessPostgresTests(unittest.TestCase):
         self.seed()
 
         def blocked(*args):
-            return replace(self.policy(*args), cost_state="blocked")
+            return with_synthetic_cost(self.policy(*args), "blocked")
 
         result = self.repository(policy=blocked).dispatch_ready()[0]
         self.assertEqual((result.outcome, len(self.db.runs), len(self.db.jobs), self.db.source_state),
@@ -505,7 +637,9 @@ class DocumentReadinessPostgresTests(unittest.TestCase):
         def changed(*args):
             nonlocal reads
             reads += 1
-            return replace(self.policy(*args), frozen_context_digest=("a" if reads == 1 else "e") * 64)
+            if reads == 2:
+                self.db.policy_values = ("internal", 3000, 1)
+            return self.policy(*args)
 
         with self.assertRaises(DocumentUnderstandingError) as caught:
             self.repository(policy=changed).dispatch_ready()
@@ -526,6 +660,26 @@ class DocumentReadinessPostgresTests(unittest.TestCase):
         self.assertGreater(len(timeouts), 2)
         self.assertLess(timeouts[-1], timeouts[0])
 
+    def test_run_policy_reread_must_match_frozen_body_before_any_business_write(self):
+        for changed in (("other-area", 2000, 1), ("internal", 3000, 1)):
+            with self.subTest(changed=changed):
+                self.setUp()
+                self.seed()
+                original_execute = self.db.execute
+
+                def execute(sql, params=()):
+                    if "/* readiness-policy */" in sql:
+                        return Result([changed])
+                    return original_execute(sql, params)
+
+                self.db.execute = execute
+                with self.assertRaises(DocumentUnderstandingError) as caught:
+                    self.repo.dispatch_ready()
+                self.assertEqual(caught.exception.code, "SOURCE_VERSION_CONFLICT")
+                self.assertEqual((self.db.runs, self.db.jobs, self.db.audits, self.db.receipts),
+                                 ([], [], [], []))
+                self.assertEqual(self.db.source_state, "waiting_model")
+
     def test_observation_passes_exact_compact_canonical_body_for_sql_hash_check(self):
         self.repo.record_observation(self.observation)
         params = next(params for sql, params in self.db.calls
@@ -538,11 +692,12 @@ class DocumentReadinessPostgresTests(unittest.TestCase):
 
     def test_same_event_final_different_context_rolls_back_new_business_rows(self):
         self.seed()
-        self.repository(policy=lambda *args: replace(self.policy(*args), cost_state="blocked")).dispatch_ready()
+        self.repository(policy=lambda *args: with_synthetic_cost(self.policy(*args), "blocked")).dispatch_ready()
         self.db.latest_run_id = self.db.runs[0][2]
+        self.db.policy_values = ("internal", 3000, 1)
 
         def changed(*args):
-            return replace(self.policy(*args), frozen_context_digest="e" * 64)
+            return self.policy(*args)
 
         with self.assertRaises(DocumentUnderstandingError) as caught:
             self.repository(policy=changed).dispatch_ready()
