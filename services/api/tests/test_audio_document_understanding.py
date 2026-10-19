@@ -4,6 +4,10 @@ from copy import deepcopy
 from dataclasses import replace
 import json
 import unittest
+import io
+import urllib.error
+import socket
+from types import SimpleNamespace
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import threading
@@ -18,6 +22,68 @@ from test_docx_document_understanding import Transport
 
 
 class AudioUnderstandingTests(unittest.TestCase):
+    def test_metadata_helper_erased_http_or_timeout_failure_stays_text_unknown(self):
+        from test_document_understanding_adapter import FailureEvidenceTransportTests
+        original_get, original_post = self.transport.get_json_no_auth, self.transport.post_json_no_auth
+        for stage in ("tags", "show"):
+            for failure in (FailureEvidenceTransportTests().upstream_error(503), TimeoutError("CANARY_PRIVATE")):
+                with self.subTest(stage=stage, failure=type(failure).__name__):
+                    def get(**kwargs):
+                        if stage == "tags": raise failure
+                        return original_get(**kwargs)
+                    def post(**kwargs):
+                        if kwargs["url"].endswith("/api/show") and stage == "show": raise failure
+                        return original_post(**kwargs)
+                    self.transport.get_json_no_auth, self.transport.post_json_no_auth = get, post
+                    self.transport.events.clear()
+                    with self.assertRaises(DocumentUnderstandingError) as caught: self.run_adapter()
+                    self.assertEqual((caught.exception.code, caught.exception.status, caught.exception.retryable),
+                                     ("DOCUMENT_PROVIDER_ADAPTER_UNAVAILABLE", 503, False))
+                    evidence = caught.exception.failure_evidence
+                    self.assertEqual((evidence.capability, evidence.dependency_connection_id, evidence.failure_kind),
+                                     ("text_generation", "text", "unknown"))
+                    self.assertNotIn("native", self.transport.events)
+                    self.assertNotIn("CANARY_PRIVATE", str(caught.exception))
+
+    def test_failure_evidence_keeps_asr_and_text_stages_separate_without_reuse_leak(self):
+        from test_document_understanding_adapter import FailureEvidenceTransportTests
+        error = FailureEvidenceTransportTests().upstream_error(503)
+        original_transcribe = self.asr.transcribe
+        def unavailable(*args, **kwargs): raise error
+        self.asr.transcribe = unavailable
+        with self.assertRaises(DocumentUnderstandingError) as asr_error: self.run_adapter()
+        evidence = getattr(asr_error.exception, "failure_evidence", None)
+        self.assertIsNotNone(evidence, "ASR 실제 단계 근거 미구현")
+        self.assertEqual((evidence.capability, evidence.dependency_connection_id, evidence.failure_kind),
+                         ("speech_to_text", "asr", "role_runtime"))
+        self.assertEqual(self.transport.events, [])
+        self.asr.transcribe = original_transcribe
+        self.transport.error = error
+        with self.assertRaises(DocumentUnderstandingError) as text_error: self.run_adapter()
+        text = getattr(text_error.exception, "failure_evidence", None)
+        self.assertIsNotNone(text)
+        self.assertEqual((text.capability, text.dependency_connection_id, text.failure_kind),
+                         ("text_generation", "text", "role_runtime"))
+        self.assertIsNone(error.failure_evidence.capability)
+        self.assertEqual(evidence.capability, "speech_to_text")
+        self.transport.error = None
+        self.assertEqual(self.run_adapter().status, "ready")
+
+    def test_failure_evidence_asr_validation_and_text_validation_are_non_availability(self):
+        transcript = AudioTranscript("wrong-model", "b" * 64, read_wav(self.document.content).source_sha256,
+            ({"segment_id": "s:1", "start_ms": 0, "end_ms": 1000, "text": self.text},))
+        self.asr.response = transcript
+        with self.assertRaises(DocumentUnderstandingError) as caught: self.run_adapter()
+        evidence = getattr(caught.exception, "failure_evidence", None)
+        self.assertIsNotNone(evidence)
+        self.assertEqual((evidence.capability, evidence.dependency_connection_id, evidence.failure_kind),
+                         ("speech_to_text", "asr", "non_availability"))
+        self.asr.response = None
+        self.transport.value = {"bad": "shape"}
+        with self.assertRaises(DocumentUnderstandingError) as caught: self.run_adapter()
+        self.assertEqual((caught.exception.failure_evidence.capability, caught.exception.failure_evidence.failure_kind),
+                         ("text_generation", "non_availability"))
+
     def setUp(self):
         from daon_user_api.audio_document_understanding import AudioDocumentAdapter
         self.adapter_type = AudioDocumentAdapter
@@ -153,6 +219,65 @@ class AudioUnderstandingTests(unittest.TestCase):
 
 
 class AsrHttpWireTests(unittest.TestCase):
+    def test_late_asr_metadata_is_role_runtime_with_legacy_public_result(self):
+        from daon_user_api.audio_document_understanding import LocalBaseAsrTranscriptionPort
+        metadata = {"model_id": "faster-whisper-base", "model_digest": "d01c3014881c9c6f3133c182f3d2887eb6ca1c789a7538c5c007196857a0a6a9",
+            "revision": "ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66", "capability": "speech_to_text", "runtime": "cpu-int8-local"}
+        selection = ResolvedModel("asr", "CUSTOM", "faster-whisper-base", "speech_to_text", "http://asr-base:8080",
+            0, 1, 1, "server_internal", "local_runtime", False, None)
+        with patch.object(LocalBaseAsrTranscriptionPort, "_request", return_value=metadata), \
+                patch("daon_user_api.audio_document_understanding.time.monotonic", side_effect=[0, 0, 6]):
+            with self.assertRaises(DocumentUnderstandingError) as caught:
+                LocalBaseAsrTranscriptionPort().transcribe(read_wav(wav_bytes()), selection, None, before_send=lambda: None)
+        self.assertEqual((caught.exception.code, caught.exception.status, caught.exception.retryable),
+                         ("UNDERSTANDING_PROVIDER_RESPONSE_INVALID", 502, False))
+        self.assertEqual(caught.exception.failure_evidence.failure_kind, "role_runtime")
+
+    def test_asr_typed_connect_reason_only_not_generic_network_or_response_timeout(self):
+        from daon_user_api.audio_document_understanding import LocalBaseAsrTranscriptionPort
+        for failure, response_started, kind in (
+            (urllib.error.URLError(socket.gaierror(socket.EAI_NONAME, "CANARY_PRIVATE")), False, "connection_availability"),
+            (urllib.error.URLError(ConnectionRefusedError("CANARY_PRIVATE")), False, "connection_availability"),
+            (urllib.error.URLError("ConnectionRefusedError DNS CANARY_PRIVATE"), False, "unknown"),
+            (urllib.error.URLError(TimeoutError("CANARY_PRIVATE")), False, "unknown"),
+            (OSError("CANARY_PRIVATE"), False, "unknown"),
+            (TimeoutError("CANARY_PRIVATE"), True, "role_runtime")):
+            with self.subTest(reason=type(failure).__name__, response_started=response_started):
+                class Response:
+                    status = 200
+                    headers = SimpleNamespace(get_content_type=lambda: "application/json")
+                    def __enter__(inner): return inner
+                    def __exit__(inner, *args): return False
+                    def read(inner, size): raise failure
+                class Opener:
+                    def open(inner, *args, **kwargs):
+                        if response_started: return Response()
+                        raise failure
+                with patch("daon_user_api.audio_document_understanding.urllib.request.build_opener", return_value=Opener()):
+                    with self.assertRaises(DocumentUnderstandingError) as caught: LocalBaseAsrTranscriptionPort._request("/v1/metadata", 1)
+                self.assertEqual((caught.exception.code, caught.exception.status, caught.exception.retryable),
+                                 ("UNDERSTANDING_PROVIDER_UNAVAILABLE", 503, True))
+                self.assertEqual(caught.exception.failure_evidence.failure_kind, kind)
+                self.assertNotIn("CANARY_PRIVATE", str(caught.exception))
+
+    def test_failure_evidence_actual_asr_http_keeps_legacy_retryable_independent(self):
+        from daon_user_api.audio_document_understanding import LocalBaseAsrTranscriptionPort
+        for status, retryable, kind in ((408, False, "role_runtime"), (429, False, "role_runtime"),
+                                       (500, False, "role_runtime"), (503, True, "role_runtime"),
+                                       (401, False, "non_availability")):
+            with self.subTest(status=status):
+                class Opener:
+                    def open(inner, request, timeout):
+                        raise urllib.error.HTTPError(request.full_url, status, "private", {}, io.BytesIO(b"CANARY_PRIVATE"))
+                with patch("daon_user_api.audio_document_understanding.urllib.request.build_opener", return_value=Opener()):
+                    with self.assertRaises(DocumentUnderstandingError) as caught:
+                        LocalBaseAsrTranscriptionPort._request("/v1/metadata", 1)
+                self.assertEqual(caught.exception.retryable, retryable)
+                evidence = getattr(caught.exception, "failure_evidence", None)
+                self.assertIsNotNone(evidence)
+                self.assertEqual((evidence.capability, evidence.dependency_connection_id, evidence.failure_kind), (None, None, kind))
+                self.assertNotIn("CANARY_PRIVATE", str(caught.exception))
+
     def test_late_asr_response_is_rejected_even_if_socket_returns_success(self):
         from daon_user_api.audio_document_understanding import LocalBaseAsrTranscriptionPort
         document = read_wav(wav_bytes())
@@ -170,6 +295,8 @@ class AsrHttpWireTests(unittest.TestCase):
             with self.assertRaises(DocumentUnderstandingError) as error:
                 LocalBaseAsrTranscriptionPort().transcribe(document, selection, None, before_send=lambda: None)
             self.assertTrue(error.exception.retryable)
+            self.assertEqual((error.exception.failure_evidence.capability, error.exception.failure_evidence.dependency_connection_id,
+                              error.exception.failure_evidence.failure_kind), ("speech_to_text", "asr", "role_runtime"))
 
     def test_audio_text_transport_never_uses_environment_proxy(self):
         import os

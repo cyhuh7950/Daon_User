@@ -7,6 +7,7 @@ import json
 import os
 import re
 import secrets
+import socket
 import unicodedata
 import urllib.error
 import urllib.request
@@ -97,12 +98,60 @@ def _has_material_evidence_conflict(key_facts: tuple[str, ...], parser_text: str
     )
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class DocumentFailureEvidence:
+    capability: str | None
+    dependency_connection_id: str | None
+    failure_kind: str
+
+    def __post_init__(self):
+        if ((self.capability is not None and self.capability not in
+                ("text_generation", "image_understanding", "document_parsing", "speech_to_text"))
+                or (self.dependency_connection_id is not None and (type(self.dependency_connection_id) is not str
+                    or _SAFE_ID.fullmatch(self.dependency_connection_id) is None))
+                or self.failure_kind not in ("connection_availability", "role_runtime", "non_availability", "unknown")):
+            raise ValueError("DOCUMENT_FAILURE_EVIDENCE_INVALID")
+
+
 class DocumentUnderstandingError(RuntimeError):
-    def __init__(self, code: str, *, status: int = 400, retryable: bool = False) -> None:
+    def __init__(self, code: str, *, status: int = 400, retryable: bool = False,
+                 failure_evidence: DocumentFailureEvidence | None = None) -> None:
+        if failure_evidence is not None and type(failure_evidence) is not DocumentFailureEvidence:
+            raise ValueError("DOCUMENT_FAILURE_EVIDENCE_INVALID")
         self.code = code
         self.status = status
         self.retryable = retryable
+        self.failure_evidence = failure_evidence
         super().__init__(code)
+
+
+def _failure_call(capability, connection_id, call, *, default_kind="unknown"):
+    """실제 호출 stage 결속. 공용/재사용 예외를 수정하거나 code에서 kind를 추정하지 않는다."""
+    try:
+        return call()
+    except DocumentUnderstandingError as error:
+        previous = error.failure_evidence
+        kind = default_kind
+        if previous is not None:
+            if ((previous.capability, previous.dependency_connection_id) == (None, None)
+                    or (previous.capability, previous.dependency_connection_id) == (capability, connection_id)):
+                kind = previous.failure_kind
+            else:
+                kind = "unknown"  # 다른 stage에 이미 결속된 근거를 재사용하지 않는다.
+        raise DocumentUnderstandingError(error.code, status=error.status, retryable=error.retryable,
+            failure_evidence=DocumentFailureEvidence(capability, connection_id, kind)) from None
+
+
+def _transport_failure_kind(error, *, response_started):
+    """연결 복귀 관측의 근거는 typed connect 실패만. retryable/문자열은 증명이 아니다."""
+    if isinstance(error, urllib.error.HTTPError):
+        return "role_runtime" if error.code in (408, 429) or 500 <= error.code <= 599 else "non_availability"
+    reason = error.reason if isinstance(error, urllib.error.URLError) else error
+    if not response_started and isinstance(reason, (socket.gaierror, ConnectionRefusedError)):
+        return "connection_availability"
+    if response_started and isinstance(reason, TimeoutError):
+        return "role_runtime"
+    return "unknown"
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,27 +290,35 @@ class UrlLibDocumentUnderstandingTransport:
         self._disable_environment_proxy = disable_environment_proxy
 
     def _request(self, request: urllib.request.Request, timeout_seconds: float | None) -> dict[str, object]:
+        response_started = False
         try:
             handlers = (urllib.request.ProxyHandler({}), _NoRedirectHandler()) if self._disable_environment_proxy else (_NoRedirectHandler(),)
             opener = urllib.request.build_opener(*handlers)
             with opener.open(request, timeout=timeout_seconds) as response:
+                response_started = True
                 raw = response.read(_MAX_RESPONSE_BYTES + 1)
         except urllib.error.HTTPError as error:
             retryable = error.code in {408, 429} or error.code >= 500
             code = "UNDERSTANDING_PROVIDER_UNAVAILABLE" if retryable else "UNDERSTANDING_PROVIDER_REJECTED"
-            raise DocumentUnderstandingError(code, status=503 if retryable else 502, retryable=retryable) from None
-        except (urllib.error.URLError, TimeoutError, OSError):
+            kind = _transport_failure_kind(error, response_started=response_started)
+            raise DocumentUnderstandingError(code, status=503 if retryable else 502, retryable=retryable,
+                failure_evidence=DocumentFailureEvidence(None, None, kind)) from None
+        except (urllib.error.URLError, TimeoutError, OSError) as error:
             raise DocumentUnderstandingError(
                 "UNDERSTANDING_PROVIDER_UNAVAILABLE", status=503, retryable=True,
+                failure_evidence=DocumentFailureEvidence(None, None, _transport_failure_kind(error, response_started=response_started)),
             ) from None
         if len(raw) > _MAX_RESPONSE_BYTES:
-            raise DocumentUnderstandingError("UNDERSTANDING_PROVIDER_RESPONSE_TOO_LARGE", status=502)
+            raise DocumentUnderstandingError("UNDERSTANDING_PROVIDER_RESPONSE_TOO_LARGE", status=502,
+                failure_evidence=DocumentFailureEvidence(None, None, "non_availability"))
         try:
             parsed = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
-            raise DocumentUnderstandingError("UNDERSTANDING_PROVIDER_RESPONSE_INVALID", status=502) from None
+            raise DocumentUnderstandingError("UNDERSTANDING_PROVIDER_RESPONSE_INVALID", status=502,
+                failure_evidence=DocumentFailureEvidence(None, None, "non_availability")) from None
         if not isinstance(parsed, dict):
-            raise DocumentUnderstandingError("UNDERSTANDING_PROVIDER_RESPONSE_INVALID", status=502)
+            raise DocumentUnderstandingError("UNDERSTANDING_PROVIDER_RESPONSE_INVALID", status=502,
+                failure_evidence=DocumentFailureEvidence(None, None, "non_availability"))
         return cast(dict[str, object], parsed)
 
     def post_json(
@@ -471,7 +528,7 @@ class UpstageDocumentUnderstandingAdapter:
         )) != parser_base_url.rstrip("/"):
             raise DocumentUnderstandingError("UPSTAGE_ENDPOINT_INVALID", status=409)
         encoded = base64.b64encode(request.content).decode("ascii")
-        semantic_response = self._transport.post_json(
+        semantic_response = _failure_call("image_understanding", selection.semantic_connection_id, lambda: self._transport.post_json(
             url=f"{semantic_base_url.rstrip('/')}/information-extraction",
             api_key=self._api_key,
             payload={
@@ -485,9 +542,10 @@ class UpstageDocumentUnderstandingAdapter:
                 "response_format": self._SCHEMA,
             },
             timeout_seconds=self._timeout_seconds,
-        )
-        semantic, semantic_revision = self._semantic(semantic_response)
-        parser_response = self._transport.post_multipart(
+        ))
+        semantic, semantic_revision = _failure_call("image_understanding", selection.semantic_connection_id,
+            lambda: self._semantic(semantic_response), default_kind="non_availability")
+        parser_response = _failure_call("document_parsing", selection.parser_connection_id, lambda: self._transport.post_multipart(
             url=f"{parser_base_url.rstrip('/')}/document-digitization", api_key=self._parser_api_key,
             fields={
                 "model": selection.parser_model_id,
@@ -496,8 +554,9 @@ class UpstageDocumentUnderstandingAdapter:
             },
             filename=request.filename, content=request.content,
             timeout_seconds=self._timeout_seconds,
-        )
-        parser, parser_revision = self._parser(parser_response)
+        ))
+        parser, parser_revision = _failure_call("document_parsing", selection.parser_connection_id,
+            lambda: self._parser(parser_response), default_kind="non_availability")
         conflict = (
             "UNDERSTANDING_PARSER_CONFLICT"
             if _has_material_evidence_conflict(semantic.key_facts, parser.text)

@@ -59,6 +59,82 @@ class ReprocessingModeSubmissionTests(unittest.TestCase):
         self.assertEqual(len(repository.calls), 4)
 
 
+class FailureEvidenceServiceTests(unittest.TestCase):
+    def test_single_role_adapter_failures_bind_actual_selection_not_unbound_transport_evidence(self):
+        from test_document_understanding_adapter import FailureEvidenceTransportTests
+        transport_error = FailureEvidenceTransportTests().upstream_error(503)
+        for filename, mime, role in (("qa.txt", "text/plain", "text_generation"),
+            ("qa.png", "image/png", "image_understanding"),
+            ("qa.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "text_generation"),
+            ("qa.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "text_generation"),
+            ("qa.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation", "text_generation")):
+            with self.subTest(filename=filename):
+                calls = []
+                class Repository(RecordingRepository):
+                    def load_source_document(inner, context, source_id, *, processing_run_id=None):
+                        return StoredSourceDocument(source_id, "version-a", filename, b"synthetic port input", mime)
+                class Resolver:
+                    @contextmanager
+                    def resolve(inner, context, capability):
+                        calls.append(capability)
+                        model = ResolvedModel("selected-connection", "UPSTAGE", "synthetic-model", capability,
+                            "https://api.upstage.ai/v1", 1, 1, 1, "external_api", "provider", True, bytearray(b"synthetic-key"))
+                        try: yield model
+                        finally: model.release()
+                class FailingAdapter:
+                    def understand(inner, *args): raise transport_error
+                repository = Repository()
+                adapter = FailingAdapter()
+                service = DocumentProcessingService(repository, Resolver(), AdapterFactory(Adapter()),
+                    egress_guard=FixtureOutboundGuard(), text_adapter=adapter, image_adapter=adapter,
+                    xlsx_adapter=adapter, docx_adapter=adapter, pptx_adapter=adapter)
+                context = DocumentProcessingContext("tenant-cp3", "workspace-cp3", "actor-cp3", "trace-cp3", "policy-v1")
+                with self.assertRaises(DocumentUnderstandingError) as caught:
+                    service.process_existing(context, source_id="source-a", processing_run_id="run-a")
+                self.assertEqual(calls, [role])
+                evidence = getattr(caught.exception, "failure_evidence", None)
+                self.assertIsNotNone(evidence)
+                self.assertEqual((evidence.capability, evidence.dependency_connection_id, evidence.failure_kind),
+                                 (role, "selected-connection", "role_runtime"))
+                self.assertEqual(repository.events, [("fail", ("run-a", "UNDERSTANDING_PROVIDER_UNAVAILABLE", True))])
+                self.assertIsNone(transport_error.failure_evidence.capability)
+
+    def test_actual_resolver_entry_capability_is_preserved_with_unknown_dependency(self):
+        from daon_user_api.workspace_model_defaults import WorkspaceModelUnavailable
+        for failing, expected_calls in (("image_understanding", ["image_understanding"]),
+                                       ("document_parsing", ["image_understanding", "document_parsing"])):
+            with self.subTest(failing=failing):
+                calls = []
+                class Resolver(ModelResolver):
+                    @contextmanager
+                    def resolve(inner, context, capability):
+                        calls.append(capability)
+                        if capability == failing:
+                            raise WorkspaceModelUnavailable("WORKSPACE_MODEL_DEFAULT_UNAVAILABLE")
+                        with super().resolve(context, capability) as model:
+                            yield model
+                repository = RecordingRepository()
+                service = DocumentProcessingService(repository, Resolver(), AdapterFactory(Adapter()), egress_guard=FixtureOutboundGuard())
+                context = DocumentProcessingContext("tenant-cp3", "workspace-cp3", "actor-cp3", "trace-cp3", "policy-v1")
+                with self.assertRaises(DocumentUnderstandingError) as caught:
+                    service.process_existing(context, source_id="source-cp3", processing_run_id="run-bound")
+                self.assertEqual(calls, expected_calls)
+                evidence = getattr(caught.exception, "failure_evidence", None)
+                self.assertIsNotNone(evidence, "실 resolver 진입 역할 근거 미구현")
+                self.assertEqual((evidence.capability, evidence.dependency_connection_id, evidence.failure_kind), (failing, None, "unknown"))
+                self.assertEqual(repository.events[-1], ("fail", ("run-bound", "WORKSPACE_MODEL_DEFAULT_UNAVAILABLE", False)))
+
+    def test_unclassified_error_is_not_upgraded_by_code_or_retryable_and_fail_contract_stays_legacy(self):
+        error = DocumentUnderstandingError("UNDERSTANDING_PROVIDER_UNAVAILABLE", status=503, retryable=True)
+        repository = RecordingRepository()
+        service = DocumentProcessingService(repository, ModelResolver(), AdapterFactory(Adapter(error)), egress_guard=FixtureOutboundGuard())
+        context = DocumentProcessingContext("tenant-cp3", "workspace-cp3", "actor-cp3", "trace-cp3", "policy-v1")
+        with self.assertRaises(DocumentUnderstandingError) as caught:
+            service.process_existing(context, source_id="source-cp3", processing_run_id="run-bound")
+        self.assertIsNone(getattr(caught.exception, "failure_evidence", None))
+        self.assertEqual(repository.events[-1], ("fail", ("run-bound", "UNDERSTANDING_PROVIDER_UNAVAILABLE", True)))
+
+
 class RecordingRepository:
     def __init__(self) -> None:
         self.events: list[tuple[str, object]] = []

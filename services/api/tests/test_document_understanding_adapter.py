@@ -4,6 +4,10 @@ import io
 import json
 import os
 import unittest
+import urllib.error
+import socket
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from daon_user_api.document_understanding_adapter import (
@@ -22,6 +26,163 @@ from daon_user_api.provider_settings import (
 
 
 PDF = b"%PDF-1.4\n% synthetic contract fixture\n%%EOF\n"
+
+
+class FailureEvidenceTransportTests(unittest.TestCase):
+    def test_runtime_unknown_and_typed_connect_failures_do_not_confuse_null_health_requeue(self):
+        # 실제 DB 현재 인가/비용 producer가 아닌 R1 순수 판정 경계의 합성 입력이다.
+        from daon_user_api.document_readiness import (CurrentReprocessEligibility, ReadinessModeProof,
+            RoleWaitEvidence, ValidatedReadinessObservation, decide_reprocess)
+        now = datetime(2026, 10, 19, 10, tzinfo=timezone.utc)
+        for failure, expected in (
+            (urllib.error.HTTPError("https://models.example", 503, "private", {}, io.BytesIO()), "READINESS_NOT_READY"),
+            (TimeoutError("CANARY_PRIVATE"), "READINESS_NOT_READY"),
+            (urllib.error.URLError(ConnectionRefusedError("CANARY_PRIVATE")), "READINESS_COST_UNCONFIRMED")):
+            with self.subTest(failure=type(failure).__name__):
+                class Opener:
+                    def open(inner, *args, **kwargs): raise failure
+                with patch("daon_user_api.document_understanding_adapter.urllib.request.build_opener", return_value=Opener()):
+                    with self.assertRaises(DocumentUnderstandingError) as caught:
+                        UrlLibDocumentUnderstandingTransport().post_json_no_auth(url="https://models.example/api/chat", payload={}, timeout_seconds=1)
+                wait = RoleWaitEvidence("tenant-a", "workspace-a", "actor-a", "notebook-a", "source-a", "version-a", "run-a",
+                    "text_generation", caught.exception.failure_evidence.failure_kind, ReadinessModeProof("auto", "request"),
+                    "connection-a", "a" * 64, caught.exception.code, now - timedelta(seconds=180), now - timedelta(seconds=120))
+                observation = ValidatedReadinessObservation(1, "rdy-" + "1" * 32, "connection-a", "CUSTOM", None,
+                    "b" * 64, 1, now - timedelta(seconds=61), now, "provider_connection_check", "healthy", 1, "c" * 64)
+                current = CurrentReprocessEligibility("tenant-a", "workspace-a", "actor-a", "notebook-a", "version-a",
+                    "text_generation", "a" * 64, "connection-a", "b" * 64, 1, 1,
+                    True, True, True, True, True, True, False, False, False, "unknown", "allowed", "run-a")
+                decision = decide_reprocess(wait, observation, current, db_now=now)
+                self.assertEqual((decision.create_run, decision.safe_code), (False, expected))
+
+    def upstream_error(self, status):
+        class Opener:
+            def open(inner, request, timeout):
+                raise urllib.error.HTTPError(request.full_url, status, "private response", {}, io.BytesIO(b"CANARY_PRIVATE"))
+        with patch("daon_user_api.document_understanding_adapter.urllib.request.build_opener", return_value=Opener()):
+            with self.assertRaises(DocumentUnderstandingError) as caught:
+                UrlLibDocumentUnderstandingTransport().post_json_no_auth(url="https://models.example/api/chat", payload={}, timeout_seconds=1)
+        return caught.exception
+
+    def test_actual_http_transport_classification_is_separate_from_legacy_error_and_retryable(self):
+        for status, kind, code, public_status, retryable in (
+            (408, "role_runtime", "UNDERSTANDING_PROVIDER_UNAVAILABLE", 503, True),
+            (429, "role_runtime", "UNDERSTANDING_PROVIDER_UNAVAILABLE", 503, True),
+            (500, "role_runtime", "UNDERSTANDING_PROVIDER_UNAVAILABLE", 503, True),
+            (503, "role_runtime", "UNDERSTANDING_PROVIDER_UNAVAILABLE", 503, True),
+            (401, "non_availability", "UNDERSTANDING_PROVIDER_REJECTED", 502, False),
+            (400, "non_availability", "UNDERSTANDING_PROVIDER_REJECTED", 502, False)):
+            with self.subTest(status=status):
+                error = self.upstream_error(status)
+                self.assertEqual((error.code, error.status, error.retryable), (code, public_status, retryable))
+                evidence = getattr(error, "failure_evidence", None)
+                self.assertIsNotNone(evidence, "실제 HTTP 분류 근거 미구현")
+                self.assertEqual((evidence.capability, evidence.dependency_connection_id, evidence.failure_kind), (None, None, kind))
+                self.assertNotIn("CANARY_PRIVATE", str(error))
+                self.assertNotIn("CANARY_PRIVATE", repr(evidence))
+
+    def test_actual_network_and_response_validation_classification_never_uses_exception_message(self):
+        for failure in (urllib.error.URLError("CANARY_PRIVATE"), TimeoutError("CANARY_PRIVATE"), OSError("CANARY_PRIVATE")):
+            with self.subTest(failure=type(failure).__name__):
+                class Opener:
+                    def open(inner, *args, **kwargs): raise failure
+                with patch("daon_user_api.document_understanding_adapter.urllib.request.build_opener", return_value=Opener()):
+                    with self.assertRaises(DocumentUnderstandingError) as caught:
+                        UrlLibDocumentUnderstandingTransport().post_json_no_auth(url="https://models.example/api/chat", payload={}, timeout_seconds=1)
+                self.assertEqual((caught.exception.code, caught.exception.status, caught.exception.retryable),
+                                 ("UNDERSTANDING_PROVIDER_UNAVAILABLE", 503, True))
+                self.assertEqual(caught.exception.failure_evidence.failure_kind, "unknown")
+                self.assertNotIn("CANARY_PRIVATE", str(caught.exception))
+        class Response:
+            def __enter__(inner): return inner
+            def __exit__(inner, *args): return False
+            def read(inner, size): return b'not-json CANARY_PRIVATE'
+        class Opener:
+            def open(inner, *args, **kwargs): return Response()
+        with patch("daon_user_api.document_understanding_adapter.urllib.request.build_opener", return_value=Opener()):
+            with self.assertRaises(DocumentUnderstandingError) as caught:
+                UrlLibDocumentUnderstandingTransport().post_json_no_auth(url="https://models.example/api/chat", payload={}, timeout_seconds=1)
+        self.assertEqual((caught.exception.status, caught.exception.retryable, caught.exception.failure_evidence.failure_kind),
+                         (502, False, "non_availability"))
+        self.assertNotIn("CANARY_PRIVATE", str(caught.exception))
+
+    def test_pdf_stage_binds_actual_semantic_or_parser_without_mutating_reused_error(self):
+        error = self.upstream_error(503)
+        selection = replace(resolve_document_model_selection(provider_snapshot()),
+                            semantic_connection_id="semantic-a", parser_connection_id="parser-b")
+        request = DocumentUnderstandingRequest("source-a", "version-a", "qa.pdf", PDF, "trace-a", "prompt-a", "policy-a")
+        class Transport(RecordingTransport):
+            failed_stage = "semantic"
+            def post_json(inner, **kwargs):
+                if inner.failed_stage == "semantic": raise error
+                return super().post_json(**kwargs)
+            def post_multipart(inner, **kwargs):
+                if inner.failed_stage == "parser": raise error
+                return super().post_multipart(**kwargs)
+        transport = Transport()
+        adapter = UpstageDocumentUnderstandingAdapter(transport=transport, api_key="synthetic-memory-key")
+        previous = []
+        previous_errors = []
+        for stage, capability, connection in (("semantic", "image_understanding", "semantic-a"), ("parser", "document_parsing", "parser-b")):
+            transport.failed_stage = stage
+            with self.assertRaises(DocumentUnderstandingError) as caught: adapter.understand(request, selection)
+            evidence = getattr(caught.exception, "failure_evidence", None)
+            self.assertIsNotNone(evidence, "PDF 실제 stage 근거 미구현")
+            self.assertEqual((evidence.capability, evidence.dependency_connection_id, evidence.failure_kind),
+                             (capability, connection, "role_runtime"))
+            self.assertEqual((caught.exception.code, caught.exception.status, caught.exception.retryable),
+                             ("UNDERSTANDING_PROVIDER_UNAVAILABLE", 503, True))
+            self.assertIsNot(caught.exception, error)
+            previous.append(evidence)
+            previous_errors.append(caught.exception)
+        self.assertEqual(previous[0].capability, "image_understanding")
+        self.assertIsNone(error.failure_evidence.capability)
+        self.assertIsNone(error.failure_evidence.dependency_connection_id)
+        error = previous_errors[0]  #  이미 다른 stage에 결속된 오류는 가용성 근거로 재사용하지 않는다.
+        with self.assertRaises(DocumentUnderstandingError) as caught: adapter.understand(request, selection)
+        self.assertEqual((caught.exception.failure_evidence.capability, caught.exception.failure_evidence.dependency_connection_id,
+                          caught.exception.failure_evidence.failure_kind), ("document_parsing", "parser-b", "unknown"))
+        self.assertEqual(error.failure_evidence.capability, "image_understanding")
+
+    def test_typed_connect_reason_only_and_response_wait_are_separated_without_message_inference(self):
+        for failure, response_started, kind in (
+            (urllib.error.URLError(socket.gaierror(socket.EAI_NONAME, "CANARY_PRIVATE")), False, "connection_availability"),
+            (urllib.error.URLError(ConnectionRefusedError("CANARY_PRIVATE")), False, "connection_availability"),
+            (socket.gaierror(socket.EAI_NONAME, "CANARY_PRIVATE"), False, "connection_availability"),
+            (ConnectionRefusedError("CANARY_PRIVATE"), False, "connection_availability"),
+            (urllib.error.URLError("ConnectionRefusedError DNS CANARY_PRIVATE"), False, "unknown"),
+            (urllib.error.URLError(TimeoutError("CANARY_PRIVATE")), False, "unknown"),
+            (ConnectionResetError("CANARY_PRIVATE"), False, "unknown"),
+            (TimeoutError("CANARY_PRIVATE"), True, "role_runtime"),
+            (ConnectionRefusedError("CANARY_PRIVATE"), True, "unknown")):
+            with self.subTest(reason=type(failure).__name__, response_started=response_started):
+                class Response:
+                    def __enter__(inner): return inner
+                    def __exit__(inner, *args): return False
+                    def read(inner, size): raise failure
+                class Opener:
+                    def open(inner, *args, **kwargs):
+                        if response_started: return Response()
+                        raise failure
+                with patch("daon_user_api.document_understanding_adapter.urllib.request.build_opener", return_value=Opener()):
+                    with self.assertRaises(DocumentUnderstandingError) as caught:
+                        UrlLibDocumentUnderstandingTransport().post_json_no_auth(url="https://models.example/api/chat", payload={}, timeout_seconds=1)
+                self.assertEqual((caught.exception.code, caught.exception.status, caught.exception.retryable),
+                                 ("UNDERSTANDING_PROVIDER_UNAVAILABLE", 503, True))
+                self.assertEqual(caught.exception.failure_evidence.failure_kind, kind)
+                self.assertNotIn("CANARY_PRIVATE", str(caught.exception))
+
+    def test_stage_validation_failure_is_non_availability_and_missing_connection_stays_none(self):
+        transport = RecordingTransport()
+        transport.post_json = lambda **kwargs: {}
+        request = DocumentUnderstandingRequest("source-a", "version-a", "qa.pdf", PDF, "trace-a", "prompt-a", "policy-a")
+        with self.assertRaises(DocumentUnderstandingError) as caught:
+            UpstageDocumentUnderstandingAdapter(transport=transport, api_key="synthetic-memory-key").understand(
+                request, resolve_document_model_selection(provider_snapshot()))
+        evidence = getattr(caught.exception, "failure_evidence", None)
+        self.assertIsNotNone(evidence)
+        self.assertEqual((evidence.capability, evidence.dependency_connection_id, evidence.failure_kind),
+                         ("image_understanding", None, "non_availability"))
 
 
 def provider_snapshot() -> ProviderSettingsSnapshot:
