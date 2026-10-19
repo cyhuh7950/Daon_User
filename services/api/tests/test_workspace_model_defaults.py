@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 import json
 import hashlib
+import os
 
 import pytest
 
@@ -95,9 +96,9 @@ def readiness_metadata(monkeypatch):
     from daon_user_api.user_provider_credentials import PostgresUserProviderCredentialService
     monkeypatch.setattr(PostgresUserProviderCredentialService, "resolve_credential", forbidden)
     reader = getattr(module, "read_document_readiness_policy", None)
-    def read(db, context, wait):
+    def read(db, context, wait, **options):
         assert callable(reader), "현재 정책/FrozenContext metadata producer 미구현"
-        return reader(db, context, wait, settings=settings)
+        return reader(db, context, wait, settings=options.get("settings", settings))
     settings = ReadinessDispatcherSettings(scopes=frozenset({("tenant-a", "workspace-a", "actor-a", "version-a")}))
     return SimpleNamespace(module=module, db=ReadinessMetadataDB(), context=context, wait=wait,
         grant=grant, auth_calls=auth_calls, read=read)
@@ -175,6 +176,131 @@ def test_readiness_metadata_cost_unknown_and_external_allow_never_invents_origin
         "classification": "confidential", "max_bytes": 0, "masking_required": True,
         "redaction_required": True, "required_approver": "organization_admin"}
     assert f.read(f.db, f.context, f.wait).eligibility.egress_state == "blocked"
+
+
+def internal_cost_settings(f, monkeypatch, *, documents=None):
+    from daon_user_api.document_readiness import ReadinessDispatcherSettings
+    row = dict(tenant_id=f.wait.tenant_id, workspace_id=f.wait.workspace_id, actor_id=f.wait.actor_id,
+        source_version_id=f.wait.source_version_id, capability=f.wait.capability,
+        connection_id=f.db.binding["connection_id"], model_id=f.db.binding["model_id"],
+        configuration_version=f.db.binding["configuration_version"], endpoint=f.db.binding["base_url"],
+        policy_version="internal-operating-cost-excluded-v1")
+    monkeypatch.setenv("DAON_DOCUMENT_READINESS_SCOPES_JSON", json.dumps([{k: row[k] for k in (
+        "tenant_id", "workspace_id", "actor_id", "source_version_id")}]))
+    monkeypatch.setenv("DAON_DOCUMENT_READINESS_INTERNAL_COST_POLICIES_JSON", json.dumps(documents or [row]))
+    return ReadinessDispatcherSettings.from_env(), row
+
+
+def test_internal_operating_cost_policy_allows_exact_current_internal_candidate_without_money(readiness_metadata, monkeypatch):
+    f = readiness_metadata
+    settings, row = internal_cost_settings(f, monkeypatch)
+    snapshot = f.read(f.db, f.context, f.wait, settings=settings)
+    assert snapshot.eligibility.cost_state == "allowed"
+    assert json.loads(snapshot.frozen_context_json)["cost"] == {
+        "state": "allowed", "basis": "internal_operating_cost_excluded", "policy": row}
+    from daon_user_api.document_readiness import ValidatedReadinessObservation, decide_reprocess
+    now = datetime(2026, 10, 19, 10, tzinfo=timezone.utc)
+    observed = ValidatedReadinessObservation(1, "rdy-" + "1" * 32, "connection-a", "OLLAMA", "text_generation",
+        snapshot.eligibility.model_catalog_digest, 3, now - timedelta(seconds=61), now,
+        "model_catalog_refresh", "healthy", 1, "d" * 64)
+    assert decide_reprocess(f.wait, observed, replace(snapshot.eligibility, latest_observation_sequence=1), db_now=now).safe_code == "READY_REPROCESS_ALLOWED"
+
+
+@pytest.mark.parametrize("change", ["scope", "actor", "version", "endpoint", "model", "connection", "role",
+    "disabled", "unverified", "personal", "credential", "adapter", "external", "catalog", "permission"])
+def test_internal_operating_cost_policy_does_not_authorize_changed_or_external_candidates(readiness_metadata, monkeypatch, change):
+    f = readiness_metadata
+    settings, _ = internal_cost_settings(f, monkeypatch)
+    wait = f.wait
+    if change == "scope": settings = replace(settings, scopes=frozenset())
+    if change == "actor": settings = replace(settings, internal_cost_policies=tuple(
+        replace(p, actor_id="other-actor") for p in settings.internal_cost_policies))
+    if change == "version": f.db.binding["configuration_version"] += 1
+    if change == "endpoint": f.db.binding["base_url"] = "http://other-ollama:11434"
+    if change == "model": f.db.binding["model_id"] = "other-model"
+    if change == "connection": f.db.binding["connection_id"] = "other-connection"
+    if change == "role": wait = replace(wait, capability="image_understanding")
+    if change == "disabled": f.db.binding["enabled"] = False
+    if change == "unverified": f.db.binding["verification_status"] = "unverified"
+    if change == "personal": f.db.binding["access_mode"] = "personal"
+    if change == "credential": f.db.binding.update(has_credential=True, has_nonce=True, nonce_size=12,
+        encryption_key_version=1, credential_schema_version=1, credential_version=1)
+    if change == "adapter": f.db.binding["adapter_type"] = "unconfirmed-adapter"
+    if change == "external": f.db.binding.update(provider_code="GROQ", adapter_type="GROQ", base_url="https://api.groq.com/openai/v1")
+    if change == "catalog": f.db.catalog[0]["allowed"] = False
+    if change == "permission": f.db.rules = [("workspace", "local_internal_llm", "deny", 0)]
+    snapshot = f.read(f.db, f.context, wait, settings=settings)
+    assert snapshot.eligibility.cost_state == "unknown"
+    assert json.loads(snapshot.frozen_context_json)["cost"] == {"state": "unknown"}
+
+
+def test_internal_cost_policy_unrelated_order_and_removal_preserve_semantic_boundary(readiness_metadata, monkeypatch):
+    f = readiness_metadata
+    settings, row = internal_cost_settings(f, monkeypatch)
+    first = f.read(f.db, f.context, f.wait, settings=settings)
+    settings, _ = internal_cost_settings(f, monkeypatch, documents=[{**row, "source_version_id": "unrelated"}, row])
+    second = f.read(f.db, f.context, f.wait, settings=settings)
+    assert first.frozen_context_json == second.frozen_context_json
+    revoked = f.read(f.db, f.context, f.wait, settings=replace(settings, internal_cost_policies=()))
+    assert revoked.eligibility.cost_state == "unknown"
+    assert revoked.eligibility.frozen_context_digest != first.eligibility.frozen_context_digest
+
+
+@pytest.mark.parametrize("change", ["missing", "extra", "bool", "version", "duplicate", "userinfo", "query", "fragment", "empty_query", "empty_fragment", "noncanonical"])
+def test_internal_cost_policy_parser_rejects_ambiguous_or_unpinned_input(readiness_metadata, monkeypatch, change):
+    from daon_user_api.document_readiness import ReadinessDispatcherSettings
+    f = readiness_metadata
+    _, row = internal_cost_settings(f, monkeypatch)
+    if change == "missing": row.pop("actor_id")
+    if change == "extra": row["currency"] = "USD"
+    if change == "bool": row["configuration_version"] = True
+    if change == "version": row["policy_version"] = "v2"
+    if change == "userinfo": row["endpoint"] = "http://user:pass@ollama:11434"
+    if change == "query": row["endpoint"] += "?x=1"
+    if change == "fragment": row["endpoint"] += "#x"
+    if change == "empty_query": row["endpoint"] += "?"
+    if change == "empty_fragment": row["endpoint"] += "#"
+    if change == "noncanonical": row["endpoint"] += "/"
+    monkeypatch.setenv("DAON_DOCUMENT_READINESS_INTERNAL_COST_POLICIES_JSON", json.dumps([row, row] if change == "duplicate" else [row]))
+    from daon_user_api.document_understanding_adapter import DocumentUnderstandingError
+    with pytest.raises(DocumentUnderstandingError): ReadinessDispatcherSettings.from_env()
+
+
+def test_internal_cost_policy_parser_default_and_json_container_boundaries(readiness_metadata, monkeypatch):
+    from daon_user_api.document_readiness import ReadinessDispatcherSettings
+    from daon_user_api.document_understanding_adapter import DocumentUnderstandingError
+    name = "DAON_DOCUMENT_READINESS_INTERNAL_COST_POLICIES_JSON"
+    monkeypatch.delenv(name, raising=False)
+    assert ReadinessDispatcherSettings.from_env().internal_cost_policies == ()
+    _, row = internal_cost_settings(readiness_metadata, monkeypatch)
+    for raw in ("null", "{}", "true", "[true]", "[NaN]",
+                json.dumps([row]).replace('"tenant_id": "tenant-a"', '"tenant_id":"tenant-a","tenant_id":"tenant-b"'),
+                json.dumps([{**row, "source_version_id": f"version-{i}"} for i in range(101)]),
+                json.dumps([row, {**row, "model_id": "different-model"}])):
+        # Windows의 실제 단일 환경변수 32767자 제한과 parser 100개 경계를 구분한다.
+        with monkeypatch.context() as local:
+            local.setattr(os, "environ", {**dict(os.environ), name: raw})
+            with pytest.raises(DocumentUnderstandingError): ReadinessDispatcherSettings.from_env()
+    raw = json.dumps([{**row, "source_version_id": f"version-{i}"} for i in range(100)])
+    with monkeypatch.context() as local:
+        local.setattr(os, "environ", {**dict(os.environ), name: raw})
+        policies = ReadinessDispatcherSettings.from_env().internal_cost_policies
+    assert len(policies) == 100
+    from dataclasses import FrozenInstanceError
+    with pytest.raises(FrozenInstanceError): policies[0].actor_id = "changed"
+
+
+def test_internal_cost_policy_exact_native_asr_uses_real_supplier_without_probe(readiness_metadata, monkeypatch):
+    f = readiness_metadata
+    monkeypatch.setenv("DAON_QA_STRUCTURED_OLLAMA_WORKSPACE_ID", "workspace-a")
+    f.wait = replace(f.wait, capability="speech_to_text")
+    f.db.binding.update(connection_id="asr-a", provider_code="CUSTOM", adapter_type="asr_base_native",
+        base_url="http://asr-base:8080", model_id="faster-whisper-base")
+    f.db.catalog[0].update(model_id="faster-whisper-base", effective_capabilities=["speech_to_text"])
+    settings, _ = internal_cost_settings(f, monkeypatch)
+    snapshot = f.read(f.db, f.context, f.wait, settings=settings)
+    assert snapshot.eligibility.cost_state == "allowed"
+    assert json.loads(snapshot.frozen_context_json)["binding"]["native_asr_contract"] is not None
 
 
 def test_readiness_metadata_personal_and_invalid_credential_schema_do_not_resolve_keys(readiness_metadata):
@@ -284,10 +410,10 @@ def test_readiness_metadata_snapshot_type_binds_body_to_digest_without_mutable_c
         replace(result, eligibility=replace(result.eligibility, frozen_context_digest="f" * 64))
 
 
-def test_readiness_snapshot_cost_state_must_match_body_without_changing_real_unknown_producer(readiness_metadata):
+def test_readiness_snapshot_cost_state_must_match_body_without_changing_real_unknown_producer(readiness_metadata, monkeypatch):
     f = readiness_metadata
     original = f.read(f.db, f.context, f.wait)
-    for state in ("allowed", "blocked", "unknown"):
+    for state in ("blocked", "unknown"):
         body = json.loads(original.frozen_context_json)
         body["cost"] = {"state": state}
         canonical = json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -303,6 +429,27 @@ def test_readiness_snapshot_cost_state_must_match_body_without_changing_real_unk
     fresh = f.read(f.db, f.context, f.wait)
     assert fresh.eligibility.cost_state == "unknown"
     assert json.loads(fresh.frozen_context_json)["cost"] == {"state": "unknown"}
+
+
+@pytest.mark.parametrize("change", ["bare_allowed", "basis", "actor", "role", "endpoint", "config", "binding_connection", "extra"])
+def test_internal_cost_snapshot_rejects_forged_allowed_proof(readiness_metadata, monkeypatch, change):
+    f = readiness_metadata
+    settings, _ = internal_cost_settings(f, monkeypatch)
+    original = f.read(f.db, f.context, f.wait, settings=settings)
+    body = json.loads(original.frozen_context_json)
+    if change == "bare_allowed": body["cost"] = {"state": "allowed"}
+    if change == "basis": body["cost"]["basis"] = "free"
+    if change == "actor": body["cost"]["policy"]["actor_id"] = "another-actor"
+    if change == "role": body["cost"]["policy"]["capability"] = "image_understanding"
+    if change == "endpoint": body["cost"]["policy"]["endpoint"] = "http://other-internal:11434"
+    if change == "config": body["cost"]["policy"]["configuration_version"] += 1
+    if change == "binding_connection":
+        body["binding"]["connection_id"] = body["catalog"]["connection_id"] = "other-connection"
+    if change == "extra": body["cost"]["amount"] = "0"
+    canonical = json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    with pytest.raises(WorkspaceModelDefaultsError):
+        f.module.ReadinessPolicySnapshot(replace(original.eligibility,
+            frozen_context_digest=hashlib.sha256(canonical.encode()).hexdigest()), canonical)
 
 
 @pytest.mark.parametrize("rules,allowed,reason", [

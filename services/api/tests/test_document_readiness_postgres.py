@@ -6,6 +6,8 @@ import hashlib
 import importlib
 import json
 import unittest
+import pytest
+from test_workspace_model_defaults import readiness_metadata, internal_cost_settings
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -39,18 +41,24 @@ def synthetic_snapshot(current, *, mode, policy_values=("internal", 2000, 1), bo
                               "actions": [{"action": "edit", "permissions": []}, {"action": "analyze", "permissions": []}]},
             "workspace_policy": {"workspace_kind": "organization", "data_area": policy_values[0],
                                  "cost_limit_cents": policy_values[1]},
-            "binding": {"connection_id": current.dependency_connection_id, "model_id": "model-a", "provider_code": "CUSTOM",
-                "adapter_type": "openai_compatible", "endpoint": "https://synthetic.invalid", "enabled": True,
+            "binding": {"connection_id": current.dependency_connection_id, "model_id": "model-a", "provider_code": "OLLAMA",
+                "adapter_type": "OLLAMA", "endpoint": "http://ollama:11434", "enabled": True,
                 "verification_status": "verified", "access_mode": "public", "credential_requirement": "none",
                 "credential_reference": {"source": "system", "present": False, "nonce_present": False,
-                                         "valid_metadata": False, "version": 0, "schema_version": None, "key_version": None},
-                "provider_kind": "external_api", "qa_scope_enabled": None, "routing_owner": "provider",
+                                         "nonce_size": None, "version": 0, "schema_version": None, "key_version": None},
+                "provider_kind": "local", "qa_scope_enabled": None, "routing_owner": "provider",
                 "daon_fallback_allowed": True, "native_asr_contract": None},
             "catalog": {"schema_version": 1, "connection_id": "connection-a",
-                        "models": [{"model_id": "model-a", "effective_capabilities": ["document_parsing"],
+                        "models": [{"model_id": "model-a", "effective_capabilities": ["image_understanding"],
                                     "catalog_status": "ready", "allowed": True}]},
             "egress": {"organization": None, "workspace": None, "effective": None},
             "cost": {"state": current.cost_state}}
+    if current.cost_state == "allowed" and body["cost"] == {"state": "allowed"}:
+        body["cost"] = {"state": "allowed", "basis": "internal_operating_cost_excluded", "policy": {
+            **{k: getattr(current, k) for k in ("tenant_id", "workspace_id", "actor_id", "source_version_id", "capability")},
+            "connection_id": current.dependency_connection_id, "model_id": body["binding"]["model_id"],
+            "configuration_version": current.configuration_version, "endpoint": body["binding"]["endpoint"],
+            "policy_version": "internal-operating-cost-excluded-v1"}}
     canonical = json.dumps(body, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
     return ReadinessPolicySnapshot(replace(current, frozen_context_digest=hashlib.sha256(canonical.encode()).hexdigest()), canonical)
 
@@ -66,6 +74,76 @@ def api():
     if importlib.util.find_spec("daon_user_api.document_readiness_postgres") is None:
         raise AssertionError("R2 보호 원장/원자 dispatch adapter 미구현")
     return importlib.import_module("daon_user_api.document_readiness_postgres")
+
+
+@pytest.fixture
+def internal_cost_dispatch(readiness_metadata, monkeypatch):
+    f = readiness_metadata
+    settings, _ = internal_cost_settings(f, monkeypatch)
+    module = api()
+    db = SqlPort()
+    db.policy_values = ("internal", 1000, 1)
+    original_execute = db.execute
+    def execute(sql, params=()):
+        if ("readiness-metadata-" in sql or sql.startswith("SELECT effect,locked")
+                or sql.startswith("SELECT version FROM identity_auth")):
+            return f.db.execute(sql, params)
+        return original_execute(sql, params)
+    db.execute = execute
+    monkeypatch.setattr(module, "_current_auth_grant", lambda context, connection, action:
+        SimpleNamespace(**vars(f.grant), action=action))
+    monkeypatch.setattr(module, "_special_source_access_allowed", lambda *args: True)
+    store = SimpleNamespace(_transaction=lambda context: db.transaction())
+    repo = module.PostgresDocumentReadinessRepository(store, settings=settings, discovery_transaction=db.transaction,
+        current_policy_reader=lambda connection, context, wait, grant: f.read(connection, context, wait, settings=repo.settings))
+    context = DocumentProcessingContext("tenant-a", "workspace-a", "actor-a", "trace-a", "policy-a")
+    snapshot = f.read(db, context, f.wait, settings=settings)
+    observation = ValidatedReadinessObservation(1, "rdy-" + "1" * 32, "connection-a", "OLLAMA", "text_generation",
+        snapshot.eligibility.model_catalog_digest, 3, NOW - timedelta(seconds=61), NOW,
+        "model_catalog_refresh", "healthy", 1, "d" * 64)
+    with db.transaction(): repo.record_wait(db, context, "run-a", f.wait)
+    repo.record_observation(observation)
+    return SimpleNamespace(repo=repo, db=db, auth=f, settings=settings, observation=observation)
+
+
+def test_internal_cost_real_supplier_dispatches_one_run_and_revoked_policy_stays_unknown(internal_cost_dispatch):
+    f = internal_cost_dispatch
+    repo, db, settings = f.repo, f.db, f.settings
+    first = repo.dispatch_ready()[0]
+    assert (first.outcome, len(db.runs), len(db.jobs), len(db.audits)) == ("enqueued", 1, 1, 1)
+    repo.dispatch_ready()  # cursor wrap
+    assert repo.dispatch_ready()[0].new_run_id == first.new_run_id
+    assert (len(db.runs), len(db.jobs), len(db.receipts)) == (1, 1, 1)
+    proof = json.loads(db.runs[0][5])["readiness_context"]
+    assert proof["frozen_context"]["cost"]["basis"] == "internal_operating_cost_excluded"
+    repo.record_observation(replace(f.observation, event_id="rdy-" + "2" * 32))
+    repo.dispatch_ready()
+    assert repo.dispatch_ready()[0].safe_code == "READINESS_CONTEXT_SUPPRESSED"
+    assert (len(db.runs), len(db.jobs), len(db.receipts)) == (1, 1, 2)
+    # 정상 재시작/재조립으로 정책을 회수한 repository는 같은 Source도 새 실행하지 않는다.
+    repo.settings = replace(settings, internal_cost_policies=())
+    repo.dispatch_ready()
+    result = repo.dispatch_ready()[0]
+    assert (result.safe_code, result.new_run_id) == ("READINESS_COST_UNCONFIRMED", None)
+    assert (len(db.runs), len(db.jobs)) == (1, 1)
+
+
+@pytest.mark.parametrize("change", ["policy", "permission", "configuration"])
+def test_internal_cost_real_supplier_change_before_atomic_write_rolls_back(internal_cost_dispatch, change):
+    f = internal_cost_dispatch
+    original = f.repo._current_policy_reader
+    calls = []
+    def current(*args):
+        calls.append(True)
+        if len(calls) == 2:
+            if change == "policy": f.repo.settings = replace(f.settings, internal_cost_policies=())
+            if change == "permission": f.auth.db.rules = [("workspace", "local_internal_llm", "deny", 0)]
+            if change == "configuration": f.auth.db.binding["configuration_version"] += 1
+        return original(*args)
+    f.repo._current_policy_reader = current
+    with pytest.raises(DocumentUnderstandingError) as caught: f.repo.dispatch_ready()
+    assert caught.value.code == "SOURCE_VERSION_CONFLICT"
+    assert (f.db.runs, f.db.jobs, f.db.receipts) == ([], [], [])
 
 
 class Result:
@@ -233,8 +311,9 @@ class DocumentReadinessPostgresTests(unittest.TestCase):
         self.assertEqual(proof["frozen_context"]["scope"], {"tenant_id": "tenant-a", "workspace_id": "workspace-a",
             "actor_id": "actor-a", "notebook_id": "notebook-a", "source_version_id": "version-a"})
         self.assertEqual(proof["frozen_context"]["mode"], {"mode": "auto", "origin": "request"})
-        self.assertEqual(proof["frozen_context"]["role"], "document_parsing")
-        self.assertEqual(proof["frozen_context"]["cost"], {"state": "allowed"})
+        self.assertEqual(proof["frozen_context"]["role"], "image_understanding")
+        self.assertEqual(proof["frozen_context"]["cost"]["state"], "allowed")
+        self.assertEqual(proof["frozen_context"]["cost"]["basis"], "internal_operating_cost_excluded")
         self.assertEqual(hashlib.sha256(self.db.runs[0][5].encode()).hexdigest(), self.db.runs[0][6])
         self.assertEqual(self.db.receipts[0]["new_run_id"], result.new_run_id)
         self.assertEqual(proof["frozen_context_digest"], self.db.receipts[0]["frozen_context_digest"])
@@ -292,7 +371,7 @@ class DocumentReadinessPostgresTests(unittest.TestCase):
         self.seed()
         def denied(*args):
             snapshot = self.policy(*args)
-            return synthetic_snapshot(replace(snapshot.eligibility, authorized=False, local_only_allowed=False),
+            return synthetic_snapshot(replace(snapshot.eligibility, authorized=False, local_only_allowed=False, cost_state="unknown"),
                                       mode=self.wait.mode)
         result = self.repository(policy=denied).dispatch_ready()[0]
         self.assertEqual((result.outcome, result.safe_code, result.new_run_id), ("denied", "READINESS_ACCESS_DENIED", None))
@@ -322,18 +401,18 @@ class DocumentReadinessPostgresTests(unittest.TestCase):
         self.db = SqlPort()
         self.context = DocumentProcessingContext("tenant-a", "workspace-a", "actor-a", "trace-a", "policy-a")
         self.wait = RoleWaitEvidence("tenant-a", "workspace-a", "actor-a", "notebook-a", "source-a",
-            "version-a", "run-a", "document_parsing", "connection_availability",
+            "version-a", "run-a", "image_understanding", "connection_availability",
             ReadinessModeProof("auto", "request"), "connection-a", "a" * 64,
             "DOCUMENT_MODEL_UNAVAILABLE", NOW - timedelta(seconds=180), NOW - timedelta(seconds=120))
         self.observation = ValidatedReadinessObservation(1, "rdy-" + "1" * 32, "connection-a", "CUSTOM",
-            "document_parsing", "b" * 64, 3, NOW - timedelta(seconds=90), NOW, "model_catalog_refresh",
+            "image_understanding", "b" * 64, 3, NOW - timedelta(seconds=90), NOW, "model_catalog_refresh",
             "healthy", 999, "c" * 64)
         self.policy_calls = []
 
         def policy(connection, context, wait, grant):
             self.policy_calls.append((connection, context.actor_id, wait.source_version_id))
             current = CurrentReprocessEligibility("tenant-a", "workspace-a", "actor-a", "notebook-a",
-                "version-a", "document_parsing", "a" * 64, "connection-a", "b" * 64,
+                "version-a", "image_understanding", "a" * 64, "connection-a", "b" * 64,
                 3, 41, True, True, True, True, True, True, False, False, False,
                 "allowed", "allowed", wait.processing_run_id)
             return synthetic_snapshot(current, mode=wait.mode, policy_values=self.db.policy_values)
@@ -503,8 +582,8 @@ class DocumentReadinessPostgresTests(unittest.TestCase):
 
     def test_server_scope_is_passed_to_discovery_before_batch_limit(self):
         self.seed()
-        own = ("tenant-a", "workspace-a", "actor-a", "notebook-a", "source-a", "version-a", "run-a", "document_parsing")
-        other = ("tenant-x", "workspace-x", "actor-x", "notebook-x", "source-x", "version-x", "run-x", "document_parsing")
+        own = ("tenant-a", "workspace-a", "actor-a", "notebook-a", "source-a", "version-a", "run-a", "image_understanding")
+        other = ("tenant-x", "workspace-x", "actor-x", "notebook-x", "source-x", "version-x", "run-x", "image_understanding")
         self.db.discovery_rows = [other] * 33 + [own]
         result = self.repo.dispatch_ready()
         self.assertEqual(len(result), 1)
@@ -522,13 +601,13 @@ class DocumentReadinessPostgresTests(unittest.TestCase):
         for i in range(32):
             run = f"run-{i:03d}"
             self.db.discovery_rows.append(("tenant-a", "workspace-a", "actor-a", "notebook-a",
-                                           "source-a", "version-a", run, "document_parsing"))
+                                           "source-a", "version-a", run, "image_understanding"))
             if mode is not None:
                 wait = replace(self.wait, processing_run_id=run, mode=mode)
-                self.db.wait_by_key[("tenant-a", "workspace-a", run, "document_parsing")] = self.m._wait_payload(wait)
+                self.db.wait_by_key[("tenant-a", "workspace-a", run, "image_understanding")] = self.m._wait_payload(wait)
         self.db.discovery_rows.append(("tenant-a", "workspace-a", "actor-a", "notebook-a",
-                                       "source-a", "version-a", "run-a", "document_parsing"))
-        self.db.wait_by_key[("tenant-a", "workspace-a", "run-a", "document_parsing")] = self.db.wait
+                                       "source-a", "version-a", "run-a", "image_understanding"))
+        self.db.wait_by_key[("tenant-a", "workspace-a", "run-a", "image_understanding")] = self.db.wait
 
     def test_deleted_first_thirty_two_waits_do_not_starve_thirty_third(self):
         self.fair_page()
@@ -539,7 +618,7 @@ class DocumentReadinessPostgresTests(unittest.TestCase):
         self.assertEqual((len(self.db.runs), len(self.db.jobs)), (1, 1))
         params = [p for sql, p in self.db.calls if "discover_document_role_waits(" in sql]
         self.assertEqual(params[0][1], None)
-        self.assertEqual(params[1][1], ["tenant-a", "workspace-a", "run-031", "document_parsing"])
+        self.assertEqual(params[1][1], ["tenant-a", "workspace-a", "run-031", "image_understanding"])
         self.assertEqual([p[-1] for p in params], [32, 32])
         self.assertEqual(self.repo.dispatch_ready(), ())  # 빈 page에서 재탐색하지 않는다.
         self.assertEqual(self.repo.dispatch_ready(), ())  # 다음 poll부터 첫 page로 wrap.
@@ -572,7 +651,7 @@ class DocumentReadinessPostgresTests(unittest.TestCase):
                 self.db = SqlPort()
                 self.repo = self.repository()
                 self.fair_page()
-                first_key = ("tenant-a", "workspace-a", "run-000", "document_parsing")
+                first_key = ("tenant-a", "workspace-a", "run-000", "image_understanding")
                 self.db.read_errors[first_key] = failure
                 with self.assertRaises(DocumentUnderstandingError) as caught:
                     self.repo.dispatch_ready()
@@ -584,9 +663,9 @@ class DocumentReadinessPostgresTests(unittest.TestCase):
                 self.assertEqual(len(second), 1)
                 self.assertEqual(second[0].outcome, "enqueued")
                 self.assertEqual(len(self.db.attempted_waits), 33)
-                self.assertEqual(self.db.attempted_waits[1], ("tenant-a", "workspace-a", "run-001", "document_parsing"))
+                self.assertEqual(self.db.attempted_waits[1], ("tenant-a", "workspace-a", "run-001", "image_understanding"))
                 params = [p for sql, p in self.db.calls if "discover_document_role_waits(" in sql]
-                self.assertEqual(params[1][1], ["tenant-a", "workspace-a", "run-000", "document_parsing"])
+                self.assertEqual(params[1][1], ["tenant-a", "workspace-a", "run-000", "image_understanding"])
                 self.assertEqual(self.repo.dispatch_ready(), ())
                 with self.assertRaises(DocumentUnderstandingError):
                     self.repo.dispatch_ready()  # wrap도 오류 행을 ack/삭제하지 않는다.
@@ -653,7 +732,7 @@ class DocumentReadinessPostgresTests(unittest.TestCase):
     def test_receipt_exact_fifteen_fields_reject_extra_missing_and_wrong_types(self):
         payload = {"tenant_id": "tenant-a", "workspace_id": "workspace-a", "actor_id": "actor-a",
             "notebook_id": "notebook-a", "source_id": "source-a", "source_version_id": "version-a",
-            "processing_run_id": "run-a", "capability_slot": "document_parsing", "event_id": "rdy-" + "1" * 32,
+            "processing_run_id": "run-a", "capability_slot": "image_understanding", "event_id": "rdy-" + "1" * 32,
             "frozen_context_digest": "a" * 64, "phase": "final", "outcome": "suppressed",
             "safe_code": "READINESS_CONTEXT_SUPPRESSED", "new_run_id": None, "received_at": NOW.isoformat()}
         self.assertEqual(self.repo._receipt(payload).outcome, "suppressed")
@@ -720,7 +799,7 @@ class DocumentReadinessPostgresTests(unittest.TestCase):
         params = next(params for sql, params in self.db.calls
                       if "record_document_readiness_observation(" in sql)
         self.assertEqual(len(params), 2)
-        self.assertEqual(params[1], '{"adapter_type":"CUSTOM","capability":"document_parsing",'
+        self.assertEqual(params[1], '{"adapter_type":"CUSTOM","capability":"image_understanding",'
             '"configuration_version":3,"connection_id":"connection-a","event_id":"rdy-11111111111111111111111111111111",'
             '"model_catalog_digest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",'
             '"observed_at":"2026-10-19T09:58:30+00:00","probe_kind":"model_catalog_refresh","schema_version":1,"status":"healthy"}')
