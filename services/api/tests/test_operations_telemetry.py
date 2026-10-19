@@ -26,7 +26,129 @@ class Sink:
         stored=self.module.ReceivedWorkerSample(sample,self.clock());self.samples.append(stored);return stored
 
 
+class OperatorBaseline:
+    """고정 command 응답 대역. 실제 Docker/Git/배포/DB 실행 증거가 아니다."""
+    old_revision='a'*40
+    new_revision='d'*40
+    old_image='sha256:'+'1'*64
+    new_image='sha256:'+'2'*64
+
+    def __init__(self,test):
+        import json
+        from pathlib import Path
+        path=Path(__file__).resolve().parents[3]/'deploy/daon-user/record-operation-receipt.py'
+        spec=importlib.util.spec_from_file_location('operation_receipt_baseline_test',path)
+        self.writer=importlib.util.module_from_spec(spec);spec.loader.exec_module(self.writer)
+        self.test=test;self.json=json;self.phase=0;self.calls=[];self.clock=NOW;self.elapsed=0
+        self.snapshots=[dict(code_revision=self.old_revision,image_digest=self.old_image,container_id='b'*64,started_at=NOW-timedelta(seconds=10)),
+            dict(code_revision=self.new_revision,image_digest=self.new_image,container_id='c'*64,started_at=NOW+timedelta(seconds=1))]
+        self.labels={self.old_image:self.old_revision,self.new_image:self.new_revision}
+        self.types={self.old_revision:'commit',self.new_revision:'commit'}
+        self.blobs={self.old_revision:'e'*40,self.new_revision:'f'*40}
+        self.source_blobs=['e'*40,'f'*40];self.smoke_fail=False;self.on_blob=None;self.on_smoke=None
+        self.image_id_override=None;self.before_wait=None;self.command_timeout=False
+
+    def run(self,args,**kwargs):
+        self.test.assertIs(kwargs['shell'],False);self.calls.append(args);snapshot=self.snapshots[self.phase]
+        if self.command_timeout:
+            import subprocess
+            raise subprocess.TimeoutExpired(args,10,stderr=b'PRIVATE_TIMEOUT_CANARY')
+        if args[:2]==('git','rev-parse'):
+            raw=self.new_revision  # checkout은 관찰 시작 전부터 이미 새 SHA다.
+        elif args[:2]==('git','cat-file'):
+            self.test.assertEqual(args[2],'-t');kind=self.types.get(args[3])
+            if kind is None:return SimpleNamespace(returncode=1,stdout=b'',stderr=b'PRIVATE_COMMIT_CANARY')
+            raw=kind
+        elif args[:2]==('git','ls-tree'):
+            digest=self.blobs.get(args[4]);raw='' if digest is None else '100644 blob '+digest+'\tservices/api/src/daon_user_api/__init__.py'
+        elif args[:2]==('docker','compose'):raw=snapshot['container_id']
+        elif args[:3]==('docker','image','inspect'):
+            image=args[-1]
+            raw=' '.join(self.json.dumps(value) for value in (self.image_id_override or image,self.labels.get(image)))
+        elif args[:2]==('docker','inspect'):
+            raw=' '.join(self.json.dumps(value) for value in
+                (snapshot['container_id'],snapshot['image_digest'],True,snapshot['started_at'].isoformat()))
+        elif args[-1]==self.writer._BLOBS:
+            raw=self.json.dumps({'services/api/src/daon_user_api/__init__.py':self.source_blobs[self.phase]})
+            if self.on_blob:self.on_blob()
+        elif args[-1]==self.writer._SMOKE:
+            if self.on_smoke:self.on_smoke()
+            if self.smoke_fail:return SimpleNamespace(returncode=1,stdout=b'',stderr=b'PRIVATE_OPERATION_CANARY')
+            raw='READY'
+        else:raise AssertionError('UNEXPECTED_OPERATOR_COMMAND')
+        return SimpleNamespace(returncode=0,stdout=raw.encode(),stderr=b'')
+
+    def applied(self,seconds):
+        self.test.assertEqual(seconds,300)
+        self.phase=1;self.clock=NOW+timedelta(seconds=2)
+        if self.before_wait:self.before_wait()
+
+    def record(self,stored,**overrides):
+        options=dict(expected_revision=self.new_revision,expected_image=self.new_image,
+            observer=self.writer.FixedOperatorObserver(run=self.run),wait_applied=self.applied,sink=stored.append,
+            clock=lambda:self.clock,monotonic=lambda:self.elapsed)
+        options.update(overrides)
+        return self.writer.record_operation('operation-a','deploy',**options)
+
+
 class OperationsTelemetryTests(unittest.TestCase):
+    def test_operator_before_uses_old_image_commit_when_checkout_is_new(self):
+        case=OperatorBaseline(self)
+        observed=case.writer.FixedOperatorObserver(run=case.run).inspect()
+        self.assertEqual(observed,case.snapshots[0])
+        self.assertIn(('git','cat-file','-t',case.old_revision),case.calls)
+        self.assertFalse(any(args[:2]==('git','rev-parse') for args in case.calls),'HEAD fallback 금지')
+
+    def test_operator_before_rejects_unproved_label_commit_blob_and_observation_change(self):
+        for mode in ('missing-label','malformed-label','missing-commit','tag-object','forged-label','wrong-blob',
+                'missing-source-tree','image-id','changed-container','changed-image','changed-label','command-timeout'):
+            with self.subTest(mode=mode):
+                case=OperatorBaseline(self)
+                if mode=='missing-label':case.labels[case.old_image]=None
+                if mode=='malformed-label':case.labels[case.old_image]='api:latest'
+                if mode=='missing-commit':case.labels[case.old_image]='9'*40
+                if mode=='tag-object':case.types[case.old_revision]='tag'
+                if mode=='forged-label':case.labels[case.old_image]=case.new_revision
+                if mode=='wrong-blob':case.source_blobs[0]='0'*40
+                if mode=='missing-source-tree':case.blobs.pop(case.old_revision)
+                if mode=='image-id':case.image_id_override='sha256:'+'9'*64
+                if mode=='changed-container':case.on_blob=lambda:case.snapshots[0].update(container_id='8'*64)
+                if mode=='changed-image':case.on_blob=lambda:case.snapshots[0].update(image_digest=case.new_image)
+                if mode=='changed-label':case.on_blob=lambda:case.labels.update({case.old_image:case.new_revision})
+                if mode=='command-timeout':case.command_timeout=True
+                with self.assertRaises(api().TelemetryUnavailable) as failed:case.writer.FixedOperatorObserver(run=case.run).inspect()
+                self.assertEqual(str(failed.exception),'OPERATIONS_TELEMETRY_UNAVAILABLE')
+                self.assertFalse(any(args[:2]==('git','rev-parse') for args in case.calls))
+
+    def test_operator_after_requires_approved_exact_revision_and_image(self):
+        for options in (dict(expected_revision='f'*40),dict(expected_image='sha256:'+'9'*64),
+                dict(expected_revision='main'),dict(expected_image='api:latest')):
+            with self.subTest(options=options):
+                case=OperatorBaseline(self);stored=[]
+                with self.assertRaises(api().TelemetryUnavailable):case.record(stored,**options)
+                self.assertEqual(stored,[])
+
+    def test_operator_change_during_smoke_is_unavailable_without_receipt(self):
+        for field,value in (('container_id','9'*64),('image_digest','sha256:'+'9'*64)):
+            with self.subTest(field=field):
+                case=OperatorBaseline(self);stored=[]
+                case.on_smoke=lambda:case.snapshots[1].update({field:value})
+                with self.assertRaises(api().TelemetryUnavailable):case.record(stored)
+                self.assertEqual(stored,[])
+
+    def test_operator_deadline_replacement_and_started_clock_boundaries_remain_closed(self):
+        for mode in ('deadline','same-container','old-start','before-window','future-start','backwards-clock'):
+            with self.subTest(mode=mode):
+                case=OperatorBaseline(self);stored=[]
+                if mode=='deadline':case.before_wait=lambda:setattr(case,'elapsed',301)
+                if mode=='same-container':case.snapshots[1]=dict(case.snapshots[0])
+                if mode=='old-start':case.snapshots[1]['started_at']=NOW-timedelta(seconds=20)
+                if mode=='before-window':case.snapshots[1]['started_at']=NOW-timedelta(seconds=1)
+                if mode=='future-start':case.snapshots[1]['started_at']=NOW+timedelta(seconds=3)
+                if mode=='backwards-clock':case.before_wait=lambda:setattr(case,'elapsed',-1)
+                with self.assertRaises(api().TelemetryUnavailable):case.record(stored)
+                self.assertEqual(stored,[])
+
     def test_using_transaction_dict_cursor_is_scoped_and_never_owns_api_pool(self):
         from contextlib import contextmanager
         from psycopg.rows import dict_row,tuple_row
@@ -72,32 +194,11 @@ class OperationsTelemetryTests(unittest.TestCase):
             self.assertEqual(events,[])
 
     def test_operator_concrete_preinspect_postinspect_smoke_and_owner_sql_no_secret_argv(self):
-        import json
-        from pathlib import Path
-        path=Path(__file__).resolve().parents[3]/'deploy/daon-user/record-operation-receipt.py'
-        spec=importlib.util.spec_from_file_location('operation_receipt_concrete_test',path);writer=importlib.util.module_from_spec(spec);spec.loader.exec_module(writer)
         pg=importlib.import_module('daon_user_api.operations_telemetry_postgres')
-        phase=[0];calls=[];smoke_fail=[False];clock=[NOW];stored=[]
-        def runner(args,**kwargs):
-            self.assertIs(kwargs['shell'],False);calls.append(args)
-            if args[:2]==('git','rev-parse'):raw=('a' if phase[0]==0 else 'd')*40
-            elif args[:2]==('git','ls-tree'):raw='100644 blob '+'e'*40+'\tservices/api/src/daon_user_api/__init__.py'
-            elif args[0:2]==('docker','compose'):raw=('b' if phase[0]==0 else 'c')*64
-            elif args[:2]==('docker','inspect'):
-                raw=' '.join(json.dumps(v) for v in [('b' if phase[0]==0 else 'c')*64,
-                    'sha256:'+('1' if phase[0]==0 else '2')*64,True,
-                    (NOW-timedelta(seconds=10) if phase[0]==0 else NOW+timedelta(seconds=1)).isoformat()])
-            elif args[-1]==writer._BLOBS:raw=json.dumps({'services/api/src/daon_user_api/__init__.py':'e'*40})
-            elif args[-1]==writer._SMOKE:
-                if smoke_fail[0]:return SimpleNamespace(returncode=1,stdout=b'',stderr=b'PRIVATE_OPERATION_CANARY')
-                raw='READY'
-            else:raise AssertionError('UNEXPECTED_OPERATOR_COMMAND')
-            return SimpleNamespace(returncode=0,stdout=raw.encode(),stderr=b'')
-        def applied(seconds):self.assertEqual(seconds,300);phase[0]=1;clock[0]=NOW+timedelta(seconds=2)
+        calls=[];stored=[]
         for fail in (False,True):
-            phase[0]=0;clock[0]=NOW;smoke_fail[0]=fail
-            receipt=writer.record_operation('operation-a','deploy',observer=writer.FixedOperatorObserver(run=runner),wait_applied=applied,
-                sink=stored.append,clock=lambda:clock[0],monotonic=lambda:0)
+            case=OperatorBaseline(self);case.smoke_fail=fail
+            receipt=case.record(stored);calls.extend(case.calls)
             self.assertEqual(receipt.state,'uncertain' if fail else 'succeeded')
             self.assertEqual(receipt.previous_image_digest,'sha256:'+'1'*64)
         self.assertNotIn('PRIVATE_OPERATION_CANARY',str(stored)+str(calls))
@@ -146,6 +247,7 @@ class OperationsTelemetryTests(unittest.TestCase):
         observer=SimpleNamespace(inspect=lambda:dict(before),smoke=lambda container:True)
         with self.assertRaises(api().TelemetryUnavailable):
             writer.record_operation('operation-a','rollback',observer=observer,wait_applied=lambda seconds:None,
+                expected_revision=before['code_revision'],expected_image=before['image_digest'],
                 sink=lambda receipt:calls.append(receipt),clock=lambda:NOW,monotonic=lambda:0)
         self.assertEqual(calls,[])
 
