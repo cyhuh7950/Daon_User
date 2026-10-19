@@ -214,14 +214,30 @@ class PostgresOperationsStatusRepository:
         with self._transaction(context) as connection:
             self._authorize_telemetry(connection,context)
             visible = self._visible_sources(connection,context)
+        # 현재 서버의 특수 Source runtime 조건을 추가 제한으로 전달한다. 인가 근거는 아니다.
+        if (type(visible) is not dict or len(visible)>256
+                or any(type(version) is not str or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}",version)
+                       for version in visible)):
+            raise ValueError("OPERATIONS_READINESS_FILTER_INVALID")
+        visible_filter=json.dumps(sorted(visible),separators=(",",":"))
+        if len(visible_filter.encode("utf-8"))>65536:raise ValueError("OPERATIONS_READINESS_FILTER_INVALID")
         # 기존 인가 helper의 FOR SHARE는 앞/뒤 별도 Tx에 유지한다.
         # scope GUC 설정 뒤 첫 업무 조회 전에 읽기 전용을 강제한다.
         with self._transaction(context) as connection:
             connection.execute("SET TRANSACTION READ ONLY")
-            rows = connection.execute(
-                "SELECT metric_id,value,has_records,coverage_partial,checked_at,window_start,window_end "
-                "FROM public.read_document_readiness_metrics(%s,%s,%s,%s)",
-                (context.tenant_id,context.workspace_id,context.actor_id,context.scope)).fetchall()
+            connection.execute("SET LOCAL statement_timeout='2000ms'")
+            original_filter=connection.execute("SELECT current_setting('app.readiness_visible_source_versions',true)").fetchone()[0]
+            try:
+                connection.execute("SELECT set_config('app.readiness_visible_source_versions',%s,true)",(visible_filter,))
+                rows = connection.execute(
+                    "SELECT metric_id,value,has_records,coverage_partial,checked_at,window_start,window_end "
+                    "FROM public.read_document_readiness_metrics(%s,%s,%s,%s)",
+                    (context.tenant_id,context.workspace_id,context.actor_id,context.scope)).fetchall()
+            finally:
+                # SQL 실패 상태에는 명령을 더 보내 원예외를 가리지 않는다. 바깥 Tx rollback이 LOCAL을 회수한다.
+                from psycopg.pq import TransactionStatus
+                if connection.info.transaction_status!=TransactionStatus.INERROR:
+                    connection.execute("SELECT set_config('app.readiness_visible_source_versions',%s,true)",(original_filter or "",))
             if len(rows)!=6 or any(type(row) not in {tuple,list} or len(row)!=7 for row in rows):
                 raise ValueError("OPERATIONS_READINESS_METRICS_INVALID")
             indexed={}

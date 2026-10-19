@@ -29,6 +29,7 @@ def downgrade():
         RAISE EXCEPTION 'DOCUMENT_READINESS_FORWARD_RECOVERY_REQUIRED' USING ERRCODE='55000'; END IF;
     END $$;
     DROP FUNCTION public.cleanup_document_readiness(text,text,integer);
+    DROP FUNCTION public.read_document_readiness_metrics(text,text,text,text);
     DROP FUNCTION public.read_document_blocked_parent(text,text,text,text,text,text,text,text);
     DROP FUNCTION public.record_document_reprocess_receipt(jsonb);
     DROP FUNCTION public.read_document_reprocess_history(text,text,text,text,text,text,text,text,text);

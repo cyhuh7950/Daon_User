@@ -615,6 +615,41 @@ class DocumentReadinessPostgresTests(unittest.TestCase):
         self.assertIn("DROP FUNCTION public.discover_document_role_waits(jsonb,text[],integer);", wrapper)
         self.assertNotIn("discover_document_role_waits(jsonb,integer)", sql + wrapper)
 
+    def test_readiness_metrics_sql_closed_read_only_projection_and_context_restore(self):
+        # SQL 정적 계약 시험이다. 실 PG의 RLS/READ ONLY/기간·경합 검증을 대신하지 않는다.
+        folder = Path(__file__).resolve().parents[1] / "migrations" / "versions"
+        sql = (folder / "0072_document_readiness.sql").read_text(encoding="utf-8")
+        wrapper = (folder / "0072_document_readiness.py").read_text(encoding="utf-8")
+        marker = "CREATE FUNCTION public.read_document_readiness_metrics(t text,w text,a text,scope text)"
+        self.assertIn(marker, sql)
+        body = sql.split(marker, 1)[1].split("END $readiness_metrics$;", 1)[0]
+        self.assertIn("RETURNS TABLE(metric_id text,value bigint,has_records boolean,coverage_partial boolean,", body)
+        self.assertIn("LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp", body)
+        self.assertIn("public.source_access_notification_access(item.source_version_id,NULL)", body)
+        self.assertIn("public.source_access_notification_access(item.source_version_id,item.notebook_id)", body)
+        self.assertIn("EXCEPTION WHEN OTHERS THEN", body)
+        self.assertEqual(body.count("set_config('app.notebook_id',coalesce(original_notebook,''),true)"), 3)
+        for name in ("tenant_id", "workspace_id", "actor_id", "role"):
+            self.assertNotIn("set_config('app." + name, body)
+        for command in ("INSERT INTO", "UPDATE public.", "DELETE FROM", "FOR UPDATE", "FOR SHARE", "CREATE TEMP", "SET ROLE"):
+            self.assertNotIn(command, body)
+        self.assertIn("scope='workspace_visible' AND effective_role NOT IN", body)
+        self.assertIn("pr.created_by=x.actor_id", body)
+        self.assertIn("newer.version>sv.version", body)
+        self.assertIn("latest.record_id=x.processing_run_id", body)
+        self.assertIn("min(c.received_at) AS first_received", body)
+        self.assertIn("current_setting('app.readiness_visible_source_versions',true)", body)
+        self.assertIn("octet_length(filter_text)>65536", body)
+        self.assertIn("jsonb_array_length(visible_filter)>256", body)
+        self.assertIn("jsonb_typeof(entry)<>'string'", body)
+        self.assertIn("count(DISTINCT entry)", body)
+        self.assertIn("sv.record_id IN (SELECT jsonb_array_elements_text(visible_filter))", body)
+        self.assertIn("count(*) FILTER(WHERE first_received>query_time-interval '24 hours'", body)
+        self.assertIn("GROUP BY c.actor_id,c.source_version_id,c.capability_slot,c.frozen_context_digest", body)
+        self.assertIn("CASE WHEN role_records THEN counts[i] ELSE NULL::bigint END", body)
+        self.assertEqual(sql.count("'read_document_readiness_metrics(text,text,text,text)'"), 2)
+        self.assertIn("DROP FUNCTION public.read_document_readiness_metrics(text,text,text,text);", wrapper)
+
     def test_receipt_exact_fifteen_fields_reject_extra_missing_and_wrong_types(self):
         payload = {"tenant_id": "tenant-a", "workspace_id": "workspace-a", "actor_id": "actor-a",
             "notebook_id": "notebook-a", "source_id": "source-a", "source_version_id": "version-a",

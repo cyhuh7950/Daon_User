@@ -47,6 +47,28 @@ test("R4 readiness query and response branch stay exact while default9 remains c
   ]){const changed=structuredClone(doc);mutate(changed);assert.throws(()=>validateOpenApiDocument(changed));}
 });
 
+test("R4 Source Mode is optional in the exact request and saved response fields stay paired",async()=>{
+  const d=await loadContract(),s=d.components.schemas,p="/api/v1/sources/{id}/processing-runs";
+  assert.equal(d.paths[p].post.requestBody.content["application/json"].schema.$ref,"#/components/schemas/SourceReprocessingMutation");
+  assert.doesNotThrow(()=>validateOpenApiDocument(d));
+  const attrs=s.SourceReprocessingMutation.properties.attributes;
+  assert.deepEqual(s.SourceReprocessingMutation.properties.kind,{const:"processing_run"});
+  assert.deepEqual(s.SourceReprocessingMutation.properties.step_up_authorization_id,{type:"null"});
+  assert.deepEqual(attrs.required,["workspace_id","notebook_id","source_version_id"]);
+  assert.deepEqual(attrs.properties.processing_mode,{type:"string",enum:["auto","local_only","pinned"]});
+  for(const mutate of [
+    d=>{d.paths[p].post.requestBody={$ref:"#/components/requestBodies/ResourceMutation"};},
+    d=>{d.components.schemas.SourceReprocessingMutation.properties.attributes.required.push("processing_mode");},
+    d=>{d.components.schemas.SourceReprocessingMutation.properties.attributes.properties.processing_mode.enum.push(null);},
+    d=>{d.components.schemas.SourceReprocessingMutation.properties.attributes.additionalProperties=true;},
+    d=>{d.components.schemas.SourceReprocessingMutation.properties.kind={type:"string"};},
+    d=>{d.components.schemas.SourceReprocessingMutation.properties.step_up_authorization_id={type:["string","null"]};},
+    d=>{d.components.schemas.SourceReprocessingResult.dependentRequired.processing_mode=[];},
+    d=>{d.components.schemas.SourceReprocessingResult.properties.auto_requeue_configured.type="string";},
+    d=>{d.paths[p].post.responses["201"]={$ref:"#/components/responses/CreatedResponse"};},
+  ]){const changed=structuredClone(d);mutate(changed);assert.throws(()=>validateOpenApiDocument(changed));}
+});
+
 test("M2 workspace telemetry contract rejects weakened scope and missing typed groups",async()=>{
   const doc=await loadContract();
   assert.doesNotThrow(()=>validateOpenApiDocument(doc));

@@ -30,6 +30,113 @@ DEFAULT_DENY_DIGEST = "caf695f3de7e3e05feb024b3ff4b8b14cbfad5318b885ac15d8e4da25
 
 
 class CloudStorageContractTests(unittest.TestCase):
+    def test_readiness_0072_requires_exact_new_catalog_guard(self):
+        self.assertTrue(callable(getattr(PostgresCloudStore,"_document_readiness_storage_is_protected",None)),
+                        "0072는 새 원장/함수의 보호 검증 없이 정상 revision으로 수용하면 안 됨")
+
+    def test_readiness_0072_revision_requires_all_existing_guards_and_new_guard(self):
+        from types import SimpleNamespace
+        for missing in (None,'organization','notification','registered','telemetry','readiness'):
+            with self.subTest(missing=missing):
+                calls=[]
+                class Connection:
+                    def execute(self,sql,params=()):return SimpleNamespace(fetchone=lambda:('0072',) if 'alembic_version' in sql else ('0.8.2',))
+                class Pool:
+                    closed=False
+                    @contextmanager
+                    def connection(self,**kwargs):yield Connection()
+                store=object.__new__(PostgresCloudStore);store._pool=Pool()
+                store._organization_storage_is_protected=lambda c:missing!='organization'
+                store._notification_storage_is_protected=lambda c:missing!='notification'
+                def checked(kind,expected):
+                    def check(connection,*,expected_revision):
+                        calls.append((kind,expected_revision));return missing!=kind and expected_revision==expected
+                    return check
+                store._registered_restore_storage_is_protected=checked('registered','0072')
+                store._telemetry_storage_is_protected=checked('telemetry','0072')
+                store._document_readiness_storage_is_protected=lambda c:missing!='readiness'
+                self.assertEqual(store.readiness().ready,missing is None)
+                self.assertTrue(all(revision=='0072' for _,revision in calls))
+
+    def test_readiness_0072_catalog_rejects_mutations_and_matches_sql_bodies(self):
+        from daon_user_api import cloud_storage as api
+        import hashlib,re
+        sql=(MIGRATION.parent/"0072_document_readiness.sql").read_text(encoding="utf-8")
+        actual_security={}
+        for signature,expected in api._READINESS_FUNCTIONS.items():
+            name=signature.split('(')[0]
+            body=re.search(r"CREATE FUNCTION public\."+name+r"\([^$]+?AS (\$\w*\$)(.*?)\1;",sql,re.S)
+            self.assertIsNotNone(body,name)
+            self.assertEqual(hashlib.md5(body[2].encode()).hexdigest(),expected[0],name)
+            header=re.search(r"CREATE FUNCTION public\."+name+r"\([^$]+?AS \$",sql,re.S)
+            actual_security[signature]='SECURITY DEFINER' in header[0]
+        self.assertFalse(actual_security['guard_document_readiness_immutable()'])
+        self.assertTrue(all(value for signature,value in actual_security.items() if signature!='guard_document_readiness_immutable()'))
+        bad_values=(None,"role","table","columns","keys","checks","policies","function","indexes","triggers","sequence",
+            "body","exec","out-name","out-type","out-mode","volatility","unknown-column","nullable","identity",
+            "weakened-check","boolean-precedence","extra-key","foreign-parent","disabled-trigger","index-predicate","extra-index",
+            "guard-secdef","missing-secdef")
+        for bad in bad_values:
+            log=[]
+            class Result:
+                def __init__(self,rows):self.rows=rows
+                def fetchone(self):return self.rows[0] if self.rows else None
+                def fetchall(self):return self.rows
+            class Reader:
+                def execute(reader,statement,params=()):
+                    log.append((statement,params));facet=statement.split('/* readiness:')[1].split(' */')[0]
+                    if bad==facet:return Result([] if facet not in {'role','table','sequence'} else [(False,)])
+                    if facet=='columns':
+                        rows=[(*row,True) for row in api._READINESS_COLUMNS[params[0]]]
+                        if bad=='unknown-column':rows.append(('unsafe_extra','text',False,None,'',True))
+                        if bad=='nullable':rows[0]=(rows[0][0],rows[0][1],False,*rows[0][3:])
+                        if bad=='identity' and params[0]=='document_readiness_observations':rows[10]=(*rows[10][:4],'d',True)
+                        return Result(rows)
+                    if facet=='keys':
+                        rows=list(api._READINESS_KEYS[params[0]])
+                        if bad=='extra-key':rows.append(api._r2_key('u','actor_id'))
+                        if bad=='foreign-parent' and params[0]=='document_reprocess_receipts':
+                            row=rows[1];rows[1]=(*row[:2],'public.identity_users',*row[3:])
+                        return Result(rows)
+                    if facet=='checks':
+                        rows=[(check,True) for check in api._READINESS_CHECKS[params[0]]]
+                        if bad=='weakened-check':rows[0]=('true',True)
+                        if bad=='boolean-precedence':rows[0]=('(a OR b) AND c',True)
+                        return Result(rows)
+                    if facet=='policies':return Result([(params[0]+'_owner','*',True,['daon_notebook_delete'],'true','true')])
+                    if facet=='function':
+                        signature=params[-1].removeprefix('public.')
+                        row=list(api._READINESS_FUNCTIONS.get(signature,[api._READINESS_PARENT_HELPER_MD5,'boolean',False,'v','plpgsql',False,['p_version','p_notebook'],[]]))
+                        inputs=signature.split('(',1)[1][:-1];count=0 if not inputs else len(inputs.split(','))
+                        modes=['i']*count+['t']*(len(row[7])-count) if row[7] else []
+                        if bad=='body':row[0]='0'*32
+                        if bad=='exec':row[5]=not row[5]
+                        if bad=='volatility':row[3]='s' if row[3]=='v' else 'v'
+                        if signature.startswith('read_document_readiness_metrics('):
+                            if bad=='out-name':row[6]=[*row[6][:-1],'private_actor']
+                            if bad=='out-type':row[7]=[*row[7][:-1],'text']
+                            if bad=='out-mode':modes=[*modes[:-1],'i']
+                        secdef=actual_security.get(signature,True)
+                        if bad=='guard-secdef' and signature=='guard_document_readiness_immutable()':secdef=True
+                        if bad=='missing-secdef' and signature!='guard_document_readiness_immutable()':secdef=False
+                        security_matches=secdef==params[0] if len(params)==2 else secdef
+                        return Result([(*row,security_matches,True,True,modes)])
+                    if facet=='indexes':
+                        rows=[(*row,True) for row in api._READINESS_INDEXES]
+                        if bad=='index-predicate':rows[1]=(*rows[1][:4],None,True)
+                        if bad=='extra-index':rows.append(rows[0])
+                        return Result(rows)
+                    if facet=='triggers':
+                        rows=sorted((table,table+suffix,kind,'O','public.guard_document_readiness_immutable','',False,False,'',None,'',True)
+                            for table in api._READINESS_COLUMNS for suffix,kind in (('_guard',31),('_no_truncate',34)))
+                        if bad=='disabled-trigger':rows[0]=(*rows[0][:3],'D',*rows[0][4:])
+                        return Result(rows)
+                    return Result([(True,)])
+            with self.subTest(facet=bad):self.assertEqual(PostgresCloudStore._document_readiness_storage_is_protected(Reader()),bad is None,
+                log[-1][0].split('*/')[0] if log else 'no query')
+            self.assertTrue(all('pg_catalog' in statement and not re.match(r'\s*(INSERT|UPDATE|DELETE|ALTER|GRANT|CREATE)',statement)
+                for statement,_ in log))
+
     def test_m2_readiness_0071_requires_parent_and_telemetry_protection_without_changing_flags(self):
         from types import SimpleNamespace
         for closed in (False,True):
@@ -58,7 +165,7 @@ class CloudStorageContractTests(unittest.TestCase):
                             store._ensure_pool_open=lambda:None
                             with patch("daon_user_api.cloud_storage.connect",connect):actual=store.readiness()
                             self.assertEqual(actual.ready,revision=="0071" and missing is None)
-                            if calls:self.assertEqual(calls,["0071"])
+                            if calls:self.assertEqual(calls,[revision])
 
     def test_m2_telemetry_catalog_exact_sql_and_each_tampered_protection_rejected(self):
         from daon_user_api import cloud_storage as api

@@ -81,6 +81,46 @@ _TELEMETRY_FUNCTIONS={
     "read_operations_deployment_receipt()":("7ed340f6be464de0d0bb0434702f65c0",True,True,"public.operations_deployment_receipts",True),
     "record_operations_deployment_receipt(text,text,text,text,text,text,timestamptz,text,text)":("7fd7148b1158c4c65204ecfe210cece1",True,False,"text",False),
 }
+# 0072 미적용 초안에서 고정한 catalog 기대값. 실PG 출력 수집/적용 증거가 아니다.
+_READINESS_FUNCTIONS={
+    "document_readiness_parent_allowed(text,text,text,text,text,text,text)":["721cff7670b94399b70c09f563af69c3","boolean",False,"s","sql",False,["t","w","a","n","s","v","r"],[]],
+    "guard_document_readiness_immutable()":["877013325240a6a0b181747fac02a22a","trigger",False,"v","plpgsql",False,[],[]],
+    "record_document_role_wait(jsonb)":["68308ccb50ed39d92a7c00dc82d6633e","jsonb",False,"v","plpgsql",True,["p"],[]],
+    "record_document_readiness_observation(jsonb,text)":["39d7fd2bb70dd3f44bda4a534f20fb54","jsonb",False,"v","plpgsql",True,["p","canonical"],[]],
+    "discover_document_role_waits(jsonb,text[],integer)":["bd25f6b0ad444e27bbee92aa72a54817","record",True,"v","plpgsql",True,["scopes","after_cursor","maximum","tenant_id","workspace_id","actor_id","notebook_id","source_id","source_version_id","processing_run_id","capability_slot"],["jsonb","text[]","integer","text","text","text","text","text","text","text","text"]],
+    "read_document_role_wait(text,text,text,text)":["e87f318c231d2a5f452ba77e9f9ca274","jsonb",False,"s","sql",True,["t","w","r","c"],[]],
+    "read_latest_document_readiness_observation(text)":["864b2fdc8e112f30d2433bbd417820d2","jsonb",False,"s","sql",True,["c"],[]],
+    "read_document_reprocess_history(text,text,text,text,text,text,text,text,text)":["019f4fcf0e6570104ccfeabf8d10ff18","jsonb",True,"s","sql",True,["t","w","a","n","s","v","r","c","d"],[]],
+    "record_document_reprocess_receipt(jsonb)":["4bfacfd7d5d3c6344c222d9b04dfe047","jsonb",False,"v","plpgsql",True,["p"],[]],
+    "read_document_blocked_parent(text,text,text,text,text,text,text,text)":["7efb6dbc7c83ab2f7e6779efbd7d8110","boolean",False,"s","sql",True,["t","w","a","n","s","v","r","new_r"],[]],
+    "cleanup_document_readiness(text,text,integer)":["65ebea2779f68df002b45fe4e006b42d","integer",False,"v","plpgsql",False,["t","w","maximum"],[]],
+    "read_document_readiness_metrics(text,text,text,text)":["4ef2e11da71811b4cc91ab885e26d655","record",True,"v","plpgsql",True,["t","w","a","scope","metric_id","value","has_records","coverage_partial","checked_at","window_start","window_end"],["text","text","text","text","text","bigint","boolean","boolean","timestamp with time zone","timestamp with time zone","timestamp with time zone"]]
+}
+_READINESS_PARENT_HELPER_MD5="63999ad4790fef4f01f5ee6ebfc9f587"
+_READINESS_CHECKS={
+    "document_role_waits":["tenant_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$'","workspace_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$'","actor_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$'","notebook_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$'","source_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$'","source_version_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$'","processing_run_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$'","capability IN ('text_generation','image_understanding','document_parsing','speech_to_text')","capability_slot=coalesce(capability,'unknown')","jsonb_typeof(payload)='object' AND octet_length(payload::text)<=16384","content_digest ~ '^[0-9a-f]{64}$'"],
+    "document_readiness_observations":["event_id ~ '^rdy-[0-9a-f]{32}$'","connection_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$'","adapter_type ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$'","capability IN ('text_generation','image_understanding','document_parsing','speech_to_text')","model_catalog_digest ~ '^[0-9a-f]{64}$'","configuration_version>0","probe_kind IN ('provider_connection_check','native_asr_ready','model_catalog_refresh')","status IN ('healthy','not_ready','unavailable')","content_digest ~ '^[0-9a-f]{64}$'","jsonb_typeof(payload)='object' AND octet_length(payload::text)<=16384","probe_kind<>'provider_connection_check' OR capability IS NULL","probe_kind<>'native_asr_ready' OR capability IS NOT DISTINCT FROM 'speech_to_text'","observed_at<=received_at+'00:00:05'::interval"],
+    "document_reprocess_receipts":["frozen_context_digest ~ '^[0-9a-f]{64}$'","phase IN ('deferred','final')","outcome IN ('enqueued','blocked_cost','blocked_policy','denied','suppressed','expired','deferred')","safe_code IN ('READY_REPROCESS_ALLOWED','READINESS_SCOPE_NOT_CONFIGURED',\n   'READINESS_MODE_UNCONFIRMED','READINESS_MODE_MANUAL','READINESS_ROLE_UNKNOWN','READINESS_DEPENDENCY_CHANGED',\n   'READINESS_NOT_READY','READINESS_OBSERVATION_EXPIRED','READINESS_ACCESS_DENIED','READINESS_SOURCE_CHANGED',\n   'READINESS_POLICY_BLOCKED','COST_LIMIT_EXCEEDED','READINESS_COST_UNCONFIRMED','READINESS_APPROVAL_MISSING',\n   'READINESS_ACTIVE_RUN_EXISTS','READINESS_CONTEXT_SUPPRESSED','READINESS_BACKOFF_PENDING')","new_run_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$'","jsonb_typeof(payload)='object' AND octet_length(payload::text)<=16384","content_digest ~ '^[0-9a-f]{64}$'","(phase='deferred')=(outcome='deferred')","(new_run_id IS NOT NULL)=(outcome IN ('enqueued','blocked_cost','blocked_policy'))","(outcome='enqueued' AND safe_code='READY_REPROCESS_ALLOWED')\n   OR (outcome='blocked_cost' AND safe_code='COST_LIMIT_EXCEEDED')\n   OR (outcome='blocked_policy' AND safe_code='READINESS_POLICY_BLOCKED')\n   OR (outcome='denied' AND safe_code='READINESS_SCOPE_NOT_CONFIGURED')\n   OR (outcome='denied' AND safe_code='READINESS_ACCESS_DENIED')\n   OR (outcome='denied' AND safe_code='READINESS_SOURCE_CHANGED')\n   OR (outcome='suppressed' AND safe_code='READINESS_MODE_MANUAL')\n   OR (outcome='suppressed' AND safe_code='READINESS_ACTIVE_RUN_EXISTS')\n   OR (outcome='suppressed' AND safe_code='READINESS_CONTEXT_SUPPRESSED')\n   OR (outcome='expired' AND safe_code='READINESS_OBSERVATION_EXPIRED')\n   OR (outcome='deferred' AND safe_code='READINESS_MODE_UNCONFIRMED')\n   OR (outcome='deferred' AND safe_code='READINESS_ROLE_UNKNOWN')\n   OR (outcome='deferred' AND safe_code='READINESS_DEPENDENCY_CHANGED')\n   OR (outcome='deferred' AND safe_code='READINESS_NOT_READY')\n   OR (outcome='deferred' AND safe_code='READINESS_COST_UNCONFIRMED')\n   OR (outcome='deferred' AND safe_code='READINESS_APPROVAL_MISSING')\n   OR (outcome='deferred' AND safe_code='READINESS_BACKOFF_PENDING')"]
+}
+_READINESS_COLUMNS={
+    "document_role_waits":[["tenant_id","text",True,None,""],["workspace_id","text",True,None,""],["actor_id","text",True,None,""],["notebook_id","text",True,None,""],["source_id","text",True,None,""],["source_version_id","text",True,None,""],["processing_run_id","text",True,None,""],["capability","text",False,None,""],["capability_slot","text",True,None,""],["payload","jsonb",True,None,""],["content_digest","text",True,None,""],["created_at","timestamp with time zone",True,"clock_timestamp()",""]],
+    "document_readiness_observations":[["event_id","text",True,None,""],["connection_id","text",True,None,""],["adapter_type","text",True,None,""],["capability","text",False,None,""],["model_catalog_digest","text",True,None,""],["configuration_version","bigint",True,None,""],["observed_at","timestamp with time zone",True,None,""],["received_at","timestamp with time zone",True,"clock_timestamp()",""],["probe_kind","text",True,None,""],["status","text",True,None,""],["observation_sequence","bigint",True,None,"a"],["content_digest","text",True,None,""],["payload","jsonb",True,None,""]],
+    "document_reprocess_receipts":[["tenant_id","text",True,None,""],["workspace_id","text",True,None,""],["actor_id","text",True,None,""],["notebook_id","text",True,None,""],["source_id","text",True,None,""],["source_version_id","text",True,None,""],["processing_run_id","text",True,None,""],["capability_slot","text",True,None,""],["event_id","text",True,None,""],["frozen_context_digest","text",True,None,""],["phase","text",True,None,""],["outcome","text",True,None,""],["safe_code","text",True,None,""],["new_run_id","text",False,None,""],["received_at","timestamp with time zone",True,"clock_timestamp()",""],["payload","jsonb",True,None,""],["content_digest","text",True,None,""]]
+}
+_READINESS_KEYS={
+    "document_role_waits":[_r2_key("p","tenant_id workspace_id processing_run_id capability_slot"),
+        _r2_key("u","tenant_id workspace_id processing_run_id capability_slot actor_id notebook_id source_id source_version_id")],
+    "document_readiness_observations":[_r2_key("p","event_id"),_r2_key("u","observation_sequence")],
+    "document_reprocess_receipts":[_r2_key("p","tenant_id workspace_id processing_run_id capability_slot event_id phase"),
+        _r2_key("f","event_id","public.document_readiness_observations","event_id"),
+        _r2_key("f","tenant_id workspace_id processing_run_id capability_slot actor_id notebook_id source_id source_version_id",
+            "public.document_role_waits","tenant_id workspace_id processing_run_id capability_slot actor_id notebook_id source_id source_version_id")],
+}
+_READINESS_INDEXES=[
+    ("document_readiness_latest",False,["connection_id","observation_sequence"],[0,3],None),
+    ("document_reprocess_first_suppression",True,["tenant_id","workspace_id","actor_id","source_version_id","capability_slot","frozen_context_digest","safe_code"],[0]*7,"outcome=\'suppressed\'"),
+    ("document_reprocess_one_run_context",True,["tenant_id","workspace_id","actor_id","source_version_id","capability_slot","frozen_context_digest"],[0]*6,"new_run_id IS NOT NULL"),
+]
 _TM_WORKER="operations_worker_observations"
 _TM_DEPLOY="operations_deployment_receipts"
 _TM_COST="operations_cost_receipts"
@@ -281,6 +321,12 @@ class PostgresCloudStore:
         def compatible(connection, revision, vector):
             if vector is None:
                 return False
+            if revision == "0072":
+                return (self._organization_storage_is_protected(connection)
+                    and self._notification_storage_is_protected(connection)
+                    and self._registered_restore_storage_is_protected(connection,expected_revision="0072")
+                    and self._telemetry_storage_is_protected(connection,expected_revision="0072")
+                    and self._document_readiness_storage_is_protected(connection))
             if revision == "0071":
                 return (self._organization_storage_is_protected(connection)
                     and self._notification_storage_is_protected(connection)
@@ -329,7 +375,7 @@ class PostgresCloudStore:
     @staticmethod
     def _registered_restore_storage_is_protected(connection,*,expected_revision="0070") -> bool:
         """0070 원 보호를 정확0071에서도 재검사. 구 revision 의미·DB 변경0."""
-        if expected_revision not in {"0070","0071"}:return False
+        if expected_revision not in {"0070","0071","0072"}:return False
         from .notification_postgres import _normalize_expression
         def values(row):return tuple(row.values()) if isinstance(row,dict) else tuple(row)
         def normalize(value):return None if value is None else _normalize_expression(value.replace("public.",""))
@@ -403,19 +449,20 @@ class PostgresCloudStore:
         except (Error,TypeError,ValueError,KeyError,AttributeError):return False
 
     @staticmethod
-    def _telemetry_storage_is_protected(connection) -> bool:
+    def _telemetry_storage_is_protected(connection,*,expected_revision="0071") -> bool:
         """0071 읽기 전용 catalog 검증. 0071SQL/권한/원장 생성·수정0."""
+        if expected_revision not in {"0071","0072"}:return False
         def values(row):return tuple(row.values()) if isinstance(row,dict) else tuple(row)
         def yes(row):return row is not None and values(row)==(True,)
         try:
             row=connection.execute("""/* m2:role */ SELECT
-                (SELECT count(*)=1 AND min(version_num)='0071' FROM public.alembic_version)
+                (SELECT count(*)=1 AND min(version_num)=%s FROM public.alembic_version)
                 AND EXISTS(SELECT 1 FROM pg_catalog.pg_roles WHERE rolname='daon_notebook_delete'
                     AND NOT rolcanlogin AND rolinherit AND NOT rolsuper AND NOT rolbypassrls AND NOT rolcreaterole AND NOT rolcreatedb)
                 AND EXISTS(SELECT 1 FROM pg_catalog.pg_roles WHERE rolname='daon_app' AND NOT rolsuper AND NOT rolbypassrls)
                 AND NOT pg_catalog.pg_has_role('daon_app','daon_notebook_delete','MEMBER')
                 AND (SELECT count(*)=8 FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
-                    WHERE n.nspname='public' AND p.proname=ANY(%s::text[]))""",([s.split("(")[0] for s in _TELEMETRY_FUNCTIONS],)).fetchone()
+                    WHERE n.nspname='public' AND p.proname=ANY(%s::text[]))""",(expected_revision,[s.split("(")[0] for s in _TELEMETRY_FUNCTIONS])).fetchone()
             if not yes(row):return False
             for table,columns in _TELEMETRY_COLUMNS.items():
                 row=connection.execute("""/* m2:table */ SELECT c.relkind='r' AND c.relpersistence='p'
@@ -495,6 +542,128 @@ class PostgresCloudStore:
                             AND md5(p.prosrc)=CASE WHEN c.relname='runs' THEN 'fda7bf31006011d2ce3d6b5cca168ecf' ELSE '85dbf2028dbced19cb0bdf00c391d4be' END))))
                 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
                 WHERE n.nspname='public' AND c.relname IN ('runs','routing_decisions','model_attempts')""").fetchone()
+            return yes(row)
+        except (Error,TypeError,ValueError,KeyError,AttributeError):return False
+
+    @staticmethod
+    def _document_readiness_storage_is_protected(connection) -> bool:
+        """0072 초안의 닫힌 catalog 계약. 조회만 수행하며 실제 적용/PG 시험을 대신하지 않는다."""
+        def values(row):return tuple(row.values()) if isinstance(row,dict) else tuple(row)
+        def yes(row):return row is not None and values(row)==(True,)
+        normalize=_telemetry_expression
+        tables=list(_READINESS_COLUMNS)
+        try:
+            row=connection.execute("""/* readiness:role */ SELECT
+                (SELECT count(*)=1 AND min(version_num)='0072' FROM public.alembic_version)
+                AND EXISTS(SELECT 1 FROM pg_catalog.pg_roles WHERE rolname='daon_notebook_delete'
+                    AND rolinherit AND NOT rolcanlogin AND NOT rolsuper AND NOT rolbypassrls
+                    AND NOT rolcreaterole AND NOT rolcreatedb AND NOT rolreplication)
+                AND EXISTS(SELECT 1 FROM pg_catalog.pg_roles WHERE rolname='daon_app' AND NOT rolsuper AND NOT rolbypassrls)
+                AND pg_catalog.pg_has_role('daon_notebook_delete','daon_app','MEMBER')
+                AND NOT pg_catalog.pg_has_role('daon_app','daon_notebook_delete','MEMBER')
+                AND (SELECT count(*)=12 FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+                    WHERE n.nspname='public' AND p.proname=ANY(%s::text[]))""",
+                ([name.split('(')[0] for name in _READINESS_FUNCTIONS],)).fetchone()
+            if not yes(row):return False
+            for table,columns in _READINESS_COLUMNS.items():
+                row=connection.execute("""/* readiness:table */ SELECT c.relkind='r' AND c.relpersistence='p'
+                    AND c.relowner='daon_notebook_delete'::regrole AND c.relrowsecurity AND c.relforcerowsecurity
+                    AND NOT pg_catalog.has_table_privilege('daon_app',c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+                    AND NOT EXISTS(SELECT 1 FROM pg_catalog.aclexplode(COALESCE(c.relacl,pg_catalog.acldefault('r',c.relowner))) a
+                        WHERE a.grantee<>c.relowner OR a.is_grantable)
+                    FROM pg_catalog.pg_class c WHERE c.oid=pg_catalog.to_regclass('public.'||%s)""",(table,)).fetchone()
+                if not yes(row):return False
+                rows=connection.execute("""/* readiness:columns */ SELECT a.attname,pg_catalog.format_type(a.atttypid,a.atttypmod),
+                    a.attnotnull,pg_catalog.pg_get_expr(d.adbin,d.adrelid),a.attidentity,
+                    a.attgenerated='' AND a.attcollation=t.typcollation
+                    AND NOT pg_catalog.has_column_privilege('daon_app',a.attrelid,a.attnum,'SELECT,INSERT,UPDATE,REFERENCES')
+                    AND NOT EXISTS(SELECT 1 FROM pg_catalog.aclexplode(a.attacl))
+                    FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_type t ON t.oid=a.atttypid
+                    LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum
+                    WHERE a.attrelid=pg_catalog.to_regclass('public.'||%s) AND a.attnum>0 AND NOT a.attisdropped
+                    ORDER BY a.attnum""",(table,)).fetchall()
+                if [values(row) for row in rows]!=[(*row,True) for row in columns]:return False
+                rows=connection.execute("""/* readiness:keys */ SELECT c.contype,
+                    ARRAY(SELECT a.attname::text FROM unnest(c.conkey) WITH ORDINALITY k(n,o)
+                        JOIN pg_catalog.pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=k.n ORDER BY k.o),
+                    CASE WHEN c.contype='f' THEN n.nspname||'.'||r.relname ELSE '' END,
+                    ARRAY(SELECT a.attname::text FROM unnest(c.confkey) WITH ORDINALITY k(n,o)
+                        JOIN pg_catalog.pg_attribute a ON a.attrelid=c.confrelid AND a.attnum=k.n ORDER BY k.o),
+                    c.convalidated AND (c.contype<>'f' OR (SELECT count(*)=4 AND bool_and(t.tgenabled='O')
+                        FROM pg_catalog.pg_trigger t WHERE t.tgconstraint=c.oid)),c.condeferrable,c.condeferred,
+                    CASE WHEN c.contype IN ('p','u') THEN i.indisvalid AND i.indisready AND i.indimmediate AND NOT i.indnullsnotdistinct ELSE true END,
+                    CASE WHEN c.contype='f' THEN c.confupdtype||c.confdeltype||c.confmatchtype ELSE '' END
+                    FROM pg_catalog.pg_constraint c LEFT JOIN pg_catalog.pg_class r ON r.oid=c.confrelid
+                    LEFT JOIN pg_catalog.pg_namespace n ON n.oid=r.relnamespace LEFT JOIN pg_catalog.pg_index i ON i.indexrelid=c.conindid
+                    WHERE c.conrelid=pg_catalog.to_regclass('public.'||%s) AND c.contype<>'c'""",(table,)).fetchall()
+                if sorted(map(values,rows),key=repr)!=sorted(_READINESS_KEYS[table],key=repr):return False
+                rows=connection.execute("""/* readiness:checks */ SELECT pg_catalog.pg_get_expr(c.conbin,c.conrelid),
+                    c.convalidated AND c.conislocal AND c.coninhcount=0 AND NOT c.connoinherit
+                    FROM pg_catalog.pg_constraint c WHERE c.conrelid=pg_catalog.to_regclass('public.'||%s) AND c.contype='c'""",(table,)).fetchall()
+                if any(values(row)[1] is not True for row in rows):return False
+                if sorted((normalize(values(row)[0]) for row in rows),key=repr)!=sorted(map(normalize,_READINESS_CHECKS[table]),key=repr):return False
+                rows=connection.execute("""/* readiness:policies */ SELECT p.polname,p.polcmd,p.polpermissive,
+                    ARRAY(SELECT r.rolname::text FROM unnest(p.polroles) role_oid JOIN pg_catalog.pg_roles r ON r.oid=role_oid ORDER BY r.rolname),
+                    pg_catalog.pg_get_expr(p.polqual,p.polrelid),pg_catalog.pg_get_expr(p.polwithcheck,p.polrelid)
+                    FROM pg_catalog.pg_policy p WHERE p.polrelid=pg_catalog.to_regclass('public.'||%s)""",(table,)).fetchall()
+                if [(*values(row)[:4],normalize(values(row)[4]),normalize(values(row)[5])) for row in rows]!=[
+                    (table+'_owner','*',True,['daon_notebook_delete'],normalize('true'),normalize('true'))]:return False
+            functions={**_READINESS_FUNCTIONS,'source_access_notification_access(text,text)':[
+                _READINESS_PARENT_HELPER_MD5,'boolean',False,'v','plpgsql',False,['p_version','p_notebook'],[]]}
+            for signature,expected in functions.items():
+                row=connection.execute("""/* readiness:function */ SELECT md5(p.prosrc),p.prorettype::regtype::text,p.proretset,
+                    p.provolatile,l.lanname,pg_catalog.has_function_privilege('daon_app',p.oid,'EXECUTE'),
+                    coalesce(p.proargnames,ARRAY[]::text[]),
+                    ARRAY(SELECT t::regtype::text FROM unnest(p.proallargtypes) WITH ORDINALITY a(t,o) ORDER BY o),
+                    p.proowner='daon_notebook_delete'::regrole AND p.prosecdef=%s AND p.prokind='f'
+                        AND p.pronargdefaults=0 AND p.provariadic=0 AND NOT p.proisstrict AND NOT p.proleakproof AND p.proparallel='u',
+                    p.proconfig=ARRAY['search_path=pg_catalog, pg_temp']::text[],
+                    NOT EXISTS(SELECT 1 FROM pg_catalog.aclexplode(COALESCE(p.proacl,pg_catalog.acldefault('f',p.proowner))) a
+                        WHERE a.grantee NOT IN (p.proowner,'daon_app'::regrole) OR a.is_grantable OR a.privilege_type<>'EXECUTE'),
+                    coalesce(p.proargmodes,ARRAY[]::"char"[])
+                    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_language l ON l.oid=p.prolang
+                    WHERE p.oid=pg_catalog.to_regprocedure(%s)""",(signature!='guard_document_readiness_immutable()','public.'+signature)).fetchone()
+                inputs=signature.split('(',1)[1][:-1]
+                input_count=0 if not inputs else len(inputs.split(','))
+                modes=['i']*input_count+['t']*(len(expected[7])-input_count) if expected[7] else []
+                if row is None or values(row)!=(*expected,True,True,True,modes):return False
+            rows=connection.execute("""/* readiness:indexes */ SELECT ci.relname,i.indisunique,
+                ARRAY(SELECT a.attname::text FROM unnest(i.indkey) WITH ORDINALITY k(n,o)
+                    JOIN pg_catalog.pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=k.n ORDER BY k.o),i.indoption::smallint[],
+                pg_catalog.pg_get_expr(i.indpred,i.indrelid),i.indisvalid AND i.indisready AND i.indimmediate
+                    AND NOT i.indnullsnotdistinct AND i.indexprs IS NULL AND i.indnkeyatts=i.indnatts
+                    AND am.amname='btree'
+                    AND NOT EXISTS(SELECT 1 FROM unnest(i.indclass,i.indcollation,i.indkey) k(op,coll,att)
+                        JOIN pg_catalog.pg_opclass oc ON oc.oid=k.op
+                        JOIN pg_catalog.pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=k.att
+                        WHERE NOT oc.opcdefault OR k.coll<>a.attcollation)
+                FROM pg_catalog.pg_index i JOIN pg_catalog.pg_class ct ON ct.oid=i.indrelid
+                JOIN pg_catalog.pg_namespace n ON n.oid=ct.relnamespace JOIN pg_catalog.pg_class ci ON ci.oid=i.indexrelid
+                JOIN pg_catalog.pg_am am ON am.oid=ci.relam
+                WHERE n.nspname='public' AND ct.relname=ANY(%s::text[])
+                AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_constraint c WHERE c.conindid=i.indexrelid)
+                ORDER BY ci.relname""",(tables,)).fetchall()
+            if [(*values(row)[:4],normalize(values(row)[4]),values(row)[5]) for row in rows]!=[
+                (*row[:4],normalize(row[4]),True) for row in _READINESS_INDEXES]:return False
+            rows=connection.execute("""/* readiness:triggers */ SELECT c.relname,t.tgname,t.tgtype,t.tgenabled,
+                n.nspname||'.'||p.proname,pg_catalog.pg_get_function_identity_arguments(p.oid),t.tgdeferrable,t.tginitdeferred,
+                encode(t.tgargs,'hex'),pg_catalog.pg_get_expr(t.tgqual,t.tgrelid),t.tgattr::text,t.tgconstraint=0 AND t.tgparentid=0
+                FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_class c ON c.oid=t.tgrelid
+                JOIN pg_catalog.pg_namespace cn ON cn.oid=c.relnamespace JOIN pg_catalog.pg_proc p ON p.oid=t.tgfoid
+                JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+                WHERE cn.nspname='public' AND c.relname=ANY(%s::text[]) AND NOT t.tgisinternal ORDER BY c.relname,t.tgname""",(tables,)).fetchall()
+            expected_triggers=sorted((table,table+suffix,kind,'O','public.guard_document_readiness_immutable','',False,False,'',None,'',True)
+                for table in tables for suffix,kind in (('_guard',31),('_no_truncate',34)))
+            if [values(row) for row in rows]!=expected_triggers:return False
+            row=connection.execute("""/* readiness:sequence */ SELECT s.relkind='S' AND s.relpersistence='p' AND s.relowner='daon_notebook_delete'::regrole
+                AND pg_catalog.pg_get_serial_sequence('public.document_readiness_observations','observation_sequence')::regclass=s.oid
+                AND q.seqtypid='bigint'::regtype AND q.seqstart=1 AND q.seqincrement=1 AND q.seqmin=1
+                AND q.seqmax=9223372036854775807 AND q.seqcache=1 AND NOT q.seqcycle
+                AND NOT pg_catalog.has_sequence_privilege('daon_app',s.oid,'USAGE,SELECT,UPDATE')
+                AND NOT EXISTS(SELECT 1 FROM pg_catalog.aclexplode(COALESCE(s.relacl,pg_catalog.acldefault('s',s.relowner))) a
+                    WHERE a.grantee<>s.relowner OR a.is_grantable)
+                FROM pg_catalog.pg_class s JOIN pg_catalog.pg_sequence q ON q.seqrelid=s.oid
+                WHERE s.oid=pg_catalog.to_regclass('public.document_readiness_observations_observation_sequence_seq')""").fetchone()
             return yes(row)
         except (Error,TypeError,ValueError,KeyError,AttributeError):return False
 

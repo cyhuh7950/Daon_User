@@ -809,6 +809,11 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
   const driveInputRef = useRef(null);
   const driveSubmitRef = useRef(false);
   const [sourceRetryError, setSourceRetryError] = useState(null);
+  const [sourceRetryTarget,setSourceRetryTarget]=useState(null);
+  const [sourceRetryMode,setSourceRetryMode]=useState("");
+  const [sourceRetrySaved,setSourceRetrySaved]=useState(null);
+  const sourceRetrySubmitting=useRef(false);
+  const sourceRetryGeneration=useRef(0);
   const [imageCitation, setImageCitation] = useState(null);
   const [imageCitationLoaded, setImageCitationLoaded] = useState(false);
   const [imageCitationError, setImageCitationError] = useState(null);
@@ -820,6 +825,12 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
   useEffect(()=>{setLawCitation(null);return()=>{lawCitationRequest.current?.abort();lawCitationRequest.current=null;};},[adapter,workspaceId]);
   const docxRequestRef = useRef(null);
   const sourceRetryKeysRef = useRef(new Map());
+  useEffect(()=>{
+    sourceRetryGeneration.current++;
+    sourceRetryKeysRef.current.clear();sourceRetrySubmitting.current=false;
+    setSourceRetryTarget(null);setSourceRetryMode("");setSourceRetrySaved(null);setSourceRetryError(null);
+    return()=>{sourceRetryGeneration.current++;};
+  },[adapter,workspaceId]);
   const pollControllerRef = useRef(null);
   const reportIdempotencyRef = useRef(null);
   const lifetimeControllerRef = useRef(null);
@@ -1226,18 +1237,31 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
     }
   };
 
-  const retrySource = async (source) => {
-    if (sourceAddPending || typeof adapter?.reprocessSource !== "function") return;
+  const retrySource = async (source, mode) => {
+    if (sourceAddPending || sourceRetrySubmitting.current || typeof adapter?.reprocessSource !== "function") return;
+    if(!["","auto","local_only","pinned"].includes(mode)){setSourceRetryError("SOURCE_REPROCESS_INPUT_INVALID");return;}
     setSourceRetryError(null);
     const retryIdentity = `${source.sourceId}:${source.sourceVersionId}`;
+    const pending=sourceRetryKeysRef.current.get(retryIdentity);
+    if(pending&&pending.mode!==mode){setSourceRetryError("SOURCE_REPROCESS_MODE_PENDING");return;}
+    sourceRetrySubmitting.current=true;
+    const generation=sourceRetryGeneration.current;
     try {
-      if (!sourceRetryKeysRef.current.has(retryIdentity)) sourceRetryKeysRef.current.set(retryIdentity, `source-retry-${secureUuid()}`);
+      if (!pending) sourceRetryKeysRef.current.set(retryIdentity,{key:`source-retry-${secureUuid()}`,mode});
       await runSourceSubmission(async (signal) => {
-        const result = await adapter.reprocessSource(source, { signal, idempotencyKey: sourceRetryKeysRef.current.get(retryIdentity) });
+        const result = await adapter.reprocessSource(source, { signal, idempotencyKey: sourceRetryKeysRef.current.get(retryIdentity).key,
+          ...(mode?{processingMode:mode}:{}) });
+        if(generation!==sourceRetryGeneration.current||signal.aborted)throw abortError();
+        if(mode&&(result?.processing_mode!==mode||typeof result.auto_requeue_configured!=="boolean"
+          ||(mode==="pinned"&&result.auto_requeue_configured!==false)))throw new Error("SOURCE_REPROCESS_RESPONSE_INVALID");
         sourceRetryKeysRef.current.delete(retryIdentity);
+        setSourceRetryTarget(null);
+        setSourceRetrySaved(mode?`Mode ${result.processing_mode} 저장 · ${result.auto_requeue_configured
+          ?"자동 재큐 설정 활성 (실행 성공을 뜻하지 않음)":"자동 재큐는 현재 비활성"}`:"재처리 요청 접수 · 자동 정책 미지정");
         return result;
-      }, (code) => setSourceRetryError(code));
-    } catch (error) { setSourceRetryError(safeErrorCode(error, "SOURCE_REPROCESS_FAILED")); }
+      }, (code) => {if(generation===sourceRetryGeneration.current)setSourceRetryError(code);});
+    } catch (error) { if(generation===sourceRetryGeneration.current)setSourceRetryError(safeErrorCode(error, "SOURCE_REPROCESS_FAILED")); }
+    finally{if(generation===sourceRetryGeneration.current)sourceRetrySubmitting.current=false;}
   };
 
   const submitPastedText = async () => {
@@ -1941,10 +1965,30 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
                 {(new Set(["failed", "waiting_model"]).has(source.sourceState)
                   || (typeof source.filename === "string" && /\.(docx|pptx)$/u.test(source.filename.toLowerCase())
                     && source.sourceState === "needs_review" && source.processingState === "completed" && source.jobState === "completed")) && typeof adapter?.reprocessSource === "function"
-                  ? <button type="button" disabled={sourceAddPending} onClick={() => void retrySource(source)}>재처리</button> : null}
+                  ? <button type="button" disabled={sourceAddPending} onClick={() => {
+                    const prior=sourceRetryKeysRef.current.get(`${source.sourceId}:${source.sourceVersionId}`);
+                    setSourceRetryTarget(source);setSourceRetryMode(prior?.mode??"");setSourceRetryError(null);setSourceRetrySaved(null);
+                  }}>재처리</button> : null}
               </li>
             ))}
           </ul>
+          {sourceRetryTarget?<section className="source-action-dialog" role="dialog" aria-modal="true" aria-label="Source 재처리 설정">
+            <strong>{sourceRetryTarget.filename??sourceRetryTarget.sourceId}</strong>
+            <label>처리 방식 <select aria-label="Source 재처리 Mode" value={sourceRetryMode}
+              disabled={sourceAddPending||sourceRetryKeysRef.current.has(`${sourceRetryTarget.sourceId}:${sourceRetryTarget.sourceVersionId}`)}
+              onChange={event=>setSourceRetryMode(event.target.value)}>
+              <option value="">기존 방식 유지 (자동 정책 미지정)</option>
+              <option value="auto">Auto · 조건 충족 시 재큐 허용</option>
+              <option value="local_only">Local only · 로컬 조건만 재큐 허용</option>
+              <option value="pinned">Pinned · 자동 재큐 금지</option>
+            </select></label>
+            <span title="선택한 Mode는 새 Run에 저장합니다. 자동 재큐는 서버의 승인 범위·현재 권한·모델·비용 조건을 모두 만족해야 하며 이 선택만으로 활성화되거나 성공하지 않습니다.">ⓘ</span>
+            {sourceRetryKeysRef.current.has(`${sourceRetryTarget.sourceId}:${sourceRetryTarget.sourceVersionId}`)
+              ?<p role="status">이전 요청의 저장 여부가 불확정합니다. 같은 설정·요청 키를 유지하며 자동 재전송하지 않습니다.</p>:null}
+            <button type="button" disabled={sourceAddPending} onClick={()=>setSourceRetryTarget(null)}>취소</button>
+            <button type="button" disabled={sourceAddPending} onClick={()=>void retrySource(sourceRetryTarget,sourceRetryMode)}>설정 확인·재처리</button>
+          </section>:null}
+          {sourceRetrySaved?<p role="status">{sourceRetrySaved}</p>:null}
           {viewState.selectedSource?.websiteSnapshot ? <WebsiteOriginal key={`${workspaceId}:${viewState.selectedSource.sourceVersionId}`} adapter={adapter} source={viewState.selectedSource} /> : null}
           {viewState.selectedSource?.lawSnapshot ? <OpenLawOriginal key={`${workspaceId}:${viewState.selectedSource.sourceVersionId}`} adapter={adapter} source={viewState.selectedSource} /> : null}
           {sourceRetryError ? <div className="inline-alert compact" role="alert">재처리를 요청하지 못했습니다. 연결과 처리 상태를 확인한 뒤 다시 시도하세요. ({sourceRetryError})</div> : null}

@@ -867,6 +867,30 @@ function validateOrganizationContract(document) {
   }
 }
 
+function validateSourceReprocessingContract(document){
+  const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b),require=ok=>{if(!ok)fail("R4 Source reprocessing exact contract");};
+  const op=document.paths?.["/api/v1/sources/{id}/processing-runs"]?.post,s=document.components?.schemas;
+  require(same(op?.requestBody,{required:true,content:{"application/json":{schema:{$ref:"#/components/schemas/SourceReprocessingMutation"}}}}));
+  require(op.responses?.["201"]?.content?.["application/json"]?.schema?.$ref==="#/components/schemas/SourceReprocessingEnvelope");
+  const ids=["workspace_id","notebook_id","source_version_id"],mode={type:"string",enum:["auto","local_only","pinned"]};
+  require(same(s.SourceReprocessingMutation,{type:"object",additionalProperties:false,required:["kind","attributes"],properties:{
+    kind:{const:"processing_run"},step_up_authorization_id:{type:"null"},
+    attributes:{type:"object",additionalProperties:false,required:ids,properties:{
+      ...Object.fromEntries(ids.map(id=>[id,{$ref:"#/components/schemas/OpaqueId",maxLength:128}])),processing_mode:mode}}}}));
+  const fields=["processing_run_id","source_id","source_version_id","retry_of_processing_run_id","processing_state","source_state","job_state","replayed"];
+  const expected={type:"object",additionalProperties:false,required:fields,properties:{
+    ...Object.fromEntries(fields.slice(0,4).map(id=>[id,{$ref:"#/components/schemas/OpaqueId"}])),
+    processing_state:{enum:["vision_llm_understanding","speech_to_text"]},source_state:{const:"processing"},job_state:{const:"pending"},
+    replayed:{type:"boolean"},processing_mode:mode,auto_requeue_configured:{type:"boolean"}},
+    dependentRequired:{processing_mode:["auto_requeue_configured"],auto_requeue_configured:["processing_mode"]},
+    allOf:[{if:{required:["processing_mode"],properties:{processing_mode:{const:"pinned"}}},then:{properties:{auto_requeue_configured:{const:false}}}}]};
+  require(same(s.SourceReprocessingResult,expected));
+  require(same(s.SourceReprocessingEnvelope,{type:"object",additionalProperties:false,required:["data","trace_id"],properties:{
+    data:{type:"object",additionalProperties:false,required:["id","kind","version","attributes"],properties:{
+      id:{$ref:"#/components/schemas/OpaqueId"},kind:{const:"processing_run"},version:{const:"2"},attributes:{$ref:"#/components/schemas/SourceReprocessingResult"}}},
+    trace_id:{$ref:"#/components/schemas/OpaqueId"}}}));
+}
+
 function validateWorkspaceOperationsContract(document){
   const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b),require=ok=>{if(!ok)fail("M2 workspace operations exact contract");};
   const s=document.components?.schemas,op=document.paths?.["/api/v1/workspaces/{id}/operations/status"]?.get;
@@ -1023,6 +1047,7 @@ export function validateOpenApiDocument(document) {
   for (const actualPath of actualPaths) if (!REQUIRED_PATHS.includes(actualPath)) fail(`unapproved path ${actualPath}`);
   validateSystemOperationsContract(document);
   validateWorkspaceOperationsContract(document);
+  validateSourceReprocessingContract(document);
   validateOrganizationContract(document);
   validateWebsiteContract(document);
   validateOpenLawContract(document);

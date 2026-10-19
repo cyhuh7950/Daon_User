@@ -2470,7 +2470,9 @@
         "x-implementation-owner": "R1-M6-05",
         "responses": {
           "201": {
-            "$ref": "#/components/responses/CreatedResponse"
+            "description":"새 재처리 Run 저장. Mode 미지정은 기존8필드, 명시는 저장된 processing_mode와 현재 scope 설정 auto_requeue_configured를 함께 반환한다. 설정 활성은 자동 실행·성공 증거가 아니다.",
+            "headers":{"X-Trace-Id":{"$ref":"#/components/headers/XTraceId"},"ETag":{"$ref":"#/components/headers/ETag"}},
+            "content":{"application/json":{"schema":{"$ref":"#/components/schemas/SourceReprocessingEnvelope"}}}
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
@@ -2503,7 +2505,8 @@
           }
         ],
         "requestBody": {
-          "$ref": "#/components/requestBodies/ResourceMutation"
+          "required":true,
+          "content":{"application/json":{"schema":{"$ref":"#/components/schemas/SourceReprocessingMutation"}}}
         }
       }
     },
@@ -8943,6 +8946,46 @@
         "properties": {
           "data":{"$ref":"#/components/schemas/OperationsStatusWithReadiness"},
           "meta":{"$ref":"#/components/schemas/OperationsStatusEnvelope/properties/meta"}
+        }
+      },
+      "SourceReprocessingMutation": {
+        "type":"object","additionalProperties":false,"required":["kind","attributes"],
+        "properties":{
+          "kind":{"const":"processing_run"},
+          "step_up_authorization_id":{"type":"null"},
+          "attributes":{"type":"object","additionalProperties":false,
+            "required":["workspace_id","notebook_id","source_version_id"],
+            "properties":{
+              "workspace_id":{"$ref":"#/components/schemas/OpaqueId","maxLength":128},
+              "notebook_id":{"$ref":"#/components/schemas/OpaqueId","maxLength":128},
+              "source_version_id":{"$ref":"#/components/schemas/OpaqueId","maxLength":128},
+              "processing_mode":{"type":"string","enum":["auto","local_only","pinned"]}
+            }}
+        }
+      },
+      "SourceReprocessingResult": {
+        "type":"object","additionalProperties":false,
+        "required":["processing_run_id","source_id","source_version_id","retry_of_processing_run_id","processing_state","source_state","job_state","replayed"],
+        "properties":{
+          "processing_run_id":{"$ref":"#/components/schemas/OpaqueId"},
+          "source_id":{"$ref":"#/components/schemas/OpaqueId"},
+          "source_version_id":{"$ref":"#/components/schemas/OpaqueId"},
+          "retry_of_processing_run_id":{"$ref":"#/components/schemas/OpaqueId"},
+          "processing_state":{"enum":["vision_llm_understanding","speech_to_text"]},
+          "source_state":{"const":"processing"},"job_state":{"const":"pending"},"replayed":{"type":"boolean"},
+          "processing_mode":{"type":"string","enum":["auto","local_only","pinned"]},
+          "auto_requeue_configured":{"type":"boolean"}
+        },
+        "dependentRequired":{"processing_mode":["auto_requeue_configured"],"auto_requeue_configured":["processing_mode"]},
+        "allOf":[{"if":{"required":["processing_mode"],"properties":{"processing_mode":{"const":"pinned"}}},"then":{"properties":{"auto_requeue_configured":{"const":false}}}}]
+      },
+      "SourceReprocessingEnvelope": {
+        "type":"object","additionalProperties":false,"required":["data","trace_id"],
+        "properties":{
+          "data":{"type":"object","additionalProperties":false,"required":["id","kind","version","attributes"],"properties":{
+            "id":{"$ref":"#/components/schemas/OpaqueId"},"kind":{"const":"processing_run"},"version":{"const":"2"},
+            "attributes":{"$ref":"#/components/schemas/SourceReprocessingResult"}}},
+          "trace_id":{"$ref":"#/components/schemas/OpaqueId"}
         }
       },
       "OutputFormatDefaults": {

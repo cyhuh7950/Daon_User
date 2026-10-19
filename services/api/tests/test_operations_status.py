@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -63,20 +64,37 @@ def readiness_metric_port(monkeypatch):
             for i, (key, value) in enumerate(zip(READINESS_IDS, (2, 0, 0, 0, 1, 0)))]
     calls, auth, transactions = [], [], []
     class Store:
+        setting = None
+        expected_filter = ["version-a"]
+        info = SimpleNamespace(transaction_status=psycopg.pq.TransactionStatus.INTRANS)
         @contextmanager
         def _transaction(self, context):
             transaction = {"number": len(transactions), "read_only": False}
             transactions.append(transaction)
             self.current = transaction
+            original_setting = self.setting
             try: yield self
-            finally: self.current = None
+            finally:
+                self.setting = original_setting  # PostgreSQL의 SET LOCAL/rollback 수명 대역.
+                self.info.transaction_status = psycopg.pq.TransactionStatus.INTRANS
+                self.current = None
         def execute(self, sql, params=()):
             if sql == "SET TRANSACTION READ ONLY":
                 self.current["read_only"] = True
                 return SimpleNamespace()
+            if sql == "SET LOCAL statement_timeout='2000ms'":
+                self.current["timeout_ms"] = 2000
+                return SimpleNamespace()
+            if sql == "SELECT current_setting('app.readiness_visible_source_versions',true)":
+                return SimpleNamespace(fetchone=lambda: (self.setting,))
+            if sql == "SELECT set_config('app.readiness_visible_source_versions',%s,true)":
+                self.setting = params[0]
+                return SimpleNamespace()
             assert sql.lstrip().startswith("SELECT ") and "public.read_document_readiness_metrics(" in sql
             assert params == ("tenant-1", "workspace-1", "actor-1", "self")
             assert self.current["read_only"], "집계 함수는 별도 READ ONLY transaction에서만 호출"
+            assert self.current.get("timeout_ms") == 2000, "집계 SQL 자체에 고정 실행 예산 필요"
+            assert json.loads(self.setting) == self.expected_filter, "서버의 실제 가시 Version 교집합 필터 필요"
             calls.append(sql)
             return SimpleNamespace(fetchall=lambda: rows)
     repository = PostgresOperationsStatusRepository(Store())
@@ -86,7 +104,48 @@ def readiness_metric_port(monkeypatch):
     monkeypatch.setattr(repository, "_authorize_telemetry", authorize)
     monkeypatch.setattr(repository, "_visible_sources", lambda *args: {"version-a": {("notebook-a", "actor-1", "object-a")}})
     context = OperationsStatusContext("tenant-1", "workspace-1", "actor-1", include_readiness=True)
-    return SimpleNamespace(repository=repository, context=context, rows=rows, now=now, calls=calls, auth=auth, transactions=transactions)
+    return SimpleNamespace(repository=repository, context=context, rows=rows, now=now, calls=calls, auth=auth,
+                           transactions=transactions, store=repository._cloud_store)
+
+
+@pytest.mark.parametrize("invalid", ["count", "bytes", "unsafe"])
+def test_readiness_metrics_visible_filter_rejects_excess_or_unsafe_without_query(readiness_metric_port, monkeypatch, invalid):
+    f = readiness_metric_port
+    keys = ([f"v-{i}" for i in range(257)] if invalid == "count" else
+            [f"v{i}-" + "a"*250 for i in range(256)] if invalid == "bytes" else ["version/unsafe"])
+    monkeypatch.setattr(f.repository, "_visible_sources", lambda *args: dict.fromkeys(keys, set()))
+    with pytest.raises(ValueError): f.repository.read_readiness_metrics(f.context)
+    assert f.calls == []
+
+
+@pytest.mark.parametrize("original", [None, "", '["preexisting-safe-version"]'])
+@pytest.mark.parametrize("error_type", [psycopg.errors.InsufficientPrivilege, psycopg.errors.QueryCanceled])
+def test_readiness_metrics_filter_context_restored_on_success_and_database_error(readiness_metric_port, monkeypatch, original, error_type):
+    f = readiness_metric_port
+    f.store.setting = original
+    f.repository.read_readiness_metrics(f.context)
+    assert f.store.setting == original
+    execute = f.store.execute
+    def fail_query(sql, params=()):
+        if "FROM public.read_document_readiness_metrics(" in sql:
+            f.store.info.transaction_status = psycopg.pq.TransactionStatus.INERROR
+            raise error_type("synthetic SQL rejection")
+        return execute(sql, params)
+    monkeypatch.setattr(f.store, "execute", fail_query)
+    with pytest.raises(psycopg.Error): f.repository.read_readiness_metrics(f.context)
+    assert f.store.setting == original
+    monkeypatch.setattr(f.store, "execute", execute)
+    f.repository.read_readiness_metrics(f.context)
+    assert f.store.setting == original
+
+
+def test_readiness_metrics_explicit_empty_intersection_is_not_collected_not_zero(readiness_metric_port, monkeypatch):
+    f = readiness_metric_port
+    monkeypatch.setattr(f.repository, "_visible_sources", lambda *args: {})
+    f.store.expected_filter = []
+    f.rows[:] = [(key, None, False, True, f.now, None, None) for key in READINESS_IDS]
+    result = f.repository.read_readiness_metrics(f.context)
+    assert all(row["value"] is None and row["state"] == "not_collected" for row in result)
 
 
 def test_readiness_metrics_project_only_closed_aggregate_and_preserve_partial_lower_bound(readiness_metric_port):

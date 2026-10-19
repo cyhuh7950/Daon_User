@@ -68,9 +68,12 @@ export async function uploadSource(workspaceId, file, { notebookId, idempotencyK
 
 export const uploadPdfSource = uploadSource;
 
-export async function reprocessSource(workspaceId, source, { notebookId, idempotencyKey, signal, fetchImpl = fetch } = {}) {
+export async function reprocessSource(workspaceId, source, options = {}) {
+  const { notebookId, idempotencyKey, signal, fetchImpl = fetch, processingMode } = options;
+  const hasMode=Object.hasOwn(options,"processingMode");
   if (!SAFE_ID.test(workspaceId ?? "") || !SAFE_ID.test(notebookId ?? "")
-      || !SAFE_ID.test(source?.sourceId ?? "") || !SAFE_ID.test(source?.sourceVersionId ?? "")) {
+      || !SAFE_ID.test(source?.sourceId ?? "") || !SAFE_ID.test(source?.sourceVersionId ?? "")
+      || (hasMode && !["auto","local_only","pinned"].includes(processingMode))) {
     throw new Error("SOURCE_REPROCESS_INPUT_INVALID");
   }
   const key = idempotencyKey ?? `source-retry-${secureUuid()}`;
@@ -79,6 +82,7 @@ export async function reprocessSource(workspaceId, source, { notebookId, idempot
     headers: { "Content-Type": "application/json", "Idempotency-Key": key },
     body: JSON.stringify({ kind: "processing_run", attributes: {
       workspace_id: workspaceId, notebook_id: notebookId, source_version_id: source.sourceVersionId,
+      ...(hasMode?{processing_mode:processingMode}:{}),
     } }),
   });
   let payload;
@@ -92,6 +96,8 @@ export async function reprocessSource(workspaceId, source, { notebookId, idempot
       || result.source_version_id !== source.sourceVersionId || result.source_state !== "processing"
       || !["vision_llm_understanding", "speech_to_text"].includes(result.processing_state) || result.job_state !== "pending"
       || typeof result.replayed !== "boolean") throw new Error("SOURCE_REPROCESS_RESPONSE_INVALID");
+  if(hasMode&&(result.processing_mode!==processingMode||typeof result.auto_requeue_configured!=="boolean"
+      || (processingMode==="pinned"&&result.auto_requeue_configured!==false)))throw new Error("SOURCE_REPROCESS_RESPONSE_INVALID");
   return result;
 }
 

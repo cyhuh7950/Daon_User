@@ -59,7 +59,7 @@ CREATE TABLE public.document_readiness_observations (
  payload jsonb NOT NULL CHECK(jsonb_typeof(payload)='object' AND octet_length(payload::text)<=16384),
  CHECK(probe_kind<>'provider_connection_check' OR capability IS NULL),
  CHECK(probe_kind<>'native_asr_ready' OR capability IS NOT DISTINCT FROM 'speech_to_text'),
- CHECK(observed_at<=received_at+interval '5 seconds')
+ CHECK(observed_at<=received_at+'00:00:05'::interval)
 );
 CREATE INDEX document_readiness_latest ON public.document_readiness_observations(connection_id,observation_sequence DESC);
 CREATE TABLE public.document_reprocess_receipts (
@@ -84,14 +84,23 @@ CREATE TABLE public.document_reprocess_receipts (
    REFERENCES public.document_role_waits(tenant_id,workspace_id,processing_run_id,capability_slot,actor_id,notebook_id,source_id,source_version_id),
  CHECK((phase='deferred')=(outcome='deferred')),
  CHECK((new_run_id IS NOT NULL)=(outcome IN ('enqueued','blocked_cost','blocked_policy'))),
- CHECK((outcome,safe_code) IN (('enqueued','READY_REPROCESS_ALLOWED'),('blocked_cost','COST_LIMIT_EXCEEDED'),
-   ('blocked_policy','READINESS_POLICY_BLOCKED'),('denied','READINESS_SCOPE_NOT_CONFIGURED'),
-   ('denied','READINESS_ACCESS_DENIED'),('denied','READINESS_SOURCE_CHANGED'),
-   ('suppressed','READINESS_MODE_MANUAL'),('suppressed','READINESS_ACTIVE_RUN_EXISTS'),
-   ('suppressed','READINESS_CONTEXT_SUPPRESSED'),('expired','READINESS_OBSERVATION_EXPIRED'),
-   ('deferred','READINESS_MODE_UNCONFIRMED'),('deferred','READINESS_ROLE_UNKNOWN'),
-   ('deferred','READINESS_DEPENDENCY_CHANGED'),('deferred','READINESS_NOT_READY'),
-   ('deferred','READINESS_COST_UNCONFIRMED'),('deferred','READINESS_APPROVAL_MISSING'),('deferred','READINESS_BACKOFF_PENDING')))
+ CHECK((outcome='enqueued' AND safe_code='READY_REPROCESS_ALLOWED')
+   OR (outcome='blocked_cost' AND safe_code='COST_LIMIT_EXCEEDED')
+   OR (outcome='blocked_policy' AND safe_code='READINESS_POLICY_BLOCKED')
+   OR (outcome='denied' AND safe_code='READINESS_SCOPE_NOT_CONFIGURED')
+   OR (outcome='denied' AND safe_code='READINESS_ACCESS_DENIED')
+   OR (outcome='denied' AND safe_code='READINESS_SOURCE_CHANGED')
+   OR (outcome='suppressed' AND safe_code='READINESS_MODE_MANUAL')
+   OR (outcome='suppressed' AND safe_code='READINESS_ACTIVE_RUN_EXISTS')
+   OR (outcome='suppressed' AND safe_code='READINESS_CONTEXT_SUPPRESSED')
+   OR (outcome='expired' AND safe_code='READINESS_OBSERVATION_EXPIRED')
+   OR (outcome='deferred' AND safe_code='READINESS_MODE_UNCONFIRMED')
+   OR (outcome='deferred' AND safe_code='READINESS_ROLE_UNKNOWN')
+   OR (outcome='deferred' AND safe_code='READINESS_DEPENDENCY_CHANGED')
+   OR (outcome='deferred' AND safe_code='READINESS_NOT_READY')
+   OR (outcome='deferred' AND safe_code='READINESS_COST_UNCONFIRMED')
+   OR (outcome='deferred' AND safe_code='READINESS_APPROVAL_MISSING')
+   OR (outcome='deferred' AND safe_code='READINESS_BACKOFF_PENDING'))
 );
 CREATE UNIQUE INDEX document_reprocess_one_run_context ON public.document_reprocess_receipts
  (tenant_id,workspace_id,actor_id,source_version_id,capability_slot,frozen_context_digest) WHERE new_run_id IS NOT NULL;
@@ -407,6 +416,135 @@ BEGIN
  RETURN removed;
 END $$;
 
+-- 집계만 반환한다. 업무 DML/행 잠금 없이 READ ONLY transaction에서 호출한다.
+-- 기존 private helper의 현재 원문/특수 Source 정책은 같은 내부 owner로만 재사용한다.
+CREATE FUNCTION public.read_document_readiness_metrics(t text,w text,a text,scope text)
+RETURNS TABLE(metric_id text,value bigint,has_records boolean,coverage_partial boolean,
+ checked_at timestamptz,window_start timestamptz,window_end timestamptz)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $readiness_metrics$
+DECLARE original_notebook text:=current_setting('app.notebook_id',true);
+ filter_text text:=nullif(current_setting('app.readiness_visible_source_versions',true),'');
+ visible_filter jsonb;
+ query_time timestamptz:=clock_timestamp(); effective_role text; kind text; item record;
+ visible_wait_keys jsonb:='[]'::jsonb; source_allowed boolean; role_records boolean:=false;
+ suppression_records boolean:=false; suppression_count bigint:=0; role_count bigint; i integer;
+ counts bigint[]:=ARRAY[0,0,0,0,0]::bigint[];
+ ids text[]:=ARRAY['waiting_text_generation','waiting_image_understanding','waiting_document_parsing',
+   'waiting_speech_to_text','waiting_role_unknown'];
+BEGIN
+ -- 이 목록은 서버가 현재 확인한 추가 제한일 뿐이다. 이후 실제 DB 인가를 대체하지 않는다.
+ IF filter_text IS NULL OR octet_length(filter_text)>65536 THEN
+   RAISE EXCEPTION 'DOCUMENT_READINESS_FILTER_INVALID' USING ERRCODE='22023'; END IF;
+ visible_filter:=filter_text::jsonb;
+ IF jsonb_typeof(visible_filter) IS DISTINCT FROM 'array' THEN
+   RAISE EXCEPTION 'DOCUMENT_READINESS_FILTER_INVALID' USING ERRCODE='22023'; END IF;
+ IF jsonb_array_length(visible_filter)>256
+   OR EXISTS(SELECT 1 FROM jsonb_array_elements(visible_filter) AS items(entry)
+     WHERE jsonb_typeof(entry)<>'string' OR (entry#>>'{}') !~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$')
+   OR (SELECT count(DISTINCT entry) FROM jsonb_array_elements(visible_filter) AS items(entry))<>jsonb_array_length(visible_filter) THEN
+   RAISE EXCEPTION 'DOCUMENT_READINESS_FILTER_INVALID' USING ERRCODE='22023'; END IF;
+ IF t IS NULL OR w IS NULL OR a IS NULL OR scope IS NULL OR scope NOT IN ('self','workspace_visible')
+   OR t IS DISTINCT FROM nullif(current_setting('app.tenant_id',true),'')
+   OR w IS DISTINCT FROM nullif(current_setting('app.workspace_id',true),'')
+   OR a IS DISTINCT FROM nullif(current_setting('app.actor_id',true),'') THEN
+   RAISE EXCEPTION 'DOCUMENT_READINESS_SCOPE_DENIED' USING ERRCODE='42501'; END IF;
+ SELECT aw.workspace_kind,CASE WHEN tr.user_id IS NOT NULL THEN CASE
+    WHEN aw.workspace_kind='personal' AND tr.role='personal_owner' THEN tr.role
+    WHEN aw.workspace_kind='organization' AND tr.role='organization_admin' THEN tr.role END
+   ELSE CASE WHEN m.role IN ('workspace_admin','editor','reviewer','approver','viewer') THEN m.role END END INTO kind,effective_role
+ FROM public.identity_users u JOIN public.identity_auth_workspaces aw ON aw.tenant_id=t AND aw.workspace_id=w
+ LEFT JOIN public.identity_auth_tenant_roles tr ON tr.tenant_id=t AND tr.user_id=a AND tr.state='active'
+ LEFT JOIN public.identity_auth_memberships m ON m.tenant_id=t AND m.workspace_id=w AND m.user_id=a AND m.state='active'
+ WHERE u.user_id=a AND u.state='active';
+ IF effective_role IS NULL OR effective_role NOT IN
+   ('personal_owner','organization_admin','workspace_admin','editor','reviewer','approver','viewer')
+   OR (scope='workspace_visible' AND effective_role NOT IN ('personal_owner','organization_admin','workspace_admin'))
+   OR (kind='organization' AND EXISTS(SELECT 1 FROM public.identity_org_tenant_memberships o
+       WHERE o.tenant_id=t AND o.user_id=a AND o.state<>'active')) THEN
+   RAISE EXCEPTION 'DOCUMENT_READINESS_ACCESS_DENIED' USING ERRCODE='42501'; END IF;
+
+ -- has_records 자체도 동일한 현재 가시성 안에서만 결정한다. 다른 자료 존재를 누설하지 않는다.
+ FOR item IN
+  SELECT x.processing_run_id,x.capability_slot,x.source_version_id,x.notebook_id,src.state,
+   sv.canonical_json->>'origin_kind' AS origin_kind,latest.record_id=x.processing_run_id AS current_run
+  FROM public.document_role_waits x
+  JOIN public.sources src ON (src.tenant_id,src.workspace_id,src.record_id)=(x.tenant_id,x.workspace_id,x.source_id)
+  JOIN public.source_versions sv ON (sv.tenant_id,sv.workspace_id,sv.record_id,sv.source_id)=
+    (x.tenant_id,x.workspace_id,x.source_version_id,x.source_id)
+  JOIN public.processing_runs pr ON (pr.tenant_id,pr.workspace_id,pr.record_id,pr.source_version_id)=
+    (x.tenant_id,x.workspace_id,x.processing_run_id,x.source_version_id) AND pr.created_by=x.actor_id
+    AND pr.canonical_json->>'notebook_id'=x.notebook_id
+  JOIN public.notebooks nb ON (nb.tenant_id,nb.workspace_id,nb.notebook_id)=(x.tenant_id,x.workspace_id,x.notebook_id)
+  JOIN public.notebook_bindings b ON (b.tenant_id,b.workspace_id,b.notebook_id,b.record_id,b.version_id)=
+    (x.tenant_id,x.workspace_id,x.notebook_id,x.source_id,x.source_version_id) AND b.binding_kind='source'
+  JOIN LATERAL (SELECT lp.record_id FROM public.processing_runs lp
+    WHERE (lp.tenant_id,lp.workspace_id,lp.source_version_id)=(x.tenant_id,x.workspace_id,x.source_version_id)
+    ORDER BY lp.created_at DESC,lp.record_id DESC LIMIT 1) latest ON true
+  WHERE x.tenant_id=t AND x.workspace_id=w AND (scope='workspace_visible' OR (x.actor_id=a AND nb.created_by=a))
+   AND sv.record_id IN (SELECT jsonb_array_elements_text(visible_filter))
+   AND src.state NOT IN ('expired','disabled','deleting','deleted')
+   AND NOT EXISTS(SELECT 1 FROM public.identity_auth_source_access acl WHERE acl.tenant_id=t
+     AND acl.workspace_id=w AND acl.user_id=a AND acl.source_version_id=x.source_version_id AND acl.allowed=0)
+   AND NOT EXISTS(SELECT 1 FROM public.source_versions newer WHERE newer.tenant_id=t AND newer.workspace_id=w
+     AND newer.source_id=x.source_id AND newer.version>sv.version)
+   AND NOT EXISTS(SELECT 1 FROM public.notebook_source_unbindings u WHERE u.tenant_id=t AND u.workspace_id=w
+     AND u.notebook_id=x.notebook_id AND u.source_id=x.source_id AND u.source_version_id=x.source_version_id)
+   AND NOT EXISTS(SELECT 1 FROM public.notebook_deletion_requests d WHERE d.tenant_id=t AND d.workspace_id=w
+     AND d.notebook_id=x.notebook_id AND d.state IN ('accepted','deleting','completed'))
+   AND NOT EXISTS(SELECT 1 FROM public.deletion_requests d WHERE d.tenant_id=t AND d.workspace_id=w
+     AND d.source_id=x.source_id AND (d.source_active=false OR d.state='purged'))
+ LOOP
+  IF coalesce(item.origin_kind,'') IN ('website','mcp_open_law') THEN
+   -- Notebook는 현재 binding에서 읽었다. caller의 ambient Notebook를 자료 근거로 사용하지 않는다.
+   PERFORM set_config('app.notebook_id',item.notebook_id,true);
+   source_allowed:=public.source_access_notification_access(item.source_version_id,item.notebook_id);
+   PERFORM set_config('app.notebook_id',coalesce(original_notebook,''),true);
+  ELSE
+   source_allowed:=public.source_access_notification_access(item.source_version_id,NULL);
+  END IF;
+  IF source_allowed IS DISTINCT FROM true THEN CONTINUE; END IF;
+  role_records:=true;
+  visible_wait_keys:=visible_wait_keys||jsonb_build_array(jsonb_build_object(
+    'processing_run_id',item.processing_run_id,'capability_slot',item.capability_slot));
+ END LOOP;
+
+ -- 같은 Version/역할의 여러 과거 실패는 현재 대기 수를 늘리지 않는다.
+ FOR i IN 1..5 LOOP
+  SELECT count(DISTINCT x.source_version_id) INTO role_count
+  FROM public.document_role_waits x JOIN jsonb_to_recordset(visible_wait_keys)
+    AS v(processing_run_id text,capability_slot text)
+    ON (v.processing_run_id,v.capability_slot)=(x.processing_run_id,x.capability_slot)
+  JOIN public.sources src ON (src.tenant_id,src.workspace_id,src.record_id)=(x.tenant_id,x.workspace_id,x.source_id)
+  JOIN LATERAL (SELECT lp.record_id FROM public.processing_runs lp
+    WHERE (lp.tenant_id,lp.workspace_id,lp.source_version_id)=(x.tenant_id,x.workspace_id,x.source_version_id)
+    ORDER BY lp.created_at DESC,lp.record_id DESC LIMIT 1) latest ON true
+  WHERE x.tenant_id=t AND x.workspace_id=w AND src.state='waiting_model' AND latest.record_id=x.processing_run_id
+    AND x.capability_slot=(ARRAY['text_generation','image_understanding','document_parsing','speech_to_text','unknown'])[i];
+  counts[i]:=role_count;
+ END LOOP;
+ -- 24h로 먼저 자르지 않는다. 과거 최초 억제가 창 밖이면 후속 시도로 최근 수를 부풀리지 않는다.
+ SELECT count(*)>0,count(*) FILTER(WHERE first_received>query_time-interval '24 hours' AND first_received<=query_time)
+ INTO suppression_records,suppression_count FROM (
+  SELECT min(c.received_at) AS first_received FROM public.document_reprocess_receipts c
+  JOIN jsonb_to_recordset(visible_wait_keys) AS v(processing_run_id text,capability_slot text)
+    ON (v.processing_run_id,v.capability_slot)=(c.processing_run_id,c.capability_slot)
+  WHERE c.tenant_id=t AND c.workspace_id=w AND c.outcome='suppressed'
+  GROUP BY c.actor_id,c.source_version_id,c.capability_slot,c.frozen_context_digest
+ ) first_suppression;
+ PERFORM set_config('app.notebook_id',coalesce(original_notebook,''),true);
+ FOR i IN 1..5 LOOP
+  RETURN QUERY SELECT ids[i],CASE WHEN role_records THEN counts[i] ELSE NULL::bigint END,
+    role_records,true,query_time,NULL::timestamptz,NULL::timestamptz;
+ END LOOP;
+ RETURN QUERY SELECT 'retry_suppressed_contexts_24h'::text,
+   CASE WHEN suppression_records THEN suppression_count ELSE NULL::bigint END,suppression_records,true,query_time,
+   CASE WHEN suppression_records THEN query_time-interval '24 hours' ELSE NULL::timestamptz END,
+   CASE WHEN suppression_records THEN query_time ELSE NULL::timestamptz END;
+EXCEPTION WHEN OTHERS THEN
+ PERFORM set_config('app.notebook_id',coalesce(original_notebook,''),true);
+ RAISE;
+END $readiness_metrics$;
+
 DO $function_permissions$
 DECLARE signature text;
 BEGIN
@@ -416,7 +554,7 @@ BEGIN
   'read_document_role_wait(text,text,text,text)','read_latest_document_readiness_observation(text)',
   'read_document_reprocess_history(text,text,text,text,text,text,text,text,text)',
   'record_document_reprocess_receipt(jsonb)','read_document_blocked_parent(text,text,text,text,text,text,text,text)',
-  'cleanup_document_readiness(text,text,integer)'] LOOP
+  'cleanup_document_readiness(text,text,integer)','read_document_readiness_metrics(text,text,text,text)'] LOOP
   EXECUTE 'ALTER FUNCTION public.'||signature||' OWNER TO daon_notebook_delete';
   EXECUTE 'REVOKE ALL ON FUNCTION public.'||signature||' FROM PUBLIC,daon_app';
  END LOOP;
@@ -424,7 +562,8 @@ BEGIN
   'discover_document_role_waits(jsonb,text[],integer)','read_document_role_wait(text,text,text,text)',
   'read_latest_document_readiness_observation(text)',
   'read_document_reprocess_history(text,text,text,text,text,text,text,text,text)',
-  'record_document_reprocess_receipt(jsonb)','read_document_blocked_parent(text,text,text,text,text,text,text,text)'] LOOP
+  'record_document_reprocess_receipt(jsonb)','read_document_blocked_parent(text,text,text,text,text,text,text,text)',
+  'read_document_readiness_metrics(text,text,text,text)'] LOOP
   EXECUTE 'GRANT EXECUTE ON FUNCTION public.'||signature||' TO daon_app';
  END LOOP;
 END $function_permissions$;

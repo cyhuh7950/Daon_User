@@ -38,7 +38,10 @@ async function mount(extra = {}) {
   const base = actual("workspace-1", "notebook-s16");
   const adapter = { ...base, listSources: async () => [source], listStudioOutputs: async () => [], listProductStudioOutputs: async () => ({ outputs: [], studioLocks: [] }),
     listConnectors: async () => [], listKnowledgePackages: async () => [], getOperationsStatus: async () => null, listSyncOperations: async () => [],
-    getLicense: async () => null, getEgressPolicy: async () => null, ...extra };
+    getLicense: async () => null, getEgressPolicy: async () => null,
+    // 삭제/재처리 시험의 통신 계수에 무관한 Studio 조회를 섞지 않는다. 성공 근거로 사용하지 않음.
+    getStudioApprovalPolicy: async () => { throw Error("STUDIO_POLICY_NOT_UNDER_TEST"); },
+    listStudioApprovalNotices: async () => { throw Error("STUDIO_NOTICES_NOT_UNDER_TEST"); }, ...extra };
   const container = dom.document.createElement("div"); dom.document.body.appendChild(container);
   const root = createRoot(container);
   const w = { container, act, cleanup: async () => { await act(async () => root.unmount()); dom.restore(); } };
@@ -60,6 +63,68 @@ async function password(w, value) {
     props(input).onChange?.({ target: input, currentTarget: input });
   });
 }
+
+test("R4 reprocess confirms explicit mode before submission and reports only actual configured state",async()=>{
+  const calls=[];
+  const w=await mount({listSources:async()=>[{...source,source_state:"waiting_model",processing_state:"failed"}],
+    reprocessSource:async(s,options)=>{calls.push({s,options});return {processing_run_id:"run-r4",source_id:source.source_id,
+      source_version_id:source.source_version_id,processing_mode:options.processingMode,auto_requeue_configured:false};},
+    getProcessingStatus:async()=>{throw Error("synthetic polling unavailable");}});
+  try{
+    await click(w,"재처리");
+    assert.equal(calls.length,0);
+    const select=findElements(w.container,n=>n.tagName==="SELECT"&&n.getAttribute("aria-label")==="Source 재처리 Mode")[0];
+    assert.ok(select);
+    await w.act(async()=>props(select).onChange({target:{value:"auto"}}));
+    await click(w,"설정 확인·재처리");
+    assert.equal(calls.length,1);
+    assert.equal(calls[0].options.processingMode,"auto");
+    assert.match(w.container.textContent,/자동 재큐는 현재 비활성/u);
+    assert.doesNotMatch(w.container.textContent,/자동 재처리 완료/u);
+  }finally{await w.cleanup();}
+});
+
+test("R4 actual Notebook adapter preserves explicit Mode and binds the current Notebook",async()=>{
+  const previous=globalThis.fetch,calls=[];
+  globalThis.fetch=async(url,init)=>{
+    calls.push({url,init});return Response.json({data:{id:"run-r4",kind:"processing_run",version:"2",attributes:{
+      processing_run_id:"run-r4",source_id:source.source_id,source_version_id:source.source_version_id,
+      retry_of_processing_run_id:"run-prior",processing_state:"vision_llm_understanding",source_state:"processing",job_state:"pending",
+      replayed:false,processing_mode:"local_only",auto_requeue_configured:false}}},{status:201});
+  };
+  try{
+    const adapter=createNotebookContextWorkspaceAdapter(actual("workspace-1","notebook-s16"),context());
+    const result=await adapter.reprocessSource({sourceId:source.source_id,sourceVersionId:source.source_version_id},
+      {processingMode:"local_only",idempotencyKey:"retry-r4-adapter"});
+    assert.equal(calls.length,1);
+    assert.equal(calls[0].url,`/bff/api/sources/${source.source_id}/processing-runs`);
+    assert.deepEqual(JSON.parse(calls[0].init.body).attributes,{workspace_id:"workspace-1",notebook_id:"notebook-s16",
+      source_version_id:source.source_version_id,processing_mode:"local_only"});
+    assert.equal(result.auto_requeue_configured,false);
+  }finally{globalThis.fetch=previous;}
+});
+
+test("R4 uncertain reprocess keeps semantic mode and idempotency key and blocks immediate duplicate",async()=>{
+  const calls=[];let reject;
+  const waiting=new Promise((_,no)=>{reject=no;});
+  const w=await mount({listSources:async()=>[{...source,source_state:"waiting_model",processing_state:"failed"}],
+    reprocessSource:async(s,options)=>{calls.push(options);if(calls.length===1)return waiting;throw Error("NETWORK_UNCERTAIN");}});
+  try{
+    await click(w,"재처리");
+    let select=findElements(w.container,n=>n.tagName==="SELECT"&&n.getAttribute("aria-label")==="Source 재처리 Mode")[0];
+    assert.ok(select);
+    await w.act(async()=>props(select).onChange({target:{value:"local_only"}}));
+    await w.act(async()=>{const b=findElements(w.container,n=>n.tagName==="BUTTON"&&n.textContent==="설정 확인·재처리")[0];props(b).onClick();props(b).onClick();});
+    assert.equal(calls.length,1);
+    await w.act(async()=>reject(Error("NETWORK_UNCERTAIN")));
+    select=findElements(w.container,n=>n.tagName==="SELECT"&&n.getAttribute("aria-label")==="Source 재처리 Mode")[0];
+    assert.ok(select.disabled);
+    await click(w,"설정 확인·재처리");
+    assert.equal(calls.length,2);
+    assert.equal(calls[0].idempotencyKey,calls[1].idempotencyKey);
+    assert.equal(calls[1].processingMode,"local_only");
+  }finally{reject?.(Error("test cleanup"));await w.cleanup();}
+});
 
 test("S16 actual adapter는 현재 Notebook을 삭제 POST에 결속한다", async () => {
   const old = globalThis.fetch, calls = [];

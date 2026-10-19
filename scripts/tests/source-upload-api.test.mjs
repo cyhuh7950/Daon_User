@@ -9,6 +9,29 @@ import { uploadPdfSource } from "../../apps/web/lib/source-upload-api.js";
 import { secureUuid } from "@daon-user/ui/secure-uuid";
 import * as sourceApi from "../../apps/web/lib/source-upload-api.js";
 
+test("R4 Source reprocess sends only explicit modes and validates saved mode and configured flag",async()=>{
+  const source={sourceId:"source-1",sourceVersionId:"version-1"},calls=[];
+  const response=(mode,configured)=>Response.json({data:{id:"run-2",kind:"processing_run",version:"2",attributes:{
+    processing_run_id:"run-2",source_id:"source-1",source_version_id:"version-1",retry_of_processing_run_id:"run-1",
+    processing_state:"vision_llm_understanding",source_state:"processing",job_state:"pending",replayed:false,
+    processing_mode:mode,auto_requeue_configured:configured}}},{status:201});
+  for(const processingMode of ["auto","local_only","pinned"]){
+    const result=await sourceApi.reprocessSource("workspace-1",source,{notebookId:"notebook-1",idempotencyKey:"retry-1",processingMode,
+      fetchImpl:async(url,init)=>{calls.push(JSON.parse(init.body));return response(processingMode,false);}});
+    assert.equal(calls.at(-1).attributes.processing_mode,processingMode);
+    assert.equal(result.processing_mode,processingMode);
+    assert.equal(result.auto_requeue_configured,false);
+  }
+  for(const processingMode of [null,"",0,true,"manual",undefined]){
+    await assert.rejects(sourceApi.reprocessSource("workspace-1",source,{notebookId:"notebook-1",processingMode,
+      fetchImpl:async()=>{throw Error("MUST_NOT_SEND_INVALID_MODE");}}),/SOURCE_REPROCESS_INPUT_INVALID/u);
+  }
+  for(const [saved,configured] of [["pinned",false],["auto",undefined],["auto","false"],["auto",0]]){
+    await assert.rejects(sourceApi.reprocessSource("workspace-1",source,{notebookId:"notebook-1",processingMode:"auto",
+      fetchImpl:async()=>response(saved,configured)}),/SOURCE_REPROCESS_RESPONSE_INVALID/u);
+  }
+});
+
 test("실패 Source 재처리는 기존 Resource 계약으로 same-origin POST하고 새 Run을 반환한다", async () => {
   assert.equal(typeof sourceApi.reprocessSource, "function");
   let call;
