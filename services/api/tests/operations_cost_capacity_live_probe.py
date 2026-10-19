@@ -15,7 +15,7 @@ W='workspace-2edb96cb84a252046e67307d'
 A='usr-fwYlLlWlcP_GvvpPoZIkadvr'
 
 
-def run_probe(connect,sql,*,host_reader=None):
+def run_probe(connect,sql,*,host_reader=None,catalog_store=None):
     import psycopg
     result={}
     conn=blocker=None
@@ -34,6 +34,43 @@ def run_probe(connect,sql,*,host_reader=None):
         assert conn.execute("SELECT to_regprocedure('public.reserve_operations_run_cost(text,text,text,text,text,text,jsonb,bigint,integer)')").fetchone()==(None,),'EXPECTED_INITIAL_FUNCTION_ABSENCE'
         before=conn.execute("SELECT oid,md5(prosrc) FROM pg_proc WHERE pronamespace='public'::regnamespace ORDER BY oid").fetchall()
         conn.execute(sql)
+        if catalog_store is not None:
+            conn.execute("UPDATE public.alembic_version SET version_num='0073' WHERE version_num='0072'")
+            conn.execute('SET LOCAL ROLE daon_app')
+            guards=(('organization',catalog_store._organization_storage_is_protected,{}),
+                ('notification',catalog_store._notification_storage_is_protected,{}),
+                ('restore',catalog_store._registered_restore_storage_is_protected,{'expected_revision':'0073'}),
+                ('telemetry',catalog_store._telemetry_storage_is_protected,{'expected_revision':'0073'}),
+                ('readiness',catalog_store._document_readiness_storage_is_protected,{'expected_revision':'0073'}),
+                ('capacity',catalog_store._operations_cost_capacity_storage_is_protected,{}))
+            for name,guard,kwargs in guards:
+                assert guard(conn,**kwargs) is True,'CATALOG_GUARD_REJECTED_'+name
+            conn.execute('RESET ROLE')
+            class RestoreSavepoint(Exception):pass
+            for mutation in (
+                'GRANT SELECT ON public.operations_run_cost_events TO daon_app',
+                'ALTER TABLE public.operations_host_capacity_samples DISABLE TRIGGER operations_host_capacity_guard',
+                'ALTER TABLE public.operations_run_cost_events NO FORCE ROW LEVEL SECURITY',
+                """DO $probe$ DECLARE check_name text; BEGIN
+                    SELECT conname INTO STRICT check_name FROM pg_catalog.pg_constraint
+                    WHERE conrelid='public.operations_host_capacity_samples'::regclass AND contype='c'
+                        AND pg_catalog.pg_get_expr(conbin,conrelid) LIKE '%cardinality(cpu_counters)%';
+                    EXECUTE format('ALTER TABLE public.operations_host_capacity_samples DROP CONSTRAINT %I',check_name);
+                    END $probe$""",
+                'GRANT EXECUTE ON FUNCTION public.operations_run_cost_parent_allowed(text,text,text,text,text) TO daon_app',
+            ):
+                try:
+                    with conn.transaction():
+                        conn.execute(mutation)
+                        conn.execute('SET LOCAL ROLE daon_app')
+                        assert catalog_store._operations_cost_capacity_storage_is_protected(conn) is False,'ALTERED_CATALOG_ACCEPTED'
+                        raise RestoreSavepoint()
+                except RestoreSavepoint:pass
+            conn.execute('SET LOCAL ROLE daon_app')
+            assert catalog_store._operations_cost_capacity_storage_is_protected(conn) is True,'SAVEPOINT_DID_NOT_RESTORE_CATALOG'
+            conn.execute('RESET ROLE')
+            conn.execute("UPDATE public.alembic_version SET version_num='0072' WHERE version_num='0073'")
+            result['exact_catalog_and_all_existing_guards_and_five_mutations']=True
         suffix=uuid.uuid4().hex[:12]
         run='qa-s44-cost-pg-'+suffix
         route='qa-s44-cost-route-'+suffix

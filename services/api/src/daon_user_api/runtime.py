@@ -875,7 +875,7 @@ def _build_document_readiness_runtime(cloud_store, settings):
     if cloud_store is None or not configured.scopes:
         return None
     status = cloud_store.readiness()
-    if status.ready is not True or status.schema_revision != "0072":
+    if status.ready is not True or status.schema_revision not in {"0072","0073"}:
         raise ValueError("DOCUMENT_READINESS_SCHEMA_REQUIRED")
     from .document_readiness_postgres import PostgresDocumentReadinessRepository
     from .workspace_model_defaults import read_document_readiness_policy
@@ -1679,8 +1679,8 @@ def _notification_dispatch_tick(
     cloud = dependencies.cloud_store
     if cloud is None or getattr(cloud, '_notification_inbox_enabled', False) is not True:
         return after
-    ready = cloud.readiness()  # 현재0072와 기존 조직/알림 보호를 함께 검사한다.
-    if ready.ready is not True or ready.schema_revision != '0072':
+    ready = cloud.readiness()  # 정확히 지원하는 revision과 모든 기존 보호를 함께 검사한다.
+    if ready.ready is not True or ready.schema_revision not in {'0072','0073'}:
         raise NotificationError('DATABASE_UNAVAILABLE', 503)
     if stop.is_set():
         return after
@@ -2400,7 +2400,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         if cloud is None or not getattr(cloud, '_notification_inbox_enabled', False):
             raise NotificationError('DATABASE_UNAVAILABLE', 503)
         ready = cloud.readiness()
-        if ready.ready is not True or ready.schema_revision != '0072':
+        if ready.ready is not True or ready.schema_revision not in {'0072','0073'}:
             raise NotificationError('DATABASE_UNAVAILABLE', 503)
         try:
             workspaces = dependencies.identity_service.notification_workspace_ids(

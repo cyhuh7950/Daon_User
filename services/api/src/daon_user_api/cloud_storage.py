@@ -171,6 +171,53 @@ _TELEMETRY_TRIGGERS=sorted((table,table+suffix,kind,"O","public."+function,"",Fa
     for table,function in ((_TM_WORKER,"guard_operations_worker_observation"),(_TM_DEPLOY,"guard_operations_receipt"),(_TM_COST,"guard_operations_receipt"))
     for suffix,kind in (("_guard",31),("_no_truncate",34)))
 
+# 0073 정본 SQL에서 고정한 기대값이다. 실행 DB의 관측으로 기대값을 만들지 않는다.
+_COST_EVENT='operations_run_cost_events'
+_HOST_SAMPLE='operations_host_capacity_samples'
+_COST_CAPACITY_NAMES={_COST_EVENT:'tenant_id workspace_id actor_id run_kind run_id sequence attempt_key state amount currency policy input_token_upper_bound output_token_limit price_version usage_digest receipt_id observed_at received_at',
+    _HOST_SAMPLE:'host_ref boot_id sequence observed_at received_at cpu_logical_millicores cpu_usage_basis_points memory_total_bytes memory_available_bytes cpu_counters'}
+_COST_CAPACITY_COLUMNS={table:[(name,'timestamp with time zone' if name.endswith('_at') else
+    'bigint' if name in {'sequence','input_token_upper_bound','cpu_logical_millicores','memory_total_bytes','memory_available_bytes'} else
+    'integer' if name in {'output_token_limit','cpu_usage_basis_points'} else 'numeric(24,9)' if name=='amount' else
+    'jsonb' if name=='policy' else 'bigint[]' if name=='cpu_counters' else 'text',
+    name not in {'amount','currency','usage_digest','receipt_id','cpu_usage_basis_points'},
+    'clock_timestamp()' if name=='received_at' else None,True)
+    for name in names.split()] for table,names in _COST_CAPACITY_NAMES.items()}
+_COST_CAPACITY_KEYS={_COST_EVENT:[_r2_key('p','tenant_id workspace_id run_kind run_id sequence'),
+    _r2_key('u','tenant_id workspace_id run_kind run_id attempt_key state'),
+    _r2_key('u','tenant_id workspace_id run_kind run_id receipt_id')],_HOST_SAMPLE:[_r2_key('p','host_ref')]}
+_COST_CAPACITY_CHECKS={_COST_EVENT:["run_kind IN ('question','document')",
+    "run_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'",'sequence>0',
+    "attempt_key ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'","state IN ('reserved','known','uncertain')",
+    "jsonb_typeof(policy)='object' AND octet_length(policy::text)<=16384",
+    'input_token_upper_bound>=0 AND input_token_upper_bound<=2147483647',
+    'output_token_limit>=1 AND output_token_limit<=512',
+    "price_version ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'","usage_digest ~ '^[0-9a-f]{64}$'",
+    "receipt_id ~ '^cost-[0-9a-f]{64}$'",
+    "(state='uncertain' AND amount IS NULL AND currency IS NULL) OR (state IN ('reserved','known') AND amount>=0::numeric AND amount IS NOT NULL AND currency='USD')",
+    "(state='reserved' AND receipt_id IS NULL AND usage_digest IS NULL) OR (state='known' AND receipt_id IS NOT NULL AND usage_digest IS NOT NULL) OR (state='uncertain' AND receipt_id IS NOT NULL)"],
+    _HOST_SAMPLE:["host_ref='wsl-server-daon-user'","boot_id ~ '^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$'",'sequence>0',
+    '(cpu_logical_millicores>=1000 AND cpu_logical_millicores<=32768000) AND cpu_logical_millicores%1000=0',
+    'cpu_usage_basis_points>=0 AND cpu_usage_basis_points<=10000','memory_total_bytes>0',
+    'memory_available_bytes>=0 AND memory_available_bytes<=memory_total_bytes',
+    'cardinality(cpu_counters)=8 AND array_position(cpu_counters,NULL::bigint) IS NULL AND 0<=ALL(cpu_counters)']}
+_COST_CAPACITY_POLICIES={_COST_EVENT:[('operations_run_cost_scope','*',True,['PUBLIC'],_TELEMETRY_SCOPE,_TELEMETRY_SCOPE)],
+    _HOST_SAMPLE:[('operations_host_capacity_fixed_host','*',True,['daon_notebook_delete'],"host_ref='wsl-server-daon-user'","host_ref='wsl-server-daon-user'")]}
+# MD5, security-definer, volatility, language, returns-set, app-execute, return-type, argument names.
+_COST_CAPACITY_FUNCTIONS={
+ 'operations_run_cost_parent_allowed(text,text,text,text,text)':('ec89852fe88607cf5e529c43add69647',True,'s','sql',False,False,'boolean','t w a k r'),
+ 'guard_operations_run_cost_event()':('b25a05e7e03efcc470ed465d61869e13',True,'v','plpgsql',False,False,'trigger',''),
+ 'reserve_operations_run_cost(text,text,text,text,text,text,jsonb,bigint,integer)':('e376d5dcd04baad2e3abb7e369f9f776',True,'v','plpgsql',True,True,'record','t w a k r i p ib ob state safe_code sequence maximum_amount currency price_version observed_at'),
+ 'settle_operations_run_cost(text,text,text,text,text,text,bigint,text,numeric,text,text,text,text,timestamptz)':('8744bb39d0c3d84d7ba653849345accc',True,'v','plpgsql',False,True,'bigint','t w a k r i q s n u p h d o'),
+ 'record_operations_price_card_receipt(text,text,text,text,text,text,text,text,numeric,text,text,text,text,timestamptz,text)':('79b3cb11d078c32cf6350a07fdb43364',True,'v','plpgsql',False,True,'text','t w r a i c m b n u h p s o d'),
+ 'guard_operations_host_capacity()':('5f8c46897c60842e5c8e9c264641dddd',False,'v','plpgsql',False,False,'trigger',''),
+ 'record_operations_host_capacity(text,text,bigint,timestamptz,bigint,integer,bigint,bigint,bigint[])':('2852d0b5b4579a6aef1c25a39b0d8ddd',True,'v','plpgsql',False,True,'public.operations_host_capacity_samples','h b q o c x m v j'),
+ 'read_operations_host_capacity()':('433d5fda439dd0aee62744ed3438a1cc',True,'s','sql',True,True,'public.operations_host_capacity_samples','')}
+_COST_CAPACITY_TRIGGERS=sorted((table,prefix+suffix,kind,'O','public.'+function,'',False,False,'',None,'',True)
+    for table,prefix,function in ((_COST_EVENT,'operations_run_cost_events','guard_operations_run_cost_event'),
+        (_HOST_SAMPLE,'operations_host_capacity','guard_operations_host_capacity'))
+    for suffix,kind in (('_guard',31),('_no_truncate',34)))
+
 
 def _telemetry_expression(expression):
     """기존 원자식 정규화를 재사용하되 AND/OR의 괄호 의미는 유지한다."""
@@ -321,6 +368,13 @@ class PostgresCloudStore:
         def compatible(connection, revision, vector):
             if vector is None:
                 return False
+            if revision == "0073":
+                return (self._organization_storage_is_protected(connection)
+                    and self._notification_storage_is_protected(connection)
+                    and self._registered_restore_storage_is_protected(connection,expected_revision="0073")
+                    and self._telemetry_storage_is_protected(connection,expected_revision="0073")
+                    and self._document_readiness_storage_is_protected(connection,expected_revision="0073")
+                    and self._operations_cost_capacity_storage_is_protected(connection))
             if revision == "0072":
                 return (self._organization_storage_is_protected(connection)
                     and self._notification_storage_is_protected(connection)
@@ -375,7 +429,7 @@ class PostgresCloudStore:
     @staticmethod
     def _registered_restore_storage_is_protected(connection,*,expected_revision="0070") -> bool:
         """0070 원 보호를 정확0071에서도 재검사. 구 revision 의미·DB 변경0."""
-        if expected_revision not in {"0070","0071","0072"}:return False
+        if expected_revision not in {"0070","0071","0072","0073"}:return False
         from .notification_postgres import _normalize_expression
         def values(row):return tuple(row.values()) if isinstance(row,dict) else tuple(row)
         def normalize(value):return None if value is None else _normalize_expression(value.replace("public.",""))
@@ -451,7 +505,7 @@ class PostgresCloudStore:
     @staticmethod
     def _telemetry_storage_is_protected(connection,*,expected_revision="0071") -> bool:
         """0071 읽기 전용 catalog 검증. 0071SQL/권한/원장 생성·수정0."""
-        if expected_revision not in {"0071","0072"}:return False
+        if expected_revision not in {"0071","0072","0073"}:return False
         def values(row):return tuple(row.values()) if isinstance(row,dict) else tuple(row)
         def yes(row):return row is not None and values(row)==(True,)
         try:
@@ -546,15 +600,100 @@ class PostgresCloudStore:
         except (Error,TypeError,ValueError,KeyError,AttributeError):return False
 
     @staticmethod
-    def _document_readiness_storage_is_protected(connection) -> bool:
+    def _operations_cost_capacity_storage_is_protected(connection) -> bool:
+        """0073 비용/호스트 보호 구조를 정본 기대값과 대조한다. 읽기 전용."""
+        def values(row):return tuple(row.values()) if isinstance(row,dict) else tuple(row)
+        def yes(row):return row is not None and values(row)==(True,)
+        try:
+            row=connection.execute("""/* capacity:role */ SELECT
+                (SELECT count(*)=1 AND min(version_num)=%s FROM public.alembic_version)
+                AND EXISTS(SELECT 1 FROM pg_catalog.pg_roles WHERE rolname='daon_notebook_delete'
+                    AND NOT rolcanlogin AND rolinherit AND NOT rolsuper AND NOT rolbypassrls AND NOT rolcreaterole AND NOT rolcreatedb)
+                AND EXISTS(SELECT 1 FROM pg_catalog.pg_roles WHERE rolname='daon_app' AND NOT rolsuper AND NOT rolbypassrls)
+                AND NOT pg_catalog.pg_has_role('daon_app','daon_notebook_delete','MEMBER')
+                AND (SELECT count(*)=8 FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+                    WHERE n.nspname='public' AND p.proname=ANY(%s::text[]))""",("0073",[s.split("(")[0] for s in _COST_CAPACITY_FUNCTIONS])).fetchone()
+            if not yes(row):return False
+            for table,columns in _COST_CAPACITY_COLUMNS.items():
+                row=connection.execute("""/* capacity:table */ SELECT c.relkind='r' AND c.relpersistence='p'
+                    AND c.relowner='daon_notebook_delete'::regrole AND c.relrowsecurity AND c.relforcerowsecurity
+                    AND NOT pg_catalog.has_table_privilege('daon_app',c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+                    AND NOT EXISTS(SELECT 1 FROM pg_catalog.aclexplode(COALESCE(c.relacl,pg_catalog.acldefault('r',c.relowner))) a
+                        WHERE a.grantee<>c.relowner OR a.is_grantable)
+                    FROM pg_catalog.pg_class c WHERE c.oid=pg_catalog.to_regclass(%s)""",("public."+table,)).fetchone()
+                if not yes(row):return False
+                rows=connection.execute("""/* capacity:columns */ SELECT a.attname,pg_catalog.format_type(a.atttypid,a.atttypmod),
+                    a.attnotnull,pg_catalog.pg_get_expr(d.adbin,d.adrelid),
+                    a.attidentity='' AND a.attgenerated='' AND a.attcollation=t.typcollation
+                    AND NOT pg_catalog.has_column_privilege('daon_app',a.attrelid,a.attnum,'SELECT,INSERT,UPDATE,REFERENCES')
+                    AND NOT EXISTS(SELECT 1 FROM pg_catalog.aclexplode(CASE WHEN cardinality(a.attacl)>0 THEN a.attacl ELSE NULL::pg_catalog.aclitem[] END))
+                    FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_type t ON t.oid=a.atttypid
+                    LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum
+                    WHERE a.attrelid=pg_catalog.to_regclass('public.'||%s) AND a.attnum>0 AND NOT a.attisdropped ORDER BY a.attnum""",(table,)).fetchall()
+                if [values(r) for r in rows]!=columns:return False
+                rows=connection.execute("""/* capacity:constraints */ SELECT c.contype,
+                    ARRAY(SELECT a.attname::text FROM unnest(c.conkey) WITH ORDINALITY k(n,o) JOIN pg_catalog.pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=k.n ORDER BY k.o),
+                    CASE WHEN c.contype='f' THEN n.nspname||'.'||r.relname ELSE '' END,
+                    ARRAY(SELECT a.attname::text FROM unnest(c.confkey) WITH ORDINALITY k(n,o) JOIN pg_catalog.pg_attribute a ON a.attrelid=c.confrelid AND a.attnum=k.n ORDER BY k.o),
+                    c.convalidated AND (c.contype<>'f' OR (SELECT count(*)=4 AND bool_and(t.tgenabled='O') FROM pg_catalog.pg_trigger t WHERE t.tgconstraint=c.oid)),c.condeferrable,c.condeferred,
+                    CASE WHEN c.contype IN ('p','u') THEN i.indisvalid AND i.indisready AND i.indimmediate
+                        AND i.indpred IS NULL AND i.indexprs IS NULL AND i.indnkeyatts=cardinality(c.conkey) AND i.indnatts=i.indnkeyatts ELSE true END,
+                    CASE WHEN c.contype='f' THEN c.confupdtype::text||c.confdeltype::text||c.confmatchtype::text ELSE '' END
+                    FROM pg_catalog.pg_constraint c LEFT JOIN pg_catalog.pg_class r ON r.oid=c.confrelid
+                    LEFT JOIN pg_catalog.pg_namespace n ON n.oid=r.relnamespace LEFT JOIN pg_catalog.pg_index i ON i.indexrelid=c.conindid
+                    WHERE c.conrelid=pg_catalog.to_regclass('public.'||%s) AND c.contype<>'c'""",(table,)).fetchall()
+                if sorted(map(values,rows),key=repr)!=sorted(_COST_CAPACITY_KEYS[table],key=repr):return False
+                rows=connection.execute("""/* capacity:checks */ SELECT pg_catalog.pg_get_expr(c.conbin,c.conrelid),c.convalidated,c.connoinherit
+                    FROM pg_catalog.pg_constraint c WHERE c.conrelid=pg_catalog.to_regclass('public.'||%s) AND c.contype='c'""",(table,)).fetchall()
+                if any(values(r)[1:]!=(True,False) for r in rows):return False
+                if sorted((_telemetry_expression(values(r)[0]) for r in rows),key=repr)!=sorted(map(_telemetry_expression,_COST_CAPACITY_CHECKS[table]),key=repr):return False
+                rows=connection.execute("""/* capacity:policy */ SELECT p.polname,p.polcmd,p.polpermissive,
+                    ARRAY(SELECT CASE WHEN role_id=0 THEN 'PUBLIC' ELSE pg_catalog.pg_get_userbyid(role_id)::text END FROM unnest(p.polroles) role_id ORDER BY 1),
+                    pg_catalog.pg_get_expr(p.polqual,p.polrelid),pg_catalog.pg_get_expr(p.polwithcheck,p.polrelid)
+                    FROM pg_catalog.pg_policy p WHERE p.polrelid=pg_catalog.to_regclass('public.'||%s)""",(table,)).fetchall()
+                actual=[(*values(r)[:4],_telemetry_expression(values(r)[4]),_telemetry_expression(values(r)[5])) for r in rows]
+                expected=[(*r[:4],_telemetry_expression(r[4]),_telemetry_expression(r[5])) for r in _COST_CAPACITY_POLICIES[table]]
+                if sorted(actual,key=repr)!=sorted(expected,key=repr):return False
+            for signature,expected in _COST_CAPACITY_FUNCTIONS.items():
+                row=connection.execute("""/* capacity:function */ SELECT md5(p.prosrc),p.prosecdef,p.provolatile,
+                    l.lanname,p.proretset,pg_catalog.has_function_privilege('daon_app',p.oid,'EXECUTE'),
+                    p.prorettype=pg_catalog.to_regtype(%s),coalesce(p.proargnames,ARRAY[]::text[]),
+                    ARRAY(SELECT t::regtype::text FROM unnest(p.proallargtypes) WITH ORDINALITY a(t,o) ORDER BY o),
+                    coalesce(p.proargmodes,ARRAY[]::"char"[]),
+                    p.proowner='daon_notebook_delete'::regrole AND p.prokind='f' AND p.pronargdefaults=0
+                        AND p.provariadic=0 AND NOT p.proisstrict AND NOT p.proleakproof AND p.proparallel='u',
+                    p.proconfig=ARRAY['search_path=pg_catalog, pg_temp']::text[],
+                    NOT EXISTS(SELECT 1 FROM pg_catalog.aclexplode(COALESCE(p.proacl,pg_catalog.acldefault('f',p.proowner))) a
+                        WHERE a.grantee NOT IN (p.proowner,'daon_app'::regrole) OR a.is_grantable OR a.privilege_type<>'EXECUTE')
+                    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_language l ON l.oid=p.prolang
+                    WHERE p.oid=pg_catalog.to_regprocedure(%s)""",(expected[6],"public."+signature)).fetchone()
+                all_types=(['text']*6+['jsonb','bigint','integer','text','text','bigint','numeric','text','text','timestamp with time zone']
+                    if signature.startswith('reserve_operations_run_cost(') else [])
+                modes=['i']*9+['t']*7 if all_types else []
+                target=(*expected[:6],True,expected[7].split(),all_types,modes,True,True,True)
+                if row is None or values(row)!=target:return False
+            rows=connection.execute("""/* capacity:trigger */ SELECT c.relname,t.tgname,t.tgtype,t.tgenabled,
+                n.nspname||'.'||p.proname,pg_catalog.pg_get_function_identity_arguments(p.oid),t.tgdeferrable,t.tginitdeferred,
+                encode(t.tgargs,'hex'),pg_catalog.pg_get_expr(t.tgqual,t.tgrelid),t.tgattr::text,t.tgconstraint=0 AND t.tgparentid=0
+                FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_class c ON c.oid=t.tgrelid
+                JOIN pg_catalog.pg_namespace cn ON cn.oid=c.relnamespace JOIN pg_catalog.pg_proc p ON p.oid=t.tgfoid
+                JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+                WHERE cn.nspname='public' AND NOT t.tgisinternal AND c.relname=ANY(%s::text[]) ORDER BY c.relname,t.tgname""",(list(_COST_CAPACITY_COLUMNS),)).fetchall()
+            if [values(r) for r in rows]!=_COST_CAPACITY_TRIGGERS:return False
+            return True
+        except (Error,TypeError,ValueError,KeyError,AttributeError):return False
+
+    @staticmethod
+    def _document_readiness_storage_is_protected(connection,*,expected_revision="0072") -> bool:
         """0072 초안의 닫힌 catalog 계약. 조회만 수행하며 실제 적용/PG 시험을 대신하지 않는다."""
+        if expected_revision not in {"0072","0073"}:return False
         def values(row):return tuple(row.values()) if isinstance(row,dict) else tuple(row)
         def yes(row):return row is not None and values(row)==(True,)
         normalize=_telemetry_expression
         tables=list(_READINESS_COLUMNS)
         try:
             row=connection.execute("""/* readiness:role */ SELECT
-                (SELECT count(*)=1 AND min(version_num)='0072' FROM public.alembic_version)
+                (SELECT count(*)=1 AND min(version_num)=%s FROM public.alembic_version)
                 AND EXISTS(SELECT 1 FROM pg_catalog.pg_roles WHERE rolname='daon_notebook_delete'
                     AND rolinherit AND NOT rolcanlogin AND NOT rolsuper AND NOT rolbypassrls
                     AND NOT rolcreaterole AND NOT rolcreatedb AND NOT rolreplication)
@@ -563,7 +702,7 @@ class PostgresCloudStore:
                 AND NOT pg_catalog.pg_has_role('daon_app','daon_notebook_delete','MEMBER')
                 AND (SELECT count(*)=12 FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
                     WHERE n.nspname='public' AND p.proname=ANY(%s::text[]))""",
-                ([name.split('(')[0] for name in _READINESS_FUNCTIONS],)).fetchone()
+                (expected_revision,[name.split('(')[0] for name in _READINESS_FUNCTIONS])).fetchone()
             if not yes(row):return False
             for table,columns in _READINESS_COLUMNS.items():
                 row=connection.execute("""/* readiness:table */ SELECT c.relkind='r' AND c.relpersistence='p'

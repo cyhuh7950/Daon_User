@@ -65,12 +65,12 @@ def test_notification_dispatch_requires_current_ready_0072_before_discovery():
     class DiscoveryReached(RuntimeError):
         pass
 
-    for ready,revision in ((True,'0072'),(True,'0069'),(True,'0071'),(True,'0073'),(False,'0072')):
+    for ready,revision in ((True,'0072'),(True,'0069'),(True,'0071'),(True,'0073'),(True,'0074'),(False,'0072'),(False,'0073')):
         cloud=SimpleNamespace(_notification_inbox_enabled=True,_dsn='postgresql://unused.invalid/unused',
             readiness=lambda:SimpleNamespace(ready=ready,schema_revision=revision))
         dependencies=SimpleNamespace(settings=SimpleNamespace(notification_inbox_enabled=True),cloud_store=cloud)
         with patch('psycopg.connect',side_effect=DiscoveryReached) as connect:
-            if ready and revision=='0072':
+            if ready and revision in {'0072','0073'}:
                 with pytest.raises(DiscoveryReached):
                     runtime._notification_dispatch_tick(dependencies,stop=Event(),limit=1)
                 assert connect.call_count==1

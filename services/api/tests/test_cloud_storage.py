@@ -30,6 +30,79 @@ DEFAULT_DENY_DIGEST = "caf695f3de7e3e05feb024b3ff4b8b14cbfad5318b885ac15d8e4da25
 
 
 class CloudStorageContractTests(unittest.TestCase):
+    def test_cost_capacity_catalog_is_closed_read_only_and_matches_declared_sql_bodies(self):
+        import hashlib,re
+        from daon_user_api import cloud_storage as api
+        migration=(MIGRATION.parent/'0073_operations_cost_capacity.sql').read_text(encoding='utf-8')
+        for signature,expected in api._COST_CAPACITY_FUNCTIONS.items():
+            body=re.search(r'CREATE FUNCTION public\.'+signature.split('(')[0]+r'\([^$]+?AS \$\$(.*?)\$\$;',migration,re.S)
+            self.assertIsNotNone(body)
+            self.assertEqual(hashlib.md5(body[1].encode()).hexdigest(),expected[0])
+        for bad in (None,'role','table','columns','constraints','checks','policy','function','trigger',
+                    'owner','column-acl','body','execute','output-modes','extra-check','policy-extra','disabled-trigger'):
+            log=[]
+            class Result:
+                def __init__(self,rows):self.rows=rows
+                def fetchone(self):return self.rows[0] if self.rows else None
+                def fetchall(self):return self.rows
+            class Reader:
+                def execute(inner,sql,params=()):
+                    log.append(sql);facet=sql.split('/* capacity:',1)[1].split(' */',1)[0]
+                    if bad==facet:return Result([])
+                    if facet=='table':return Result([(bad!='owner',)])
+                    if facet=='columns':
+                        rows=list(api._COST_CAPACITY_COLUMNS[params[0]])
+                        if bad=='column-acl':rows[0]=(*rows[0][:-1],False)
+                        return Result(rows)
+                    if facet=='constraints':return Result(api._COST_CAPACITY_KEYS[params[0]])
+                    if facet=='checks':
+                        rows=[(e,True,False) for e in api._COST_CAPACITY_CHECKS[params[0]]]
+                        if bad=='extra-check':rows.append(('true',True,False))
+                        return Result(rows)
+                    if facet=='policy':
+                        rows=list(api._COST_CAPACITY_POLICIES[params[0]])
+                        if bad=='policy-extra':rows.append(('extra','*',True,['PUBLIC'],'true','true'))
+                        return Result(rows)
+                    if facet=='function':
+                        signature=params[1].removeprefix('public.');e=api._COST_CAPACITY_FUNCTIONS[signature]
+                        self.assertEqual(params[0],e[6])
+                        types=(['text']*6+['jsonb','bigint','integer','text','text','bigint','numeric','text','text','timestamp with time zone']
+                            if signature.startswith('reserve_operations_run_cost(') else [])
+                        modes=['i']*9+['t']*7 if types else []
+                        return Result([('0'*32 if bad=='body' else e[0],*e[1:5],not e[5] if bad=='execute' else e[5],
+                            True,e[7].split(),types,[] if bad=='output-modes' and modes else modes,True,True,True)])
+                    if facet=='trigger':
+                        return Result([(*r[:3],'D',*r[4:]) for r in api._COST_CAPACITY_TRIGGERS]
+                            if bad=='disabled-trigger' else api._COST_CAPACITY_TRIGGERS)
+                    return Result([(True,)])
+            with self.subTest(bad=bad):
+                self.assertEqual(PostgresCloudStore._operations_cost_capacity_storage_is_protected(Reader()),bad is None)
+            self.assertTrue(all('pg_catalog' in sql and not re.match(r'\s*(INSERT|UPDATE|DELETE|ALTER|GRANT|CREATE)',sql) for sql in log))
+
+    def test_readiness_0073_requires_every_existing_guard_and_exact_cost_capacity_guard(self):
+        from types import SimpleNamespace
+        for missing in (None,'organization','notification','registered','telemetry','readiness','cost_capacity'):
+            with self.subTest(missing=missing):
+                calls=[]
+                class Connection:
+                    def execute(self,sql,params=()):return SimpleNamespace(fetchone=lambda:('0073',) if 'alembic_version' in sql else ('0.8.2',))
+                class Pool:
+                    closed=False
+                    @contextmanager
+                    def connection(self,**kwargs):yield Connection()
+                store=object.__new__(PostgresCloudStore);store._pool=Pool()
+                store._organization_storage_is_protected=lambda c:missing!='organization'
+                store._notification_storage_is_protected=lambda c:missing!='notification'
+                def checked(kind):
+                    def check(connection,*,expected_revision):calls.append((kind,expected_revision));return missing!=kind and expected_revision=='0073'
+                    return check
+                store._registered_restore_storage_is_protected=checked('registered')
+                store._telemetry_storage_is_protected=checked('telemetry')
+                store._document_readiness_storage_is_protected=checked('readiness')
+                store._operations_cost_capacity_storage_is_protected=lambda c:missing!='cost_capacity'
+                self.assertEqual(store.readiness().ready,missing is None)
+                self.assertTrue(all(revision=='0073' for _,revision in calls))
+
     def test_readiness_0072_requires_exact_new_catalog_guard(self):
         self.assertTrue(callable(getattr(PostgresCloudStore,"_document_readiness_storage_is_protected",None)),
                         "0072는 새 원장/함수의 보호 검증 없이 정상 revision으로 수용하면 안 됨")
@@ -310,7 +383,10 @@ class CloudStorageContractTests(unittest.TestCase):
             store._notification_storage_is_protected=lambda c:True
             def registered(c,*,expected_revision="0070"):
                 checked.append(expected_revision);return expected_revision==revision[0]
-            store._registered_restore_storage_is_protected=registered;store._telemetry_storage_is_protected=lambda c:True
+            store._registered_restore_storage_is_protected=registered
+            store._telemetry_storage_is_protected=lambda c,**kwargs:True
+            store._document_readiness_storage_is_protected=lambda c,**kwargs:True
+            store._operations_cost_capacity_storage_is_protected=lambda c:True
             repositories=[object.__new__(kind) for kind in (runtime.PostgresIdentityRepository,runtime.PostgresAuthorizationRepository,runtime.PostgresOrganizationRepository)]
             for repository in repositories:repository._dsn=store._dsn
             repositories[2]._access_bridge=OrganizationAccessBridge(postgres=True)
@@ -319,12 +395,12 @@ class CloudStorageContractTests(unittest.TestCase):
             document=PostgresDocumentProcessingRepository(store,object())
             studio=PostgresStudioWorkspaceRepository(store)
             self.assertIs(document._cloud_store,store);self.assertIs(studio._cloud_store,store);self.assertIs(studio._generation_queue._cloud_store,store)
-            for value in ("0069","0070","0071","0072"):
+            for value in ("0069","0070","0071","0072","0073","0074"):
                 revision[0]=value
-                with self.subTest(revision=value):self.assertEqual(runtime._organization_management_ready(dependencies),value!="0072")
+                with self.subTest(revision=value):self.assertEqual(runtime._organization_management_ready(dependencies),value!="0074")
             revision[0]="0071";vector[0]=None
             self.assertFalse(runtime._organization_management_ready(dependencies))
-            self.assertEqual(checked,["0070","0071"])
+            self.assertEqual(checked,["0070","0071","0072","0073"])
             studio._generation_queue._pool.close();store.close()
 
     def test_r4_readiness_0070_requires_all_protections_in_both_pool_states(self):
