@@ -22,6 +22,38 @@ from daon_user_api.question_answering import GeneralConversationRequest, Grounde
 from daon_user_api.data_canon import canonical_json_bytes
 
 
+class GeneralThinkingPreparationTests(unittest.TestCase):
+    def test_internal_general_think_is_frozen_before_egress_and_sent_unchanged_once(self):
+        from types import SimpleNamespace
+        from test_question_answering import GeneralInternalThinkingTests
+        from daon_user_api.question_egress import PostgresQuestionEgressAuthorizer
+        transport=GeneralInternalThinkingTests.Transport({'values':[False,True]})
+        class Resolver:
+            @contextmanager
+            def resolve(self,context,capability):
+                yield ResolvedModel('internal-model','OLLAMA','fixture-installed',capability,
+                    'http://models.example.com',0,1,1,'server_internal','provider',True,None)
+        actual=PostgresQuestionEgressAuthorizer.__new__(PostgresQuestionEgressAuthorizer)
+        actual._policy_service=SimpleNamespace(get_effective=lambda ctx:SimpleNamespace(masking_required=True,redaction_required=True))
+        wires=[]
+        class Egress:
+            prepare_payload=actual.prepare_payload
+            def authorize(self,context,**kwargs):
+                wires.append(kwargs['provider_payload'])
+                return {'egress_decision_id':'egress','routing_decision_id':'routing'}
+        repository=FakeRepository();service=QuestionAnsweringService(Resolver(),repository,FakeIndex(()),FakeCredential(),transport,Egress())
+        context=QuestionContext('tenant-cp3','workspace-cp3','actor-cp3','trace','policy')
+        authorization=service.prepare_authorization(context,source_id=None,source_version_id=None,question='안녕')
+        self.assertIs(json.loads(authorization.provider_payload)['think'],False)
+        answer=service.ask(context,source_id=None,source_version_id=None,question='안녕',run_id='run-general-thinking')
+        chats=[call for call in transport.calls if call['url'].endswith('/api/chat')]
+        self.assertEqual(len(chats),1)
+        self.assertEqual(wires,[authorization.provider_payload])
+        self.assertEqual(canonical_json_bytes(chats[0]['payload']),authorization.provider_payload)
+        self.assertEqual(chats[0]['payload']['options'],{'num_predict':64,'temperature':0})
+        self.assertEqual(answer.answer,'안녕하세요.')
+
+
 class S18MediaCapDiagnosticTests(unittest.TestCase):
     def test_s18_media_result_insufficient_notice_enum_is_checked_without_repair(self):
         for answer in ("다른 부족 안내입니다.", " 선택한 원문 근거에 질문에 답할 정보가 없습니다. "):
@@ -919,7 +951,7 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
             ("workspace-qa", "workspace-qa", tuple(replace(c, locator_kind="page", locator_value="1") for c in cells), False, False, 0),
             ("workspace-qa", "workspace-qa", (cells[0], replace(cells[1], locator_kind="image_region", locator_value="0,0,1,1,1,1")), False, False, 0),
             ("workspace-qa", "workspace-qa", (cells[0], replace(cells[1], source_version_id="other-version")), False, False, 0),
-            ("workspace-qa", "workspace-qa", (), True, False, 0),
+            ("workspace-qa", "workspace-qa", (), True, False, 6),
         ):
             with self.subTest(workspace=workspace, target=target, general=general, insufficient=insufficient, evidence=evidence):
                 calls = []
@@ -984,7 +1016,7 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
                     self.assertEqual(json.loads(chat["payload"]["messages"][1]["content"])["evidence"][0]["text"], evidence[0].text)
                     self.assertEqual(chat["payload"]["messages"][1]["content"],
                                      canonical_json_bytes(json.loads(chat["payload"]["messages"][1]["content"])).decode())
-                if metadata_calls:
+                if metadata_calls and not general:
                     self.assertIs(chat["payload"]["think"], False)
                 else:
                     self.assertNotIn("think", chat["payload"])

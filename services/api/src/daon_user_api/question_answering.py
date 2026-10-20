@@ -555,6 +555,10 @@ class OllamaTextGenerationAdapter:
 
     def verified_internal_metadata(self, selection: TextModelSelection) -> tuple[str, tuple[str, ...]]:
         """Existing bounded tags/show/tags check, also consumed by DOCX Native."""
+        digest,capabilities,_false_supported=self._verified_internal_metadata(selection)
+        return digest,capabilities
+
+    def _verified_internal_metadata(self, selection: TextModelSelection) -> tuple[str, tuple[str, ...], bool]:
         if selection.provider_code != "OLLAMA" or selection.provider_kind not in {"local", "server_internal", "local_runtime"}:
             raise ValueError("TEXT_GENERATION_RESPONSE_INVALID")
         from .document_understanding_adapter import DocumentUnderstandingError
@@ -604,7 +608,12 @@ class OllamaTextGenerationAdapter:
             remaining()
         except (ValueError, TypeError, AttributeError, OSError, DocumentUnderstandingError):
             raise ValueError("TEXT_GENERATION_RESPONSE_INVALID") from None
-        return digest, tuple(capabilities)
+        thinking=info.get("thinking")
+        values=thinking.get("values") if isinstance(thinking,dict) else None
+        false_supported=bool(isinstance(values,list) and values
+            and all(type(value) in (bool,str) for value in values)
+            and any(type(value) is bool and value is False for value in values))
+        return digest, tuple(capabilities), false_supported
 
     @staticmethod
     def provider_payload(request: GroundedQuestionRequest, selection: TextModelSelection) -> dict[str, object]:
@@ -766,6 +775,21 @@ class OllamaTextGenerationAdapter:
             if not currencies(answer).issubset(currencies(cited_text)):
                 raise ValueError('TEXT_GENERATION_GROUNDING_INVALID')
         return GroundedTextResult(answer, cited, insufficient, usage,reported_cost_from_usage(response.get("usage")))
+
+    def prepare_general_payload(
+        self, request: GeneralConversationRequest, selection: TextModelSelection,
+        payload: dict[str, object],
+    ) -> dict[str, object]:
+        """Optional supported output control; preserve legacy wire when metadata is unavailable."""
+        if (not isinstance(request,GeneralConversationRequest) or selection.provider_code!="OLLAMA"
+            or selection.provider_kind not in {"local","server_internal","local_runtime"}):
+            return payload
+        try:
+            _digest,_capabilities,false_supported=self._verified_internal_metadata(selection)
+        except ValueError as error:
+            if str(error)!="TEXT_GENERATION_RESPONSE_INVALID":raise
+            return payload
+        return {**payload,"think":False} if false_supported else payload
 
     @staticmethod
     def general_provider_payload(

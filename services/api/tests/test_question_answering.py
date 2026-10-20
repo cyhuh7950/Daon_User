@@ -28,6 +28,93 @@ from daon_user_api.question_answering import (
 )
 
 
+class GeneralInternalThinkingTests(unittest.TestCase):
+    @staticmethod
+    def selection(kind="server_internal", provider="OLLAMA"):
+        return TextModelSelection(provider,"http://models.example.com","profile","deployment","fixture-installed",4,kind)
+
+    class Transport:
+        def __init__(self,thinking=None,*,omit=False,invalid=None):
+            self.thinking=thinking;self.omit=omit;self.invalid=invalid;self.calls=[]
+        def get_json_no_auth(self,**kwargs):
+            self.calls.append(kwargs)
+            if self.invalid=='timeout':raise OSError('PRIVATE_METADATA_FAILURE')
+            digest='b'*64 if self.invalid=='digest' and len(self.calls)>1 else 'a'*64
+            row={'name':'other' if self.invalid=='model' else 'fixture-installed','digest':digest}
+            if self.invalid=='remote':row['remote_host']='cloud.example'
+            return {'models':[row]}
+        def post_json_no_auth(self,**kwargs):
+            self.calls.append(kwargs)
+            if kwargs['url'].endswith('/api/show'):
+                value={'capabilities':['completion','thinking'],'model_info':{'architecture':'fixture'}}
+                if self.invalid=='metadata':value['model_info']={}
+                if not self.omit:value['thinking']=self.thinking
+                return value
+            return {'message':{'content':'{"answer":"안녕하세요."}'},'eval_count':8}
+
+    def test_general_false_support_adds_only_think_without_generation_or_mutation(self):
+        for values in ([False,True],[False]):
+            with self.subTest(values=values):
+                transport=self.Transport({'values':values,'default':True})
+                adapter=OllamaTextGenerationAdapter(transport=transport)
+                request=GeneralConversationRequest('안녕','trace')
+                original=adapter.general_provider_payload(request,self.selection());saved=deepcopy(original)
+                prepared=adapter.prepare_general_payload(request,self.selection(),original)
+                self.assertEqual(prepared,{**saved,'think':False});self.assertEqual(original,saved)
+                self.assertEqual(prepared['options'],{'num_predict':64,'temperature':0})
+                self.assertEqual([c['url'].rsplit('/',1)[1] for c in transport.calls],['tags','show','tags'])
+                self.assertTrue(all(0<c['timeout_seconds']<=5 for c in transport.calls))
+                self.assertEqual(transport.calls[1]['payload'],{'model':'fixture-installed'})
+
+    def test_missing_malformed_or_unsupported_thinking_keeps_original_payload(self):
+        cases=[None,{},[],{'values':None},{'values':'false'},{'values':[]},{'values':[True]},
+            {'values':['false']},{'values':['low','high']},{'values':[0]},{'values':[False,0]}]
+        for controls in cases:
+            with self.subTest(controls=controls):
+                transport=self.Transport(controls);adapter=OllamaTextGenerationAdapter(transport=transport)
+                request=GeneralConversationRequest('안녕','trace');payload=adapter.general_provider_payload(request,self.selection())
+                self.assertIs(adapter.prepare_general_payload(request,self.selection(),payload),payload)
+                self.assertNotIn('think',payload)
+        transport=self.Transport(omit=True);adapter=OllamaTextGenerationAdapter(transport=transport)
+        payload=adapter.general_provider_payload(request,self.selection())
+        self.assertIs(adapter.prepare_general_payload(request,self.selection(),payload),payload)
+
+    def test_metadata_validation_failure_keeps_payload_and_never_chats(self):
+        for failure in ('timeout','digest','model','remote','metadata'):
+            with self.subTest(failure=failure):
+                transport=self.Transport({'values':[False]},invalid=failure)
+                adapter=OllamaTextGenerationAdapter(transport=transport);request=GeneralConversationRequest('안녕','trace')
+                payload=adapter.general_provider_payload(request,self.selection())
+                self.assertIs(adapter.prepare_general_payload(request,self.selection(),payload),payload)
+                self.assertFalse(any(c['url'].endswith('/api/chat') for c in transport.calls))
+        adapter=OllamaTextGenerationAdapter(transport=self.Transport({'values':[False]}))
+        with patch('daon_user_api.question_answering.time.monotonic',side_effect=[0,6]):
+            self.assertIs(adapter.prepare_general_payload(request,self.selection(),payload),payload)
+
+    def test_noninternal_other_provider_and_grounded_do_not_query_metadata(self):
+        transport=self.Transport({'values':[False]});adapter=OllamaTextGenerationAdapter(transport=transport)
+        general=GeneralConversationRequest('안녕','trace')
+        evidence=(IndexedEvidenceChunk('chunk','source','version',1,'근거','span'),)
+        for selection,request in ((self.selection('external_api'),general),(self.selection(provider='CUSTOM'),general),
+                                  (self.selection(),GroundedQuestionRequest('질문',evidence,'trace'))):
+            with self.subTest(provider=selection.provider_code,kind=selection.provider_kind,request=type(request)):
+                payload={'unchanged':'payload'}
+                self.assertIs(adapter.prepare_general_payload(request,selection,payload),payload)
+        self.assertEqual(transport.calls,[])
+
+    def test_optional_metadata_does_not_swallow_programming_errors(self):
+        adapter=OllamaTextGenerationAdapter(transport=self.Transport());request=GeneralConversationRequest('안녕','trace')
+        for error in (RuntimeError('PROGRAMMING_FAILURE'),ValueError('UNEXPECTED_VALUE_ERROR')):
+            with self.subTest(kind=type(error)):
+                with patch.object(adapter,'_verified_internal_metadata',side_effect=error):
+                    with self.assertRaises(type(error)):
+                        adapter.prepare_general_payload(request,self.selection(),{})
+
+    def test_public_verified_metadata_retains_existing_two_value_contract(self):
+        transport=self.Transport({'values':[False]});adapter=OllamaTextGenerationAdapter(transport=transport)
+        self.assertEqual(adapter.verified_internal_metadata(self.selection()),('a'*64,('completion','thinking')))
+
+
 def text_snapshot() -> ProviderSettingsSnapshot:
     return ProviderSettingsSnapshot(
         workspace_id="workspace-cp3",
