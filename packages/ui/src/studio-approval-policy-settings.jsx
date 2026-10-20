@@ -10,12 +10,15 @@ export function StudioApprovalPolicySettings({ adapter, workspaceId }) {
   const [error, setError] = useState(null);
   const requestRef = useRef(null);
   const scopeRef = useRef(null);
+  const changeButtonRef = useRef(null);
+  const returnFocusRef = useRef(false);
   scopeRef.current = { adapter, workspaceId };
   const current = request => requestRef.current === request && !request.controller.signal.aborted
     && scopeRef.current.adapter === request.adapter && scopeRef.current.workspaceId === request.workspaceId;
   useEffect(() => {
     const controller = new AbortController();
     const scope = { adapter, workspaceId };
+    returnFocusRef.current = false;
     setPolicy(null); setDays("7"); setPassword(""); setChallenge(false); setPending(false); setError(null);
     const owns = () => !controller.signal.aborted && scopeRef.current.adapter === scope.adapter && scopeRef.current.workspaceId === scope.workspaceId;
     if (adapter?.getStudioApprovalPolicy) {
@@ -25,8 +28,15 @@ export function StudioApprovalPolicySettings({ adapter, workspaceId }) {
     } else setError("STUDIO_APPROVAL_POLICY_UNAVAILABLE");
     return () => { controller.abort(); requestRef.current?.controller.abort(); requestRef.current = null; };
   }, [adapter, workspaceId]);
+  useEffect(() => {
+    if (!challenge && returnFocusRef.current) {
+      returnFocusRef.current = false;
+      changeButtonRef.current?.focus();
+    }
+  }, [challenge]);
   const cancel = () => {
     requestRef.current?.controller.abort(); requestRef.current = null;
+    returnFocusRef.current = true;
     setPassword(""); setChallenge(false); setPending(false);
   };
   const begin = () => {
@@ -48,7 +58,7 @@ export function StudioApprovalPolicySettings({ adapter, workspaceId }) {
       const value = await request.adapter.saveStudioApprovalPolicy({ ttl_days: request.ttl,
         expected_policy_version: request.expected, step_up_authorization: token },
       { signal: request.controller.signal, idempotencyKey: request.idempotencyKey });
-      if (current(request)) { setPolicy(value); setDays(String(value.ttl_days)); setChallenge(false); requestRef.current = null; }
+      if (current(request)) { setPolicy(value); setDays(String(value.ttl_days)); returnFocusRef.current = true; setChallenge(false); requestRef.current = null; }
     } catch (failure) {
       if (current(request)) {
         request.issuing = false;
@@ -65,7 +75,7 @@ export function StudioApprovalPolicySettings({ adapter, workspaceId }) {
       <p>조직 승인 기한 {policy.ttl_days}일</p>
       <label>승인 기한 일수<input type="number" min="1" max="30" value={days} disabled={challenge || pending || !policy.can_manage}
         onChange={event => { if (!requestRef.current) setDays(event.currentTarget.value); }} /></label>
-      <button type="button" disabled={challenge || pending || !policy.can_manage || !/^(?:[1-9]|[12][0-9]|30)$/u.test(days)} onClick={begin}>승인 기한 변경</button>
+      <button ref={changeButtonRef} type="button" disabled={challenge || pending || !policy.can_manage || !/^(?:[1-9]|[12][0-9]|30)$/u.test(days)} onClick={begin}>승인 기한 변경</button>
       <small>{policy.can_manage ? "재인증 후 이후 요청에만 적용됩니다." : "조직 정책으로 잠김 · 현재 정책 변경 권한이 없습니다."}</small>
     </> : null}
     {challenge ? <section aria-label="승인 정책 추가 인증">

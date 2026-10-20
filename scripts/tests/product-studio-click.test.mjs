@@ -85,13 +85,14 @@ test('S24 lifecycle policy save uses bound challenge and canonical receipt witho
     }
     if(url.includes('approval-notices'))return lifecycleReply({items:[],unread_count:0});
     return s23Read([initial]);
-  },async({container,act,click,fillPassword,detail})=>{
+  },async({container,act,click,fillPassword,detail,document})=>{
     const input=s22Field(container,'승인 기한 일수','INPUT');
     await act(async()=>s22Props(input).onChange({currentTarget:{value:'1'}}));
-    await click('승인 기한 변경');await fillPassword();await click('추가 인증 확인');
+    await click('승인 기한 변경');await fillPassword();buttonByText(container,'추가 인증 확인').focus();await click('추가 인증 확인');
     assert.equal(writes,1);assert.match(container.textContent,/조직 승인 기한 1일/);
     assert.match(detail().textContent,/2099-01-01/);assert.doesNotMatch(container.textContent,/opaque-policy-only/);
     assert.equal(findElements(container,node=>node.getAttribute?.('role')==='dialog').length,0);
+    assert.ok(document.activeElement===buttonByText(container,'승인 기한 변경'),'successful save returns focus to policy change');
   },initial,true,true);
 });
 
@@ -129,9 +130,10 @@ test('S24 settings policy cancellation discards an in-flight grant and password'
     if(url.includes('approval-notices'))return lifecycleReply({items:[],unread_count:0});
     if(url.endsWith('/session/step-up')){signal=init.signal;return auth.promise;}
     return s23Read([s24Version()]);
-  },async({container,click,fillPassword,act})=>{
+  },async({container,click,fillPassword,act,document})=>{
     await click('승인 기한 변경');await fillPassword();await click('추가 인증 확인');
-    await click('추가 인증 취소');assert.equal(signal.aborted,true);
+    buttonByText(container,'추가 인증 취소').focus();await click('추가 인증 취소');assert.equal(signal.aborted,true);
+    assert.ok(document.activeElement===buttonByText(container,'승인 기한 변경'),'cancel returns focus to policy change');
     await act(async()=>auth.resolve(Response.json({data:{step_up_authorization:'late-cancelled-grant'}})));
     assert.equal(saves,0);await click('승인 기한 변경');
     assert.equal(s22Field(container,'추가 인증 비밀번호','INPUT').value,'');
