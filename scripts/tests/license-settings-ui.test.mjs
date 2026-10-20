@@ -9,7 +9,7 @@ test("License client는 safe projection만 받고 exact same-origin BFF를 사�
   const safe = {
     product: "daon-user", edition: "enterprise", license_id_hint: "…1-001",
     issued_at: "2026-08-14T08:00:00Z", expires_at: "2027-08-15T08:00:00Z", status: "active",
-    features: ["citation"], resources: [{ resource: "generation_runs", limit: 100, used: 2, remaining: 98, status: "available" }],
+    features: ["citation"], resources: [{ resource: "notebooks", limit: 100, used: 2, remaining: 98, status: "available" }],
     warning: null, creation_allowed: true, existing_read_allowed: true, existing_export_allowed: true, can_apply: true,
   };
   const requests = [];
@@ -29,6 +29,7 @@ test("License client는 safe projection만 받고 exact same-origin BFF를 사�
     { ...safe, license_id_hint: "…too-long" },
     { ...safe, issued_at: "August 14, 2026" },
     { ...safe, features: ["citation", "citation"] },
+    { ...safe, resources: [{ ...safe.resources[0], resource: "generation_runs" }] },
     { ...safe, resources: [{ ...safe.resources[0], status: "warning" }] },
     { ...safe, resources: [{ ...safe.resources[0], remaining: 99 }] },
     { ...safe, warning: { code: "INTERNAL_DECISION", action: "unsafe" } },
@@ -50,6 +51,7 @@ test("License OpenAPI projection은 client가 fail-close하는 enum과 형식을
   assert.equal(schemas.LicenseView.properties.license_id_hint.oneOf[0].pattern, "^…[^\\s]{5}$");
   assert.equal(schemas.LicenseView.properties.issued_at.oneOf[0].format, "date-time");
   assert.deepEqual(schemas.LicenseResourceUsage.properties.status.enum, ["available", "limit_reached"]);
+  assert.deepEqual(schemas.LicenseResourceUsage.properties.resource.enum, ["users", "notebooks"]);
   assert.equal(schemas.LicenseView.properties.features.items.pattern, "^[a-z][a-z0-9_]{0,63}$");
 });
 
