@@ -1050,6 +1050,55 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(scope.actor_id == "user-local-001" for scope in cloud_store.scopes))
         self.assertTrue(all(scope.capability == "workspace.bootstrap" for scope in cloud_store.scopes))
 
+    async def test_no_workspace_admin_normal_creation_login_password_change_and_revocation(self):
+        from daon_user_api.admin_users import AdminUserService
+        self.dependencies.settings = replace(self.settings, system_admin_user_ids=frozenset({self.web.user_id}))
+        self.dependencies.admin_user_service = AdminUserService(repository=self.identity_repository,
+            audit_store=self.audit, system_admin_user_ids=frozenset({self.web.user_id}), clock=self.clock)
+        operator = {"cookie": f"{WEB_SESSION_COOKIE}={self.web.access_token}", "X-Daon-Bff-Transport": "internal"}
+        created = await self.client.post("/api/v1/admin/users", headers={**operator, "Idempotency-Key": "s44-create-admin-0001"},
+            json={"login_id": "s44-no-workspace", "email": "s44-no-workspace@example.test", "initial_password": "initial s44 password"})
+        self.assertEqual(created.status_code, 201, created.text)
+        user_id = created.json()["data"]["user"]["user_id"]
+        approved = await self.client.post(f"/api/v1/admin/users/{user_id}/approve",
+            headers={**operator, "Idempotency-Key": "s44-approve-admin-0001"}, json={})
+        self.assertEqual(approved.status_code, 200, approved.text)
+        self.dependencies.settings = replace(self.settings, system_admin_user_ids=frozenset({self.web.user_id, user_id}))
+        login = await self.client.post("/api/v1/auth/login", json={"login_id": "s44-no-workspace", "password": "initial s44 password"})
+        self.assertEqual(login.status_code, 200, login.text)
+        self.assertIsNone(login.json()["data"]["workspace_id"])
+        tenant = login.json()["data"]["tenant_id"]
+        headers = {"cookie": f"{WEB_SESSION_COOKIE}={login.cookies[WEB_SESSION_COOKIE]}"}
+        session = await self.client.get("/api/v1/session", headers=headers)
+        self.assertIsNone(session.json()["data"]["workspace_id"])
+        self.assertIs(session.json()["data"]["password_change_required"], True)
+        self.assertEqual((await self.client.get("/api/v1/system/operations/status", headers=headers)).status_code, 403)
+        changed = await self.client.post("/api/v1/auth/password/change", headers={**headers,
+            "X-Daon-Bff-Transport": "internal", "X-Daon-Csrf-Origin": "https://app.example.com",
+            "X-Daon-Csrf-Referer": "https://app.example.com/password-change"},
+            json={"current_password": "initial s44 password", "new_password": "replacement s44 password"})
+        self.assertEqual(changed.status_code, 200, changed.text)
+        self.assertIn("Max-Age=0", changed.headers["set-cookie"])
+        self.assertEqual((await self.client.get("/api/v1/session", headers=headers)).status_code, 401)
+        again = await self.client.post("/api/v1/auth/login", json={"login_id": "s44-no-workspace", "password": "replacement s44 password"})
+        self.assertIsNone(again.json()["data"]["workspace_id"])
+        headers = {"cookie": f"{WEB_SESSION_COOKIE}={again.cookies[WEB_SESSION_COOKIE]}"}
+        current = (await self.client.get("/api/v1/session", headers=headers)).json()["data"]
+        self.assertIs(current["password_change_required"], False)
+        self.assertIs(current["is_system_admin"], True)
+        self.assertEqual(current["recovery_operations"], [])
+        self.assertEqual((await self.client.get("/api/v1/system/operations/status", headers=headers)).status_code, 200)
+        self.assertIsNone(self.authorization_repository.primary_workspace_id(tenant))
+        self.dependencies.settings = self.settings
+        self.assertEqual((await self.client.get("/api/v1/system/operations/status", headers=headers)).status_code, 403)
+        # 권한 회수 후 일반 사용자 Web 로그인은 기존 개인 Workspace를 생성한다.
+        ordinary = await self.client.post("/api/v1/auth/login", json={"login_id": "s44-no-workspace", "password": "replacement s44 password"})
+        workspace = ordinary.json()["data"]["workspace_id"]
+        self.assertIsInstance(workspace, str)
+        self.dependencies.settings = replace(self.settings, system_admin_user_ids=frozenset({user_id}))
+        existing = await self.client.post("/api/v1/auth/login", json={"login_id": "s44-no-workspace", "password": "replacement s44 password"})
+        self.assertEqual(existing.json()["data"]["workspace_id"], workspace)
+
     async def test_native_local_login_returns_opaque_credentials_without_cookie_and_rejects_client_kind_overrides(self) -> None:
         class Sender:
             messages: list[dict[str, str]] = []

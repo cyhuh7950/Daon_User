@@ -1776,7 +1776,9 @@ test("강제 변경 화면은 확인 불일치와 double-submit을 막고 성공
   let changes = 0; const redirects = []; let release;
   const pending = new Promise((resolve) => { release = resolve; });
   const view = await render("apps/web/components/password-change-workspace.jsx", "PasswordChangeWorkspace", {
-    getSession: async () => ({ password_change_required: true, is_system_admin: true }),
+    getSession: async () => ({ user_id: "qa-admin", tenant_id: "tenant-qa", workspace_id: null,
+      session_id: "session-qa", device_id: "device-qa", client_kind: "web", delivery: "same_origin_secure_cookie",
+      expires_at: "2099-01-01T00:00:00Z", recovery_operations: [], password_change_required: true, is_system_admin: true }),
     changePassword: async () => { changes += 1; await pending; return { status: "password_changed" }; },
     navigate: (path) => redirects.push(path),
   }, ".password-change-");

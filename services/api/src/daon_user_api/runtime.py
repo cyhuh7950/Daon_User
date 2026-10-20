@@ -3445,10 +3445,13 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             login_id=body.login_id, password=body.password, platform=DevicePlatform.WEB,
             trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
         )
-        workspace_id = _ensure_personal_workspace(
-            dependencies,
-            tenant_id=credentials.tenant_id,
-            user_id=credentials.user_id,
+        no_workspace_admin = (
+            credentials.user_id in dependencies.settings.system_admin_user_ids
+            and dependencies.authorization_repository.primary_workspace_id(credentials.tenant_id) is None
+            and not dependencies.identity_service.selectable_tenant_workspaces(user_id=credentials.user_id)
+        )
+        workspace_id = None if no_workspace_admin else _ensure_personal_workspace(
+            dependencies, tenant_id=credentials.tenant_id, user_id=credentials.user_id,
         )
         response = JSONResponse({"data": {"user_id": credentials.user_id, "tenant_id": credentials.tenant_id, "workspace_id": workspace_id}, "meta": {"trace_id": request.state.trace_id}})
         response.set_cookie(WEB_SESSION_COOKIE, credentials.access_token, max_age=WEB_SESSION_COOKIE_MAX_AGE, httponly=True, secure=True, samesite="lax", path="/")

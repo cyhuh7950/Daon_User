@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { authApi } from "./auth-api.js";
+import { authApi, authEntryPath, getCurrentAuthSession } from "./auth-api.js";
 
 const initial = { login_id: "", email: "", password: "", token: "" };
 const SAFE_AUTH_ERROR_CODES = new Set([
@@ -19,13 +19,40 @@ export function AuthPane({ onLoginComplete } = {}) {
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const firstInputRef = useRef(null);
+  const requestRef = useRef(null);
 
   useEffect(() => { firstInputRef.current?.focus(); }, [screen, signupStep, resetStep]);
+  useEffect(() => {
+    const abort = () => requestRef.current?.abort();
+    const hide = () => { abort(); requestRef.current = null; clearSensitive(); setBusy(false); };
+    const show = async (event) => {
+      if (!event.persisted) return;
+      abort();
+      const controller = new AbortController();
+      requestRef.current = controller;
+      setBusy(true); setMessage("");
+      try {
+        const session = await getCurrentAuthSession({ signal: controller.signal });
+        if (controller.signal.aborted) return;
+        const destination = authEntryPath(session);
+        if (destination !== "/password-change" && typeof onLoginComplete === "function") await onLoginComplete();
+        else window.location.assign(destination);
+      } catch (error) {
+        if (!controller.signal.aborted && error?.message !== "AUTHENTICATION_REQUIRED") setMessage("인증 상태를 확인하지 못했습니다.");
+      } finally {
+        if (requestRef.current === controller) requestRef.current = null;
+        if (!controller.signal.aborted) setBusy(false);
+      }
+    };
+    window.addEventListener("pagehide", hide);
+    window.addEventListener("pageshow", show);
+    return () => { abort(); window.removeEventListener("pagehide", hide); window.removeEventListener("pageshow", show); };
+  }, [onLoginComplete]);
 
   const update = (field) => (event) => setForm((current) => ({ ...current, [field]: event.target.value }));
   const clearSensitive = () => setForm((current) => ({ ...current, password: "", token: "" }));
   const changeScreen = (nextScreen, nextSignupStep = "signup") => {
-    if (busy) return;
+    if (busy || requestRef.current) return;
     clearSensitive();
     setMessage("");
     if (nextScreen === "signup") setSignupStep(nextSignupStep);
@@ -33,34 +60,39 @@ export function AuthPane({ onLoginComplete } = {}) {
     setScreen(nextScreen);
   };
   const run = async (path, payload, success, afterSuccess) => {
-    if (busy) return;
+    if (busy || requestRef.current) return;
+    const controller = new AbortController();
+    requestRef.current = controller;
     setBusy(true);
     setMessage("");
     try {
       const operations = {
         signup: () => authApi.signup(payload),
-        login: () => authApi.login(payload),
+        login: () => authApi.login(payload, { signal: controller.signal }),
         "verify-email": () => authApi.verifyEmail(payload.token),
         "resend-verification": () => authApi.resendVerification(payload.identifier),
         "password-reset/request": () => authApi.requestPasswordReset(payload.identifier),
         "password-reset/confirm": () => authApi.confirmPasswordReset(payload.token, payload.new_password),
       };
       const result = await operations[path]();
+      if (controller.signal.aborted) return;
       setMessage(success);
       afterSuccess?.();
-      if (path === "login" && result?.data?.workspace_id) {
-        if (typeof onLoginComplete === "function") await onLoginComplete();
-        else window.location.assign("/notebooks");
-      } else if (path === "login") {
-        setMessage("WORKSPACE_REQUIRED");
+      if (path === "login") {
+        const session = await getCurrentAuthSession({ signal: controller.signal, expectedIdentity: result?.data ?? {} });
+        if (controller.signal.aborted) return;
+        const destination = authEntryPath(session);
+        if (destination !== "/password-change" && typeof onLoginComplete === "function") await onLoginComplete();
+        else window.location.assign(destination);
       }
     }
     catch (error) {
+      if (controller.signal.aborted) return;
       setMessage(SAFE_AUTH_ERROR_CODES.has(error?.code) ? error.code : "처리 실패: 요청을 완료하지 못했습니다.");
     }
     finally {
-      clearSensitive();
-      setBusy(false);
+      if (requestRef.current === controller) requestRef.current = null;
+      if (!controller.signal.aborted) { clearSensitive(); setBusy(false); }
     }
   };
 
