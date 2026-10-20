@@ -208,6 +208,54 @@ const deferred = () => {
   return { promise, resolve, reject };
 };
 
+test("승인 정책 설정 메뉴는 전용 modal 안에서 조회하고 닫기·Workspace 전환의 늦은 인증을 폐기한다", async () => {
+  const root = path.resolve(import.meta.dirname, "../..");
+  const output = await mkdtemp(path.join("D:/tmp", "daon-user-approval-policy-shell-"));
+  const dom = installMinimalDom(); let reactRoot;
+  try {
+    const { build } = await import("vite"), { createElement, act } = await import("react"), { createRoot } = await import("react-dom/client");
+    await build({ configFile: false, logLevel: "silent", root, build: { outDir: output, emptyOutDir: false,
+      lib: { entry: path.join(root, "packages/ui/src/product-workspace-shell.jsx"), formats: ["es"], fileName: "approval-policy-shell" },
+      rollupOptions: { external: ["react", "react-dom", "react-dom/client"], output: { paths: Object.fromEntries(["react", "react-dom", "react-dom/client"].map(name => [name, import.meta.resolve(name)])) } } } });
+    const entry = (await readdir(output)).find(name => /\.m?js$/u.test(name));
+    const { ProductWorkspaceShell } = await import(pathToFileURL(path.join(output, entry)).href);
+    let reads=0, saves=0; const challenges=[];
+    const adapterFor = days => ({ ...adapter, async listSources(){return [];}, async listStudioOutputs(){return [];},
+      async listStudioApprovalNotices(){return {items:[],unread_count:0};},
+      async getStudioApprovalPolicy(){reads++;return {ttl_days:days,policy_version:2,can_manage:true,step_up_target_id:'server-policy-target'};},
+      async issueStudioApprovalPolicyStepUp(target,password,options){assert.equal(target,'server-policy-target');assert.equal(password,'fixture password only');const waiting=deferred();challenges.push({...waiting,signal:options.signal});return waiting.promise;},
+      async saveStudioApprovalPolicy(){saves++;throw new Error('UNEXPECTED_SAVE');},
+    });
+    const currentAdapter=adapterFor(7), nextAdapter=adapterFor(30);
+    const container=dom.document.createElement('div');dom.document.body.appendChild(container);reactRoot=createRoot(container);
+    const render=(workspaceId,sourceAdapter)=>act(async()=>{reactRoot.render(createElement(ProductWorkspaceShell,{workspaceId,adapter:sourceAdapter}));await Promise.resolve();await Promise.resolve();});
+    const button=text=>findElements(container,node=>node.tagName==='BUTTON'&&node.textContent.trim()===text)[0];
+    const click=async element=>{assert.ok(element,'expected control');await act(async()=>element.dispatchEvent(new MinimalEvent('click')));};
+    const field=text=>{const label=findElements(container,node=>node.tagName==='LABEL'&&node.textContent.includes(text))[0];assert.ok(label,text);return findElements(label,node=>node.tagName==='INPUT')[0];};
+    const props=node=>node[Object.keys(node).find(key=>key.startsWith('__reactProps'))];
+    const open=async()=>{await click(button('설정'));await click(findElements(container,node=>node.tagName==='BUTTON'&&node.getAttribute('role')==='menuitem'&&node.textContent.includes('승인 정책'))[0]);};
+    const authorize=async()=>{await click(button('승인 기한 변경'));await act(async()=>props(field('추가 인증 비밀번호')).onChange({currentTarget:{value:'fixture password only'}}));await click(button('추가 인증 확인'));};
+    await render('workspace-1',currentAdapter);assert.equal(reads,0);
+    assert.ok(!button('승인 기한 변경'));await open();assert.equal(reads,1);assert.match(container.textContent,/조직 승인 기한 7일/);
+    await authorize();
+    const dialogs=findElements(container,node=>node.getAttribute?.('role')==='dialog');assert.equal(dialogs.length,1);
+    assert.ok(findElements(dialogs[0],node=>node===field('추가 인증 비밀번호')).length===1,'policy authentication stays inside settings dialog');
+    assert.equal(field('추가 인증 비밀번호').value,'');
+    await click(findElements(container,node=>node.tagName==='BUTTON'&&node.getAttribute('aria-label')==='닫기')[0]);
+    assert.equal(challenges[0].signal.aborted,true);
+    await act(async()=>challenges[0].resolve('late-closed-grant'));assert.equal(saves,0);
+    await open();await authorize();await render('workspace-2',nextAdapter);
+    assert.equal(challenges[1].signal.aborted,true);
+    await act(async()=>challenges[1].resolve('late-old-workspace-grant'));
+    assert.equal(saves,0);assert.ok(!button('추가 인증 확인'));
+    await open();assert.match(container.textContent,/조직 승인 기한 30일/);
+    assert.doesNotMatch(container.textContent,/late-closed-grant|late-old-workspace-grant/);
+  } finally {
+    if(reactRoot){const {act}=await import('react');await act(async()=>reactRoot.unmount());}
+    dom.restore();assert.equal(path.dirname(output),path.resolve('D:/tmp'));await rm(output,{recursive:true,force:true});
+  }
+});
+
 const s17Connector = Object.freeze({ connector_id: "daon-approved", kind: "daon_approved_knowledge",
   name: "Daon 승인 지식", status: "unavailable", source_count: 0, endpoint_label: "Daon",
   last_checked_at: null, error_code: "CONNECTOR_UNAVAILABLE" });

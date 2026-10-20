@@ -7,6 +7,7 @@ import "@daon-user/design-tokens/tokens.css";
 import { canCreateGroundedReport, createProductWorkspaceState, normalizeProductWorkspaceState, projectQuestionFailureState, questionFailureMessage, parseImageRegion, parseSheetCell, isSheetCellContent } from "./product-workspace-model.js";
 import { createProductStudioState } from "./product-studio-model.js";
 import { ProductStudioPane } from "./product-studio-pane.jsx";
+import { StudioApprovalPolicySettings } from "./studio-approval-policy-settings.jsx";
 import { classifyConversationIntent } from "./conversation-intent.js";
 import { secureUuid } from "./secure-uuid.js";
 import "./workspace.css";
@@ -1887,6 +1888,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
               <button type="button" role="menuitem" onClick={() => openModal("llm", settingsButtonRef.current)}><span className="menu-icon icon-model" aria-hidden="true" /><span><strong>LLM 설정</strong><small>Provider와 모델 연결</small></span></button>
               <button type="button" role="menuitem" onClick={() => openModal("output-version", settingsButtonRef.current)}><span className="menu-icon icon-output" aria-hidden="true" /><span><strong>출력·버전</strong><small>기본 형식과 저장 정책</small></span></button>
               <button type="button" role="menuitem" onClick={() => openModal("sync", settingsButtonRef.current)}><span className="menu-icon icon-sync" aria-hidden="true" /><span><strong>동기화·승인</strong><small>Preview 확인과 명시 승인</small></span></button>
+              <button type="button" role="menuitem" onClick={() => openModal("approval-policy", settingsButtonRef.current)}><span className="menu-icon icon-policy" aria-hidden="true" /><span><strong>승인 정책</strong><small>조직 승인 기한</small></span></button>
               <button type="button" role="menuitem" onClick={() => openModal("organization-policy", settingsButtonRef.current)}><span className="menu-icon icon-policy" aria-hidden="true" /><span><strong>조직 정책</strong><small>읽기 전용</small></span></button>
               <button type="button" role="menuitem" onClick={() => openModal("license", settingsButtonRef.current)}><span className="menu-icon icon-license" aria-hidden="true" /><span><strong>라이선스</strong><small>Edition과 사용 한도</small></span></button>
               <button type="button" role="menuitem" onClick={() => openModal("manual", settingsButtonRef.current)}><span className="menu-icon icon-manual" aria-hidden="true" /><span><strong>사용자 설명서</strong><small>가이드 검색·읽기·다운로드</small></span></button>
@@ -2223,7 +2225,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
       </div>
       {modalView ? <div className="workspace-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeModal(); }}>
         <section ref={modalRef} className={`workspace-modal workspace-modal-${modalView}`} role="dialog" aria-modal="true" aria-labelledby="workspace-modal-title" onKeyDown={(event) => trapDialogFocus(event, closeModal)}>
-          <header className="workspace-modal-header"><div><span className="section-kicker">WORKSPACE SETTINGS</span><h2 id="workspace-modal-title">{modalView === "question-step-up" ? "외부 질문 추가 인증" : modalView === "llm" ? "LLM 설정" : modalView === "output-version" ? "출력·버전" : modalView === "sync" ? "동기화·승인" : modalView === "organization-policy" ? "조직 정책" : modalView === "license" ? "라이선스" : modalView === "manual" ? "사용자 설명서" : "운영상태"}</h2></div><button className="modal-close" type="button" disabled={modalView === "output-version" && outputRequestRef.current?.kind === "save"} onClick={() => closeModal()} aria-label="닫기">×</button></header>
+          <header className="workspace-modal-header"><div><span className="section-kicker">WORKSPACE SETTINGS</span><h2 id="workspace-modal-title">{modalView === "question-step-up" ? "외부 질문 추가 인증" : modalView === "llm" ? "LLM 설정" : modalView === "output-version" ? "출력·버전" : modalView === "sync" ? "동기화·승인" : modalView === "approval-policy" ? "승인 정책" : modalView === "organization-policy" ? "조직 정책" : modalView === "license" ? "라이선스" : modalView === "manual" ? "사용자 설명서" : "운영상태"}</h2></div><button className="modal-close" type="button" disabled={modalView === "output-version" && outputRequestRef.current?.kind === "save"} onClick={() => closeModal()} aria-label="닫기">×</button></header>
           {modalView === "question-step-up" ? <div className="workspace-modal-content">
             <p>현재 선택한 자료와 질문의 외부 전송에 추가 인증이 필요합니다.</p>
             <label>현재 비밀번호<input ref={questionPasswordRef} type="password" autoComplete="off" aria-label="외부 질문 추가 인증 비밀번호" disabled={questionAuthPending} /></label>
@@ -2257,7 +2259,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
               </article>)}
             </div>
             {syncOperations.some((operation) => operation.state === "awaiting_approval") ? <label className="sync-step-up-password"><span>현재 비밀번호</span><input ref={syncPasswordRef} type="password" autoComplete="current-password" disabled={syncPending} /><small>승인 시 Step-up 인증에만 사용하며 저장하지 않습니다.</small></label> : null}
-          </div> : modalView === "organization-policy" ? <div className="workspace-modal-content organization-policy-settings" aria-live="polite">
+          </div> : modalView === "approval-policy" ? <StudioApprovalPolicySettings key={workspaceId} adapter={adapter} workspaceId={workspaceId} /> : modalView === "organization-policy" ? <div className="workspace-modal-content organization-policy-settings" aria-live="polite">
             {egressPolicyPending ? <div className="modal-unavailable" role="status">조직 정책을 불러오고 있습니다.</div> : null}
             {!egressPolicyPending && egressPolicySafeError ? <div className="modal-unavailable" role="alert"><strong>조직 정책을 불러오지 못했습니다.</strong><p>정책은 변경되지 않았습니다.</p><button type="button" onClick={() => void loadEgressPolicy()}>다시 불러오기</button></div> : null}
             {!egressPolicyPending && egressPolicy ? <>

@@ -223,8 +223,7 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered, initi
   const [savedRevision, setSavedRevision] = useState(null);
   const [stepUp, setStepUp] = useState(null);
   const [password, setPassword] = useState("");
-  const [approvalInfo, setApprovalInfo] = useState({ policy: null, items: [], unread_count: 0, error: false });
-  const [approvalDays, setApprovalDays] = useState("7");
+  const [approvalInfo, setApprovalInfo] = useState({ items: [], unread_count: 0, error: false });
   const [approvalRefresh, setApprovalRefresh] = useState(0);
   const generationRequestRef = useRef(null);
   const generationScopeRef = useRef(null);
@@ -236,11 +235,11 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered, initi
   useEffect(() => {
     const controller = new AbortController();
     const scope = { adapter, workspaceId: state.workspaceId };
-    setApprovalInfo({ policy: null, items: [], unread_count: 0, error: false });
-    if (!adapter?.getStudioApprovalPolicy || !adapter?.listStudioApprovalNotices) return () => controller.abort();
+    setApprovalInfo({ items: [], unread_count: 0, error: false });
+    if (!adapter?.listStudioApprovalNotices) return () => controller.abort();
     const current = () => !controller.signal.aborted && generationScopeRef.current.adapter === scope.adapter && generationScopeRef.current.workspaceId === scope.workspaceId;
-    void Promise.all([adapter.getStudioApprovalPolicy({ signal: controller.signal }), adapter.listStudioApprovalNotices({ signal: controller.signal })])
-      .then(([policy, notices]) => { if (current()) { setApprovalInfo({ policy, ...notices, error: false }); setApprovalDays(String(policy.ttl_days)); } })
+    void adapter.listStudioApprovalNotices({ signal: controller.signal })
+      .then(notices => { if (current()) setApprovalInfo({ ...notices, error: false }); })
       .catch(() => { if (current()) setApprovalInfo(value => ({ ...value, error: true })); });
     return () => controller.abort();
   }, [adapter, state.workspaceId, approvalRefresh]);
@@ -510,30 +509,6 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered, initi
   const lifecycleRequest = kind => ({ kind, phase: "challenge", outputId: selectedOutput?.studio_output_id,
     versionId: selectedOutput?.output_version_id, adapter, workspaceId: state.workspaceId,
     controller: new AbortController(), idempotencyKey: secureUuid() });
-  const changeApprovalPolicy = () => {
-    if (configurationBusy || generationRequestRef.current || actionRequestRef.current || !approvalInfo.policy?.can_manage
-      || !adapter?.saveStudioApprovalPolicy || !adapter?.issueStudioApprovalPolicyStepUp || !/^(?:[1-9]|[12][0-9]|30)$/u.test(approvalDays)) return;
-    const request = { ...lifecycleRequest("policy"), ttl: Number(approvalDays), expected: approvalInfo.policy.policy_version,
-      policyTarget: approvalInfo.policy.step_up_target_id };
-    actionRequestRef.current = request; stepUpRef.current = request; setStepUp(request); setPassword("");
-  };
-  const performPolicySave = async (request, token) => {
-    request.phase = "write"; detailRequestRef.current = request;
-    try {
-      const policy = await request.adapter.saveStudioApprovalPolicy({ ttl_days: request.ttl,
-        expected_policy_version: request.expected, step_up_authorization: token },
-      { signal: request.controller.signal, idempotencyKey: request.idempotencyKey });
-      if (currentLifecycle(request)) {
-        setApprovalInfo(current => ({ ...current, policy, error: false })); setApprovalDays(String(policy.ttl_days));
-      }
-    } catch (error) {
-      if (currentLifecycle(request)) setView(current => ({ ...current, safeError: /^[A-Z][A-Z0-9_]+$/u.test(error?.message) ? error.message : "STUDIO_ACTION_FAILED" }));
-    } finally {
-      const owns = currentLifecycle(request);
-      if (actionRequestRef.current === request) actionRequestRef.current = null;
-      if (owns) setView(current => ({ ...current, pending: false }));
-    }
-  };
   const readApprovalNotice = async notice => {
     if (configurationBusy || actionRequestRef.current || generationRequestRef.current || notice.read_at || !adapter?.markStudioApprovalNoticeRead) return;
     const request = lifecycleRequest("notice"); request.phase = "write";
@@ -564,19 +539,16 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered, initi
     setPassword(""); challenge.issuing = true;
     setView((current) => ({ ...current, pending: true, safeError: null }));
     try {
-      const issue = challenge.kind === "policy" ? challenge.adapter?.issueStudioApprovalPolicyStepUp : challenge.kind === "export" ? challenge.adapter?.issueStudioExportStepUp : challenge.adapter?.issueStudioStepUp;
+      const issue = challenge.kind === "export" ? challenge.adapter?.issueStudioExportStepUp : challenge.adapter?.issueStudioStepUp;
       if (!issue) throw new Error("STUDIO_STEP_UP_UNAVAILABLE");
-      const token = challenge.kind === "policy"
-        ? await issue(challenge.policyTarget, currentPassword, { signal: challenge.controller.signal })
-        : challenge.kind === "export"
+      const token = challenge.kind === "export"
         ? await issue(challenge.outputId, challenge.versionId, challenge.format, currentPassword, { signal: challenge.controller.signal })
         : await issue("final_approval_or_knowledge_registration", challenge.versionId, currentPassword, { signal: challenge.controller.signal });
       if (stepUpRef.current !== challenge || !sameDetailScope(challenge)
         || detailSelectionRef.current.outputId !== challenge.outputId || detailSelectionRef.current.versionId !== challenge.versionId) return;
       if (typeof token !== "string" || !token) throw new Error("STEP_UP_REQUIRED");
       stepUpRef.current = null; setStepUp(null);
-      if (challenge.kind === "policy") await performPolicySave(challenge, token);
-      else if (challenge.kind === "export") await performDownload(challenge, token);
+      if (challenge.kind === "export") await performDownload(challenge, token);
       else await performAction(challenge, token);
     } catch (error) {
       if (stepUpRef.current !== challenge) return;
@@ -622,14 +594,8 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered, initi
   return (
     <div className="product-studio" data-studio-state={view.status}>
       {knowledgeNotice ? <p role="status">{knowledgeNotice}</p> : null}
-      {approvalInfo.error ? <p role="alert">승인 기한·알림을 불러오지 못했습니다. 현재 접근과 연결을 확인해 주세요.</p> : null}
-      {approvalInfo.policy ? <section aria-label="승인 기한과 알림">
-        <p>조직 승인 기한 {approvalInfo.policy.ttl_days}일</p>
-        <label>승인 기한 일수<input type="number" min="1" max="30" value={approvalDays}
-          disabled={configurationBusy || !approvalInfo.policy.can_manage}
-          onChange={event => { if (!actionRequestRef.current) setApprovalDays(event.currentTarget.value); }} /></label>
-        <button type="button" disabled={configurationBusy || !approvalInfo.policy.can_manage || !/^(?:[1-9]|[12][0-9]|30)$/u.test(approvalDays)} onClick={changeApprovalPolicy}>승인 기한 변경</button>
-        <small>{approvalInfo.policy.can_manage ? "재인증 후 이후 요청에만 적용됩니다." : "조직 정책으로 잠김 · 현재 정책 변경 권한이 없습니다."}</small>
+      {approvalInfo.error ? <p role="alert">승인 알림을 불러오지 못했습니다. 현재 접근과 연결을 확인해 주세요.</p> : null}
+      {adapter?.listStudioApprovalNotices ? <section aria-label="승인 알림">
         <p>승인 알림 · 안 읽음 {approvalInfo.unread_count}</p>
         <ul>{approvalInfo.items.map(notice => <li key={notice.notification_id}>
           {({ due_24h: "승인 기한 임박", expired: "승인 요청 만료", withdrawn: "승인 요청 회수" })[notice.event_kind]} · {notice.scheduled_at}

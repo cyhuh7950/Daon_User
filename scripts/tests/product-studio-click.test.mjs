@@ -18,6 +18,20 @@ function lifecycleReply(data,method='GET',workspace='workspace-1') {
 }
 function lifecyclePolicy(days=7,version=0) {return {ttl_days:days,policy_version:version,can_manage:true,step_up_target_id:'studio-approval-policy-'+'a'.repeat(64)};}
 
+test('S24 standalone Studio keeps notices without approval policy controls or policy GET',async()=>{
+  let policyReads=0;
+  await withS24Studio(async(url)=>{
+    if(url.includes('approval-policy')){policyReads++;return lifecycleReply(lifecyclePolicy());}
+    if(url.includes('approval-notices'))return lifecycleReply({items:[],unread_count:0});
+    return s23Read([s24Version()]);
+  },async({container})=>{
+    assert.ok(!buttonByText(container,'승인 기한 변경'),'Studio must not contain policy controls');
+    assert.doesNotMatch(container.textContent,/조직 승인 기한|승인 기한 일수/);
+    assert.match(container.textContent,/승인 알림 · 안 읽음 0/);
+    assert.equal(policyReads,0);
+  },s24Version(),true);
+});
+
 test('S24 lifecycle withdrawal is synchronous single-flight and canonical withdrawn permits a new request not approval',async()=>{
   let writes=0; const waiting=s22Deferred();
   const initial=s24Version({status:'in_review',review_request_id:'review-1',approval_request_id:'request-1',approval_request_state:'pending',approval_expires_at:'2099-01-01T00:00:00Z'});
@@ -58,7 +72,7 @@ test('S24 lifecycle policy reauthentication binds server target wipes password a
     await act(async()=>auth.resolve(Response.json({data:{step_up_authorization:'opaque-late'}})));
     assert.equal(saves,0);assert.doesNotMatch(container.textContent,/opaque-late/);
     assert.match(container.textContent,/30일/);
-  },s24Version(),true);
+  },s24Version(),true,true);
 });
 test('S24 lifecycle policy save uses bound challenge and canonical receipt without changing an existing request deadline',async()=>{
   let writes=0;
@@ -78,7 +92,51 @@ test('S24 lifecycle policy save uses bound challenge and canonical receipt witho
     assert.equal(writes,1);assert.match(container.textContent,/조직 승인 기한 1일/);
     assert.match(detail().textContent,/2099-01-01/);assert.doesNotMatch(container.textContent,/opaque-policy-only/);
     assert.equal(findElements(container,node=>node.getAttribute?.('role')==='dialog').length,0);
-  },initial,true);
+  },initial,true,true);
+});
+
+test('S24 settings policy denies unauthorized changes and invalid TTL without issuing a grant',async()=>{
+  let writes=0;
+  await withS24Studio(async(url,init)=>{
+    if(init.method!=='GET')writes++;
+    if(url.includes('approval-policy'))return lifecycleReply({...lifecyclePolicy(),can_manage:false});
+    if(url.includes('approval-notices'))return lifecycleReply({items:[],unread_count:0});
+    return s23Read([s24Version()]);
+  },async({container,act})=>{
+    const change=buttonByText(container,'승인 기한 변경');assert.equal(change.disabled,true);
+    await act(async()=>s22Props(change).onClick());assert.equal(writes,0);
+    assert.match(container.textContent,/조직 정책으로 잠김/);
+  },s24Version(),true,true);
+  await withS24Studio(async(url,init)=>{
+    if(init.method!=='GET')writes++;
+    if(url.includes('approval-policy'))return lifecycleReply(lifecyclePolicy());
+    if(url.includes('approval-notices'))return lifecycleReply({items:[],unread_count:0});
+    return s23Read([s24Version()]);
+  },async({container,act})=>{
+    for(const value of ['0','31','1.5','01','']) {
+      await act(async()=>s22Props(s22Field(container,'승인 기한 일수','INPUT')).onChange({currentTarget:{value}}));
+      const button=buttonByText(container,'승인 기한 변경');assert.equal(button.disabled,true);
+      await act(async()=>s22Props(button).onClick());
+    }
+    assert.equal(writes,0);
+  },s24Version(),true,true);
+});
+
+test('S24 settings policy cancellation discards an in-flight grant and password',async()=>{
+  const auth=s22Deferred();let saves=0;let signal;
+  await withS24Studio(async(url,init)=>{
+    if(url.includes('approval-policy')){if(init.method==='PATCH')saves++;return lifecycleReply(lifecyclePolicy());}
+    if(url.includes('approval-notices'))return lifecycleReply({items:[],unread_count:0});
+    if(url.endsWith('/session/step-up')){signal=init.signal;return auth.promise;}
+    return s23Read([s24Version()]);
+  },async({container,click,fillPassword,act})=>{
+    await click('승인 기한 변경');await fillPassword();await click('추가 인증 확인');
+    await click('추가 인증 취소');assert.equal(signal.aborted,true);
+    await act(async()=>auth.resolve(Response.json({data:{step_up_authorization:'late-cancelled-grant'}})));
+    assert.equal(saves,0);await click('승인 기한 변경');
+    assert.equal(s22Field(container,'추가 인증 비밀번호','INPUT').value,'');
+    assert.doesNotMatch(container.textContent,/late-cancelled-grant/);
+  },s24Version(),true,true);
 });
 
 test('S24 lifecycle notice read is synchronous single-flight preserves receipt and ignores late responses from a previous adapter',async()=>{
@@ -118,7 +176,7 @@ test('S24 lifecycle read receipt remains read when its canonical refresh fails w
   },s24Version(),true);
 });
 
-test('S24 lifecycle expired request forbids approval allows explicit new request and policy permission disables changes',async()=>{
+test('S24 lifecycle expired request forbids approval allows explicit new request without policy controls',async()=>{
   const initial=s24Version({status:'in_review',review_request_id:'review-1',approval_request_id:'request-1',approval_request_state:'expired',approval_expires_at:'2020-01-01T00:00:00Z'});
   let writes=0;
   await withS24Studio(async(url,init)=>{
@@ -131,23 +189,22 @@ test('S24 lifecycle expired request forbids approval allows explicit new request
     assert.equal(buttonByText(container,'승인').disabled,true);
     assert.equal(buttonByText(container,'승인 요청').disabled,false);
     assert.equal(buttonByText(container,'승인 요청 회수').disabled,true);
-    const change=buttonByText(container,'승인 기한 변경');assert.equal(change.disabled,true);
-    await act(async()=>s22Props(change).onClick());assert.equal(writes,0);
-    assert.match(container.textContent,/조직 정책으로 잠김/);
+    assert.ok(!buttonByText(container,'승인 기한 변경'));assert.equal(writes,0);
   },initial,true);
 });
 
-async function withS24Studio(fetchImpl, run, version = s24Version(), lifecycle = false) {
+async function withS24Studio(fetchImpl, run, version = s24Version(), lifecycle = false, policySettings = false) {
   const rootPath = path.resolve(import.meta.dirname, '../..');
-  const output = await mkdtemp(path.join(rootPath, '.product-studio-s24-'));
+  const output = await mkdtemp(path.join('D:/tmp', 'daon-user-approval-policy-s24-'));
   const dom = installMinimalDom(); let reactRoot;
   try {
     const { createElement, act } = await import('react'), { createRoot } = await import('react-dom/client'), { build } = await import('vite');
     await build({ configFile: false, logLevel: 'silent', root: rootPath, build: { outDir: output, emptyOutDir: false,
-      lib: { entry: path.join(rootPath, 'packages/ui/src/product-studio-pane.jsx'), formats: ['es'], fileName: 'product-studio' },
-      rollupOptions: { external: ['react', 'react-dom', 'react-dom/client'] } } });
+      lib: { entry: policySettings ? { 'product-studio': path.join(rootPath, 'packages/ui/src/product-studio-pane.jsx'), 'approval-policy': path.join(rootPath, 'packages/ui/src/studio-approval-policy-settings.jsx') } : path.join(rootPath, 'packages/ui/src/product-studio-pane.jsx'), formats: ['es'], fileName: (_format,name) => `${name ?? 'product-studio'}.mjs` },
+      rollupOptions: { external: ['react', 'react-dom', 'react-dom/client'], output: { paths: Object.fromEntries(['react', 'react-dom', 'react-dom/client'].map(name => [name, import.meta.resolve(name)])) } } } });
     const entry = (await readdir(output)).find(name => name.startsWith('product-studio') && /\.m?js$/u.test(name));
     const { ProductStudioPane } = await import(pathToFileURL(path.join(output, entry)).href);
+    const PolicySettings = policySettings ? (await import(pathToFileURL(path.join(output, 'approval-policy.mjs')).href)).StudioApprovalPolicySettings : null;
     const container = dom.document.createElement('div'); dom.document.body.appendChild(container); reactRoot = createRoot(container);
     const adapterFor = (workspace = 'workspace-1', extra = {}) => ({
       ...(lifecycle ? {
@@ -167,7 +224,7 @@ async function withS24Studio(fetchImpl, run, version = s24Version(), lifecycle =
     const stateFor = (workspace = 'workspace-1', current = version) => ({ ...s23State(workspace), sources: s22Sources,
       settings: { sourceVersionIds: ['source-version-1'] }, outputs: s23State(workspace).outputs.map(item =>
         item.studio_output_id === 'output-target' ? { ...item, ...current } : item) });
-    const render = (state, adapter) => act(async () => reactRoot.render(createElement(ProductStudioPane, { state, adapter })));
+    const render = (state, adapter) => act(async () => reactRoot.render(createElement('div', null, createElement(ProductStudioPane, { state, adapter }), PolicySettings ? createElement(PolicySettings, { adapter, workspaceId: state.workspaceId }) : null)));
     await render(stateFor(), adapterFor());
     const click = label => act(async () => { const button = buttonByText(container, label); assert.ok(button, label); button.dispatchEvent(new MinimalEvent('click')); });
     const fillPassword = () => act(async () => s22Props(s22Field(container, '추가 인증 비밀번호', 'INPUT')).onChange({ currentTarget: { value: 'fixture password only' } }));
@@ -175,7 +232,7 @@ async function withS24Studio(fetchImpl, run, version = s24Version(), lifecycle =
     await run({ container, act, render, adapterFor, stateFor, click, fillPassword, detail, document: dom.document });
   } finally {
     if (reactRoot) { const { act } = await import('react'); await act(async () => reactRoot.unmount()); }
-    dom.restore(); await rm(output, { recursive: true, force: true });
+    dom.restore(); assert.equal(path.dirname(output),path.resolve('D:/tmp')); await rm(output, { recursive: true, force: true });
   }
 }
 
