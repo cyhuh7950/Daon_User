@@ -148,6 +148,9 @@ class ReadTransition:
 
 
 class NotificationRepository(Protocol):
+    transactional_audit: bool
+    def notifications_for(self, *, tenant_id: str, recipient_id: str) -> tuple[Notification, ...]: ...
+    def notification_for(self, *, tenant_id: str, recipient_id: str, notification_id: str) -> Notification | None: ...
     def insert_if_absent(self, dedupe_key: str, item: Notification) -> bool: ...
     def all_notifications(self) -> tuple[Notification, ...]: ...
     def replace_notification(self, item: Notification) -> None: ...
@@ -173,6 +176,8 @@ class ReferenceNotificationRepository:
     transaction and persist the audit through its transactional Outbox.
     """
 
+    transactional_audit = False
+
     def __init__(self) -> None:
         self._lock = RLock()
         self._secret = secrets.token_bytes(32)
@@ -192,6 +197,15 @@ class ReferenceNotificationRepository:
     def all_notifications(self) -> tuple[Notification, ...]:
         with self._lock:
             return tuple(self._notifications.values())
+
+    def notifications_for(self, *, tenant_id: str, recipient_id: str) -> tuple[Notification, ...]:
+        with self._lock:
+            return tuple(item for item in self._notifications.values()
+                         if item.tenant_id == tenant_id and item.recipient_id == recipient_id)
+
+    def notification_for(self, *, tenant_id: str, recipient_id: str, notification_id: str) -> Notification | None:
+        item = self.notification_by_id(notification_id)
+        return item if item is not None and item.tenant_id == tenant_id and item.recipient_id == recipient_id else None
 
     def replace_notification(self, item: Notification) -> None:
         with self._lock:
@@ -215,6 +229,7 @@ class ReferenceNotificationRepository:
         self, *, notification_id: str, tenant_id: str, recipient_id: str,
         expected_etag: str, idempotency_key: str, fingerprint: str, read_at: datetime,
         on_first_transition: Callable[[Notification, Notification], None],
+        audit_draft_factory: Callable[[Notification, Notification], AuditEventDraft] | None = None,
     ) -> ReadTransition:
         """Atomically decide replay/conflict, append first audit, and commit read state.
 
@@ -298,6 +313,11 @@ def _plain_text(value: object, *, maximum: int) -> str:
 def _safe_deep_link(value: object, native_routes: frozenset[str]) -> str:
     if not isinstance(value, str) or len(value) > 512 or value != value.strip():
         raise NotificationError("UNSAFE_DEEP_LINK")
+    if value == "/settings/account" or re.fullmatch(
+        r"/notebooks/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\?(?:output_version_id|source_version_id|run_id|studio_job_id)=[A-Za-z0-9][A-Za-z0-9._:-]{0,127}",
+        value,
+    ):
+        return value
     if value.startswith("/") and not value.startswith("//"):
         parsed = urlsplit(value)
         first = parsed.path.strip("/").split("/", 1)[0]
@@ -339,6 +359,8 @@ class NotificationService:
                 trace_id=trace_id, policy_version=policy_version,
             )
         except AuthorizationError as error:
+            if error.http_status >= 500:
+                raise NotificationError("DATABASE_UNAVAILABLE", 503) from None
             status = 404 if error.http_status == 404 else 403
             code = "RESOURCE_UNAVAILABLE" if status == 404 else "CURRENT_ACCESS_DENIED"
             raise NotificationError(code, status) from None
@@ -404,7 +426,7 @@ class NotificationService:
         self, principal: IdentityPrincipal, trace_id: str, policy_version: str
     ) -> tuple[Notification, ...]:
         candidates = tuple(
-            item for item in self._repository.all_notifications()
+            item for item in self._repository.notifications_for(tenant_id=principal.tenant_id, recipient_id=principal.user_id)
             if item.tenant_id == principal.tenant_id and item.recipient_id == principal.user_id
         )
         visible: list[Notification] = []
@@ -454,7 +476,8 @@ class NotificationService:
         self, *, principal: IdentityPrincipal, notification_id: str,
         trace_id: str, policy_version: str,
     ) -> Notification:
-        item = self._repository.notification_by_id(_checked_id(notification_id))
+        item = self._repository.notification_for(tenant_id=principal.tenant_id,
+            recipient_id=principal.user_id, notification_id=_checked_id(notification_id))
         if item is None or item.tenant_id != principal.tenant_id or item.recipient_id != principal.user_id:
             raise NotificationError("RESOURCE_UNAVAILABLE", 404)
         self._authorize(principal, item.workspace_id, trace_id, policy_version)
@@ -485,8 +508,8 @@ class NotificationService:
             raise NotificationError("INVALID_TIME")
         digest = hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()[:24]
 
-        def append_audit(before: Notification, after: Notification) -> None:
-            self._audit.append(AuditEventDraft(
+        def audit_draft(before: Notification, after: Notification) -> AuditEventDraft:
+            return AuditEventDraft(
                 event_id=f"audit-notification-read-{digest}", occurred_at=now,
                 actor_id=principal.user_id, actor_type=ActorType.USER,
                 tenant_id=principal.tenant_id, workspace_id=before.workspace_id,
@@ -496,8 +519,12 @@ class NotificationService:
                 before={"state": "unread", "version": before.version},
                 after={"state": "read", "version": after.version},
                 metadata={"source_event_id": before.source_event_id},
-            ))
+            )
 
+        def append_audit(before: Notification, after: Notification) -> None:
+            self._audit.append(audit_draft(before, after))
+
+        audit_options = {"audit_draft_factory": audit_draft} if self._repository.transactional_audit else {}
         transition = self._repository.transition_read(
             notification_id=item.notification_id,
             tenant_id=principal.tenant_id,
@@ -507,6 +534,7 @@ class NotificationService:
             fingerprint=fingerprint,
             read_at=now,
             on_first_transition=append_audit,
+            **audit_options,
         )
         return transition.notification
 
@@ -539,7 +567,9 @@ class NotificationService:
                     principal, item.workspace_id, trace_id, policy_version,
                     action=_REQUEST_ACTIONS[item.request_kind],
                 )
-            except NotificationError:
+            except NotificationError as error:
+                if error.http_status >= 500:
+                    raise
                 continue
             _safe_deep_link(item.deep_link, self._native_routes)
             items.append(item)

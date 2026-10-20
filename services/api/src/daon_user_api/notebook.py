@@ -183,7 +183,8 @@ class NotebookRepository(Protocol):
         record_id: str, version_id: str | None, now: datetime,
     ) -> bool: ...
     def read_selected_context(
-        self, context: NotebookContext, notebook_id: str,
+        self, context: NotebookContext, notebook_id: str, *,
+        run_id: str | None = None, studio_job_id: str | None = None,
     ) -> NotebookSelectedContext: ...
     def unbind_source(
         self, context: NotebookContext, notebook_id: str, *, source_id: str,
@@ -371,9 +372,18 @@ class NotebookService:
         )
 
     def read_selected_context(
-        self, context: NotebookContext, notebook_id: object,
+        self, context: NotebookContext, notebook_id: object, *,
+        run_id: object = None, studio_job_id: object = None,
     ) -> NotebookSelectedContext:
         notebook = _binding(notebook_id, field="NOTEBOOK_ID")
+        if run_id is not None and studio_job_id is not None:
+            raise NotebookError("INVALID_REQUEST")
+        if run_id is not None or studio_job_id is not None:
+            selector = run_id if run_id is not None else studio_job_id
+            if not isinstance(selector, str) or _SAFE_ID.fullmatch(selector) is None:
+                raise NotebookError("INVALID_REQUEST")
+            return self._repository.read_selected_context(context, notebook,
+                run_id=run_id, studio_job_id=studio_job_id)
         return self._repository.read_selected_context(context, notebook)
 
     def unbind_source(
@@ -531,7 +541,12 @@ class ReferenceNotebookRepository:
             ))
             return False
 
-    def read_selected_context(self, context: NotebookContext, notebook_id: str) -> NotebookSelectedContext:
+    def read_selected_context(self, context: NotebookContext, notebook_id: str, *,
+        run_id: str | None = None, studio_job_id: str | None = None,
+    ) -> NotebookSelectedContext:
+        if run_id is not None or studio_job_id is not None:
+            # 이 reference adapter에는 검증 가능한 실제 Run/Job 원장이 없다.
+            raise NotebookError("NOTEBOOK_NOT_FOUND", 404)
         scope = self._scope(context, notebook_id)
         with self._lock:
             if scope not in self._notebooks:

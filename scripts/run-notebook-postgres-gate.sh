@@ -6,7 +6,8 @@ gate_db="daon_notebook_gate_${suffix}"
 gate_role="daon_notebook_gate_${suffix}"
 container=local-postgres
 owner=$(docker exec "$container" printenv POSTGRES_USER)
-owner_password=$(docker exec "$container" printenv POSTGRES_PASSWORD)
+source "$repo_root/scripts/postgres-owner-credential.sh"
+daon_load_primary_postgres_password owner_password
 if [[ $(docker exec "$container" psql -U "$owner" -d postgres -Atqc "SELECT count(*) FROM pg_database WHERE datname='$gate_db'") != 0 ]]; then echo NOTEBOOK_GATE_TARGET_ALREADY_EXISTS; exit 23; fi
 cleanup(){ docker exec "$container" dropdb -U "$owner" --if-exists "$gate_db" >/dev/null 2>&1 || true; docker exec "$container" psql -U "$owner" -d postgres -c "DROP ROLE IF EXISTS $gate_role" >/dev/null 2>&1 || true; echo "NOTEBOOK_GATE_CLEANUP db=$(docker exec "$container" psql -U "$owner" -d postgres -Atqc "SELECT count(*) FROM pg_database WHERE datname='$gate_db'") role=$(docker exec "$container" psql -U "$owner" -d postgres -Atqc "SELECT count(*) FROM pg_roles WHERE rolname='$gate_role'")"; }
 trap cleanup EXIT

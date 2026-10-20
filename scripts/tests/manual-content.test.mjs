@@ -13,6 +13,70 @@ const docs = [
   ["daon-knowledge-llm-guide", "Daon 지식·LLM 활용 가이드"],
 ];
 
+test("S33 두 설명서는 게시본의 상세 절차와 최신 Provider 권한·호환 방식·Auto 설명을 함께 보존한다", async (t) => {
+  for (const id of ["daon-user-manual", "daon-knowledge-llm-guide"]) await t.test(id, async () => {
+    for (const file of [`docs/manual/${id}/index.md`, `apps/web/public/manual/${id}.md`]) {
+      const markdown = await readFile(new URL(file, root), "utf8");
+      for (const required of [
+        /OpenAI 호환.*Chat Completions/su,
+        /Anthropic 호환.*Messages/su,
+        /Media Bridge.*CUSTOM/su,
+        /공용.*관리자 Key/su,
+        /비공용.*본인.*개인 Key/su,
+        /시스템 Key.*fallback.*없/u,
+        /라우터 Auto 사용/u,
+        /openrouter\/auto/u,
+        /논리 모델/u,
+        /기본 모델 저장/u,
+        /키 교체.*Endpoint.*worker/su,
+        /이관.*환경변수/su,
+      ]) assert.match(markdown, required, file);
+      assert.doesNotMatch(markdown, /현재 관리자 비밀번호|시스템 범위의 연결별 키 하나를 모든 Workspace가 공유/u);
+    }
+  });
+});
+
+test("S33 사용자 설명서는 조직 정책 잠금과 License의 사용자·Notebook 한도 및 서버 적용 권한을 보존한다", async () => {
+  for (const file of ["docs/manual/daon-user-manual/index.md", "apps/web/public/manual/daon-user-manual.md"]) {
+    const markdown = await readFile(new URL(file, root), "utf8");
+    assert.match(markdown, /Workspace에서는 조직의 외부 전송 정책을 읽기 전용/u);
+    assert.match(markdown, /\/settings\/organization/u);
+    assert.match(markdown, /ETag/u);
+    assert.match(markdown, /사용자 수.*Notebook 수/su);
+    assert.match(markdown, /기본값은 사용자 1명, Notebook 1개, LLM 사용 가능/u);
+    assert.match(markdown, /can_apply=true/u);
+    assert.match(markdown, /Step-up 후 검증·적용/u);
+    assert.doesNotMatch(markdown, /라이선스 등록·교체·적용은 시스템 관리자만/u);
+  }
+});
+
+test("S33 지식 가이드는 기존 핵심 원칙과 용어 절의 여섯 근거 정의를 보존한다", async (t) => {
+  for (const file of ["docs/manual/daon-knowledge-llm-guide/index.md", "apps/web/public/manual/daon-knowledge-llm-guide.md"]) await t.test(file, async () => {
+    const markdown = await readFile(new URL(file, root), "utf8");
+    const principlesStart = markdown.indexOf("## 1. 목적과 핵심 원칙\n");
+    const termsStart = markdown.indexOf("## 2. 용어\n");
+    const sourcesStart = markdown.indexOf("## 3. 접근 경로와 Source 유형·현재 지원 수준\n");
+    assert.ok(principlesStart >= 0 && termsStart > principlesStart && sourcesStart > termsStart, `${file}: 1 → 2 → 3 절 순서`);
+    assert.deepEqual(markdown.slice(principlesStart, termsStart).split("\n").filter((line) => line.startsWith("- ")), [
+      "- 질문에 사용할 Source를 사용자가 명시적으로 선택합니다.",
+      "- 근거 질문은 Citation을 원문과 함께 검토합니다.",
+      "- Provider 연결과 실제 질문 실행 지원을 구분합니다.",
+      "- 외부 전송은 조직 정책을 통과한 경우에만 수행합니다.",
+      "- 모델과 설정을 자동으로 임의 변경하지 않습니다.",
+      "- 미지원 형식이나 기능은 성공을 가장하지 않고 안전하게 중단합니다.",
+      "- Version, Run과 산출물의 계보를 보존합니다.",
+    ]);
+    assert.deepEqual(markdown.slice(termsStart, sourcesStart).split("\n").filter((line) => line.startsWith("- ")).slice(0, 6), [
+      "- Raw Source: 사용자가 직접 등록한 파일이나 텍스트",
+      "- Daon 승인 지식: Daon 2, Daon 2.5, Daon 3에서 생산·등록된 지식 패키지",
+      "- 연결형 Source: MCP나 Connector를 통해 참조하는 외부 Source",
+      "- Source Version: 특정 시점 Source의 변경 불가능한 Version",
+      "- Evidence: 질문 처리에 실제 사용된 근거 조각",
+      "- Citation: 답변에서 Evidence 위치를 가리키는 참조",
+    ]);
+  });
+});
+
 test("한국어 Manual 정본 3종은 실제 절차·권한·오류·준비 상태를 명시한다", async () => {
   for (const [id, title] of docs) {
     const markdown = await readFile(new URL(`docs/manual/${id}/index.md`, root), "utf8");

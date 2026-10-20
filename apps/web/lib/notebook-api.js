@@ -1,4 +1,9 @@
 "use client";
+import { parseImageRegion } from "@daon-user/ui/product-workspace-model";
+import { parseSheetCell } from "./sheet-cell-locator.js";
+import { parseDocxBlock } from "./docx-block-locator.js";
+import { parsePptxBlock } from "./pptx-block-locator.js";
+import { parseAudioSegment } from "./audio-segment-locator.js";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 const VIEW_KEYS = Object.freeze(["notebook_id", "title", "source_count", "output_count", "updated_at", "status", "etag"]);
@@ -75,9 +80,14 @@ function validCitation(value) {
     && Number.isSafeInteger(value.page) && value.page >= 1
     && ["raw_source", "daon_knowledge"].includes(value.origin)
     && exact(value.locator, ["kind", "value"])
-    && ["page", "section"].includes(value.locator.kind)
+    && ["page", "section", "image_region", "sheet_cell", "docx_block", "pptx_block", "audio_segment"].includes(value.locator.kind)
     && typeof value.locator.value === "string" && value.locator.value.length >= 1 && value.locator.value.length <= 255
-    && (value.locator.kind !== "page" || value.locator.value === String(value.page));
+    && (value.locator.kind !== "page" || value.locator.value === String(value.page))
+    && (value.locator.kind !== "image_region" || parseImageRegion(value.locator.value) !== null)
+    && (value.locator.kind !== "sheet_cell" || parseSheetCell(value.locator.value) !== null)
+    && (value.locator.kind !== "docx_block" || parseDocxBlock(value.locator.value) !== null)
+    && (value.locator.kind !== "pptx_block" || parsePptxBlock(value.locator.value) !== null)
+    && (value.locator.kind !== "audio_segment" || parseAudioSegment(value.locator.value) !== null);
 }
 
 function validContext(value, notebookId) {
@@ -95,7 +105,11 @@ function validContext(value, notebookId) {
     && typeof value.conversation.answer.insufficient === "boolean"
     && Array.isArray(value.conversation.answer.citations)
     && value.conversation.answer.citations.length <= 20
-    && value.conversation.answer.citations.every(validCitation)
+    && value.conversation.answer.citations.every(citation => validCitation(citation)
+      && (!["sheet_cell", "docx_block", "pptx_block", "audio_segment"].includes(citation.locator.kind) || citation.origin !== "raw_source"
+        || (citation.context_item_id === citation.source_id && Array.isArray(value.sources)
+          && value.sources.some(source => source?.source_id === citation.source_id
+            && source?.source_version_id === citation.source_version_id))))
   );
   return exact(value, CONTEXT_KEYS) && value.notebook_id === notebookId
     && Array.isArray(value.sources) && value.sources.length <= 1_000
@@ -107,7 +121,7 @@ function validContext(value, notebookId) {
     && Array.isArray(value.source_deletion_requests) && value.source_deletion_requests.length <= 1_000
     && value.source_deletion_requests.every((item) => exact(item, ["request_id", "source_id", "state", "version", "grace_until", "legal_hold_active"])
       && safeId(item.request_id) && safeId(item.source_id)
-      && ["grace_period", "blocked_by_hold", "awaiting_ack", "cleanup_pending"].includes(item.state)
+      && ["grace_period", "blocked_by_hold", "awaiting_ack", "cleanup_pending", "failed", "purged"].includes(item.state)
       && Number.isSafeInteger(item.version) && item.version >= 1 && timestamp(item.grace_until)
       && typeof item.legal_hold_active === "boolean")
     && (value.conversation === null || value.conversation_thread_ids.length > 0);
@@ -164,9 +178,13 @@ export async function getNotebook(workspaceId, notebookId, { fetchImpl = fetch, 
   return decode(response, { requireEtag: true });
 }
 
-export async function getNotebookContext(workspaceId, notebookId, { fetchImpl = fetch, signal } = {}) {
+export async function getNotebookContext(workspaceId, notebookId, { fetchImpl = fetch, signal, runId, studioJobId } = {}) {
   if (!safeId(notebookId)) throw new Error("NOTEBOOK_INPUT_INVALID");
-  const response = await fetchImpl(`${basePath(workspaceId)}/${encodeURIComponent(notebookId)}/context`, {
+  const selected = runId !== undefined ? runId : studioJobId;
+  if ((runId !== undefined && studioJobId !== undefined)
+    || (selected !== undefined && (!safeId(selected) || /\s/u.test(selected)))) throw new Error("NOTEBOOK_INPUT_INVALID");
+  const query = selected === undefined ? "" : `?${runId !== undefined ? "run_id" : "studio_job_id"}=${encodeURIComponent(selected)}`;
+  const response = await fetchImpl(`${basePath(workspaceId)}/${encodeURIComponent(notebookId)}/context${query}`, {
     method: "GET", credentials: "same-origin", cache: "no-store", signal,
   });
   let payload;
@@ -174,6 +192,7 @@ export async function getNotebookContext(workspaceId, notebookId, { fetchImpl = 
   if (!response.ok) throw new Error(typeof payload?.error?.code === "string" ? payload.error.code : "NOTEBOOK_UNAVAILABLE");
   if (!exact(payload, ["data", "meta"]) || !validContext(payload.data, notebookId)
       || !validMeta(payload.meta)) throw new Error("NOTEBOOK_CONTEXT_INVALID");
+  if (runId !== undefined && payload.data.conversation?.answer?.run_id !== runId) throw new Error("NOTEBOOK_CONTEXT_INVALID");
   const bindingEtag = response.headers.get("etag");
   if (typeof bindingEtag !== "string" || !/^"notebook-binding:[1-9][0-9]*"$/u.test(bindingEtag)) throw new Error("NOTEBOOK_CONTEXT_INVALID");
   Object.defineProperty(payload.data, "bindingEtag", { enumerable: false, value: bindingEtag });

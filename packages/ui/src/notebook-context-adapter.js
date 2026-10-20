@@ -1,3 +1,7 @@
+import { parseSheetCell, parseImageRegion } from "./product-workspace-model.js";
+import { parseDocxBlock } from "./shared-docx-block.js";
+import { parsePptxBlock } from "./shared-pptx-block.js";
+import { parseAudioSegment } from "./shared-audio-segment.js";
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u;
 const CONTEXT_KEYS = Object.freeze([
   "notebook_id", "sources", "knowledge_context_ids", "conversation_thread_ids",
@@ -28,10 +32,20 @@ function validCitation(value) {
     && Number.isSafeInteger(value.page) && value.page >= 1
     && ["raw_source", "daon_knowledge"].includes(value.origin)
     && exact(value.locator, ["kind", "value"])
-    && ["page", "section"].includes(value.locator.kind)
+    && ["page", "section", "image_region", "sheet_cell", "docx_block", "pptx_block", "audio_segment"].includes(value.locator.kind)
     && typeof value.locator.value === "string" && value.locator.value.length >= 1
     && value.locator.value.length <= 255
-    && (value.locator.kind !== "page" || value.locator.value === String(value.page));
+    && (value.locator.kind !== "page" || value.locator.value === String(value.page))
+    && (value.locator.kind !== "image_region" || parseImageRegion(value.locator.value) !== null)
+    && (value.locator.kind !== "sheet_cell" || parseSheetCell(value.locator.value) !== null)
+    && (value.locator.kind !== "docx_block" || parseDocxBlock(value.locator.value) !== null)
+    && (value.locator.kind !== "pptx_block" || parsePptxBlock(value.locator.value) !== null)
+    && (value.locator.kind !== "audio_segment" || parseAudioSegment(value.locator.value) !== null)
+    && (!isCanonicalTextSectionCitation(value) || (
+      value.source_version_id === `sv-${value.source_id.slice("src-".length)}`
+      && value.page === 1 && /^span-[0-9a-f]{32}$/u.test(value.evidence_span_id)
+      && value.locator.value === value.evidence_span_id
+    ));
 }
 
 function projectCitation(value) {
@@ -41,6 +55,24 @@ function projectCitation(value) {
     page: value.page, origin: value.origin, context_item_id: value.context_item_id,
     locator: Object.freeze({ kind: value.locator.kind, value: value.locator.value }),
   });
+}
+
+function isWebsiteSectionCitation(citation) {
+  return citation.origin === "raw_source" && citation.locator.kind === "section"
+    && /^web-source-[0-9a-f]{32}$/u.test(citation.source_id)
+    && /^web-version-[0-9a-f]{32}$/u.test(citation.source_version_id);
+}
+
+function isLawSectionCitation(citation) {
+  return citation.origin === 'raw_source' && citation.locator.kind === 'section'
+    && /^law-source-[0-9a-f]{32}$/u.test(citation.source_id);
+}
+
+function isCanonicalTextSectionCitation(citation) {
+  // The DTO has no chunk/text. Validate its canonical shape and binding here;
+  // the existing content endpoint remains the authority for RLS and originals.
+  return citation.origin === "raw_source" && citation.locator.kind === "section"
+    && /^src-[0-9a-f]{32}$/u.test(citation.source_id);
 }
 
 export function projectNotebookSelectedContext(value) {
@@ -63,11 +95,19 @@ export function projectNotebookSelectedContext(value) {
     && Array.isArray(value.source_deletion_requests) && value.source_deletion_requests.length <= 1_000
     && value.source_deletion_requests.every((item) => exact(item, ["request_id", "source_id", "state", "version", "grace_until", "legal_hold_active"])
       && safeId(item.request_id) && safeId(item.source_id)
-      && ["grace_period", "blocked_by_hold", "awaiting_ack", "cleanup_pending"].includes(item.state)
+      && ["grace_period", "blocked_by_hold", "awaiting_ack", "cleanup_pending", "failed", "purged"].includes(item.state)
       && Number.isSafeInteger(item.version) && item.version >= 1
       && typeof item.grace_until === "string" && Number.isFinite(Date.parse(item.grace_until))
       && typeof item.legal_hold_active === "boolean")
     && conversationValid
+    && (value.conversation === null || value.conversation.answer.citations.every(citation =>
+      !(["page", "docx_block", "pptx_block", "audio_segment"].includes(citation.locator.kind) || isWebsiteSectionCitation(citation) || isCanonicalTextSectionCitation(citation) || isLawSectionCitation(citation)) || citation.origin !== "raw_source"
+      || (citation.context_item_id === citation.source_id
+        && (!isWebsiteSectionCitation(citation) || citation.source_version_id === `web-version-${citation.source_id.slice("web-source-".length)}`)
+        && (!isLawSectionCitation(citation) || (citation.source_version_id === `law-version-${citation.source_id.slice('law-source-'.length)}`
+          && citation.page === 1 && /^law-span-[0-9a-f]{32}$/u.test(citation.evidence_span_id) && citation.locator.value === citation.evidence_span_id))
+        && value.sources.some(source =>
+        source.source_id === citation.source_id && source.source_version_id === citation.source_version_id))))
     && (value.conversation === null || value.conversation_thread_ids.length > 0);
   if (!valid) throw new Error("NOTEBOOK_CONTEXT_INVALID");
   return Object.freeze({
@@ -141,7 +181,13 @@ export function createNotebookContextWorkspaceAdapter(baseAdapter, inputContext)
 
   const loadNotebookConversation = async (options) => {
     if (context.conversation === null || context.conversation_thread_ids.length !== 1) return null;
-    return context.conversation.answer;
+    const answer = context.conversation.answer;
+    const withContentUrls = (citation) => ["page", "image_region", "sheet_cell", "docx_block", "pptx_block", "audio_segment"].includes(citation.locator.kind)
+      || isWebsiteSectionCitation(citation) || isCanonicalTextSectionCitation(citation) || isLawSectionCitation(citation);
+    if (!answer.citations.some(withContentUrls)) return answer;
+    return { ...answer, citations: answer.citations.map((citation) => withContentUrls(citation)
+      ? { ...citation, content_url: baseAdapter.citationUrl(citation, { notebookId: context.notebook_id }) }
+      : citation) };
   };
 
   const filterOutputs = (values) => {
@@ -174,8 +220,22 @@ export function createNotebookContextWorkspaceAdapter(baseAdapter, inputContext)
   const adapter = {
     ...baseAdapter,
     notebookContext: context,
+    searchOpenLaw: typeof baseAdapter.searchOpenLaw === 'function'
+      ? (input,options) => baseAdapter.searchOpenLaw(input,{...options,notebookId:context.notebook_id}) : undefined,
+    previewOpenLaw: typeof baseAdapter.previewOpenLaw === 'function'
+      ? (input,options) => baseAdapter.previewOpenLaw(input,{...options,notebookId:context.notebook_id}) : undefined,
+    importOpenLaw: typeof baseAdapter.importOpenLaw === 'function'
+      ? (input,options) => baseAdapter.importOpenLaw(input,{...options,notebookId:context.notebook_id}) : undefined,
+    getOpenLawSnapshot: typeof baseAdapter.getOpenLawSnapshot === 'function'
+      ? (version,options) => baseAdapter.getOpenLawSnapshot(version,{...options,notebookId:context.notebook_id}) : undefined,
+    getOpenLawCitation: typeof baseAdapter.getOpenLawCitation === 'function'
+      ? (citation,options) => baseAdapter.getOpenLawCitation(citation,{...options,notebookId:context.notebook_id}) : undefined,
     generationSettingsIds: [...context.generation_settings_ids],
     listSources,
+    importWebsite: typeof baseAdapter.importWebsite === 'function'
+      ? (input,options) => baseAdapter.importWebsite(input,{...options,notebookId:context.notebook_id}) : undefined,
+    getWebsiteSnapshot: typeof baseAdapter.getWebsiteSnapshot === 'function'
+      ? (version,options) => baseAdapter.getWebsiteSnapshot(version,{...options,notebookId:context.notebook_id}) : undefined,
     listSourceDeletionRequests: typeof baseAdapter.listSourceDeletionRequests === "function"
       ? (options) => baseAdapter.listSourceDeletionRequests({ ...options, notebookId: context.notebook_id })
       : async () => context.source_deletion_requests.map((item) => ({ ...item })),
@@ -187,7 +247,7 @@ export function createNotebookContextWorkspaceAdapter(baseAdapter, inputContext)
       })
       : undefined,
     requestSourceDeletion: typeof baseAdapter.requestSourceDeletion === "function"
-      ? (source, options) => baseAdapter.requestSourceDeletion(source, options)
+      ? (source, options) => baseAdapter.requestSourceDeletion(source, { ...options, notebookId: context.notebook_id })
       : undefined,
     getSourceDeletionRequest: typeof baseAdapter.getSourceDeletionRequest === "function"
       ? (requestId, options) => baseAdapter.getSourceDeletionRequest(requestId, options)
@@ -223,6 +283,9 @@ export function createNotebookContextWorkspaceAdapter(baseAdapter, inputContext)
     askQuestion: typeof baseAdapter.askQuestion === "function"
       ? (input, options) => baseAdapter.askQuestion({ ...input, notebookId: context.notebook_id }, options)
       : undefined,
+    authorizeQuestion: typeof baseAdapter.authorizeQuestion === "function"
+      ? (input, options) => baseAdapter.authorizeQuestion({ ...input, notebookId: context.notebook_id }, options)
+      : undefined,
     createGeneration: typeof baseAdapter.createGeneration === "function"
       ? (input, options) => baseAdapter.createGeneration(input, { ...options, notebookId: context.notebook_id })
       : undefined,
@@ -235,6 +298,18 @@ export function createNotebookContextWorkspaceAdapter(baseAdapter, inputContext)
     createStudioAction: typeof baseAdapter.createStudioAction === "function"
       ? (action, input, options) => baseAdapter.createStudioAction(action, input, { ...options, notebookId: context.notebook_id })
       : undefined,
+    getStudioApprovalPolicy: typeof baseAdapter.getStudioApprovalPolicy === "function"
+      ? options => baseAdapter.getStudioApprovalPolicy({ ...options, notebookId: context.notebook_id }) : undefined,
+    saveStudioApprovalPolicy: typeof baseAdapter.saveStudioApprovalPolicy === "function"
+      ? (input, options) => baseAdapter.saveStudioApprovalPolicy(input, { ...options, notebookId: context.notebook_id }) : undefined,
+    issueStudioApprovalPolicyStepUp: typeof baseAdapter.issueStudioApprovalPolicyStepUp === "function"
+      ? (target, password, options) => baseAdapter.issueStudioApprovalPolicyStepUp(target, password, { ...options, notebookId: context.notebook_id }) : undefined,
+    withdrawStudioApprovalRequest: typeof baseAdapter.withdrawStudioApprovalRequest === "function"
+      ? (requestId, versionId, options) => baseAdapter.withdrawStudioApprovalRequest(requestId, versionId, { ...options, notebookId: context.notebook_id }) : undefined,
+    listStudioApprovalNotices: typeof baseAdapter.listStudioApprovalNotices === "function"
+      ? options => baseAdapter.listStudioApprovalNotices({ ...options, notebookId: context.notebook_id }) : undefined,
+    markStudioApprovalNoticeRead: typeof baseAdapter.markStudioApprovalNoticeRead === "function"
+      ? (noticeId, version, options) => baseAdapter.markStudioApprovalNoticeRead(noticeId, version, { ...options, notebookId: context.notebook_id }) : undefined,
     downloadStudioExport: typeof baseAdapter.downloadStudioExport === "function"
       ? (outputId, versionId, format, options) => baseAdapter.downloadStudioExport(outputId, versionId, format, { ...options, notebookId: context.notebook_id })
       : undefined,

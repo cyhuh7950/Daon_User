@@ -1,8 +1,56 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { parse } from "yaml";
 
 const composeUrl = new URL("../../deploy/daon-user/compose.yaml", import.meta.url);
+
+test("S44 API가 기대하는 문서 worker는 실제 Compose publisher 식별자와 일치한다", async () => {
+  const document = parse(await readFile(composeUrl, "utf8"));
+  const key = "DAON_DOCUMENT_WORKER_ID";
+  for (const [project, expected] of [["daon_user", "daon_user-document-worker"], ["qa-isolated", "qa-isolated-document-worker"]]) {
+    const resolved = name => document.services[name].environment[key]?.replaceAll("${COMPOSE_PROJECT_NAME}", project);
+    assert.equal(resolved("api"), expected, `API expected worker for ${project}`);
+    assert.equal(resolved("document-worker"), expected, `actual publisher for ${project}`);
+  }
+  for (const name of ["web", "studio-worker", "object-storage"]) {
+    assert.equal(Object.hasOwn(document.services[name].environment || {}, key), false, name);
+  }
+});
+
+test("S42 기존 알림 flag는 API·두 worker에만 default false로 전달된다", async () => {
+  const document = parse(await readFile(composeUrl, "utf8"));
+  const flag = "DAON_NOTIFICATION_INBOX_ENABLED";
+  const callers = new Set(["api", "document-worker", "studio-worker"]);
+  for (const [name, service] of Object.entries(document.services)) {
+    const environment = service.environment || {};
+    if (!callers.has(name)) {
+      assert.equal(Object.hasOwn(environment, flag), false, name);
+      continue;
+    }
+    assert.equal(environment[flag], "${DAON_NOTIFICATION_INBOX_ENABLED-false}", name);
+    for (const [value, expected] of [[undefined, "false"], ["false", "false"], ["true", "true"]]) {
+      const expanded = environment[flag].replace(/\$\{DAON_NOTIFICATION_INBOX_ENABLED-([^}]+)\}/u,
+        (_match, fallback) => value === undefined ? fallback : value);
+      assert.equal(expanded, expected);
+    }
+  }
+});
+
+test("S39 적용 flag는 API에만 전달하며 미설정 false·명시 true 계약을 보존한다", async () => {
+  const document = parse(await readFile(composeUrl, "utf8"));
+  const flag = "DAON_ORGANIZATION_ADMIN_V2_ENABLED";
+  const expression = document.services.api.environment[flag];
+  assert.equal(expression, "${DAON_ORGANIZATION_ADMIN_V2_ENABLED-false}");
+  // Compose의 이 한 default 표현식 계약만 확인한다. 실제 Compose config/배포 시험은 아니다.
+  for (const [provided, expected] of [[undefined, "false"], ["true", "true"], ["false", "false"]]) {
+    const expanded = expression.replace(/\$\{DAON_ORGANIZATION_ADMIN_V2_ENABLED-([^}]+)\}/u, (_match, fallback) => provided === undefined ? fallback : provided);
+    assert.equal(expanded, expected);
+  }
+  for (const [name, service] of Object.entries(document.services)) {
+    if (name !== "api") assert.equal(Object.hasOwn(service.environment || {}, flag), false, name);
+  }
+});
 
 test("provider credentials use one read-only secret reference in provider callers", async () => {
   const source = await readFile(composeUrl, "utf8");

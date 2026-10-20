@@ -54,7 +54,46 @@ def _contains_sensitive_key(value: object) -> bool:
     return False
 
 
+def _ollama_catalog_projection(payload: Mapping[object, object]) -> Mapping[object, object]:
+    """Remove only typed tokenizer switches at the exact show.model_info path.
+
+    All other fields still pass through the unchanged recursive secret guard.
+    Do not mutate the upstream payload or accept string/integer token values.
+    """
+    raw_models = payload.get("models")
+    if not isinstance(raw_models, list):
+        return payload
+    options = {"tokenizer.ggml.add_eos_token", "tokenizer.ggml.add_bos_token",
+               "tokenizer.ggml.add_padding_token", "tokenizer.ggml.add_unknown_token"}
+    rows = []
+    for raw in raw_models:
+        row = dict(raw) if isinstance(raw, Mapping) else raw
+        metadata = row.get("native_metadata") if isinstance(row, Mapping) else None
+        info = metadata.get("model_info") if isinstance(metadata, Mapping) else None
+        if isinstance(info, Mapping):
+            row["native_metadata"] = {**metadata, "model_info": {
+                key: value for key, value in info.items()
+                if not (key in options and type(value) is bool)
+            }}
+        rows.append(row)
+    return {**payload, "models": rows}
+
+
 class ProviderCatalog:
+    @staticmethod
+    def from_native_asr_metadata(connection_id: str, payload: object) -> tuple[DiscoveredModel, ...]:
+        """설치된 CPU base의 메타데이터만 허용하며 실제 전사 성공을 뜻하지 않는다."""
+        expected = {
+            "model_id": "faster-whisper-base",
+            "model_digest": "d01c3014881c9c6f3133c182f3d2887eb6ca1c789a7538c5c007196857a0a6a9",
+            "revision": "ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66",
+            "capability": "speech_to_text", "runtime": "cpu-int8-local",
+        }
+        if not isinstance(payload, Mapping) or payload != expected:
+            raise ProviderCatalogError("PROVIDER_CATALOG_RESPONSE_INVALID")
+        return (DiscoveredModel(connection_id, "CUSTOM", "faster-whisper-base",
+                                ("speech_to_text",), "local_runtime", False),)
+
     @staticmethod
     def logical_auto_model(connection_id: str, provider_code: str, auto_model_id: str) -> DiscoveredModel:
         return DiscoveredModel(
@@ -120,7 +159,11 @@ class ProviderCatalog:
         provider_code: str,
         payload: object,
     ) -> tuple[DiscoveredModel, ...]:
-        if not isinstance(payload, Mapping) or _contains_sensitive_key(payload):
+        if not isinstance(payload, Mapping):
+            raise ProviderCatalogError("PROVIDER_CATALOG_RESPONSE_INVALID")
+        if provider_code == "OLLAMA":
+            payload = _ollama_catalog_projection(payload)
+        if _contains_sensitive_key(payload):
             raise ProviderCatalogError("PROVIDER_CATALOG_RESPONSE_INVALID")
         if provider_code == "OLLAMA":
             return ProviderCatalog._from_ollama(connection_id, payload)
@@ -173,16 +216,27 @@ class ProviderCatalog:
         if not isinstance(raw_models, list):
             raise ProviderCatalogError("PROVIDER_CATALOG_RESPONSE_INVALID")
         model_ids: list[str] = []
+        vision_ids: set[str] = set()
         for raw_model in raw_models:
             if not isinstance(raw_model, Mapping):
                 raise ProviderCatalogError("PROVIDER_CATALOG_RESPONSE_INVALID")
             model_ids.append(_valid_model_id(raw_model.get("name") or raw_model.get("model")))
+            metadata = raw_model.get("native_metadata")
+            digest = raw_model.get("digest")
+            if (isinstance(metadata, Mapping) and isinstance(metadata.get("capabilities"), list)
+                    and "vision" in metadata["capabilities"] and isinstance(metadata.get("model_info"), Mapping)
+                    and metadata["model_info"] and isinstance(digest, str)
+                    and len(digest.removeprefix("sha256:")) == 64
+                    and all(c in "0123456789abcdef" for c in digest.removeprefix("sha256:"))
+                    and not any(raw_model.get(k) or metadata.get(k) or metadata["model_info"].get(k)
+                                for k in ("remote_host", "remote_model", "remote", "cloud"))):
+                vision_ids.add(model_ids[-1])
         return tuple(
             DiscoveredModel(
                 connection_id=connection_id,
                 provider_code="OLLAMA",
                 model_id=model_id,
-                reported_capabilities=("text_generation",),
+                reported_capabilities=("image_understanding", "text_generation") if model_id in vision_ids else ("text_generation",),
                 routing_owner="provider",
                 daon_fallback_allowed=True,
             )

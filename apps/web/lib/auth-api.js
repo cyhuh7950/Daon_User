@@ -8,10 +8,51 @@ function exact(value, keys) {
   return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
 }
 
-async function request(path, payload) {
+function validAuthSession(value) {
+  const keys = ["user_id", "tenant_id", "workspace_id", "session_id", "device_id", "client_kind", "delivery",
+    "expires_at", "recovery_operations", "password_change_required", "is_system_admin"];
+  const safeId = (id) => typeof id === "string" && SAFE_TRACE_ID.test(id);
+  return (exact(value, keys) || exact(value, [...keys, "login_id"]))
+    && ["user_id", "tenant_id", "session_id", "device_id"].every((key) => safeId(value[key]))
+    && (value.login_id == null || (typeof value.login_id === "string" && value.login_id.length >= 1 && value.login_id.length <= 128))
+    && typeof value.is_system_admin === "boolean" && typeof value.password_change_required === "boolean"
+    && Array.isArray(value.recovery_operations) && value.recovery_operations.length <= 32
+    && new Set(value.recovery_operations).size === value.recovery_operations.length && value.recovery_operations.every(safeId)
+    && (safeId(value.workspace_id) || (value.workspace_id === null && value.is_system_admin === true && value.recovery_operations.length === 0))
+    && value.client_kind === "web" && value.delivery === "same_origin_secure_cookie"
+    && typeof value.expires_at === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/u.test(value.expires_at)
+    && !Number.isNaN(Date.parse(value.expires_at));
+}
+
+export function authEntryPath(session) {
+  if (!validAuthSession(session)) throw new Error("SESSION_RESPONSE_INVALID");
+  return session.password_change_required ? "/password-change" : session.workspace_id === null ? "/operations" : "/notebooks";
+}
+
+export async function getCurrentAuthSession({ fetchImpl = fetch, signal, expectedIdentity } = {}) {
+  const read = async () => {
+    const response = await fetchImpl("/bff/api/session", { method: "GET", credentials: "same-origin", cache: "no-store", signal });
+    if (response.status === 401) throw new Error("AUTHENTICATION_REQUIRED");
+    if (!response.ok) throw new Error("SESSION_UNAVAILABLE");
+    const body = await response.json().catch(() => null);
+    if (!exact(body, ["data", "meta"]) || !validAuthSession(body.data)
+      || !exact(body.meta, ["trace_id"]) || typeof body.meta.trace_id !== "string" || !SAFE_TRACE_ID.test(body.meta.trace_id)) {
+      throw new Error("SESSION_RESPONSE_INVALID");
+    }
+    return body.data;
+  };
+  const before = await read(), after = await read();
+  if (signal?.aborted) throw new Error("SESSION_CHANGED");
+  if (!["user_id", "tenant_id", "workspace_id", "session_id", "device_id", "is_system_admin", "password_change_required"]
+    .every((key) => before[key] === after[key]) || (expectedIdentity &&
+      (after.user_id !== expectedIdentity.user_id || after.tenant_id !== expectedIdentity.tenant_id))) throw new Error("SESSION_CHANGED");
+  return Object.freeze({ ...after, recovery_operations: Object.freeze([...after.recovery_operations]) });
+}
+
+async function request(path, payload, { signal } = {}) {
   const response = await fetch(`/bff/api/auth/${path}`, {
     method: "POST", credentials: "same-origin", headers: JSON_HEADERS,
-    body: JSON.stringify(payload),
+    body: JSON.stringify(payload), signal,
   });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -105,7 +146,7 @@ export async function changeCurrentPassword(currentPassword, newPassword, option
 
 export const authApi = Object.freeze({
   signup(input) { return request("signup", input); },
-  login(input) { return request("login", input); },
+  login(input, options) { return request("login", input, options); },
   verifyEmail(token) { return request("verify-email", { token }); },
   resendVerification(identifier) { return request("resend-verification", { identifier }); },
   requestPasswordReset(identifier) { return request("password-reset/request", { identifier }); },

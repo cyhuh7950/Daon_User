@@ -60,6 +60,130 @@ DSN = os.getenv("DAON_TEST_POSTGRES_DSN")
 pytestmark = pytest.mark.skipif(not DSN, reason="DAON_TEST_POSTGRES_DSN is required")
 
 
+@pytest.mark.parametrize("scenario", [
+    "unbound-pdf", "different-version", "one-of-many-unbound",
+    "bound-pdf", "other-notebook-unbound", "source-free",
+])
+def test_s18_selected_context_postgres_binding_history(scenario: str) -> None:
+    """Synthetic PG records only: real bind/persist/unbind/read, no Provider/MinIO."""
+    from uuid import uuid4
+    from daon_user_api.data_canon import canonical_json_bytes
+    from daon_user_api.object_queue import ObjectKeyPolicy
+
+    assert DSN is not None
+    suffix = uuid4().hex
+    scope = NotebookContext("tenant-s18-" + suffix, "workspace-s18-" + suffix,
+                            "user-s18-" + suffix, "trace-s18-" + suffix, "policy-v1")
+    now = datetime.now(timezone.utc)
+    cloud = CloudAccessContext(scope.tenant_id, scope.workspace_id, scope.actor_id, "question.test")
+    canon_context = CanonicalContext(scope.tenant_id, scope.workspace_id, scope.actor_id, "source.create", scope.trace_id)
+    store = PostgresCloudStore(DSN, min_size=1, max_size=2)
+    canon = PostgresDataCanonStore(DSN, min_size=1, max_size=1)
+    notebooks = PostgresNotebookRepository(store, creation_enforcer=enforce_license_creation)
+
+    class NoStorageRead:
+        def get(self, _key):
+            raise AssertionError("selected context must not read objects or call a Provider")
+
+    try:
+        store.seed_scope(cloud)
+        PostgresLicenseRepository(store).apply(
+            LicenseContext(scope.tenant_id, scope.workspace_id, scope.actor_id, scope.trace_id, scope.policy_version),
+            VerifiedLicense(license_id="license-s18-" + suffix, product="daon-user", edition="enterprise",
+                organization_id=scope.tenant_id, issued_at=now - timedelta(days=1), expires_at=now + timedelta(days=365),
+                features=("notebook_management",), resource_limits=(("notebooks", 10),), claims_digest="a" * 64, key_id="release-1"),
+            idempotency_key="license-s18-" + suffix, request_fingerprint="a" * 64,
+        )
+        selected, _ = notebooks.create(scope, title="S18 selected", description=None,
+            idempotency_key="selected-" + suffix, request_fingerprint="b" * 64, now=now)
+        other, _ = notebooks.create(scope, title="S18 other", description=None,
+            idempotency_key="other-" + suffix, request_fingerprint="c" * 64, now=now)
+        pairs, evidence = [], []
+        for index in (1, 2):
+            source, version, oid = f"src-s18-{index}-{suffix}", f"sv-s18-{index}-{suffix}", uuid4().hex
+            data = f"%PDF-1.4\nsynthetic S18 {index}\n".encode()
+            digest = hashlib.sha256(data).hexdigest()
+            with store._transaction(cloud) as connection:
+                connection.execute(
+                    "INSERT INTO object_records (tenant_id,workspace_id,object_id,area,staging_key,object_key,"
+                    "digest_sha256,byte_size,content_type,status,cleanup_pending,created_by,trace_id,idempotency_key,"
+                    "request_fingerprint,created_at,completed_at) VALUES (%s,%s,%s,'source',%s,%s,%s,%s,"
+                    "'application/pdf','completed',false,%s,%s,%s,%s,%s,%s)",
+                    (scope.tenant_id, scope.workspace_id, oid, ObjectKeyPolicy().staging_key(cloud, "source", oid),
+                     ObjectKeyPolicy().final_key(cloud, "source", oid), digest, len(data), scope.actor_id,
+                     scope.trace_id, "object-" + oid, "d" * 64, now, now),
+                )
+            canon.register_uploaded_source(canon_context, notebook_id=selected.notebook_id,
+                source_id=source, source_version_id=version, object_id=oid, filename=f"s18-{index}.pdf",
+                digest_sha256=digest, byte_size=len(data), created_at=now)
+            notebooks.bind_verified(scope, other.notebook_id, binding_kind="source", record_id=source, version_id=version, now=now)
+            span, chunk = f"span-s18-{index}-{suffix}", f"chunk-s18-{index}-{suffix}"
+            with store._transaction(cloud) as connection:
+                current_version = 1
+                for state in ("security_check", "processing", "indexing", "ready"):
+                    row = connection.execute("SELECT state,version,outcome FROM transition_canon_state('Source',%s,%s,%s,%s,'source.test',%s,%s)",
+                        (source, current_version, state, f"transition-{index}-{state}-{suffix}", scope.trace_id, scope.policy_version)).fetchone()
+                    assert row is not None and row[2] == "succeeded"
+                    current_version = int(row[1])
+                connection.execute("INSERT INTO evidence_spans (tenant_id,workspace_id,record_id,aggregate_id,digest_sha256,source_version_id,created_by,trace_id,created_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (scope.tenant_id, scope.workspace_id, span, span, hashlib.sha256(b"{}").hexdigest(), version, scope.actor_id, scope.trace_id, now))
+            pairs.append((source, version))
+            evidence.append(IndexedEvidenceChunk(chunk, source, version, 2, "synthetic S18 evidence", span, 1.0))
+
+        chosen = () if scenario == "source-free" else tuple(evidence if scenario == "one-of-many-unbound" else evidence[:1])
+        context_sources = tuple(SimpleNamespace(origin="raw_source", context_item_id=item.source_id,
+            source_id=item.source_id, source_version_id=item.source_version_id, digest_sha256=None) for item in chosen)
+        stored = PostgresQuestionAnsweringRepository(store, NoStorageRead()).persist_completed(
+            QuestionContext(scope.tenant_id, scope.workspace_id, scope.actor_id, scope.trace_id, scope.policy_version, selected.notebook_id),
+            run_id="run-s18-" + suffix, source_id=chosen[0].source_id if chosen else None,
+            source_version_id=chosen[0].source_version_id if chosen else None, question="S18 synthetic question",
+            selection=TextModelSelection("UPSTAGE", "https://api.upstage.ai/v1", "profile-s18", "deployment-s18", "synthetic-s18", 1),
+            evidence=chosen, result=GroundedTextResult("synthetic S18 answer", tuple(item.chunk_id for item in chosen), False, {"total_tokens": 1}),
+            context_mode="raw_only" if chosen else "general_ungrounded", context_sources=context_sources,
+        )
+        assert notebooks.read_selected_context(scope, selected.notebook_id).conversation is not None
+
+        def history():
+            with store._transaction(cloud) as connection:
+                return (
+                    connection.execute("SELECT record_id,state,canonical_json FROM runs WHERE record_id=%s", ("run-s18-" + suffix,)).fetchall(),
+                    connection.execute("SELECT record_id,canonical_json FROM run_results WHERE record_id=%s", (stored.run_result_id,)).fetchall(),
+                    connection.execute("SELECT record_id,canonical_json FROM citations WHERE run_result_id=%s ORDER BY record_id", (stored.run_result_id,)).fetchall(),
+                    connection.execute("SELECT notebook_id,record_id FROM notebook_bindings WHERE binding_kind='conversation_thread' ORDER BY notebook_id,record_id").fetchall(),
+                    connection.execute("SELECT record_id,digest_sha256,canonical_json FROM source_versions WHERE record_id=ANY(%s) ORDER BY record_id", ([pair[1] for pair in pairs],)).fetchall(),
+                )
+
+        before = history()
+        if scenario in {"unbound-pdf", "different-version", "one-of-many-unbound", "other-notebook-unbound"}:
+            target = other.notebook_id if scenario == "other-notebook-unbound" else selected.notebook_id
+            source, version = pairs[1 if scenario == "one-of-many-unbound" else 0]
+            notebooks.unbind_source(scope, target, source_id=source, source_version_id=version,
+                expected_etag=notebooks.read_selected_context(scope, target).etag,
+                idempotency_key="unbind-s18-" + suffix, request_fingerprint="e" * 64, now=now)
+            if scenario == "different-version":
+                with store._transaction(cloud) as connection:
+                    payload = dict(connection.execute("SELECT canonical_json FROM source_versions WHERE record_id=%s", (version,)).fetchone()[0])
+                payload["filename"] = "s18-new-version.pdf"
+                new_version = "sv-s18-new-" + suffix
+                canon.append_source_version(canon_context, source_version_id=new_version, source_id=source,
+                    version_number=2, previous_version_id=version, canonical_payload=payload,
+                    digest_sha256=hashlib.sha256(canonical_json_bytes(payload)).hexdigest(), created_at=now)
+                notebooks.bind_verified(scope, selected.notebook_id, binding_kind="source", record_id=source, version_id=new_version, now=now)
+        projection = notebooks.read_selected_context(scope, selected.notebook_id)
+        if scenario in {"unbound-pdf", "different-version", "one-of-many-unbound"}:
+            assert projection.conversation is None
+        else:
+            assert projection.conversation is not None
+            assert projection.conversation.run_result_id == stored.run_result_id
+            assert len(projection.conversation.citations) == len(chosen)
+        assert projection.notebook_id == selected.notebook_id
+        assert len(projection.conversation_thread_ids) == 1
+        assert history() == before, "reentry/unbinding must preserve immutable results, citations, versions and conversation binding"
+    finally:
+        canon.close()
+        store.close()
+
+
 def test_actual_postgres_external_policy_exact_mismatch_has_zero_domain_write() -> None:
     assert DSN is not None
     store = PostgresCloudStore(DSN, min_size=1, max_size=2)
@@ -2138,3 +2262,86 @@ def test_actual_postgres_http_local_question_replay_revalidates_binding_before_p
             dependencies.close()
     finally:
         store.close()
+
+@pytest.mark.parametrize('selection', ('completed', 'failed', 'unknown', 'failed_source_denied'))
+def test_s42_exact_run_selector_preserves_default_and_performs_no_writes(selection):
+    """실제 저장 메서드의 정상/실패 Run 선택. 모델 호출이나 실제 브라우저 증거는 아니다."""
+    import psycopg
+    from test_notification_events import _l2b_qd_history_case, _l2b_completion_snapshot
+    prepared, old, thread = _l2b_qd_history_case()
+    scope, context = prepared.scope, prepared.context
+    notebook_context = NotebookContext(context.tenant_id, context.workspace_id, context.actor_id,
+        context.trace_id, context.policy_version)
+    store = PostgresCloudStore(scope.app, min_size=0, max_size=2, notification_inbox_enabled=True)
+    try:
+        repository = PostgresNotebookRepository(store)
+        baseline = repository.read_selected_context(notebook_context, context.notebook_id)
+        assert baseline.conversation.run_id == old.run_id
+        if selection == 'failed_source_denied':
+            with psycopg.connect(scope.admin) as connection:
+                connection.execute('INSERT INTO identity_auth_source_access '
+                    '(tenant_id,workspace_id,user_id,source_version_id,allowed,version,updated_at) '
+                    'VALUES(%s,%s,%s,%s,0,1,now())',
+                    (context.tenant_id, context.workspace_id, context.actor_id, prepared.version))
+        before = _l2b_completion_snapshot(scope)
+        selected_run = old.run_id if selection == 'completed' else (
+            's42-nonexistent-run' if selection == 'unknown' else prepared.run)
+        if selection == 'completed':
+            selected = repository.read_selected_context(notebook_context, context.notebook_id, run_id=selected_run)
+            assert selected == baseline
+            assert selected.conversation_thread_ids == (thread,)
+        else:
+            with pytest.raises(NotebookError) as failure:
+                repository.read_selected_context(notebook_context, context.notebook_id, run_id=selected_run)
+            assert (failure.value.code, failure.value.status) == (
+                ('QUESTION_FAILED', 409) if selection == 'failed' else ('NOTEBOOK_NOT_FOUND', 404))
+        assert _l2b_completion_snapshot(scope) == before
+        assert repository.read_selected_context(notebook_context, context.notebook_id).conversation.run_id == old.run_id
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize('selection', ('owner', 'shared_viewer', 'source_denied', 'wrong_notebook'))
+def test_s42_exact_job_selector_is_owner_bound_without_changing_shared_get(selection):
+    from dataclasses import replace
+    import psycopg
+    from test_notification_events import (_existing_0069_studio_case, _l2b_start_owned_studio_job,
+        _l2b_cleanup_owned_active_studio_job, _l2b_completion_snapshot, _studio_case_member)
+    from daon_user_api.studio_workspace_postgres import PostgresStudioWorkspaceRepository
+    scope = _existing_0069_studio_case()
+    context = scope.context
+    store = PostgresCloudStore(scope.app, min_size=0, max_size=2, notification_inbox_enabled=True)
+    try:
+        queue, job = _l2b_start_owned_studio_job(scope, store)
+        queue.finish(job, state='failed', error_code='STUDIO_GENERATION_FAILED')
+        notebook_context = NotebookContext(context.tenant_id, context.workspace_id, context.actor_id,
+            context.trace_id, context.policy_version)
+        notebook_id = context.notebook_id
+        if selection == 'shared_viewer':
+            peer = _studio_case_member(scope, role='viewer')
+            shared = replace(context, actor_id=peer)
+            assert PostgresStudioWorkspaceRepository(store).get_generation_job(shared, job.job_id)['job_id'] == job.job_id
+            notebook_context = replace(notebook_context, actor_id=peer)
+        elif selection == 'source_denied':
+            with psycopg.connect(scope.admin) as connection:
+                connection.execute('INSERT INTO identity_auth_source_access '
+                    '(tenant_id,workspace_id,user_id,source_version_id,allowed,version,updated_at) '
+                    'VALUES(%s,%s,%s,%s,0,1,now())', (context.tenant_id, context.workspace_id,
+                    context.actor_id, job.request_json['source_version_ids'][0]))
+        elif selection == 'wrong_notebook':
+            notebook_id = 's42-unrelated-notebook'
+        before = _l2b_completion_snapshot(scope)
+        repository = PostgresNotebookRepository(store)
+        if selection == 'owner':
+            assert repository.read_selected_context(notebook_context, notebook_id, studio_job_id=job.job_id) == (
+                repository.read_selected_context(notebook_context, notebook_id))
+        else:
+            with pytest.raises(NotebookError) as failure:
+                repository.read_selected_context(notebook_context, notebook_id, studio_job_id=job.job_id)
+            assert (failure.value.code, failure.value.status) == ('NOTEBOOK_NOT_FOUND', 404)
+        assert _l2b_completion_snapshot(scope) == before
+    finally:
+        try:
+            _l2b_cleanup_owned_active_studio_job(scope)
+        finally:
+            store.close()

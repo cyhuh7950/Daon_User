@@ -88,31 +88,45 @@ class PostgresKnowledgePackageService:
     ) -> tuple[KnowledgeQuestionSource, ...]:
         if not package_ids or len(package_ids) > 8 or len(set(package_ids)) != len(package_ids):
             raise KnowledgePackageError("QUESTION_CONTEXT_INVALID", 400)
-        packages = {item.package_id: item for item in self.list_packages(context)}
-        if any(package_id not in packages for package_id in package_ids):
-            raise KnowledgePackageError("KNOWLEDGE_PACKAGE_UNAVAILABLE", 404)
         try:
             with self._transaction(context, "sync.read") as connection:
                 rows = connection.execute("""
                     SELECT kr.canonical_json->>'package_id',sv.source_id,
                            kr.registered_source_version_id,
-                           kr.canonical_json->>'package_digest'
+                           kr.canonical_json->>'package_digest',kr.record_id
                       FROM knowledge_registrations kr
+                      JOIN output_versions ov
+                        ON ov.tenant_id=kr.tenant_id
+                       AND ov.workspace_id=kr.workspace_id
+                       AND ov.record_id=kr.output_version_id
                       JOIN source_versions sv
                         ON sv.tenant_id=kr.tenant_id
                        AND sv.workspace_id=kr.workspace_id
                        AND sv.record_id=kr.registered_source_version_id
+                      JOIN sources s
+                        ON s.tenant_id=sv.tenant_id AND s.workspace_id=sv.workspace_id AND s.record_id=sv.source_id
                      WHERE kr.canonical_json->>'package_id'=ANY(%s)
                        AND kr.state='registered'
-                """, (list(package_ids),)).fetchall()
+                       AND ov.state='approved'
+                       AND kr.canonical_json->>'authority'='approved'
+                       AND kr.canonical_json->>'producer' IN ('daon2','daon2_5','daon3')
+                       AND (kr.canonical_json->>'effective_at')::timestamptz <= %s
+                       AND (kr.canonical_json->>'expires_at')::timestamptz > %s
+                """, (list(package_ids),self._clock(),self._clock())).fetchall()
         except CloudDatabaseError as error:
             raise KnowledgePackageError(error.code, 503) from None
-        by_package = {str(row[0]): row for row in rows}
+        # 정렬/마지막 행 선택으로 등록 모호성을 감추지 않는다. 같은 등록의 중복 aggregate도 거부한다.
+        by_package = {}
+        for row in rows:
+            if (len(row)!=5 or any(not isinstance(value,str) or not value for value in row)
+                or row[0] not in package_ids or row[0] in by_package):
+                raise KnowledgePackageError("KNOWLEDGE_PACKAGE_UNAVAILABLE",404)
+            by_package[row[0]]=row
         if any(package_id not in by_package for package_id in package_ids):
             raise KnowledgePackageError("KNOWLEDGE_PACKAGE_UNAVAILABLE", 404)
         return tuple(KnowledgeQuestionSource(
             package_id, str(by_package[package_id][1]), str(by_package[package_id][2]),
-            str(by_package[package_id][3]),
+            str(by_package[package_id][3]),str(by_package[package_id][4]),
         ) for package_id in package_ids)
 
     def create_offline_copy(

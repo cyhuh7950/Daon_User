@@ -17,9 +17,11 @@ const SAFE_DELETE_ERRORS = new Set(["NOTEBOOK_TITLE_CONFIRMATION_MISMATCH", "NOT
 const safeText = (value) => typeof value === "string" ? value : "";
 
 function SettingsMenu({ onOpenSetting, onLogout, showUserManagement, showOrganizationPolicy,
-  tenantScope, scopeError, switchingScope, onSwitchTenant }) {
+  tenantScope, scopeError, switchingScope, onSwitchTenant, onReload }) {
   const [open, setOpen] = useState(false);
-  const showTenantSelection = tenantScope?.tenants?.some((item) => item.kind === "organization");
+  const showTenantSelection = tenantScope?.tenants?.some((item) => item.kind === "organization")
+    || (tenantScope?.tenants?.some(item => item.kind === "personal")
+      && !tenantScope.tenants.some(item => item.tenant_id === tenantScope.current_tenant_id));
   const currentScope = tenantScope?.tenants?.find((item) => item.tenant_id === tenantScope.current_tenant_id);
   return <div className="notebook-settings-wrap">
     <button className="notebook-toolbar-button" type="button" aria-expanded={open} aria-haspopup="menu" onClick={() => setOpen((value) => !value)}>⚙ 설정</button>
@@ -33,7 +35,10 @@ function SettingsMenu({ onOpenSetting, onLogout, showUserManagement, showOrganiz
           {item.kind === "personal" ? "개인" : "조직"} · {item.display_name}
         </button>)}
       </div>}
-      {scopeError && <p className="notebook-scope-error" role="status">조직 범위를 확인할 수 없습니다. 다시 시도해 주세요.</p>}
+      <button role="menuitem" type="button" onClick={() => onReload?.()}>작업 범위 새로고침</button>
+      {scopeError && <p className="notebook-scope-error" role="status">{scopeError === "TENANT_SWITCH_UNCERTAIN"
+        ? "전환 결과를 확인할 수 없습니다. 본인 세션을 다시 확인한 뒤 전환할 수 있습니다."
+        : "조직 범위를 확인할 수 없습니다. 다시 시도해 주세요."}</p>}
       {[['screen', '화면 설정'], ['license', '라이선스'], ['manual', '사용자 설명서'], ['model-connections', 'LLM 설정'], ...(showOrganizationPolicy ? [['organization-policy', '조직 정책']] : []), ...(showUserManagement ? [['user-management', '사용자 관리']] : [])].map(([id, label]) =>
         <button key={id} role="menuitem" type="button" onClick={() => { setOpen(false); onOpenSetting?.(id); }}>{label}</button>)}
       <button role="menuitem" type="button" onClick={() => { setOpen(false); onLogout?.(); }}>로그아웃</button>
@@ -97,6 +102,7 @@ function NotebookCard({ notebook, viewMode, onOpenNotebook, onRequestDelete }) {
 }
 
 export function NotebookHome({ state = "ready", notebooks = [], errorCode = null, showUserManagement = false, showOrganizationPolicy = false, displayIdentity = null, tenantScope = null, scopeError = null, switchingScope = false, onSwitchTenant, onReload, onCreate, onDelete, onOpenNotebook, onOpenSetting, onLogout }) {
+  const homeRef = useRef(null);
   const surfaceRef = useRef(null);
   const createOpenerRef = useRef(null);
   const [search, setSearch] = useState("");
@@ -104,6 +110,22 @@ export function NotebookHome({ state = "ready", notebooks = [], errorCode = null
   const [viewMode, setViewMode] = useState("grid");
   const [creating, setCreating] = useState(false);
   const [deletingNotebook, setDeletingNotebook] = useState(null);
+  useEffect(() => {
+    const home = homeRef.current;
+    const badge = home?.ownerDocument.querySelector?.(".web-shell-runtime");
+    if (!badge) return;
+    // 고정 배너의 실제 점유 하단만 S41에 예약한다. 배너 상태/동작과 다른 화면은 바꾸지 않는다.
+    const measure = () => home.style.setProperty("--nh-shell-occupied", `${Math.max(0, badge.getBoundingClientRect().bottom)}px`);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(badge);
+    window.addEventListener("resize", measure);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", measure);
+      home.style.removeProperty("--nh-shell-occupied");
+    };
+  }, []);
   useEffect(() => {
     setBackgroundInert(surfaceRef.current, creating || Boolean(deletingNotebook));
     return () => setBackgroundInert(surfaceRef.current, false);
@@ -123,9 +145,9 @@ export function NotebookHome({ state = "ready", notebooks = [], errorCode = null
     queueMicrotask(() => createOpenerRef.current?.focus?.());
   };
 
-  return <main className="notebook-home" aria-busy={state === "loading"}>
+  return <main ref={homeRef} className="notebook-home" aria-busy={state === "loading"}>
     <div ref={surfaceRef} className="notebook-home-surface">
-    <header className="notebook-home-header"><a className="notebook-brand" href="#notebook-home" aria-label="Daon Notebook 홈"><span aria-hidden="true">◒</span>Daon Notebook</a><div className="notebook-session-identity" aria-label="현재 접속자">{displayIdentity || "현재 사용자"}</div><SettingsMenu onOpenSetting={onOpenSetting} onLogout={onLogout} showUserManagement={showUserManagement} showOrganizationPolicy={showOrganizationPolicy} tenantScope={tenantScope} scopeError={scopeError} switchingScope={switchingScope} onSwitchTenant={onSwitchTenant} /></header>
+    <header className="notebook-home-header"><a className="notebook-brand" href="#notebook-home" aria-label="Daon Notebook 홈"><span aria-hidden="true">◒</span>Daon Notebook</a><div className="notebook-session-identity" aria-label="현재 접속자">{displayIdentity || "현재 사용자"}</div><SettingsMenu onOpenSetting={onOpenSetting} onLogout={onLogout} showUserManagement={showUserManagement} showOrganizationPolicy={showOrganizationPolicy} tenantScope={tenantScope} scopeError={scopeError} switchingScope={switchingScope} onSwitchTenant={onSwitchTenant} onReload={onReload} /></header>
     <section id="notebook-home" className="notebook-home-content" aria-labelledby="notebook-home-title">
       <div className="notebook-home-intro"><div><p>MY NOTEBOOKS</p><h1 id="notebook-home-title">지식에서 결과까지, 하나의 Notebook에서</h1></div><button ref={createOpenerRef} className="notebook-create-button" type="button" onClick={() => setCreating(true)}>＋ 새 Notebook</button></div>
       <div className="notebook-home-tools">

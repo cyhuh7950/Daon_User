@@ -3,14 +3,18 @@
 import { createProductWorkspaceState } from "@daon-user/ui/product-workspace-model";
 import { ProductWorkspaceShell } from "@daon-user/ui/product-workspace-shell";
 import { ProviderSettingsWorkspace } from "./provider-settings-workspace.jsx";
-import { getDocumentProcessingStatus, uploadSource } from "../lib/source-upload-api.js";
+import { getDocumentProcessingStatus, reprocessSource, uploadSource } from "../lib/source-upload-api.js";
 import { askGroundedQuestion, authorizeGroundedQuestion, citationContentUrl } from "../lib/question-answering-api.js";
 import { createGroundedReport, createStudioGeneration, getStudioGenerationJob, createStudioVersion, createStudioAction, downloadStudioExport, getWorkspaceOperationsStatus, getWorkspaceOutputVersionSettings, issueStudioStepUp, listProductStudioOutputs, listStudioOutputs, listStudioVersions, listWorkspaceConnectors, listWorkspaceKnowledgePackages, listWorkspaceSources, reconnectWorkspaceConnector, registerWorkspaceConnector, unregisterWorkspaceConnector, saveWorkspaceOutputVersionSettings, unbindWorkspaceSource } from "../lib/product-workspace-api.js";
+import { issueStudioExportStepUp } from "../lib/product-workspace-api.js";
+import { getStudioApprovalPolicy, saveStudioApprovalPolicy, issueStudioApprovalPolicyStepUp, withdrawStudioApprovalRequest, listStudioApprovalNotices, markStudioApprovalNoticeRead } from "../lib/product-workspace-api.js";
 import { approveWorkspaceSyncOperation, listWorkspaceSyncOperations } from "../lib/sync-approval-settings-api.js";
 import { getEffectiveEgressPolicy } from "../lib/egress-policy-api.js";
 import { applyCurrentOrganizationLicenseWithStepUp, getWorkspaceLicense } from "../lib/license-api.js";
 import { downloadManualAsset, getManualManifest, readManualDocument } from "../lib/manual-api.js";
-import { cancelSourceDeletionRequest, getSourceDeletionRequest, requestSourceDeletion } from "../lib/source-retention-api.js";
+import { cancelSourceDeletionRequest, getSourceDeletionRequest, issueSourceDeletionStepUp, requestSourceDeletion } from "../lib/source-retention-api.js";
+import { importWebsiteSource, getWebsiteSnapshot, validWebsiteUrl } from '../lib/website-source-api.js';
+import { searchOpenLaw,previewOpenLaw,importOpenLaw,getOpenLawSnapshot,getOpenLawCitation,listWorkspaceConnectorSources } from '../lib/product-workspace-api.js';
 
 export function createWebProductWorkspaceAdapter(workspaceId, notebookId) {
   const notebookOptions = (options = {}) => (notebookId
@@ -21,8 +25,19 @@ export function createWebProductWorkspaceAdapter(workspaceId, notebookId) {
     : input);
   return Object.freeze({
     listSources: (options) => listWorkspaceSources(workspaceId, notebookOptions(options)),
-    unbindSource: (source, options = {}) => unbindWorkspaceSource(workspaceId, source, { ...notebookOptions(options), etag: options.etag ?? options.bindingEtag }),
-    requestSourceDeletion: (source, options) => requestSourceDeletion(source.sourceId, options),
+    searchOpenLaw: (input,options={}) => searchOpenLaw(workspaceId,{...input,notebook_id:notebookId ?? options.notebookId},options),
+    previewOpenLaw: (input,options={}) => previewOpenLaw(workspaceId,{...input,notebook_id:notebookId ?? options.notebookId},options),
+    importOpenLaw: (input,options={}) => importOpenLaw(workspaceId,{...input,notebook_id:notebookId ?? options.notebookId},options),
+    getOpenLawSnapshot: (version,options) => getOpenLawSnapshot(workspaceId,version,notebookOptions(options)),
+    getOpenLawCitation: (citation,options) => getOpenLawCitation(workspaceId,citation,notebookOptions(options)),
+    listConnectorSources: (connectorId,options) => listWorkspaceConnectorSources(workspaceId,connectorId,options),
+    validWebsiteUrl,
+    importWebsite: ({url,publicPageConfirmed}, options = {}) => importWebsiteSource(workspaceId,
+      {notebook_id:notebookId ?? options.notebookId,url,public_page_confirmed:publicPageConfirmed},options),
+    getWebsiteSnapshot: (sourceVersionId, options) => getWebsiteSnapshot(workspaceId,sourceVersionId,notebookOptions(options)),
+    unbindSource: (source, options = {}) => unbindWorkspaceSource(workspaceId, { sourceId: source?.sourceId, sourceVersionId: source?.sourceVersionId }, { ...notebookOptions(options), etag: options.etag ?? options.bindingEtag }),
+    requestSourceDeletion: (source, options) => requestSourceDeletion(source.sourceId, notebookOptions(options)),
+    issueSourceDeletionStepUp,
     getSourceDeletionRequest,
     cancelSourceDeletionRequest,
     listKnowledgePackages: (options) => listWorkspaceKnowledgePackages(workspaceId, options),
@@ -43,6 +58,7 @@ export function createWebProductWorkspaceAdapter(workspaceId, notebookId) {
     downloadManual: (documentId, format, manifest, options) => downloadManualAsset(documentId, format, { ...options, manifest }),
     uploadSource: (file, options) => uploadSource(workspaceId, file, notebookOptions(options)),
     uploadPdf: (file, options) => uploadSource(workspaceId, file, notebookOptions(options)),
+    reprocessSource: (source, options) => reprocessSource(workspaceId, source, notebookOptions(options)),
     getProcessingStatus: (processingRunId, options) => getDocumentProcessingStatus(workspaceId, processingRunId, notebookOptions(options)),
     askQuestion: (input, options) => askGroundedQuestion(workspaceId, notebookInput(input), options),
     authorizeQuestion: (input, options) => authorizeGroundedQuestion(workspaceId, notebookInput(input), options),
@@ -56,17 +72,27 @@ export function createWebProductWorkspaceAdapter(workspaceId, notebookId) {
     listStudioVersions: (outputId, options) => listStudioVersions(workspaceId, outputId, notebookOptions(options)),
     createStudioAction: (action, input, options) => createStudioAction(workspaceId, action, input, notebookOptions(options)),
     issueStudioStepUp,
+    getStudioApprovalPolicy: (options) => getStudioApprovalPolicy(workspaceId, notebookOptions(options)),
+    saveStudioApprovalPolicy: (input, options) => saveStudioApprovalPolicy(workspaceId, input, notebookOptions(options)),
+    issueStudioApprovalPolicyStepUp,
+    withdrawStudioApprovalRequest: (requestId, versionId, options) => withdrawStudioApprovalRequest(workspaceId, requestId, versionId, notebookOptions(options)),
+    listStudioApprovalNotices: (options) => listStudioApprovalNotices(workspaceId, notebookOptions(options)),
+    markStudioApprovalNoticeRead: (noticeId, version, options) => markStudioApprovalNoticeRead(workspaceId, noticeId, version, notebookOptions(options)),
+    issueStudioExportStepUp: (outputId, versionId, format, password, options) => issueStudioExportStepUp(workspaceId, outputId, versionId, format, password, notebookOptions(options)),
     downloadStudioExport: (outputId, versionId, format, options) => downloadStudioExport(workspaceId, outputId, versionId, format, notebookOptions(options)),
   });
 }
 
-export function ActualWorkspace({ workspaceId, notebookId, notebookTitle, adapter, processingPollOptions, onLogout }) {
+export function ActualWorkspace({ workspaceId, notebookId, notebookTitle, adapter, processingPollOptions, onLogout,
+  initialSourceVersionId = null, initialStudioOutput = null }) {
   const activeAdapter = workspaceId ? (adapter ?? createWebProductWorkspaceAdapter(workspaceId, notebookId)) : null;
   return (
     <ProductWorkspaceShell
       workspaceId={workspaceId}
       notebookTitle={notebookTitle}
       adapter={activeAdapter}
+      initialSourceVersionId={initialSourceVersionId}
+      initialStudioOutput={initialStudioOutput}
       processingPollOptions={processingPollOptions}
       providerSettings={<ProviderSettingsWorkspace workspaceId={workspaceId} embedded />}
       onLogout={onLogout}

@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -58,23 +59,26 @@ def _snapshot(provider_code: str) -> ProviderSettingsSnapshot:
     )
 
 
-def _prepared_wire(provider_code: str) -> bytes:
+def _prepared_wire(provider_code: str, *, grounded: bool = True) -> bytes:
     evidence = (IndexedEvidenceChunk(
         "chunk-1", "source", "source-version", 3, "secret evidence", "span-1",
     ),)
     selection = ResolvedModel(
         "profile", provider_code, "model", "text_generation",
-        "https://api.upstage.ai/v1" if provider_code == "UPSTAGE" else "http://ollama:11434",
-        1 if provider_code == "UPSTAGE" else 0, 1, 1,
-        "external_api" if provider_code == "UPSTAGE" else "local_runtime",
+        ("https://omniroute.example/v1" if provider_code == "OMNIROUTE" else
+            "https://api.upstage.ai/v1" if provider_code == "UPSTAGE" else "http://ollama:11434"),
+        0 if provider_code == "OLLAMA" else 1, 1, 1,
+        "local_runtime" if provider_code == "OLLAMA" else "external_api",
         "provider", True,
-        bytearray(b"configured-test-credential") if provider_code == "UPSTAGE" else None,
+        None if provider_code == "OLLAMA" else bytearray(b"configured-test-credential"),
     )
-    prepared = QuestionAdapterRegistry().prepare(
-        selection, evidence, "secret question", "trace-1", NoTransport(),
-    )
-    selection.release()
-    return canonical_json_bytes(prepared.provider_payload)
+    try:
+        registry = QuestionAdapterRegistry()
+        prepared = (registry.prepare(selection, evidence, "secret question", "trace-1", NoTransport())
+            if grounded else registry.prepare_general(selection, "안녕", "trace-1", NoTransport()))
+        return canonical_json_bytes(prepared.provider_payload)
+    finally:
+        selection.release()
 
 
 @pytest.mark.parametrize("provider_code", ["UPSTAGE", "OLLAMA"])
@@ -119,6 +123,78 @@ def test_required_masking_accepts_any_general_question_wire() -> None:
         QuestionContext("tenant", "workspace", "actor", "trace", "policy"), wire,
     ))
     assert transformed["messages"][1]["content"] == "2026년 매출은?"
+
+
+@pytest.mark.parametrize("provider_code", ["OMNIROUTE", "UPSTAGE", "OLLAMA"])
+@pytest.mark.parametrize("grounded", [False, True])
+@pytest.mark.parametrize("requirements", [(True, True), (True, False), (False, True)])
+def test_required_transform_preserves_actual_general_and_grounded_protocol_wire(
+    provider_code: str, grounded: bool, requirements, caplog,
+) -> None:
+    class NoWrites:
+        def _transaction(self, *_args):
+            raise AssertionError("payload preparation must not write")
+    class RequiredPolicy(Policy):
+        def get_effective(self, context):
+            return replace(super().get_effective(context),
+                masking_required=requirements[0], redaction_required=requirements[1])
+    authorizer = PostgresQuestionEgressAuthorizer(NoWrites(), RequiredPolicy())
+    original = _prepared_wire(provider_code, grounded=grounded)
+    transformed = authorizer.prepare_payload(
+        QuestionContext("tenant", "workspace", "actor", "trace", "policy"), original,
+    )
+    field = "input" if provider_code == "OMNIROUTE" else "messages"
+    before, after = json.loads(original), json.loads(transformed)
+    if grounded:
+        before[field][1]["content"] = canonical_json_bytes(json.loads(before[field][1]["content"])).decode("utf-8")
+    assert after == before
+    assert ("messages" in after, "input" in after) == (field == "messages", field == "input")
+    if grounded:
+        user = json.loads(after[field][1]["content"])
+        assert user["question"] == "secret question"
+        assert user["evidence"] == [{"chunk_id": "chunk-1", "page": 3, "text": "secret evidence"}]
+    else:
+        assert after[field][1]["content"] == "안녕"
+    assert transformed == canonical_json_bytes(after)
+    assert caplog.text == ""
+
+
+@pytest.mark.parametrize("field", ["messages", "input"])
+@pytest.mark.parametrize("malformed", [
+    None, "text", {}, [], [None], ["text"], [{"role": "user", "content": None}],
+    [{"role": "user", "content": [{"type": "input_text", "text": "text"}]}],
+    [{"role": "user", "content": "text"}, {"role": "user", "content": "other"}],
+    [{"role": "system", "content": "text"}],
+    [{"role": "user", "content": "text"}, None],
+    [{"role": "user", "content": "text"}, {"role": "system", "content": {}}],
+    [{"role": "user", "content": "text"}, {"role": None, "content": "text"}],
+    [{"role": "user", "content": "text"}, {"role": "unknown", "content": "text"}],
+])
+def test_required_transform_rejects_malformed_protocol_before_write_or_transport(field, malformed, caplog):
+    class NoWrites:
+        def _transaction(self, *_args):
+            raise AssertionError("invalid payload must not write")
+    authorizer = PostgresQuestionEgressAuthorizer(NoWrites(), Policy())
+    with pytest.raises(QuestionAnsweringError) as error:
+        authorizer.prepare_payload(
+            QuestionContext("tenant", "workspace", "actor", "trace", "policy"),
+            canonical_json_bytes({"model": "m", field: malformed}),
+        )
+    assert error.value.code == "EGRESS_TRANSFORMATION_FAILED" and error.value.status == 403
+    assert caplog.text == ""
+
+
+@pytest.mark.parametrize("other", [None, [], [{"role": "user", "content": "other"}]])
+@pytest.mark.parametrize("field", ["messages", "input"])
+def test_required_transform_rejects_both_wire_protocols(field, other):
+    authorizer = PostgresQuestionEgressAuthorizer.__new__(PostgresQuestionEgressAuthorizer)
+    authorizer._policy_service = Policy()
+    wire = {field: [{"role": "user", "content": "text"}],
+        "input" if field == "messages" else "messages": other}
+    with pytest.raises(QuestionAnsweringError, match="EGRESS_TRANSFORMATION_FAILED"):
+        authorizer.prepare_payload(
+            QuestionContext("tenant", "workspace", "actor", "trace", "policy"), canonical_json_bytes(wire),
+        )
 
 
 @pytest.mark.parametrize(
@@ -226,6 +302,41 @@ def test_frozen_egress_and_run_snapshot_contain_only_safe_exact_model_metadata()
     assert "data-api-client-key" not in repr(frozen)
     assert "data-api-client-key" not in repr(run)
     selection.release()
+
+
+@pytest.mark.parametrize('required,changed', [(False,None), (True,None), (False,'policy_fingerprint'),
+    (False,'provider_payload_fingerprint'), (False,'deployment_id')])
+def test_policy_approved_authorization_requires_current_no_step_up_policy_and_exact_fingerprints(required, changed):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+    import hashlib
+    policy = replace(Policy().get_effective(None), question_step_up_required=required)
+    writes = []
+    class Connection:
+        def execute(self, sql, params=()):
+            writes.append((sql, params))
+            return _Result()
+    class Store:
+        @contextmanager
+        def _transaction(self, context):yield Connection()
+    selection = TextModelSelection('UPSTAGE','https://provider.example','profile','deployment','model',1)
+    approved = dict(authorization_mode='policy_approved', policy_fingerprint=policy.fingerprint,
+        provider_payload_fingerprint='sha256:'+hashlib.sha256(b'{}').hexdigest(),
+        provider_kind='external_api', deployment_id='deployment')
+    if changed:approved[changed] = 'changed'
+    authorizer = PostgresQuestionEgressAuthorizer(Store(), SimpleNamespace(get_effective=lambda ctx:policy))
+    args = dict(run_id='run-policy-mode',source_id=None,source_version_id=None,selection=selection,
+        provider_payload=b'{}',approved_authorization=approved,question='안녕',context_mode='general_ungrounded',
+        request_fingerprint='sha256:'+'b'*64)
+    if required or changed:
+        with pytest.raises(QuestionAnsweringError,match='EGRESS_POLICY_DENIED'):
+            authorizer.authorize(QuestionContext('tenant','workspace','actor','trace','policy'),**args)
+    else:
+        result = authorizer.authorize(QuestionContext('tenant','workspace','actor','trace','policy'),**args)
+        assert result['frozen_routing_context']['authorization_mode'] == 'policy_approved'
+        assert result['frozen_routing_context']['question_step_up_required'] is False
+        audit = [params[-1].obj for sql, params in writes if "INSERT INTO audit_events" in sql][-1]
+        assert audit['authorization_mode'] == 'policy_approved'
 
 
 def test_approval_fails_closed_when_credential_or_catalog_version_changes() -> None:

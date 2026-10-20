@@ -46,22 +46,22 @@
         "markdown": {
           "filename": "daon-user-manual.md",
           "href": "/manual/daon-user-manual.md",
-          "bytes": 32030,
-          "sha256": "560ea8f9e81aec68d9c963dbe0ea78399d91baa6572910b8075dbd50c434f794",
+          "bytes": 41760,
+          "sha256": "ffff2a47269b8b82ca63444e858b46d56b46379ee7dabfc31f2653ed96db1b94",
           "mime": "text/markdown; charset=utf-8"
         },
         "docx": {
           "filename": "daon-user-manual.docx",
           "href": "/manual/daon-user-manual.docx",
-          "bytes": 52855,
-          "sha256": "ed3d307752dab2ed2d6df506192b86df485fca0c605e773e0117c548371a3c53",
+          "bytes": 56068,
+          "sha256": "3408e743e0160cdd60ff8d886e8f709338dbcb8b367d60bba6230bafafd71f16",
           "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         },
         "pdf": {
           "filename": "daon-user-manual.pdf",
           "href": "/manual/daon-user-manual.pdf",
-          "bytes": 449697,
-          "sha256": "f191d24474cdaabfbf029d4c53f6250dd3d3e5f73ba7d0ad570c61edafa58b87",
+          "bytes": 533434,
+          "sha256": "075df95761ebc6df3539ccbcdad28c88f8c299defab113effb7ec913d6e42fcb",
           "mime": "application/pdf"
         }
       }
@@ -77,22 +77,22 @@
         "markdown": {
           "filename": "daon-knowledge-llm-guide.md",
           "href": "/manual/daon-knowledge-llm-guide.md",
-          "bytes": 17035,
-          "sha256": "6f620d811a3c8527f1fe5f9fffef99a013b27618b1451521970e7566f8ee0b0b",
+          "bytes": 21798,
+          "sha256": "8f085dc8721cb5854a8fcccdeaf0758c0157ab3f523a4a8b5272f99db7bcda9c",
           "mime": "text/markdown; charset=utf-8"
         },
         "docx": {
           "filename": "daon-knowledge-llm-guide.docx",
           "href": "/manual/daon-knowledge-llm-guide.docx",
-          "bytes": 47415,
-          "sha256": "e7466aaece95772159c9f02cf7909966de8645ffb7a3eb7ae12e3d9a42123d11",
+          "bytes": 48811,
+          "sha256": "df36c5e83e32233d8e59402886ca1a84d124f4a577838bcb70ef46279d7f8a9f",
           "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         },
         "pdf": {
           "filename": "daon-knowledge-llm-guide.pdf",
           "href": "/manual/daon-knowledge-llm-guide.pdf",
-          "bytes": 332665,
-          "sha256": "12e0c4d587923374cad36f6709de20487a6404c0f0c57bb59bc150a939748bf4",
+          "bytes": 404642,
+          "sha256": "793c67e0acf99e66877aff2a7ca6ba3e161ba679fc97a9186bdbb3826421970c",
           "mime": "application/pdf"
         }
       }

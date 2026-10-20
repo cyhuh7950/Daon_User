@@ -770,11 +770,15 @@ class AuthorizationService:
     def __init__(
         self, *, repository: SqliteAuthorizationRepository, audit_store: object,
         clock: Callable[[], datetime], identity_service: object | None = None,
+        notification_inbox_enabled: bool = False,
     ) -> None:
+        if type(notification_inbox_enabled) is not bool:
+            raise ValueError("NOTIFICATION_INBOX_FLAG_INVALID")
         self._repository = repository
         self._audit_store = audit_store
         self._clock = clock
         self._identity_service = identity_service
+        self._notification_inbox_enabled = notification_inbox_enabled
         self._lock = RLock()
 
     def _now(self) -> datetime:
@@ -785,7 +789,7 @@ class AuthorizationService:
         trace_id: str, policy_version: str, workspace_id: str | None,
         target_type: str, target_id: str, before: dict[str, object] | None = None,
         after: dict[str, object] | None = None, metadata: dict[str, object] | None = None,
-    ) -> None:
+    ) -> AuditEventDraft:
         draft = AuditEventDraft(
             event_id=_id("audit"),
             occurred_at=self._now(),
@@ -807,6 +811,7 @@ class AuthorizationService:
             self._audit_store.append(draft)  # type: ignore[attr-defined]
         except Exception as error:
             raise AuthorizationError("AUDIT_WRITE_FAILED", 503) from error
+        return draft
 
     def _workspace(
         self, connection: sqlite3.Connection, principal: IdentityPrincipal, workspace_id: str,
@@ -824,7 +829,20 @@ class AuthorizationService:
                 metadata={"reason_code": "RESOURCE_UNAVAILABLE"},
             )
             raise AuthorizationError("RESOURCE_UNAVAILABLE", 404)
+        self._assert_organization_active(connection, principal, row)
         return row
+
+    def _assert_organization_active(self, connection, principal, workspace=None) -> None:
+        if workspace is not None and workspace["workspace_kind"] != "organization":
+            return
+        from .organization_access import OrganizationAccessBridge
+        from .organization_membership import OrganizationWorkflowError
+        try:
+            OrganizationAccessBridge(postgres=hasattr(self._repository, "_dsn")).assert_organization_active(
+                connection=connection, tenant_id=principal.tenant_id, user_id=principal.user_id,
+            )
+        except OrganizationWorkflowError as error:
+            raise AuthorizationError(error.code, error.status) from error
 
     def _membership(
         self, connection: sqlite3.Connection, principal: IdentityPrincipal, workspace_id: str
@@ -934,6 +952,7 @@ class AuthorizationService:
             binding = None if workspace is None else self._role_binding(connection, principal, workspace)
             if workspace is None:
                 raise AuthorizationError("RESOURCE_UNAVAILABLE", 404)
+            self._assert_organization_active(connection, principal, workspace)
             if binding is None:
                 raise AuthorizationError("ACTION_DENIED", 403)
             return self._effective_permission(
@@ -1042,6 +1061,8 @@ class AuthorizationService:
         with self._repository.transaction() as connection:
             tenant_role = self._tenant_role(connection, principal)
             role = None if tenant_role is None else Role(str(tenant_role["role"]))
+            if role is Role.ORGANIZATION_ADMIN:
+                self._assert_organization_active(connection, principal)
             allowed = role in TENANT_ROLES
             self._audit(
                 action=(
@@ -1285,13 +1306,20 @@ class AuthorizationService:
                 "UPDATE auth_workspaces SET acl_version=acl_version+1,updated_at=? WHERE tenant_id=? AND workspace_id=?",
                 (_iso(now), principal.tenant_id, workspace_id),
             )
-            self._audit(
+            draft = self._audit(
                 action="authorization.source_access.changed", outcome=AuditOutcome.SUCCEEDED,
                 principal=principal, trace_id=trace_id, policy_version=policy_version,
                 workspace_id=workspace_id, target_type="source_access", target_id=source_version_id,
                 before=None if current is None else {"allowed": bool(current["allowed"]), "version": current_version},
                 after={"allowed": allowed, "version": next_version},
             )
+            if self._notification_inbox_enabled and hasattr(connection, "_conn"):
+                from .notification_source_access import enqueue_source_access_event
+
+                enqueue_source_access_event(
+                    connection, event=draft, recipient_id=user_id,
+                    source_version_id=source_version_id, allowed=allowed, acl_version=next_version,
+                )
             return next_version
 
     def set_permission_policy(

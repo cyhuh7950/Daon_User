@@ -79,12 +79,13 @@ class Adapter:
         self.events = events
 
     def prepare(self, selection, evidence, question, trace_id, transport):  # type: ignore[no-untyped-def]
-        del selection, trace_id, transport
+        from daon_user_api.question_answering import GroundedQuestionRequest
+        del selection, transport
         payload = {"evidence": [
             {"chunk_id": item.chunk_id, "page": item.page, "text": item.text}
             for item in evidence
         ], "model": "model", "question": question}
-        return SimpleNamespace(provider_payload=payload)
+        return SimpleNamespace(provider_payload=payload, request=GroundedQuestionRequest(question, evidence, trace_id))
 
     def generate_prepared(self, prepared):  # type: ignore[no-untyped-def]
         from daon_user_api.question_answering import GroundedTextResult

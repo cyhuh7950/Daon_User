@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import path from "node:path";
+import os from "node:os";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 
@@ -20,7 +21,7 @@ async function bundleProvider(root, output, fileName) {
   await build({ configFile: false, logLevel: "silent", root, build: {
     outDir: output, emptyOutDir: false,
     lib: { entry: path.join(root, "apps/web/components/provider-settings-workspace.jsx"), formats: ["es"], fileName },
-    rollupOptions: { external: ["react", "react-dom", "react-dom/client"] },
+    rollupOptions: { external: ["react", "react-dom", "react-dom/client"], output: { paths: Object.fromEntries(["react", "react-dom", "react-dom/client"].map(name => [name, import.meta.resolve(name)])) } },
   } });
   const entry = (await readdir(output)).find((name) => name.startsWith(fileName) && /\.m?js$/u.test(name));
   return import(`${pathToFileURL(path.join(output, entry)).href}?v=${Date.now()}`);
@@ -59,6 +60,7 @@ function adminFixture({ previewModels = [], previewFails = false, saveFailures =
   const requests = [];
   let connections = existingConnections;
   let pendingSaveFailures = saveFailures;
+  let nativeDefault=null;
   return {
     requests,
     async fetch(url, options = {}) {
@@ -75,6 +77,16 @@ function adminFixture({ previewModels = [], previewFails = false, saveFailures =
         return Response.json({ data: { ...credential, configured: true, credential_version: body.expected_version + 1, verification_status: "verified" } });
       }
       if (path === "/bff/api/admin/provider-health-settings") return Response.json({ data: { interval_minutes: 60, version: 1 } });
+      if (path === "/bff/api/workspaces/workspace-001/model-defaults" && method === "GET") return Response.json({
+        data: { workspace_id: "workspace-001", available_models: connections.filter(item=>item.adapter_type==='asr_base_native').map(item=>({
+          connection_id:item.connection_id,model_id:'faster-whisper-base',display_name:item.display_name,
+          catalog_status:'ready',effective_capabilities:['speech_to_text']})), defaults: nativeDefault?[nativeDefault]:[], version:nativeDefault?1:0 },
+      }, { headers: { etag: nativeDefault?'"defaults-v1"':'"defaults-v0"' } });
+      if(path === '/bff/api/workspaces/workspace-001/model-defaults' && method==='PATCH'){
+        assert.equal(body.capability,'speech_to_text');
+        nativeDefault={capability:body.capability,connection_id:body.connection_id,model_id:body.model_id,version:1};
+        return Response.json({data:{workspace_id:'workspace-001',available_models:connections.filter(item=>item.adapter_type==='asr_base_native').map(item=>({connection_id:item.connection_id,model_id:'faster-whisper-base',display_name:item.display_name,catalog_status:'ready',effective_capabilities:['speech_to_text']})),defaults:[nativeDefault],version:1}},{headers:{etag:'"defaults-v1"'}});
+      }
       if (path === "/bff/api/admin/provider-connections/model-preview") {
         return previewFails
           ? Response.json({ error: { code: "PROVIDER_CATALOG_UNAVAILABLE" } }, { status: 503 })
@@ -103,7 +115,7 @@ function adminFixture({ previewModels = [], previewFails = false, saveFailures =
 
 async function mountAdminFixture(fixture, fileName) {
   const root = path.resolve(import.meta.dirname, "../..");
-  const output = await mkdtemp(path.join(root, "node_modules", `.provider-${fileName}-`));
+  const output = await mkdtemp(path.join(os.tmpdir(), `.provider-${fileName}-`));
   const dom = installMinimalDom();
   const originalFetch = globalThis.fetch;
   globalThis.fetch = fixture.fetch;
@@ -113,8 +125,87 @@ async function mountAdminFixture(fixture, fileName) {
   const container = dom.document.createElement("div"); dom.document.body.appendChild(container);
   const reactRoot = createRoot(container);
   await act(async () => { reactRoot.render(createElement(ProviderSettingsWorkspace, { workspaceId: "workspace-001", embedded: true })); await Promise.resolve(); await Promise.resolve(); });
-  return { container, act, async cleanup() { await act(async () => reactRoot.unmount()); globalThis.fetch = originalFetch; dom.restore(); await rm(output, { recursive: true, force: true }); } };
+  let unmounted=false;
+  const unmount=async()=>{if(!unmounted){await act(async()=>reactRoot.unmount());unmounted=true;}};
+  return { container, act, unmount,
+    async render(props={}) { await act(async()=>reactRoot.render(createElement(ProviderSettingsWorkspace,{workspaceId:'workspace-001',embedded:true,...props}))); },
+    async cleanup() { await unmount(); globalThis.fetch = originalFetch; dom.restore(); await rm(output, { recursive: true, force: true }); } };
 }
+
+function s26Connection(id) {
+  return { connection_id:`s26-${id}`,provider_code:'CUSTOM',adapter_type:'openai_compatible',provider_name:`S26 ${id}`,display_name:`S26 connection ${id}`,
+    base_url:`https://${id}.example/v1`,short_code:id==='a'?'SA':'SB',access_mode:'public',credential_requirement:'none',
+    allowed_model_ids:[],enabled:true,configured:false,verification_status:'unverified',version:1,catalog_status:'unverified',catalog_version:0,models:[] };
+}
+function s26DelayedFixture(existingConnections=[]) {
+  const fixture=adminFixture({existingConnections}),base=fixture.fetch,pending=[];
+  fixture.fetch=async(url,options={})=>{
+    if(String(url).endsWith('/model-preview')) {
+      fixture.requests.push({path:String(url),method:options.method,body:JSON.parse(options.body)});
+      return new Promise((resolve,reject)=>pending.push({resolve,reject}));
+    }
+    return base(url,options);
+  };
+  return {fixture,pending};
+}
+
+test('S26 delayed preview success and failure cannot mutate a different connection endpoint protocol or Workspace',async t=>{
+  for(const boundary of ['connection','new_connection','endpoint','protocol','workspace'])for(const outcome of ['success','failure']) {
+    await t.test(`${boundary}-${outcome}`,async()=>{
+      const fresh=boundary==='endpoint'||boundary==='protocol';
+      const {fixture,pending}=s26DelayedFixture(fresh?[]:[s26Connection('a'),s26Connection('b')]);
+      const view=await mountAdminFixture(fixture,`S26-${boundary}-${outcome}`);
+      try {
+        if(fresh) {await fill(view.act,controlFor(view.container,'Endpoint'),'https://a.example/v1');await fill(view.act,controlFor(view.container,'인증 유형'),'none');}
+        await click(view.act,buttonByText(view.container,'모델 목록 조회'));
+        assert.equal(pending.length,1);
+        assert.equal(fixture.requests.find(row=>row.path.endsWith('/model-preview')).body.base_url,'https://a.example/v1');
+        if(boundary==='connection')await click(view.act,findElements(view.container,node=>node.tagName==='BUTTON'&&node.textContent.includes('S26 connection b'))[0]);
+        else if(boundary==='new_connection') {await click(view.act,buttonByText(view.container,'연결 추가'));await fill(view.act,controlFor(view.container,'Endpoint'),'https://new.example/v1');await fill(view.act,controlFor(view.container,'인증 유형'),'none');}
+        else if(boundary==='endpoint') {assert.notEqual(reactProps(controlFor(view.container,'Endpoint')).disabled,true);await fill(view.act,controlFor(view.container,'Endpoint'),'https://b.example/v1');}
+        else if(boundary==='protocol') {assert.notEqual(reactProps(controlFor(view.container,'호환 방식')).disabled,true);await fill(view.act,controlFor(view.container,'호환 방식'),'anthropic_compatible');await fill(view.act,controlFor(view.container,'Endpoint'),'https://b.example/v1');await fill(view.act,controlFor(view.container,'인증 유형'),'none');}
+        else await view.render({workspaceId:'workspace-002'});
+        const before=view.container.textContent;
+        await view.act(async()=>outcome==='success'?pending[0].resolve(Response.json({data:{model_ids:['stale-a-model']}})):pending[0].reject(new Error('private stale provider response')));
+        assert.equal(view.container.textContent,before,'old response must not alter current models or status');
+        assert.doesNotMatch(view.container.textContent,/stale-a-model|private stale provider response/);
+        assert.equal(buttonByText(view.container,'모델 목록 조회').disabled,false,'new scope must not remain busy for the discarded preview');
+        assert.equal(fixture.requests.filter(row=>row.method!=='GET'&&!row.path.endsWith('/model-preview')).length,0);
+      } finally { for(const item of pending)item.resolve(Response.json({data:{model_ids:[]}}));await view.cleanup(); }
+    });
+  }
+});
+
+test('S26 preview synchronous duplicate handlers issue one request and old failure cannot release a newer preview',async()=>{
+  const {fixture,pending}=s26DelayedFixture([s26Connection('a'),s26Connection('b')]);
+  const view=await mountAdminFixture(fixture,'S26-singleflight');
+  try {
+    const handler=reactProps(buttonByText(view.container,'모델 목록 조회')).onClick;
+    await view.act(async()=>{handler();handler();});assert.equal(pending.length,1);
+    await click(view.act,findElements(view.container,node=>node.tagName==='BUTTON'&&node.textContent.includes('S26 connection b'))[0]);
+    assert.equal(buttonByText(view.container,'모델 목록 조회').disabled,false);
+    await click(view.act,buttonByText(view.container,'모델 목록 조회'));assert.equal(pending.length,2);
+    await view.act(async()=>pending[0].reject(new Error('private old response')));
+    assert.equal(buttonByText(view.container,'모델 목록 조회').disabled,true);
+    assert.match(view.container.textContent,/모델 목록을 조회하는 중/);
+    await view.act(async()=>pending[1].resolve(Response.json({data:{model_ids:['current-b-model']}})));
+    assert.match(view.container.textContent,/current-b-model/);assert.doesNotMatch(view.container.textContent,/private old response/);
+    assert.equal(buttonByText(view.container,'모델 목록 조회').disabled,false);
+    assert.equal(controlFor(view.container,'모델 ID 직접 입력').value,'','preview may not expand the allowlist');
+  } finally {for(const item of pending)item.resolve(Response.json({data:{model_ids:[]}}));await view.cleanup();}
+});
+
+test('S26 unmounted preview late resolution and rejection produce no UI or unhandled rejection',async t=>{
+  for(const outcome of ['success','failure'])await t.test(outcome,async()=>{
+    const {fixture,pending}=s26DelayedFixture([s26Connection('a')]);const view=await mountAdminFixture(fixture,`S26-unmount-${outcome}`);
+    try {
+      await click(view.act,buttonByText(view.container,'모델 목록 조회'));assert.equal(pending.length,1);
+      await view.unmount();
+      await view.act(async()=>outcome==='success'?pending[0].resolve(Response.json({data:{model_ids:['stale-a-model']}})):pending[0].reject(new Error('private unmounted response')));
+      assert.equal(view.container.textContent,'');
+    } finally {for(const item of pending)item.resolve(Response.json({data:{model_ids:[]}}));await view.cleanup();}
+  });
+});
 
 test("admin can save zero minutes to disable periodic provider checks", async () => {
   const fixture = adminFixture();
@@ -140,12 +231,12 @@ test("admin can save zero minutes to disable periodic provider checks", async ()
   } finally { await view.cleanup(); }
 });
 
-test("new connection offers only OpenAI and Anthropic compatibility, not legacy providers", async () => {
+test("new connection offers OpenAI, Anthropic and approved pinned QA Native ASR, not legacy providers", async () => {
   const view = await mountAdminFixture(adminFixture(), "compatible-only-new");
   try {
     const mode = controlFor(view.container, "호환 방식");
     const options = findElements(mode, (node) => node.tagName === "OPTION");
-    assert.deepEqual(options.map((option) => option.value), ["openai_compatible", "anthropic_compatible"]);
+    assert.deepEqual(options.map((option) => option.value), ["openai_compatible", "anthropic_compatible", "asr_base_native"]);
     assert.equal(reactProps(mode).value, "openai_compatible");
     assert.equal(controlFor(view.container, "API 유형").value, "Chat Completions");
     assert.equal(findElements(view.container, (node) => node.tagName === "LABEL" && node.textContent.startsWith("Provider 방식")).length, 0);
@@ -175,6 +266,35 @@ test("new compatible connection can use no API Key", async () => {
     assert.deepEqual(create.body.allowed_model_ids, ["local-model"]);
     assert.equal(buttonByText(view.container, "모델 조회").disabled, false);
   } finally { await view.cleanup(); }
+});
+
+test('QA native ASR registration fixes endpoint model and keyless contract without chat probe',async()=>{
+  const fixture=adminFixture(),view=await mountAdminFixture(fixture,'qa-native-asr');
+  try{
+    const mode=controlFor(view.container,'호환 방식');
+    assert.ok(findElements(mode,node=>node.tagName==='OPTION'&&node.value==='asr_base_native').length);
+    await fill(view.act,mode,'asr_base_native');
+    assert.equal(controlFor(view.container,'Endpoint').value,'서버 관리');
+    assert.equal(reactProps(controlFor(view.container,'Endpoint')).readOnly,true);
+    assert.equal(controlFor(view.container,'인증 유형').value,'Key 불필요');
+    assert.equal(findElements(view.container,node=>node.tagName==='INPUT'&&node.getAttribute?.('type')==='password').length,0);
+    assert.equal(findElements(view.container,node=>node.tagName==='TEXTAREA').length,0);
+    await click(view.act,buttonByText(view.container,'ASR 준비 확인 및 저장'));
+    const saved=fixture.requests.find(item=>item.path==='/bff/api/admin/provider-connections'&&item.method==='POST');
+    assert.ok(saved);assert.equal(saved.body.adapter_type,'asr_base_native');
+    assert.equal(saved.body.base_url,'server-managed-asr');assert.equal(saved.body.credential_requirement,'none');
+    assert.equal(saved.body.access_mode,'public');assert.equal(saved.body.auto_model_id,null);
+    assert.deepEqual(saved.body.allowed_model_ids,['faster-whisper-base']);assert.deepEqual(saved.body.logical_model_ids,[]);
+    assert.equal(Object.hasOwn(saved.body,'credential'),false);
+    assert.equal(fixture.requests.some(item=>item.path.endsWith('/model-preview')),false);
+    assert.match(view.container.textContent,/ready\/metadata/u);
+    const asr=controlFor(view.container,'QA 음성 인식 기본 모델');
+    await fill(view.act,asr,JSON.stringify([saved.body.connection_id,'faster-whisper-base']));
+    await click(view.act,buttonByText(view.container,'QA ASR 역할 저장'));
+    const role=fixture.requests.find(item=>item.path.endsWith('/model-defaults')&&item.method==='PATCH');
+    assert.ok(role);assert.equal(role.body.capability,'speech_to_text');assert.equal(role.body.model_id,'faster-whisper-base');
+    assert.equal(role.body.connection_id,saved.body.connection_id);
+  }finally{await view.cleanup();}
 });
 
 test("custom router Auto is offered only after an admin enables it and saves its real ID", async () => {
@@ -733,6 +853,7 @@ test("ordinary user cannot save a Key for pending personal CUSTOM without allowe
       allowed_model_ids: [], enabled: true, configured: false, verification_status: "unverified", version: 1, models: [],
     }] });
     if (String(url) === "/bff/api/provider-credentials") return Response.json({ data: { credentials: [] } });
+    if (String(url) === "/bff/api/workspaces/workspace-001/model-defaults") return Response.json({ data: { workspace_id: "workspace-001", available_models: [], defaults: [], version: 0 } }, { headers: { etag: '"defaults-v0"' } });
     throw new Error(`UNEXPECTED_REQUEST: ${String(url)}`);
   };
   try {
@@ -828,6 +949,7 @@ test("ordinary user sees public connection without personal key actions", async 
     if (String(url) === "/bff/api/session") return Response.json({ data: { workspace_id: "workspace-001", is_system_admin: false } });
     if (String(url) === "/bff/api/admin/provider-connections") return Response.json({ data: [{ connection_id: "ollama-lan", provider_code: "OLLAMA", display_name: "LAN Ollama", short_code: "OL", access_mode: "public", credential_requirement: "none", adapter_type: "OLLAMA", allowed_model_ids: ["qwen3"], enabled: true, configured: false, verification_status: "verified", version: 1, models: [{ model_id: "qwen3", catalog_status: "ready", effective_capabilities: ["text_generation"] }] }] });
     if (String(url) === "/bff/api/provider-credentials") return Response.json({ data: { credentials: [] } });
+    if (String(url) === "/bff/api/workspaces/workspace-001/model-defaults") return Response.json({ data: { workspace_id: "workspace-001", available_models: [{ connection_id: "ollama-lan", provider_code: "OLLAMA", display_name: "LAN Ollama", model_id: "qwen3", catalog_status: "ready", effective_capabilities: ["text_generation"] }], defaults: [], version: 0 } }, { headers: { etag: '"defaults-v0"' } });
     throw new Error("UNEXPECTED_REQUEST");
   };
   try {
@@ -837,7 +959,7 @@ test("ordinary user sees public connection without personal key actions", async 
     const container = dom.document.createElement("div"); dom.document.body.appendChild(container);
     reactRoot = createRoot(container);
     await act(async () => { reactRoot.render(createElement(ProviderSettingsWorkspace, { workspaceId: "workspace-001", embedded: true })); await Promise.resolve(); await Promise.resolve(); });
-    assert.deepEqual(requests, ["/bff/api/session", "/bff/api/admin/provider-connections", "/bff/api/provider-credentials"]);
+    assert.deepEqual(requests, ["/bff/api/session", "/bff/api/admin/provider-connections", "/bff/api/provider-credentials", "/bff/api/workspaces/workspace-001/model-defaults"]);
     assert.equal(findElements(container, (node) => node.tagName === "INPUT" && (node.type === "password" || node.getAttribute("type") === "password")).length, 0);
     assert.match(container.textContent, /공용|qwen3/u);
     assert.doesNotMatch(container.textContent, /내 계정 키 저장|내 계정 키 삭제|연결 저장|연결 삭제|모델 조회/u);
@@ -845,6 +967,57 @@ test("ordinary user sees public connection without personal key actions", async 
     if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount()));
     globalThis.fetch = originalFetch;
     dom.restore();
+    await rm(output, { recursive: true, force: true });
+  }
+});
+
+test("ordinary user saves own Workspace text_generation default with current ETag and version", async () => {
+  const root = path.resolve(import.meta.dirname, "../..");
+  const output = await mkdtemp(path.join(root, "node_modules", ".provider-text-default-"));
+  const dom = installMinimalDom();
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  let reactRoot;
+  const model = { connection_id: "ollama-public", provider_code: "OLLAMA", display_name: "Public Ollama",
+    model_id: "llama3.2:3b", effective_capabilities: ["text_generation"], catalog_status: "ready", catalog_version: 1 };
+  globalThis.fetch = async (url, options = {}) => {
+    const path = String(url);
+    requests.push({ path, method: options.method ?? "GET", headers: options.headers, body: options.body });
+    if (path === "/bff/api/session") return Response.json({ data: { workspace_id: "workspace-personal", is_system_admin: false } });
+    if (path === "/bff/api/admin/provider-connections") return Response.json({ data: [] });
+    if (path === "/bff/api/provider-credentials") return Response.json({ data: { credentials: [] } });
+    if (path === "/bff/api/workspaces/workspace-personal/model-defaults" && (options.method ?? "GET") === "GET") {
+      return Response.json({ data: { workspace_id: "workspace-personal", available_models: [model], defaults: [], version: 0 } },
+        { headers: { etag: '"defaults-v0"' } });
+    }
+    if (path === "/bff/api/workspaces/workspace-personal/model-defaults" && options.method === "PATCH") {
+      return Response.json({ data: { workspace_id: "workspace-personal", available_models: [model],
+        defaults: [{ capability: "text_generation", connection_id: "ollama-public", model_id: "llama3.2:3b", version: 1 }], version: 1 } },
+      { headers: { etag: '"defaults-v1"' } });
+    }
+    throw new Error(`UNEXPECTED_REQUEST: ${path}`);
+  };
+  try {
+    const { createElement, act } = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    const { ProviderSettingsWorkspace } = await bundleProvider(root, output, "text-default");
+    const container = dom.document.createElement("div"); dom.document.body.appendChild(container);
+    reactRoot = createRoot(container);
+    await act(async () => { reactRoot.render(createElement(ProviderSettingsWorkspace, { workspaceId: "workspace-personal", embedded: true })); await Promise.resolve(); await Promise.resolve(); });
+    await fill(act, controlFor(container, "텍스트 생성 기본 모델"), JSON.stringify(["ollama-public", "llama3.2:3b"]));
+    assert.equal(buttonByText(container, "기본 모델 저장")?.disabled, false, JSON.stringify(requests));
+    await click(act, buttonByText(container, "기본 모델 저장"));
+    const patch = requests.find((item) => item.method === "PATCH");
+    assert.equal(patch.path, "/bff/api/workspaces/workspace-personal/model-defaults");
+    assert.equal(patch.headers["If-Match"], '"defaults-v0"');
+    assert.ok(patch.headers["Idempotency-Key"]);
+    assert.deepEqual(JSON.parse(patch.body), {
+      capability: "text_generation", connection_id: "ollama-public", model_id: "llama3.2:3b", expected_version: 0,
+    });
+    assert.match(container.textContent, /기본 모델을 저장했습니다/u);
+  } finally {
+    if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount()));
+    globalThis.fetch = originalFetch; dom.restore();
     await rm(output, { recursive: true, force: true });
   }
 });
@@ -922,6 +1095,7 @@ test("system admin can re-enter their own legacy personal Key without replacing 
       ["/bff/api/admin/provider-connections", "GET"],
       ["/bff/api/provider-credentials", "GET"],
       ["/bff/api/admin/provider-health-settings", "GET"],
+      ["/bff/api/workspaces/workspace-001/model-defaults", "GET"],
     ]);
     assert.match(container.textContent, /Key 재입력 필요/u);
     assert.ok(buttonByText(container, "시스템 키 시험 및 저장"));

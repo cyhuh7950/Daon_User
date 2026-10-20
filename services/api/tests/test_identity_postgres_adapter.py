@@ -103,6 +103,49 @@ def test_organization_sql_uses_isolated_tables() -> None:
     assert "%s" in mapped
 
 
+def test_organization_history_uses_exact_existing_physical_table() -> None:
+    connection = PostgresCompatConnection.__new__(PostgresCompatConnection)
+    connection._prefixes = ("organization_",)
+    assert connection._sql(
+        "INSERT INTO tenant_membership_role_history VALUES (?,?,?,?,?,?,?,?,?,?)"
+    ) == "INSERT INTO identity_org_role_history VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
+    assert connection._sql(
+        "SELECT h.* FROM tenant_membership_role_history h "
+        "JOIN tenant_memberships m ON h.tenant_id=m.tenant_id WHERE h.user_id=?"
+    ) == (
+        "SELECT h.* FROM identity_org_role_history h "
+        "JOIN identity_org_tenant_memberships m ON h.tenant_id=m.tenant_id WHERE h.user_id=%s"
+    )
+    for logical, physical in (
+        ("organization_creation_requests", "identity_org_creation_requests"),
+        ("invitation_codes", "identity_org_invitation_codes"),
+        ("organization_join_requests", "identity_org_join_requests"),
+        ("tenant_memberships", "identity_org_tenant_memberships"),
+        ("organization_idempotency", "identity_org_idempotency"),
+    ):
+        assert connection._sql(f"SELECT * FROM {logical} WHERE tenant_id=?") == (
+            f"SELECT * FROM {physical} WHERE tenant_id=%s"
+        )
+
+
+def test_c9_auth_mapping_is_unchanged_by_organization_history_mapping() -> None:
+    connection = PostgresCompatConnection.__new__(PostgresCompatConnection)
+    connection._prefixes = ("auth_",)
+    assert connection._sql(
+        "SELECT m.role,w.acl_version FROM auth_memberships m "
+        "JOIN auth_workspaces w ON m.workspace_id=w.workspace_id WHERE m.tenant_id=?"
+    ) == (
+        "SELECT m.role,w.acl_version FROM identity_auth_memberships m "
+        "JOIN identity_auth_workspaces w ON m.workspace_id=w.workspace_id WHERE m.tenant_id=%s"
+    )
+    assert connection._sql(
+        "INSERT OR IGNORE INTO auth_admin_role_audit_outbox(event_id) VALUES (?)"
+    ) == "INSERT INTO identity_auth_admin_role_audit_outbox(event_id) VALUES (%s) ON CONFLICT DO NOTHING"
+    assert connection._sql("SELECT * FROM tenant_membership_role_history WHERE tenant_id=?") == (
+        "SELECT * FROM tenant_membership_role_history WHERE tenant_id=%s"
+    )
+
+
 def test_shared_postgres_rows_support_positional_access() -> None:
     row = _compat_row({"workspace_id": "workspace-1", "state": "active"})
     assert row["workspace_id"] == "workspace-1"

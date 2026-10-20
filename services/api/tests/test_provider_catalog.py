@@ -5,6 +5,74 @@ import pytest
 from daon_user_api.provider_catalog import ProviderCatalog, ProviderCatalogError
 
 
+TOKENIZER_BOOLEAN_OPTIONS = (
+    "tokenizer.ggml.add_eos_token", "tokenizer.ggml.add_bos_token",
+    "tokenizer.ggml.add_padding_token", "tokenizer.ggml.add_unknown_token",
+)
+
+
+def test_native_asr_catalog_requires_exact_installed_metadata():
+    metadata = {"model_id": "faster-whisper-base",
+        "model_digest": "d01c3014881c9c6f3133c182f3d2887eb6ca1c789a7538c5c007196857a0a6a9",
+        "revision": "ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66",
+        "capability": "speech_to_text", "runtime": "cpu-int8-local"}
+    models = ProviderCatalog.from_native_asr_metadata("asr-qa", metadata)
+    assert len(models) == 1
+    assert models[0].reported_capabilities == ("speech_to_text",)
+    assert models[0].routing_owner == "local_runtime"
+    assert models[0].daon_fallback_allowed is False
+    for field in metadata:
+        with pytest.raises(ProviderCatalogError):
+            ProviderCatalog.from_native_asr_metadata("asr-qa", {**metadata, field: "other"})
+    with pytest.raises(ProviderCatalogError):
+        ProviderCatalog.from_native_asr_metadata("asr-qa", {**metadata, "extra": True})
+
+
+def test_ollama_show_tokenizer_boolean_options_are_not_credentials():
+    info = {"general.architecture": "qwen3vl", **dict(zip(TOKENIZER_BOOLEAN_OPTIONS, (True, False, True, False)))}
+    payload = {"models": [{"name": "qwen3-vl:latest", "digest": "a" * 64,
+                           "native_metadata": {"capabilities": ["completion", "vision"], "model_info": info}}]}
+    models = ProviderCatalog.from_payload("ollama-1", "OLLAMA", payload)
+    assert models[0].reported_capabilities == ("image_understanding", "text_generation")
+    assert payload["models"][0]["native_metadata"]["model_info"] == info
+
+
+@pytest.mark.parametrize("key", TOKENIZER_BOOLEAN_OPTIONS)
+@pytest.mark.parametrize("value", ["fixture-not-a-real-key", b"fixture-not-a-real-key", 1, None])
+def test_ollama_tokenizer_option_non_boolean_still_fails_closed(key, value):
+    with pytest.raises(ProviderCatalogError, match="^PROVIDER_CATALOG_RESPONSE_INVALID$"):
+        ProviderCatalog.from_payload("ollama-1", "OLLAMA", {"models": [{"name": "model", "digest": "a" * 64,
+            "native_metadata": {"capabilities": ["vision"], "model_info": {"general.architecture": "x", key: value}}}]})
+
+
+@pytest.mark.parametrize("key", ["access_token", "password", "tokenizer.ggml.add_other_token"])
+def test_ollama_show_other_sensitive_keys_remain_rejected(key):
+    with pytest.raises(ProviderCatalogError, match="^PROVIDER_CATALOG_RESPONSE_INVALID$"):
+        ProviderCatalog.from_payload("ollama-1", "OLLAMA", {"models": [{"name": "model", "digest": "a" * 64,
+            "native_metadata": {"capabilities": ["vision"], "model_info": {"general.architecture": "x", key: True}}}]})
+
+
+def test_tokenizer_boolean_exception_is_exact_ollama_show_model_info_path_only():
+    for payload in ({"models": [{"name": "model", TOKENIZER_BOOLEAN_OPTIONS[0]: True}]},
+                    {"models": [{"name": "model", "native_metadata": {TOKENIZER_BOOLEAN_OPTIONS[0]: True}}]}):
+        with pytest.raises(ProviderCatalogError, match="^PROVIDER_CATALOG_RESPONSE_INVALID$"):
+            ProviderCatalog.from_payload("ollama-1", "OLLAMA", payload)
+    with pytest.raises(ProviderCatalogError, match="^PROVIDER_CATALOG_RESPONSE_INVALID$"):
+        ProviderCatalog.from_payload("other", "CUSTOM", {"data": [{"id": "model", "model_info": {TOKENIZER_BOOLEAN_OPTIONS[0]: True}}]})
+
+
+def test_ollama_vision_uses_verified_show_metadata_not_model_name():
+    rows = [
+        {"name": "opaque-id", "digest": "a" * 64, "native_metadata": {"capabilities": ["vision"], "model_info": {"architecture": "x"}}},
+        {"name": "vision-name-only", "digest": "b" * 64},
+        {"name": "remote-vision", "digest": "c" * 64, "remote_host": "https://cloud.example",
+         "native_metadata": {"capabilities": ["vision"], "model_info": {"architecture": "x"}}},
+    ]
+    models = ProviderCatalog.from_payload("ollama-1", "OLLAMA", {"models": rows})
+    assert models[0].reported_capabilities == ("image_understanding", "text_generation")
+    assert all("image_understanding" not in m.reported_capabilities for m in models[1:])
+
+
 def test_ollama_catalog_preserves_connection_scope_and_normalizes_duplicate_models() -> None:
     models = ProviderCatalog.from_payload(
         "ollama-lan",

@@ -6,6 +6,101 @@ import {
   listWorkspaceSources,
 } from "../../apps/web/lib/product-workspace-api.js";
 import { uploadPdfSource } from "../../apps/web/lib/source-upload-api.js";
+import { secureUuid } from "@daon-user/ui/secure-uuid";
+import * as sourceApi from "../../apps/web/lib/source-upload-api.js";
+
+test("R4 Source reprocess sends only explicit modes and validates saved mode and configured flag",async()=>{
+  const source={sourceId:"source-1",sourceVersionId:"version-1"},calls=[];
+  const response=(mode,configured)=>Response.json({data:{id:"run-2",kind:"processing_run",version:"2",attributes:{
+    processing_run_id:"run-2",source_id:"source-1",source_version_id:"version-1",retry_of_processing_run_id:"run-1",
+    processing_state:"vision_llm_understanding",source_state:"processing",job_state:"pending",replayed:false,
+    processing_mode:mode,auto_requeue_configured:configured}}},{status:201});
+  for(const processingMode of ["auto","local_only","pinned"]){
+    const result=await sourceApi.reprocessSource("workspace-1",source,{notebookId:"notebook-1",idempotencyKey:"retry-1",processingMode,
+      fetchImpl:async(url,init)=>{calls.push(JSON.parse(init.body));return response(processingMode,false);}});
+    assert.equal(calls.at(-1).attributes.processing_mode,processingMode);
+    assert.equal(result.processing_mode,processingMode);
+    assert.equal(result.auto_requeue_configured,false);
+  }
+  for(const processingMode of [null,"",0,true,"manual",undefined]){
+    await assert.rejects(sourceApi.reprocessSource("workspace-1",source,{notebookId:"notebook-1",processingMode,
+      fetchImpl:async()=>{throw Error("MUST_NOT_SEND_INVALID_MODE");}}),/SOURCE_REPROCESS_INPUT_INVALID/u);
+  }
+  for(const [saved,configured] of [["pinned",false],["auto",undefined],["auto","false"],["auto",0]]){
+    await assert.rejects(sourceApi.reprocessSource("workspace-1",source,{notebookId:"notebook-1",processingMode:"auto",
+      fetchImpl:async()=>response(saved,configured)}),/SOURCE_REPROCESS_RESPONSE_INVALID/u);
+  }
+});
+
+test("실패 Source 재처리는 기존 Resource 계약으로 same-origin POST하고 새 Run을 반환한다", async () => {
+  assert.equal(typeof sourceApi.reprocessSource, "function");
+  let call;
+  const result = await sourceApi.reprocessSource("workspace-1", { sourceId: "source-1", sourceVersionId: "version-1" }, {
+    notebookId: "notebook-1", idempotencyKey: "retry-1", fetchImpl: async (url, init) => {
+      call = { url, init };
+      return Response.json({ data: { id: "run-2", kind: "processing_run", version: "2", attributes: {
+        processing_run_id: "run-2", source_id: "source-1", source_version_id: "version-1", retry_of_processing_run_id: "run-1",
+        processing_state: "vision_llm_understanding", source_state: "processing", job_state: "pending", replayed: false,
+      } }, trace_id: "trace-1" }, { status: 201, headers: { ETag: '"processing-run:run-2:2"' } });
+    },
+  });
+  assert.equal(call.url, "/bff/api/sources/source-1/processing-runs");
+  assert.equal(call.init.method, "POST");
+  assert.equal(call.init.headers["Idempotency-Key"], "retry-1");
+  assert.deepEqual(JSON.parse(call.init.body), { kind: "processing_run", attributes: { workspace_id: "workspace-1", notebook_id: "notebook-1", source_version_id: "version-1" } });
+  assert.equal(result.processing_run_id, "run-2");
+});
+
+test("Source 재처리 adapter는 다른 Source 응답과 안전 HTTP 실패를 거부한다", async () => {
+  const source = { sourceId: "source-1", sourceVersionId: "version-1" };
+  const options = { notebookId: "notebook-1", idempotencyKey: "retry-1" };
+  await assert.rejects(sourceRetryApiCall({ data: { id: "run-2", kind: "processing_run", version: "2", attributes: {
+    processing_run_id: "run-2", source_id: "other-source", source_version_id: "version-1", retry_of_processing_run_id: "run-1",
+    processing_state: "vision_llm_understanding", source_state: "processing", job_state: "pending", replayed: false,
+  } }, trace_id: "trace-1" }), /SOURCE_REPROCESS_RESPONSE_INVALID/u);
+  await assert.rejects(sourceApi.reprocessSource("workspace-1", source, { ...options, fetchImpl: async () => Response.json({ error: { code: "SOURCE_PROCESSING_ACTIVE", retryable: false } }, { status: 409 }) }), /SOURCE_PROCESSING_ACTIVE/u);
+  function sourceRetryApiCall(payload) { return sourceApi.reprocessSource("workspace-1", source, { ...options, fetchImpl: async () => Response.json(payload, { status: 201 }) }); }
+});
+
+test("음성 Source 재처리는 speech_to_text 시작 응답과 replayed를 보존한다", async () => {
+  for (const replayed of [false, true]) {
+    const attributes = {
+      processing_run_id: "run-2", source_id: "source-1", source_version_id: "version-1",
+      retry_of_processing_run_id: "run-1", processing_state: "speech_to_text",
+      source_state: "processing", job_state: "pending", replayed,
+    };
+    const result = await sourceApi.reprocessSource("workspace-1", {
+      sourceId: "source-1", sourceVersionId: "version-1",
+    }, {
+      notebookId: "notebook-1", idempotencyKey: "audio-retry-1",
+      fetchImpl: async () => Response.json({
+        data: { id: "run-2", kind: "processing_run", version: "2", attributes },
+        trace_id: "trace-1",
+      }, { status: 201 }),
+    });
+    assert.deepEqual(result, attributes);
+  }
+});
+
+test("Source 재처리는 두 시작 상태 밖의 처리 단계와 unknown 상태를 거부한다", async () => {
+  for (const processing_state of [
+    "llm_semantic_understanding", "transcript_timecode_validation", "evidence_reconciliation",
+    "indexing", "completed", "processing", "unexpected", "", null,
+  ]) {
+    await assert.rejects(sourceApi.reprocessSource("workspace-1", {
+      sourceId: "source-1", sourceVersionId: "version-1",
+    }, {
+      notebookId: "notebook-1", idempotencyKey: "invalid-retry-1",
+      fetchImpl: async () => Response.json({ data: {
+        id: "run-2", kind: "processing_run", version: "2", attributes: {
+          processing_run_id: "run-2", source_id: "source-1", source_version_id: "version-1",
+          retry_of_processing_run_id: "run-1", processing_state,
+          source_state: "processing", job_state: "pending", replayed: false,
+        },
+      }, trace_id: "trace-1" }, { status: 201 }),
+    }), { message: "SOURCE_REPROCESS_RESPONSE_INVALID" }, String(processing_state));
+  }
+});
 
 const source = Object.freeze({
   source_id: "source-1", source_version_id: "version-1", filename: "approved.pdf",
@@ -16,6 +111,16 @@ const canonSourceStates = Object.freeze([
   "registered", "security_check", "processing", "indexing", "ready", "waiting_model",
   "partial_understanding", "needs_review", "failed", "expired", "disabled", "deleting", "deleted",
 ]);
+
+test("DOCX upload consumer forwards original bytes/MIME/Notebook and never preclaims ready",async()=>{
+  const file=new File([new Uint8Array([80,75,3,4])],"qa.docx",{type:"application/vnd.openxmlformats-officedocument.wordprocessingml.document"});
+  let call;const result=await sourceApi.uploadSource("workspace-1",file,{notebookId:"notebook-1",idempotencyKey:"docx-upload",fetchImpl:async(url,init)=>{
+    call={url,init};return Response.json({data:{source_id:"source-1",source_version_id:"version-1",object_id:"a".repeat(32),digest_sha256:"b".repeat(64),byte_size:4,status:"accepted",replayed:false,processing_run_id:"run-1",processing_state:"vision_llm_understanding",job_state:"pending"},meta:{trace_id:"trace-1",workspace_id:"workspace-1"}},{status:202});
+  }});
+  assert.equal(call.url,"/bff/api/workspaces/workspace-1/sources");assert.equal(call.init.body,file);
+  assert.equal(call.init.headers["Content-Type"],file.type);assert.equal(call.init.headers["X-Notebook-Id"],"notebook-1");
+  assert.equal(result.status,"accepted");assert.equal(result.processing_state,"vision_llm_understanding");
+});
 
 test("Source 목록은 same-origin GET과 exact Safe DTO만 허용한다", async () => {
   const calls = [];
@@ -106,6 +211,72 @@ test("PDF upload은 same-origin PDF 계약과 processing metadata를 보존한�
   });
   assert.equal(result.processing_run_id, "processing-1");
   assert.equal(result.status, "accepted");
+});
+
+test("HTTP QA Source upload은 randomUUID 없이 secure UUID 키로 실제 전송한다", async () => {
+  const originalCrypto = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+  const calls = [];
+  try {
+    Object.defineProperty(globalThis, "crypto", {
+      configurable: true,
+      value: { getRandomValues(bytes) { bytes.fill(7); return bytes; } },
+    });
+    const file = new File(["ORANGE-COMPASS-42"], "notes.txt", { type: "text/plain" });
+    await uploadPdfSource("workspace-1", file, {
+      notebookId: "notebook-1",
+      fetchImpl: async (url, init) => {
+        calls.push({ url, init });
+        return Response.json({ data: {
+          source_id: "source-1", source_version_id: "version-1", object_id: "a".repeat(32),
+          digest_sha256: "b".repeat(64), byte_size: file.size, status: "accepted", replayed: false,
+          processing_run_id: "processing-1", processing_state: "processing", job_state: "queued",
+        }, meta: { trace_id: "trace-1", workspace_id: "workspace-1" } }, { status: 202 });
+      },
+    });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, "/bff/api/workspaces/workspace-1/sources");
+    assert.match(calls[0].init.headers["Idempotency-Key"], /^source-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
+  } finally {
+    if (originalCrypto) Object.defineProperty(globalThis, "crypto", originalCrypto);
+    else delete globalThis.crypto;
+  }
+});
+
+test("Source upload은 보안 난수 API가 모두 없으면 전송 전 명확히 실패한다", async () => {
+  const originalCrypto = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+  let calls = 0;
+  try {
+    Object.defineProperty(globalThis, "crypto", { configurable: true, value: {} });
+    const file = new File(["source"], "notes.txt", { type: "text/plain" });
+    await assert.rejects(
+      () => uploadPdfSource("workspace-1", file, {
+        notebookId: "notebook-1",
+        fetchImpl: async () => { calls += 1; return Response.json({}); },
+      }),
+      { message: "SECURE_RANDOM_UNAVAILABLE" },
+    );
+    assert.equal(calls, 0);
+  } finally {
+    if (originalCrypto) Object.defineProperty(globalThis, "crypto", originalCrypto);
+    else delete globalThis.crypto;
+  }
+});
+
+test("HTTPS secure UUID 경로는 기존 browser randomUUID를 그대로 사용한다", () => {
+  const originalCrypto = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+  try {
+    Object.defineProperty(globalThis, "crypto", {
+      configurable: true,
+      value: {
+        randomUUID() { return "01234567-89ab-4cde-8f01-23456789abcd"; },
+        getRandomValues() { throw new Error("FALLBACK_MUST_NOT_RUN"); },
+      },
+    });
+    assert.equal(secureUuid(), "01234567-89ab-4cde-8f01-23456789abcd");
+  } finally {
+    if (originalCrypto) Object.defineProperty(globalThis, "crypto", originalCrypto);
+    else delete globalThis.crypto;
+  }
 });
 
 test("Source upload 응답이 invalid이면 안전하게 fail-close한다", async () => {

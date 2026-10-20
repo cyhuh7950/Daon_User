@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import secrets
 import sqlite3
@@ -49,8 +50,9 @@ def _add_local_user(repository, *, user_id: str, password: str) -> None:
         )
 
 
-def test_admin_user_password_reset_request_protects_accounts_and_uses_email_contract(tmp_path: Path) -> None:
-    identity, repository, audit, clock = create_service(tmp_path / "identity.sqlite3")
+def test_admin_user_password_reset_request_protects_accounts_and_uses_canonical_login(tmp_path: Path) -> None:
+    sender = _ResetMailSender()
+    identity, repository, audit, clock = create_service(tmp_path / "identity.sqlite3", email_sender=sender)
     identity.ensure_initial_admin()
     _add_local_user(repository, user_id="target-user", password=secrets.token_urlsafe(24))
     with repository.transaction() as connection:
@@ -67,17 +69,12 @@ def test_admin_user_password_reset_request_protects_accounts_and_uses_email_cont
             "INSERT INTO memberships(tenant_id,user_id,role) VALUES (?,?,?)",
             ("no-email-user", "no-email-user", "personal_owner"),
         )
-    sent: list[tuple[str, str, str]] = []
-
-    def request_reset(*, identifier: str, trace_id: str, policy_version: str, revoke_sessions: bool = False) -> None:
-        sent.append((identifier, trace_id, policy_version, revoke_sessions))
-
     service = AdminUserService(
         repository=repository,
         audit_store=audit,
         system_admin_user_ids=frozenset({"admin"}),
         clock=clock,
-        password_reset_requester=request_reset,
+        password_reset_requester=identity.request_password_reset,
     )
     admin = IdentityPrincipal("admin", "admin-session", "admin-device", "admin")
 
@@ -90,7 +87,11 @@ def test_admin_user_password_reset_request_protects_accounts_and_uses_email_cont
     )
     assert result.replayed is False
     assert result.status == "accepted"
-    assert sent == [("target-user@example.test", TRACE_ID, POLICY_VERSION, True)]
+    # Identity resolves the registered email from this canonical local login ID.
+    assert sender.attempts == len(sender.messages) == 1
+    assert sender.messages[0]["recipient"] == "target-user@example.test"
+    with repository.transaction() as connection:
+        assert connection.execute("SELECT user_id FROM password_reset_tokens").fetchone()[0] == "target-user"
 
     with pytest.raises(IdentityError) as protected:
         service.request_password_reset(
@@ -112,6 +113,287 @@ def test_admin_user_password_reset_request_protects_accounts_and_uses_email_cont
             trace_id=TRACE_ID, policy_version=POLICY_VERSION,
         )
     assert missing_email.value.code == "USER_EMAIL_REQUIRED"
+
+
+class _ResetMailSender:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.messages: list[dict[str, str]] = []
+        self.attempts = 0
+        self.fail = fail
+
+    def send(self, **message: str) -> None:
+        self.attempts += 1
+        if self.fail:
+            raise IdentityError("EMAIL_DELIVERY_UNAVAILABLE", 503)
+        self.messages.append(message)
+
+
+def _admin_reset_fixture(tmp_path: Path, sender: _ResetMailSender):
+    identity, repository, audit, clock = create_service(tmp_path / "identity.sqlite3", email_sender=sender)
+    identity.ensure_initial_admin()
+    password = secrets.token_urlsafe(24)
+    _add_local_user(repository, user_id="usr-reset-target", password=password)
+    _add_local_user(repository, user_id="usr-reset-other", password=password)
+    with repository.transaction() as connection:
+        connection.execute(
+            "UPDATE users SET login_id=?,email=? WHERE user_id=?",
+            ("qa-reset-login", "qa+reset-alias@example.test", "usr-reset-target"),
+        )
+    web = identity.local_login(
+        login_id="qa-reset-login", password=password, platform=DevicePlatform.WEB,
+        trace_id=TRACE_ID, policy_version=POLICY_VERSION,
+    )
+    native = identity.local_native_login(
+        login_id="qa-reset-login", password=password, trace_id=TRACE_ID, policy_version=POLICY_VERSION,
+    )
+    other = identity.local_login(
+        login_id="usr-reset-other", password=password, platform=DevicePlatform.WEB,
+        trace_id=TRACE_ID, policy_version=POLICY_VERSION,
+    )
+    service = AdminUserService(
+        repository=repository, audit_store=audit, system_admin_user_ids=frozenset({"admin"}),
+        clock=clock, password_reset_requester=identity.request_password_reset,
+    )
+    admin = IdentityPrincipal("admin", "admin-session", "admin-device", "admin")
+    return identity, repository, audit, service, admin, web, native, other
+
+
+def test_admin_reset_real_identity_uses_canonical_login_delivers_plus_alias_once(tmp_path: Path, caplog, capsys) -> None:
+    sender = _ResetMailSender()
+    identity, repository, audit, service, admin, web, native, other = _admin_reset_fixture(tmp_path, sender)
+    try:
+        with repository.transaction() as connection:
+            other_before = tuple(connection.execute("SELECT * FROM users WHERE user_id=?", (other.user_id,)).fetchone())
+            target_before = tuple(connection.execute("SELECT * FROM users WHERE user_id=?", (web.user_id,)).fetchone())
+        assert web.user_id == "usr-reset-target" and web.user_id != "qa-reset-login"
+        request = dict(user_id=web.user_id, idempotency_key="qa-admin-reset-real-0001", trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+        assert service.request_password_reset(admin, **request).replayed is False
+        assert service.request_password_reset(admin, **request).replayed is True
+        assert sender.attempts == len(sender.messages) == 1
+        assert sender.messages[0]["recipient"] == "qa+reset-alias@example.test"
+        token = sender.messages[0]["body"].split(": ", 1)[1]
+        with repository.transaction() as connection:
+            rows = connection.execute("SELECT * FROM password_reset_tokens").fetchall()
+            assert len(rows) == 1
+            assert rows[0]["user_id"] == web.user_id
+            assert rows[0]["token_digest"] == hashlib.sha256(token.encode("utf-8")).hexdigest()
+            assert rows[0]["used_at"] is None
+            assert tuple(connection.execute("SELECT * FROM users WHERE user_id=?", (web.user_id,)).fetchone()) == target_before
+            assert tuple(connection.execute("SELECT * FROM users WHERE user_id=?", (other.user_id,)).fetchone()) == other_before
+            assert connection.execute("SELECT COUNT(*) FROM admin_audit_outbox WHERE operation='request_password_reset' AND delivered_at IS NOT NULL").fetchone()[0] == 1
+            assert bool(token in "\n".join(connection.iterdump())) is False
+        for credentials in (web, native):
+            with pytest.raises(IdentityError) as revoked:
+                identity.validate_access(credentials.access_token, trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+            assert revoked.value.code == "SESSION_REVOKED"
+        with pytest.raises(IdentityError):
+            identity.rotate_refresh(native.refresh_token, trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+        identity.validate_access(other.access_token, trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+        events = audit.list(tenant_id="admin", action="identity.user.password_reset.requested").items
+        assert len(events) == 1
+        output = capsys.readouterr()
+        assert bool(token in caplog.text + output.out + output.err + repr(events)) is False
+    finally:
+        repository.close()
+
+
+@pytest.mark.parametrize("failure", ["mail", "audit_intent"])
+def test_admin_reset_real_identity_failure_preserves_tokens_sessions_and_audit(tmp_path: Path, failure: str) -> None:
+    sender = _ResetMailSender(fail=failure == "mail")
+    identity, repository, audit, service, admin, web, native, other = _admin_reset_fixture(tmp_path, sender)
+    try:
+        if failure == "audit_intent":
+            with repository.transaction() as connection:
+                connection.execute("CREATE TRIGGER fail_reset_intent BEFORE INSERT ON admin_audit_outbox WHEN NEW.operation='request_password_reset' BEGIN SELECT RAISE(ABORT, 'forced reset intent failure'); END")
+        with pytest.raises((IdentityError, sqlite3.Error)) as failed:
+            service.request_password_reset(admin, user_id=web.user_id, idempotency_key="qa-admin-reset-failed-01", trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+        assert sender.attempts == (1 if failure == "mail" else 0)
+        assert sender.messages == []
+        for credentials in (web, native, other):
+            identity.validate_access(credentials.access_token, trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+        with repository.transaction() as connection:
+            assert connection.execute("SELECT COUNT(*) FROM password_reset_tokens").fetchone()[0] == 0
+            pending_intents = connection.execute("SELECT COUNT(*) FROM admin_audit_outbox WHERE operation='request_password_reset'").fetchone()[0]
+            assert connection.execute("SELECT state FROM refresh_families WHERE session_id=?", (native.session_id,)).fetchone()[0] == "active"
+        assert audit.list(tenant_id="admin", action="identity.user.password_reset.requested").items == ()
+        if failure == "mail":
+            assert failed.value.code == "EMAIL_DELIVERY_UNAVAILABLE"
+        assert pending_intents == 0
+    finally:
+        repository.close()
+
+
+@pytest.mark.parametrize(("field", "value", "code"), [
+    ("login_id", None, "INVALID_INPUT"), ("login_id", "", "INVALID_INPUT"),
+    ("login_id", "invalid@login", "INVALID_INPUT"),
+    ("issuer", "oidc", "INVALID_USER_STATE"), ("state", "suspended", "INVALID_USER_STATE"),
+    ("email", None, "USER_EMAIL_REQUIRED"), ("email_verified_at", None, "EMAIL_VERIFICATION_REQUIRED"),
+    ("target", None, "USER_NOT_FOUND"), ("target", "unknown-user", "USER_NOT_FOUND"), ("target", "admin", "PROTECTED_ADMIN_ACCOUNT"),
+    ("actor", "usr-reset-other", "FORBIDDEN"),
+])
+def test_admin_reset_real_identity_guards_never_send_or_accept_invalid_target(tmp_path: Path, field: str, value, code: str) -> None:
+    sender = _ResetMailSender()
+    identity, repository, audit, service, admin, web, native, other = _admin_reset_fixture(tmp_path, sender)
+    try:
+        target = web.user_id
+        if field == "target":
+            target = value
+        elif field == "actor":
+            admin = IdentityPrincipal(value, "other-session", "other-device", value)
+        else:
+            with repository.transaction() as connection:
+                connection.execute(f"UPDATE users SET {field}=? WHERE user_id=?", (value, target))
+        with pytest.raises(IdentityError) as rejected:
+            service.request_password_reset(admin, user_id=target, idempotency_key="qa-admin-reset-guard-0001", trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+        assert rejected.value.code == code
+        assert sender.attempts == 0
+        with repository.transaction() as connection:
+            assert connection.execute("SELECT COUNT(*) FROM password_reset_tokens").fetchone()[0] == 0
+            assert connection.execute("SELECT COUNT(*) FROM admin_audit_outbox WHERE operation='request_password_reset'").fetchone()[0] == 0
+        assert audit.list(tenant_id="admin", action="identity.user.password_reset.requested").items == ()
+    finally:
+        repository.close()
+
+
+@pytest.mark.parametrize("mode", ["silent_requester", "retargeted_login", "unverified", "suspended", "email_missing", "nonlocal"])
+def test_admin_reset_real_identity_requires_hook_and_revalidates_target(tmp_path: Path, mode: str) -> None:
+    sender = _ResetMailSender()
+    identity, repository, audit, service, admin, web, native, other = _admin_reset_fixture(tmp_path, sender)
+    try:
+        def requester(**kwargs):
+            if mode == "silent_requester":
+                return None
+            with repository.transaction() as connection:
+                if mode == "retargeted_login":
+                    connection.execute("UPDATE users SET login_id='qa-reset-renamed' WHERE user_id=?", (web.user_id,))
+                    connection.execute("UPDATE users SET login_id='qa-reset-login' WHERE user_id=?", (other.user_id,))
+                elif mode == "unverified":
+                    connection.execute("UPDATE users SET email_verified_at=NULL WHERE user_id=?", (web.user_id,))
+                elif mode == "email_missing":
+                    connection.execute("UPDATE users SET email=NULL WHERE user_id=?", (web.user_id,))
+                elif mode == "nonlocal":
+                    connection.execute("UPDATE users SET issuer='oidc' WHERE user_id=?", (web.user_id,))
+                else:
+                    connection.execute("UPDATE users SET state='suspended' WHERE user_id=?", (web.user_id,))
+            return identity.request_password_reset(**kwargs)
+
+        service._password_reset_requester = requester
+        with pytest.raises(IdentityError):
+            service.request_password_reset(admin, user_id=web.user_id, idempotency_key="qa-reset-revalidate-0001", trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+        assert sender.attempts == 0
+        for credentials in (web, native, other):
+            with repository.transaction() as connection:
+                assert connection.execute("SELECT state FROM sessions WHERE session_id=?", (credentials.session_id,)).fetchone()[0] == "active"
+        with repository.transaction() as connection:
+            assert connection.execute("SELECT COUNT(*) FROM password_reset_tokens").fetchone()[0] == 0
+            assert connection.execute("SELECT COUNT(*) FROM admin_audit_outbox WHERE operation='request_password_reset'").fetchone()[0] == 0
+        assert audit.list(tenant_id="admin", action="identity.user.password_reset.requested").items == ()
+    finally:
+        repository.close()
+
+
+@pytest.mark.parametrize("different_target", [False, True])
+def test_admin_reset_real_identity_concurrent_key_sends_once(tmp_path: Path, different_target: bool) -> None:
+    sender = _ResetMailSender()
+    identity, repository, audit, service, admin, web, native, other = _admin_reset_fixture(tmp_path, sender)
+    second_repository = SqliteIdentityRepository(tmp_path / "identity.sqlite3")
+    try:
+        second_identity = IdentityService(repository=second_repository, audit_store=audit, oidc_policies=(), clock=identity._clock, email_sender=sender)
+        second_service = AdminUserService(repository=second_repository, audit_store=audit, system_admin_user_ids=frozenset({"admin"}), clock=identity._clock, password_reset_requester=second_identity.request_password_reset)
+        barrier = threading.Barrier(2)
+
+        def request(candidate, target):
+            barrier.wait(timeout=5)
+            try:
+                return candidate.request_password_reset(admin, user_id=target, idempotency_key="qa-reset-concurrent-0001", trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+            except IdentityError as error:
+                return error.code
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(request, candidate, target) for candidate, target in (
+                (service, web.user_id), (second_service, other.user_id if different_target else web.user_id),
+            )]
+            results = [future.result(timeout=10) for future in futures]
+        if different_target:
+            assert results.count("IDEMPOTENCY_KEY_REUSED") == 1
+            assert sum(not isinstance(result, str) and not result.replayed for result in results) == 1
+        else:
+            assert sorted(result.replayed for result in results) == [False, True]
+            identity.validate_access(other.access_token, trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+        assert sender.attempts == len(sender.messages) == 1
+        with repository.transaction() as connection:
+            assert connection.execute("SELECT COUNT(*) FROM password_reset_tokens").fetchone()[0] == 1
+            assert connection.execute("SELECT COUNT(*) FROM admin_audit_outbox WHERE operation='request_password_reset'").fetchone()[0] == 1
+        assert len(audit.list(tenant_id="admin", action="identity.user.password_reset.requested").items) == 1
+    finally:
+        second_repository.close()
+        repository.close()
+
+
+def test_admin_reset_real_identity_central_audit_failure_keeps_durable_intent_without_resend(tmp_path: Path) -> None:
+    class FailingAudit:
+        def append(self, _draft):
+            raise RuntimeError("audit unavailable")
+
+    sender = _ResetMailSender()
+    identity, repository, audit, service, admin, web, native, other = _admin_reset_fixture(tmp_path, sender)
+    try:
+        service._audit_store = FailingAudit()
+        request = dict(user_id=web.user_id, idempotency_key="qa-reset-audit-defer-0001", trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+        assert service.request_password_reset(admin, **request).replayed is False
+        assert service.request_password_reset(admin, **request).replayed is True
+        with repository.transaction() as connection:
+            assert connection.execute("SELECT COUNT(*) FROM admin_audit_outbox WHERE operation='request_password_reset' AND delivered_at IS NULL").fetchone()[0] == 1
+        service._audit_store = audit
+        assert service.request_password_reset(admin, **request).replayed is True
+        assert sender.attempts == 1
+        assert len(audit.list(tenant_id="admin", action="identity.user.password_reset.requested").items) == 1
+    finally:
+        repository.close()
+
+
+def test_admin_reset_real_identity_commit_failure_after_send_is_uncertain_without_auto_resend(tmp_path: Path) -> None:
+    sender = _ResetMailSender()
+    identity, repository, audit, service, admin, web, native, other = _admin_reset_fixture(tmp_path, sender)
+    original_transaction = repository.transaction
+    try:
+        @contextmanager
+        def fail_after_send():
+            with original_transaction() as connection:
+                yield connection
+                if connection.execute("SELECT COUNT(*) FROM password_reset_tokens").fetchone()[0]:
+                    raise sqlite3.OperationalError("forced reset commit failure")
+
+        repository.transaction = fail_after_send
+        with pytest.raises(IdentityError) as failed:
+            service.request_password_reset(admin, user_id=web.user_id, idempotency_key="qa-reset-commit-fail-0001", trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+        assert failed.value.code == "PERSISTENCE_UNAVAILABLE"
+        repository.transaction = original_transaction
+        assert sender.attempts == len(sender.messages) == 1  # External delivery cannot be rolled back.
+        with repository.transaction() as connection:
+            assert connection.execute("SELECT COUNT(*) FROM password_reset_tokens").fetchone()[0] == 0
+            assert connection.execute("SELECT COUNT(*) FROM admin_audit_outbox WHERE operation='request_password_reset'").fetchone()[0] == 0
+        for credentials in (web, native, other):
+            identity.validate_access(credentials.access_token, trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+        assert audit.list(tenant_id="admin", action="identity.user.password_reset.requested").items == ()
+    finally:
+        repository.transaction = original_transaction
+        repository.close()
+
+
+def test_admin_reset_identity_default_call_keeps_existing_non_admin_behavior(tmp_path: Path) -> None:
+    sender = _ResetMailSender()
+    identity, repository, audit, service, admin, web, native, other = _admin_reset_fixture(tmp_path, sender)
+    try:
+        assert identity.request_password_reset(identifier="unknown-login", trace_id=TRACE_ID, policy_version=POLICY_VERSION) is None
+        assert sender.attempts == 0
+        assert identity.request_password_reset(identifier="qa-reset-login", trace_id=TRACE_ID, policy_version=POLICY_VERSION) is None
+        assert sender.attempts == 1
+        identity.validate_access(web.access_token, trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+        with repository.transaction() as connection:
+            assert connection.execute("SELECT COUNT(*) FROM admin_audit_outbox WHERE operation='request_password_reset'").fetchone()[0] == 0
+    finally:
+        repository.close()
 
 
 def test_reset_initial_password_is_atomic_and_revokes_all_sessions(tmp_path: Path) -> None:

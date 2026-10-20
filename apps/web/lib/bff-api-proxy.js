@@ -1,4 +1,6 @@
 const MAX_REQUEST_BYTES = 65_536;
+const MAX_ANDROID_AUTH_FORM_BYTES = 512;
+const MAX_ANDROID_AUTH_RESPONSE_BYTES = 4_096;
 const MAX_SOURCE_UPLOAD_BYTES = 25 * 1024 * 1024;
 const MAX_NATIVE_RESPONSE_BYTES = 128 * 1024;
 const MAX_NATIVE_RECOVERY_RESPONSE_BYTES = 1024 * 1024;
@@ -25,6 +27,7 @@ const RESPONSE_HEADERS = new Set([
   "x-trace-id",
   "x-citation-locator-kind",
   "x-citation-page",
+  "x-citation-region",
   "x-content-type-options",
 ]);
 const NATIVE_RESPONSE_HEADERS = new Set([
@@ -36,6 +39,7 @@ const NATIVE_RESPONSE_HEADERS = new Set([
   "x-trace-id",
   "x-citation-locator-kind",
   "x-citation-page",
+  "x-citation-region",
 ]);
 const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 const SESSION_COOKIE_NAME = "__Host-daon_session";
@@ -62,8 +66,10 @@ const PROVIDER_CODES = new Set([
   "OPENAI", "OPENROUTER", "UPSTAGE", "OMNIROUTE", "EOUL_GATEWAY",
 ]);
 const STUDIO_QUERY = new Set(["workspace_id", "notebook_id"]);
+const STUDIO_NOTICE_QUERY = new Set(["notebook_id"]);
+const STUDIO_LIFECYCLE_EMPTY_QUERY = new Set();
 const RESTORE_ACTIONS = new Set(["execute", "cancel"]);
-const GROUNDED_QUESTION_TIMEOUT_MS = 100_000;
+const GROUNDED_QUESTION_TIMEOUT_MS = null;
 
 export class BffConfigurationError extends Error {
   constructor(code) {
@@ -142,6 +148,39 @@ export function browserSessionCookieName(profile = "production") {
 }
 
 function routeFor(method, segments) {
+  if (segments.length === 2 && segments[0] === "account" && new Set(["profile", "devices", "sessions"]).has(segments[1])) {
+    const profile = segments[1] === "profile";
+    return (method === "GET" || profile && method === "PATCH")
+      ? { path: `/api/v1/account/${segments[1]}`, query: profile ? new Set() : new Set(["limit", "cursor"]),
+        csrfProvenanceRequired: method === "PATCH", strictQuery: true, profileSessionBinding: profile && method === "PATCH" } : { methodRejected: true };
+  }
+  if (segments.length === 3 && segments[0] === "devices" && SAFE_SEGMENT.test(segments[1]) && new Set(["trust", "revoke"]).has(segments[2])) {
+    return method === "POST" ? { path: `/api/v1/devices/${encodeURIComponent(segments[1])}/${segments[2]}`,
+      query: new Set(), csrfProvenanceRequired: true, strictQuery: true } : { methodRejected: true };
+  }
+  if (segments.length === 2 && segments[0] === "session" && segments[1] === "revoke") {
+    return method === "POST" ? { path: "/api/v1/session/revoke", query: new Set(), csrfProvenanceRequired: true, strictQuery: true } : { methodRejected: true };
+  }
+  if(segments.length===5 && segments[0]==='workspaces' && SAFE_SEGMENT.test(segments[1])
+    && segments[2]==='connectors' && segments[3]==='mcp-open-law-go-kr' && new Set(['law-search','law-preview','law-imports']).has(segments[4])){
+    return method==='POST'?{path:`/api/v1/workspaces/${encodeURIComponent(segments[1])}/connectors/mcp-open-law-go-kr/${segments[4]}`,
+      query:null,requiredQuery:new Set(),law:true,lawPost:true,csrfProvenanceRequired:true,maxRequestBytes:32768}:{methodRejected:true};
+  }
+  if(segments.length===5 && segments[0]==='workspaces' && SAFE_SEGMENT.test(segments[1]) && segments[2]==='source-versions'
+    && SAFE_SEGMENT.test(segments[3]) && segments[4]==='law-snapshot'){
+    return method==='GET'?{path:`/api/v1/workspaces/${encodeURIComponent(segments[1])}/source-versions/${encodeURIComponent(segments[3])}/law-snapshot`,
+      query:new Set(['notebook_id']),requiredQuery:new Set(['notebook_id']),law:true}:{methodRejected:true};
+  }
+  if (segments.length === 3 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "website-imports") {
+    return method === "POST" ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/website-imports`,
+      query: null, requiredQuery: new Set(), website: true, websiteImport: true, csrfProvenanceRequired: true }
+      : { methodRejected: true };
+  }
+  if (segments.length === 5 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1])
+      && segments[2] === "source-versions" && SAFE_SEGMENT.test(segments[3]) && segments[4] === "website-snapshot") {
+    return method === "GET" ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/source-versions/${encodeURIComponent(segments[3])}/website-snapshot`,
+      query: new Set(["notebook_id"]), requiredQuery: new Set(["notebook_id"]), website: true } : { methodRejected: true };
+  }
   if (segments.length === 3 && segments[0] === "auth" && segments[1] === "password" && segments[2] === "change") {
     return method === "POST"
       ? { path: "/api/v1/auth/password/change", query: null, csrfProvenanceRequired: true }
@@ -263,6 +302,13 @@ function routeFor(method, segments) {
   }
   // Organization workflow and administrator console contracts. The browser
   // only sees /bff/api; the internal /api/v1 origin remains server-side.
+  if (segments.length === 3 && segments[0] === "organization" && segments[1] === "admin" && segments[2] === "tenants") {
+    return method === "GET" ? { path: "/api/v1/organization/admin/tenants", query: new Set(), strictQuery: true } : { methodRejected: true };
+  }
+  if (segments.length === 4 && segments[0] === "organization" && segments[1] === "tenants"
+    && SAFE_SEGMENT.test(segments[2]) && segments[3] === "workspaces") {
+    return method === "GET" ? { path: `/api/v1/organization/tenants/${encodeURIComponent(segments[2])}/workspaces`, query: new Set(), strictQuery: true } : { methodRejected: true };
+  }
   if (segments.length === 3 && segments[0] === "organization"
     && segments[1] === "admin" && segments[2] === "directory") {
     return method === "GET"
@@ -273,7 +319,7 @@ function routeFor(method, segments) {
     && new Set(["creation-requests", "join-requests"]).has(segments[1])) {
     if (segments[1] === "join-requests") {
       return new Set(["GET", "POST"]).has(method)
-        ? { path: `/api/v1/organization/${segments[1]}`, query: new Set(["tenant_id"]) }
+        ? { path: `/api/v1/organization/${segments[1]}`, query: new Set(method === "GET" ? ["tenant_id"] : []), strictQuery: method === "POST", orgSessionBinding: method === "POST" }
         : { methodRejected: true };
     }
     return new Set(["GET", "POST"]).has(method)
@@ -284,21 +330,21 @@ function routeFor(method, segments) {
     && new Set(["creation-requests", "join-requests"]).has(segments[1])
     && SAFE_SEGMENT.test(segments[2]) && segments[3] === "decision") {
     return method === "POST"
-      ? { path: `/api/v1/organization/${segments[1]}/${encodeURIComponent(segments[2])}/decision`, query: null }
+      ? { path: `/api/v1/organization/${segments[1]}/${encodeURIComponent(segments[2])}/decision`, query: null, orgSessionBinding: segments[1] === "join-requests" }
       : { methodRejected: true };
   }
   if (segments.length === 4 && segments[0] === "organization"
     && segments[1] === "tenants" && SAFE_SEGMENT.test(segments[2])
     && segments[3] === "invitations") {
-    return method === "POST"
-      ? { path: `/api/v1/organization/tenants/${encodeURIComponent(segments[2])}/invitations`, query: null }
+    return new Set(["GET", "POST"]).has(method)
+      ? { path: `/api/v1/organization/tenants/${encodeURIComponent(segments[2])}/invitations`, query: new Set(), strictQuery: true, orgSessionBinding: method === "POST" }
       : { methodRejected: true };
   }
   if (segments.length === 5 && segments[0] === "organization"
     && segments[1] === "tenants" && SAFE_SEGMENT.test(segments[2])
     && segments[3] === "invitations" && SAFE_SEGMENT.test(segments[4])) {
     return method === "DELETE"
-      ? { path: `/api/v1/organization/tenants/${encodeURIComponent(segments[2])}/invitations/${encodeURIComponent(segments[4])}`, query: null }
+      ? { path: `/api/v1/organization/tenants/${encodeURIComponent(segments[2])}/invitations/${encodeURIComponent(segments[4])}`, query: new Set(["expected_version"]), organizationVersionQuery: true, orgSessionBinding: true }
       : { methodRejected: true };
   }
   if (segments.length === 4 && segments[0] === "organization"
@@ -313,7 +359,7 @@ function routeFor(method, segments) {
     && segments[3] === "members" && SAFE_SEGMENT.test(segments[4])
     && new Set(["role", "state"]).has(segments[5])) {
     return method === "PATCH"
-      ? { path: `/api/v1/organization/tenants/${encodeURIComponent(segments[2])}/members/${encodeURIComponent(segments[4])}/${segments[5]}`, query: segments[5] === "state" ? new Set(["active"]) : null }
+      ? { path: `/api/v1/organization/tenants/${encodeURIComponent(segments[2])}/members/${encodeURIComponent(segments[4])}/${segments[5]}`, query: segments[5] === "state" ? new Set(["active"]) : null, orgSessionBinding: true }
       : { methodRejected: true };
   }
   if (
@@ -340,7 +386,8 @@ function routeFor(method, segments) {
     && SAFE_SEGMENT.test(segments[3]) && segments[4] === "context"
   ) {
     return method === "GET"
-      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/notebooks/${encodeURIComponent(segments[3])}/context`, query: null }
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/notebooks/${encodeURIComponent(segments[3])}/context`,
+          query: new Set(["run_id", "studio_job_id"]), strictQuery: true, notebookContextSelection: true }
       : { methodRejected: true };
   }
   if (
@@ -457,6 +504,11 @@ function routeFor(method, segments) {
   if (segments.length === 2 && segments[0] === "session" && segments[1] === "step-up") {
     return method === "POST" ? { path: "/api/v1/session/step-up", query: null } : { methodRejected: true };
   }
+  if (segments.length === 2 && segments[0] === "studio-generation-jobs" && SAFE_SEGMENT.test(segments[1])) {
+    return method === "GET"
+      ? { path: `/api/v1/studio-generation-jobs/${encodeURIComponent(segments[1])}`, query: STUDIO_QUERY, requiredQuery: STUDIO_QUERY }
+      : { methodRejected: true };
+  }
   if (segments.length === 1 && new Set([
     "studio-generation-requests", "studio-outputs", "reviews", "approval-requests",
     "approvals", "deliveries", "knowledge-registrations",
@@ -481,7 +533,26 @@ function routeFor(method, segments) {
     && new Set(["docx", "pdf", "xlsx", "csv", "json", "svg", "png"]).has(segments[5])
   ) {
     return method === "GET"
-      ? { path: `/api/v1/studio-outputs/${encodeURIComponent(segments[1])}/versions/${encodeURIComponent(segments[3])}/exports/${segments[5]}`, query: STUDIO_QUERY }
+      ? { path: `/api/v1/studio-outputs/${encodeURIComponent(segments[1])}/versions/${encodeURIComponent(segments[3])}/exports/${segments[5]}`, query: STUDIO_QUERY, studioExport: true }
+      : { methodRejected: true };
+  }
+  if (segments.length === 3 && segments[0] === "approval-requests" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "withdraw") {
+    return method === "POST" ? { path: `/api/v1/approval-requests/${encodeURIComponent(segments[1])}/withdraw`, query: STUDIO_LIFECYCLE_EMPTY_QUERY, requiredQuery: STUDIO_LIFECYCLE_EMPTY_QUERY } : { methodRejected: true };
+  }
+  if (segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1] ?? "") && segments[2] === "studio") {
+    const prefix = `/api/v1/workspaces/${encodeURIComponent(segments[1])}/studio`;
+    if (segments.length === 4 && segments[3] === "approval-policy") {
+      return ["GET", "PATCH"].includes(method) ? { path: `${prefix}/approval-policy`, query: STUDIO_LIFECYCLE_EMPTY_QUERY, requiredQuery: STUDIO_LIFECYCLE_EMPTY_QUERY } : { methodRejected: true };
+    }
+    if (segments.length === 4 && segments[3] === "approval-notices") {
+      return method === "GET" ? { path: `${prefix}/approval-notices`, query: STUDIO_NOTICE_QUERY, requiredQuery: STUDIO_NOTICE_QUERY } : { methodRejected: true };
+    }
+    if (segments.length === 5 && segments[3] === "approval-notices" && SAFE_SEGMENT.test(segments[4])) {
+      return method === "PATCH" ? { path: `${prefix}/approval-notices/${encodeURIComponent(segments[4])}`, query: STUDIO_LIFECYCLE_EMPTY_QUERY, requiredQuery: STUDIO_LIFECYCLE_EMPTY_QUERY } : { methodRejected: true };
+    }
+  }
+  if (segments.length === 3 && segments[0] === "sources" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "processing-runs") {
+    return method === "POST" ? { path: `/api/v1/sources/${encodeURIComponent(segments[1])}/processing-runs`, query: null }
       : { methodRejected: true };
   }
   if (
@@ -503,7 +574,7 @@ function routeFor(method, segments) {
     && segments[3] === "status"
   ) {
     return method === "GET"
-      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/operations/status`, query: null }
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/operations/status`, query: new Set(["scope","include_readiness","include_capacity"]), strictQuery: true, operationsStatus: true }
       : { methodRejected: true };
   }
   if (
@@ -587,7 +658,7 @@ function routeFor(method, segments) {
     return method === "GET"
       ? {
           path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/citations/${encodeURIComponent(segments[3])}/content`,
-          query: new Set(["notebook_id"]),
+          query: new Set(["notebook_id", "representation"]),
         }
       : { methodRejected: true };
   }
@@ -612,7 +683,7 @@ function routeFor(method, segments) {
     && segments[2] === "sources"
   ) {
     if (method === "GET") {
-      return { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/sources`, query: new Set(["notebook_id"]) };
+      return { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/sources`, query: new Set(["notebook_id", "website_source_version_id"]), websiteSourceQuery: true };
     }
     return method === "POST" ? {
           path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/sources`,
@@ -669,6 +740,15 @@ function routeFor(method, segments) {
       ? { path: "/api/v1/backups", query: null }
       : { methodRejected: true };
   }
+  if (segments.length === 3 && segments.join("/") === "system/operations/status") {
+    return method === "GET" ? { path: "/api/v1/system/operations/status", query: new Set(['include_capacity']), strictQuery: true, operationsStatus:true } : { methodRejected: true };
+  }
+  if (segments.length === 2 && segments[0] === "backups" && segments[1] === "selection-previews") {
+    return method === "POST" ? { path: "/api/v1/backups/selection-previews", query: new Set(), strictQuery: true } : { methodRejected: true };
+  }
+  if (segments.length === 3 && segments[0] === "backups" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "restore-destinations") {
+    return method === "GET" ? { path: `/api/v1/backups/${encodeURIComponent(segments[1])}/restore-destinations`, query: new Set(), strictQuery: true } : { methodRejected: true };
+  }
   if (segments.length === 2 && segments[0] === "backups" && SAFE_SEGMENT.test(segments[1])) {
     return method === "GET"
       ? { path: `/api/v1/backups/${encodeURIComponent(segments[1])}`, query: null }
@@ -712,6 +792,12 @@ function routeFor(method, segments) {
   if (segments.length === 2 && segments[0] === "session" && segments[1] === "tenant") {
     return method === "POST"
       ? { path: "/api/v1/session/tenant", query: null, csrfProvenanceRequired: true }
+      : { methodRejected: true };
+  }
+  if (segments.length === 3 && segments[0] === "session" && segments[1] === "android" && segments[2] === "authorize") {
+    return method === "POST"
+      ? { path: "/api/v1/session/android/authorize", query: null, csrfProvenanceRequired: true,
+        requiresSessionCookie: true, androidFormAuthorization: true, maxRequestBytes: MAX_ANDROID_AUTH_FORM_BYTES }
       : { methodRejected: true };
   }
   if (segments.length === 2 && segments[0] === "session" && segments[1] === "logout") {
@@ -759,6 +845,11 @@ function nativeRouteFor(method, segments, requestUrl) {
   let matched = null;
   if (segments.length === 3 && segments[0] === "auth" && segments[1] === "native" && segments[2] === "login") {
     matched = method === "POST" ? route("/api/v1/auth/native/login", { protected: false, requestMediaType: "application/json" }) : { methodRejected: true };
+  } else if (segments.length === 3 && segments[0] === "session" && segments[1] === "android"
+    && new Set(["transactions", "exchange"]).has(segments[2])) {
+    matched = method === "POST"
+      ? route(`/api/v1/session/android/${segments[2]}`, { protected: false, requestMediaType: "application/json" })
+      : { methodRejected: true };
   } else if (segments.length === 2 && segments[0] === "session" && segments[1] === "refresh") {
     matched = method === "POST" ? route("/api/v1/session/refresh", { protected: false, requestMediaType: "application/json" }) : { methodRejected: true };
   } else if (segments.length === 1 && segments[0] === "session") {
@@ -771,7 +862,7 @@ function nativeRouteFor(method, segments, requestUrl) {
       : { methodRejected: true };
   } else if (segments.length === 3 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "sources") {
     matched = new Set(["GET", "POST"]).has(method)
-      ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/sources`, method === "POST" ? { maxRequestBytes: MAX_SOURCE_UPLOAD_BYTES, requestMediaType: "application/pdf" } : {})
+      ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/sources`, method === "POST" ? { maxRequestBytes: MAX_SOURCE_UPLOAD_BYTES, requestMediaTypes: ["application/pdf", "text/plain", "text/markdown", "text/csv", "image/png", "image/jpeg", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "audio/wav"] } : {})
       : { methodRejected: true };
   } else if (segments.length === 4 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "processing-runs" && SAFE_SEGMENT.test(segments[3])) {
     matched = method === "GET"
@@ -783,14 +874,20 @@ function nativeRouteFor(method, segments, requestUrl) {
     matched = method === "POST" ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/questions`, { requestMediaType: "application/json" }) : { methodRejected: true };
   } else if (segments.length === 5 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "citations" && SAFE_SEGMENT.test(segments[3]) && segments[4] === "content") {
     matched = method === "GET"
-      ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/citations/${encodeURIComponent(segments[3])}/content`, { expectsPdf: true, maxResponseBytes: MAX_SOURCE_UPLOAD_BYTES })
+      ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/citations/${encodeURIComponent(segments[3])}/content`, { responseMediaTypes: ["application/pdf", "text/plain", "image/png", "image/jpeg", "application/json", "audio/wav"], maxResponseBytes: MAX_SOURCE_UPLOAD_BYTES })
       : { methodRejected: true };
   } else if (segments.length === 4 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "studio" && segments[3] === "reports") {
     matched = method === "POST" ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/studio/reports`, { requestMediaType: "application/json" }) : { methodRejected: true };
   } else if (segments.length === 4 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "studio" && segments[3] === "outputs") {
     matched = method === "GET" ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/studio/outputs`) : { methodRejected: true };
+  } else if (segments.length === 3 && segments.join("/") === "system/operations/status") {
+    matched = method === "GET" ? route("/api/v1/system/operations/status") : { methodRejected: true };
   } else if (segments.length === 1 && segments[0] === "backups") {
     matched = new Set(["GET", "POST"]).has(method) ? route("/api/v1/backups", { maxResponseBytes: MAX_NATIVE_RECOVERY_RESPONSE_BYTES, ...(method === "POST" ? { requestMediaType: "application/json" } : {}) }) : { methodRejected: true };
+  } else if (segments.length === 2 && segments[0] === "backups" && segments[1] === "selection-previews") {
+    matched = method === "POST" ? route("/api/v1/backups/selection-previews", { maxResponseBytes: MAX_NATIVE_RECOVERY_RESPONSE_BYTES, requestMediaType: "application/json" }) : { methodRejected: true };
+  } else if (segments.length === 3 && segments[0] === "backups" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "restore-destinations") {
+    matched = method === "GET" ? route(`/api/v1/backups/${encodeURIComponent(segments[1])}/restore-destinations`, { maxResponseBytes: MAX_NATIVE_RECOVERY_RESPONSE_BYTES }) : { methodRejected: true };
   } else if (segments.length === 2 && segments[0] === "backups" && SAFE_SEGMENT.test(segments[1])) {
     matched = method === "GET" ? route(`/api/v1/backups/${encodeURIComponent(segments[1])}`, { maxResponseBytes: MAX_NATIVE_RECOVERY_RESPONSE_BYTES }) : { methodRejected: true };
   } else if (segments.length === 3 && segments[0] === "backups" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "restore-previews") {
@@ -811,8 +908,12 @@ function nativeRouteFor(method, segments, requestUrl) {
   );
   if (notebookScopedRead) {
     const entries = [...incoming.searchParams];
-    if (entries.length !== 1 || entries[0][0] !== "notebook_id" || !SAFE_SEGMENT.test(entries[0][1])) return null;
-    matched.query = new URLSearchParams([["notebook_id", entries[0][1]]]);
+    const audio=segments.length===5 && segments[2]==="citations" && incoming.searchParams.has("representation");
+    const allowed=audio?new Set(["notebook_id","representation"]):new Set(["notebook_id"]);
+    if(entries.length!==(audio?2:1) || new Set(entries.map(([key])=>key)).size!==entries.length
+        || entries.some(([key])=>!allowed.has(key)) || !SAFE_SEGMENT.test(incoming.searchParams.get("notebook_id")??"")
+        || (audio && incoming.searchParams.get("representation")!=="audio"))return null;
+    matched.query = new URLSearchParams(entries);
   } else if (method === "GET" && segments.length === 1 && segments[0] === "backups") {
     const entries = [...incoming.searchParams];
     if (entries.length !== 1 || entries[0][0] !== "workspace_id" || !SAFE_SEGMENT.test(entries[0][1])) return null;
@@ -831,11 +932,13 @@ function nativeBearer(request) {
   return bytes >= MIN_NATIVE_BEARER_BYTES && bytes <= MAX_NATIVE_BEARER_BYTES ? match[1] : null;
 }
 
-function nativeSensitiveBodyValues(body) {
+function nativeSensitiveBodyValues(body, routePath) {
   try {
     const parsed = JSON.parse(Buffer.from(body).toString("utf8"));
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
-    return ["password", "credential", "access_credential", "refresh_credential"]
+    const sensitiveKeys = ["password", "credential", "access_credential", "refresh_credential"];
+    if (routePath === "/api/v1/session/android/exchange") sensitiveKeys.push("code", "code_verifier");
+    return sensitiveKeys
       .map((key) => parsed[key])
       .filter((value) => typeof value === "string" && value.length > 0);
   } catch {
@@ -845,6 +948,19 @@ function nativeSensitiveBodyValues(body) {
 
 function exactMediaType(rawValue) {
   return rawValue?.split(";", 1)[0].trim().toLowerCase() ?? "";
+}
+
+function androidAuthorizationLocation(value) {
+  if (typeof value !== "string" || value.includes("#") || /[\x00-\x1f\x7f]/u.test(value)) return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" || !url.hostname || url.username || url.password || url.hash
+      || url.searchParams.getAll("code").length !== 1 || !url.searchParams.get("code")
+      || url.searchParams.getAll("state").length !== 1 || !url.searchParams.get("state")) return null;
+    return url.href;
+  } catch {
+    return null;
+  }
 }
 
 export function createBffTraceId(request) {
@@ -949,7 +1065,7 @@ function createAbortScope(clientSignal, timeoutMs) {
   if (clientSignal?.aborted) abortForClient();
   else clientSignal?.addEventListener("abort", abortForClient, { once: true });
 
-  const timer = setTimeout(() => {
+  const timer = timeoutMs === null ? null : setTimeout(() => {
     if (controller.signal.aborted) return;
     cause = "timeout";
     controller.abort(new DOMException("Gateway timeout", "TimeoutError"));
@@ -958,7 +1074,7 @@ function createAbortScope(clientSignal, timeoutMs) {
     signal: controller.signal,
     get cause() { return cause; },
     cleanup() {
-      clearTimeout(timer);
+      if (timer !== null) clearTimeout(timer);
       clientSignal?.removeEventListener("abort", abortForClient);
     },
   };
@@ -994,13 +1110,88 @@ function cancellationError(scope, trace) {
   return null;
 }
 
+async function boundedWebsiteResponse(upstream, maximum, signal) {
+  const declared = upstream.headers.get("content-length");
+  if (declared !== null && (!/^\d+$/u.test(declared) || Number(declared) > maximum)) {
+    await upstream.body?.cancel(); throw new Error("UPSTREAM_RESPONSE_INVALID");
+  }
+  if (!upstream.body) return new Uint8Array();
+  const reader = upstream.body.getReader(); const chunks = []; let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await waitWithAbort(reader.read(), signal, () => reader.cancel());
+      if (done) break;
+      if (value.byteLength > maximum - size) throw new Error("UPSTREAM_RESPONSE_INVALID");
+      chunks.push(value); size += value.byteLength;
+    }
+    const body = new Uint8Array(size); let offset = 0;
+    for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
+    return body;
+  } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+}
+
+// Only the browser question POST uses this transport. Node's fetch otherwise
+// imposes its own headers/body deadlines even when our abort timer is absent.
+async function requestQuestionWithoutFetchTimeout(destination, init) {
+  const { request } = destination.protocol === 'https:' ? await import('node:https') : await import('node:http');
+  const { Readable, pipeline } = await import('node:stream');
+  return new Promise((resolve, reject) => {
+    const headers = new Headers(init.headers);
+    headers.set('accept-encoding', 'identity');
+    const outgoing = request(destination, {
+      method: init.method, headers: Object.fromEntries(headers), signal: init.signal,
+      agent: false, timeout: 0,
+    }, incoming => {
+      // Response errors can arrive while the optional decoder is being loaded.
+      incoming.on('error', reject);
+      const respond = async () => {
+        const responseHeaders = new Headers();
+        for (let index = 0; index < incoming.rawHeaders.length; index += 2) {
+          responseHeaders.append(incoming.rawHeaders[index], incoming.rawHeaders[index + 1]);
+        }
+        const status = incoming.statusCode;
+        if (new Set([204, 205, 304]).has(status) || (status >= 300 && status < 400)) {
+          incoming.destroy();
+          return new Response(null, { status, headers: responseHeaders });
+        }
+        let stream = incoming;
+        const encoding = responseHeaders.get('content-encoding')?.toLowerCase().trim();
+        if (encoding && encoding !== 'identity') {
+          const { createGunzip, createInflate, createBrotliDecompress } = await import('node:zlib');
+          const decoder = encoding === 'gzip' ? createGunzip() : encoding === 'deflate' ? createInflate()
+            : encoding === 'br' ? createBrotliDecompress() : null;
+          if (!decoder) throw new Error('UPSTREAM_RESPONSE_INVALID');
+          // pipeline propagates socket errors and stream cancellation in both directions.
+          pipeline(incoming, decoder, () => {});
+          stream = decoder;
+          responseHeaders.delete('content-encoding');
+          responseHeaders.delete('content-length');
+        }
+        return new Response(Readable.toWeb(stream), { status, headers: responseHeaders });
+      };
+      respond().then(resolve, error => { incoming.destroy(); reject(error); });
+    });
+    outgoing.on('socket', socket => socket.setTimeout(0));
+    outgoing.on('upgrade', (_incoming, socket) => {
+      socket.destroy();
+      reject(new Error('UPSTREAM_UPGRADE_REJECTED'));
+    });
+    outgoing.on('error', reject);
+    outgoing.end(init.body === undefined ? undefined : Buffer.from(init.body));
+  });
+}
+
 export function createBffProxy({
-  baseUrl, publicOrigin, fetchImpl = fetch, timeoutMs = 10_000,
+  baseUrl, publicOrigin, fetchImpl, timeoutMs = 10_000,
   questionTimeoutMs = GROUNDED_QUESTION_TIMEOUT_MS,
   browserCookieName = SESSION_COOKIE_NAME,
 }) {
   if (!(baseUrl instanceof URL)) {
     throw new BffConfigurationError("BFF_INTERNAL_API_URL_REQUIRED");
+  }
+  if (questionTimeoutMs !== null && (typeof questionTimeoutMs !== 'number' || !Number.isFinite(questionTimeoutMs)
+      || questionTimeoutMs <= 0 || questionTimeoutMs > 2_147_483_647)) {
+    throw new BffConfigurationError('BFF_QUESTION_TIMEOUT_INVALID');
   }
   if (publicOrigin !== undefined && !(publicOrigin instanceof URL)) {
     throw new BffConfigurationError("BFF_PUBLIC_GATEWAY_URL_REQUIRED");
@@ -1008,6 +1199,8 @@ export function createBffProxy({
   if (!new Set([SESSION_COOKIE_NAME, WSL_HTTP_SESSION_COOKIE_NAME]).has(browserCookieName)) {
     throw new BffConfigurationError("BFF_SESSION_COOKIE_NAME_INVALID");
   }
+  const defaultFetch = fetchImpl === undefined;
+  const forwardFetch = defaultFetch ? fetch : fetchImpl;
   return async function proxy(request, pathSegments, providedTrace) {
     const trace = providedTrace ?? createBffTraceId(request);
     const route = routeFor(request.method, pathSegments);
@@ -1018,6 +1211,51 @@ export function createBffProxy({
     }
     if (route.csrfProvenanceRequired && !csrfRefererIsSameOrigin(request, publicOrigin)) {
       return createBffSafeError(403, "CSRF_VALIDATION_FAILED", trace);
+    }
+    if (route.notebookContextSelection) {
+      const values = [...new URL(request.url).searchParams];
+      if (values.length > 1 || values.some(([key, value]) => !route.query.has(key)
+        || !SAFE_SEGMENT.test(value) || /\s/u.test(value))) return createBffSafeError(400, "INVALID_REQUEST", trace);
+    }
+    if (route.requiredQuery) {
+      const query = new URL(request.url).searchParams;
+      if ([...query.keys()].some((key) => !route.requiredQuery.has(key))
+        || [...route.requiredQuery].some((key) => query.getAll(key).length !== 1 || !SAFE_SEGMENT.test(query.get(key)))) {
+        return createBffSafeError(400, "INVALID_REQUEST", trace);
+      }
+    }
+    const websiteQuery = route.websiteSourceQuery && new URL(request.url).searchParams.has("website_source_version_id");
+    if (websiteQuery) {
+      const query = new URL(request.url).searchParams;
+      if ([...query.keys()].some(key => !route.query.has(key)) || ["notebook_id", "website_source_version_id"].some(key => query.getAll(key).length !== 1 || !SAFE_SEGMENT.test(query.get(key)))) {
+        return createBffSafeError(400, "INVALID_REQUEST", trace);
+      }
+    }
+    if ((route.websiteImport || route.lawPost) && exactMediaType(request.headers.get("content-type")) !== "application/json") {
+      return createBffSafeError(415, "UNSUPPORTED_MEDIA_TYPE", trace);
+    }
+    if (route.strictQuery) {
+      const query = new URL(request.url).searchParams;
+      if ([...query.keys()].some((key) => !route.query.has(key) || query.getAll(key).length !== 1)) {
+        return createBffSafeError(400, "INVALID_REQUEST", trace);
+      }
+      if (route.operationsStatus && ((query.has("scope") && !["self","workspace_visible"].includes(query.get("scope")))
+          || (query.has("include_readiness") && query.get("include_readiness")!=="1")
+          || (query.has('include_capacity') && query.get('include_capacity')!=='1'))) {
+        return createBffSafeError(400, "INVALID_REQUEST", trace);
+      }
+    }
+    if (route.organizationVersionQuery) {
+      const query = new URL(request.url).searchParams;
+      const version = query.get("expected_version");
+      if ([...query.keys()].some(key => key !== "expected_version") || query.getAll("expected_version").length !== 1
+        || !/^[1-9][0-9]*$/u.test(version || "") || !Number.isSafeInteger(Number(version))) {
+        return createBffSafeError(422, "INVALID_REQUEST", trace);
+      }
+    }
+    const expectedProfileSession = (route.profileSessionBinding || route.orgSessionBinding) ? request.headers.get("x-daon-expected-session-id") : null;
+    if ((route.profileSessionBinding || route.orgSessionBinding) && (typeof expectedProfileSession !== "string" || !SAFE_SEGMENT.test(expectedProfileSession))) {
+      return createBffSafeError(422, "ACCOUNT_INPUT_INVALID", trace);
     }
     const destination = new URL(route.path, baseUrl);
     if (new Set(["/api/v1/session/tenants", "/api/v1/session/tenant"]).has(route.path)) {
@@ -1033,11 +1271,28 @@ export function createBffProxy({
     for (const [key, value] of request.headers) {
       if (REQUEST_HEADERS.has(key.toLowerCase())) headers.set(key, value);
     }
+    if (route.profileSessionBinding || route.orgSessionBinding) headers.set("X-Daon-Expected-Session-Id", expectedProfileSession);
+    if (route.studioExport && request.headers.has("x-daon-step-up-authorization")) {
+      headers.set("x-daon-step-up-authorization", request.headers.get("x-daon-step-up-authorization"));
+    }
     let credential;
+    const nativeQuestion = defaultFetch && request.method === 'POST'
+      && route.groundedQuestion && route.path.endsWith('/questions');
+    let upstream;
     try {
       credential = sessionCookie(request, browserCookieName);
     } catch {
       return createBffSafeError(400, "INVALID_SESSION_COOKIE", trace);
+    }
+    if (route.requiresSessionCookie && !credential) {
+      return createBffSafeError(401, "AUTHENTICATION_REQUIRED", trace);
+    }
+    if (route.androidFormAuthorization && (
+      request.headers.get("sec-fetch-mode") !== "navigate"
+      || request.headers.get("sec-fetch-dest") !== "document"
+    )) return createBffSafeError(403, "CSRF_VALIDATION_FAILED", trace);
+    if (route.androidFormAuthorization && new URL(request.url).search) {
+      return createBffSafeError(400, "INVALID_REQUEST_BODY", trace);
     }
     if (credential) headers.set("cookie", credential);
     headers.set("x-trace-id", trace);
@@ -1050,14 +1305,15 @@ export function createBffProxy({
     const init = { method: request.method, headers, redirect: "manual" };
     const abortScope = createAbortScope(
       request.signal,
-      route.groundedQuestion ? questionTimeoutMs : timeoutMs,
+      route.law ? 30_000 : route.websiteImport || websiteQuery ? 25_000 : route.groundedQuestion
+        ? (route.path.endsWith('/questions') ? questionTimeoutMs : questionTimeoutMs ?? 100_000) : timeoutMs,
     );
     try {
       if (abortScope.signal.aborted) return cancellationError(abortScope, trace);
       if (request.method !== "GET" && request.method !== "HEAD") {
         let body;
         try {
-          body = await waitWithAbort(request.arrayBuffer(), abortScope.signal);
+          body = await waitWithAbort(route.law ? boundedWebsiteResponse(request,32768,abortScope.signal) : request.arrayBuffer(), abortScope.signal);
         } catch {
           return cancellationError(abortScope, trace)
             ?? createBffSafeError(400, "INVALID_REQUEST_BODY", trace);
@@ -1065,13 +1321,44 @@ export function createBffProxy({
         if (body.byteLength > (route.maxRequestBytes ?? MAX_REQUEST_BYTES)) {
           return createBffSafeError(413, "REQUEST_TOO_LARGE", trace);
         }
-        init.body = body;
+        if (route.androidFormAuthorization) {
+          if (exactMediaType(request.headers.get("content-type")) !== "application/x-www-form-urlencoded") {
+            return createBffSafeError(415, "UNSUPPORTED_MEDIA_TYPE", trace);
+          }
+          let entries;
+          try {
+            entries = [...new URLSearchParams(new TextDecoder("utf-8", { fatal: true }).decode(body))];
+          } catch {
+            return createBffSafeError(400, "INVALID_REQUEST_BODY", trace);
+          }
+          if (entries.length !== 1 || entries[0][0] !== "transaction_id" || !SAFE_SEGMENT.test(entries[0][1])) {
+            return createBffSafeError(400, "INVALID_REQUEST_BODY", trace);
+          }
+          headers.set("content-type", "application/json");
+          init.body = JSON.stringify({ transaction_id: entries[0][1] });
+        } else {
+          init.body = body;
+          const providerRegistration = request.method === "POST" && route.path === "/api/v1/admin/provider-connections"
+            || request.method === "PUT" && /^\/api\/v1\/admin\/provider-connections\/[^/]+$/u.test(route.path);
+          if (providerRegistration) {
+            let value;
+            try { value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body)); } catch { /* 기존 API 본문 오류 처리를 유지한다. */ }
+            if (value && !Array.isArray(value) && value.base_url === "server-managed-asr") {
+              if (value.adapter_type !== "asr_base_native" || (value.provider_code !== undefined && value.provider_code !== "CUSTOM")
+                || (request.method === "POST" && value.provider_code !== "CUSTOM")
+                || value.credential_requirement !== "none" || value.access_mode !== "public"
+                || Object.hasOwn(value, "credential") || Object.hasOwn(value, "test_credential")) {
+                return createBffSafeError(400, "INVALID_REQUEST_BODY", trace);
+              }
+              init.body = JSON.stringify({ ...value, base_url: "http://asr-base:8080" });
+            }
+          }
+        }
       }
 
-      let upstream;
       try {
         upstream = await waitWithAbort(
-          fetchImpl(destination, { ...init, signal: abortScope.signal }),
+          (nativeQuestion ? requestQuestionWithoutFetchTimeout : forwardFetch)(destination, { ...init, signal: abortScope.signal }),
           abortScope.signal,
         );
       } catch {
@@ -1080,6 +1367,37 @@ export function createBffProxy({
       }
       if (upstream.status >= 300 && upstream.status < 400) {
         return createBffSafeError(502, "UPSTREAM_REDIRECT_REJECTED", trace);
+      }
+      if (route.androidFormAuthorization) {
+        if (upstream.status !== 200) {
+          const status = new Set([400, 401, 403, 404, 409, 410, 422, 429]).has(upstream.status)
+            ? upstream.status : 502;
+          return createBffSafeError(status, "ANDROID_AUTHORIZATION_FAILED", trace);
+        }
+        if (upstream.headers.has("set-cookie")
+          || exactMediaType(upstream.headers.get("content-type")) !== "application/json") {
+          return createBffSafeError(502, "UPSTREAM_RESPONSE_INVALID", trace);
+        }
+        const declaredLength = upstream.headers.get("content-length");
+        if (declaredLength !== null && (!/^\d+$/u.test(declaredLength)
+          || Number(declaredLength) > MAX_ANDROID_AUTH_RESPONSE_BYTES)) {
+          return createBffSafeError(502, "UPSTREAM_RESPONSE_INVALID", trace);
+        }
+        let payload;
+        try {
+          const body = await waitWithAbort(upstream.arrayBuffer(), abortScope.signal, () => upstream.body?.cancel());
+          if (body.byteLength > MAX_ANDROID_AUTH_RESPONSE_BYTES) throw new Error("ANDROID_AUTH_RESPONSE_TOO_LARGE");
+          payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
+        } catch {
+          return cancellationError(abortScope, trace)
+            ?? createBffSafeError(502, "UPSTREAM_RESPONSE_INVALID", trace);
+        }
+        const location = androidAuthorizationLocation(payload?.data?.authorization_url);
+        if (!location) return createBffSafeError(502, "UPSTREAM_RESPONSE_INVALID", trace);
+        return new Response(null, { status: 303, headers: {
+          Location: location, "Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
+          "X-Trace-Id": trace,
+        } });
       }
       const responseHeaders = new Headers();
       for (const [key, value] of upstream.headers) {
@@ -1093,13 +1411,13 @@ export function createBffProxy({
           return createBffSafeError(502, "UPSTREAM_RESPONSE_INVALID", trace);
         }
       }
-      responseHeaders.set("Cache-Control", "no-store");
+      responseHeaders.set("Cache-Control", responseHeaders.get("Content-Type")?.split(";",1)[0].trim()==="audio/wav" ? "private, no-store" : "no-store");
       if (!responseHeaders.has("x-trace-id")) responseHeaders.set("x-trace-id", trace);
       let body = null;
       if (upstream.status !== 204) {
         try {
           body = await waitWithAbort(
-            upstream.arrayBuffer(),
+            route.law || route.website || websiteQuery ? boundedWebsiteResponse(upstream, route.law ? 4_194_304 : websiteQuery ? 8_388_608 : 32_768, abortScope.signal) : upstream.arrayBuffer(),
             abortScope.signal,
             () => upstream.body?.cancel(),
           );
@@ -1110,6 +1428,9 @@ export function createBffProxy({
       }
       return new Response(body, { status: upstream.status, headers: responseHeaders });
     } finally {
+      if (nativeQuestion && upstream?.body && !upstream.body.locked) {
+        await upstream.body.cancel().catch(() => {});
+      }
       abortScope.cleanup();
     }
   };
@@ -1162,8 +1483,8 @@ export function createNativeBffProxy({ baseUrl, publicOrigin, fetchImpl = fetch,
         if (body.byteLength > (route.maxRequestBytes ?? MAX_REQUEST_BYTES)) {
           return createBffSafeError(413, "REQUEST_TOO_LARGE", trace);
         }
-        sensitiveValues.push(...nativeSensitiveBodyValues(body));
-        if (body.byteLength > 0 && exactMediaType(request.headers.get("content-type")) !== route.requestMediaType
+        sensitiveValues.push(...nativeSensitiveBodyValues(body, route.path));
+        if (body.byteLength > 0 && !(route.requestMediaTypes ?? [route.requestMediaType]).includes(exactMediaType(request.headers.get("content-type")))
           && route.path !== "/api/v1/session/tenant") {
           return createBffSafeError(415, "UNSUPPORTED_MEDIA_TYPE", trace);
         }
@@ -1203,8 +1524,8 @@ export function createNativeBffProxy({ baseUrl, publicOrigin, fetchImpl = fetch,
       let body = null;
       if (upstream.status !== 204) {
         const contentType = upstream.headers.get("content-type")?.toLowerCase() ?? "";
-        const expectedType = route.expectsPdf ? "application/pdf" : "application/json";
-        if (exactMediaType(contentType) !== expectedType) return createBffSafeError(502, "GATEWAY_RESPONSE_REJECTED", trace);
+        const expectedTypes = route.responseMediaTypes ?? [route.expectsPdf ? "application/pdf" : "application/json"];
+        if (!expectedTypes.includes(exactMediaType(contentType))) return createBffSafeError(502, "GATEWAY_RESPONSE_REJECTED", trace);
         try {
           body = await waitWithAbort(upstream.arrayBuffer(), abortScope.signal, () => upstream.body?.cancel());
         } catch {
@@ -1224,7 +1545,7 @@ export function createNativeBffProxy({ baseUrl, publicOrigin, fetchImpl = fetch,
         if (NATIVE_RESPONSE_HEADERS.has(key.toLowerCase())) responseHeaders.set(key, value);
       }
       responseHeaders.set("Content-Length", String(body?.byteLength ?? 0));
-      responseHeaders.set("Cache-Control", "no-store");
+      responseHeaders.set("Cache-Control", responseHeaders.get("Content-Type")?.split(";",1)[0].trim()==="audio/wav" ? "private, no-store" : "no-store");
       if (!responseHeaders.has("x-trace-id")) responseHeaders.set("x-trace-id", trace);
       return new Response(body, { status: upstream.status, headers: responseHeaders });
     } finally {

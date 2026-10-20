@@ -12,6 +12,7 @@ from types import FrameType
 from typing import Any
 
 from daon_user_api.cloud_storage import CloudAccessContext
+from daon_user_api.operations_telemetry import worker_publisher
 from daon_user_api.object_queue import (
     DurableObjectWorker,
     MinioObjectStorageAdapter,
@@ -33,6 +34,7 @@ class ObjectWorkerSettings:
     poll_seconds: float = 0.2
     lease_seconds: float = 30.0
     drain_timeout_seconds: float = 10.0
+    worker_id: str = "object-worker-1"
 
     def __post_init__(self) -> None:
         if not all(
@@ -81,6 +83,7 @@ class ObjectWorkerSettings:
             poll_seconds=float(os.environ.get("DAON_WORKER_POLL_SECONDS", "0.2")),
             lease_seconds=float(os.environ.get("DAON_WORKER_LEASE_SECONDS", "30")),
             drain_timeout_seconds=float(os.environ.get("DAON_WORKER_DRAIN_TIMEOUT_SECONDS", "10")),
+            worker_id=os.environ.get("DAON_OBJECT_WORKER_ID","object-worker-1"),
         )
 
 
@@ -116,6 +119,8 @@ def run(settings: ObjectWorkerSettings, *, stop_event: threading.Event | None = 
         storage,
         f"{socket.gethostname()}-{os.getpid()}",
         lease_seconds=settings.lease_seconds,
+        telemetry=worker_publisher(settings.database_dsn,worker_kind="object",worker_id=settings.worker_id),
+        telemetry_worker_id=settings.worker_id,
     )
     stopped = stop_event or threading.Event()
     previous_handlers: dict[signal.Signals, Any] = {}

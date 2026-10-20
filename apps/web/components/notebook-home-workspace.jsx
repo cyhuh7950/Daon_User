@@ -8,6 +8,8 @@ import { concealProtectedRoute, revealProtectedRoute } from "../lib/protected-ro
 
 const SAFE_ERRORS = new Set(["NOTEBOOK_UNAVAILABLE", "SESSION_UNAVAILABLE", "SESSION_RESPONSE_INVALID"]);
 const replaceLocation = (path) => window.location.replace(path);
+const sameSession = (left, right) => left && right
+  && ["user_id", "session_id", "tenant_id", "workspace_id", "device_id"].every(key => left[key] === right[key]);
 
 function notebookOperationKey(prefix) {
   if (typeof globalThis.crypto?.getRandomValues !== "function") throw new Error("NOTEBOOK_CRYPTO_UNAVAILABLE");
@@ -22,6 +24,10 @@ export function NotebookHomeWorkspace({
 } = {}) {
   const logoutPending = useRef(false);
   const protectedRoot = useRef(null);
+  const loadEpoch = useRef(0);
+  const loadController = useRef(null);
+  const currentSession = useRef(null);
+  const scopeOperation = useRef(null);
   const [sessionValidated, setSessionValidated] = useState(false);
   const [state, setState] = useState("loading");
   const [notebooks, setNotebooks] = useState([]);
@@ -42,12 +48,24 @@ export function NotebookHomeWorkspace({
     setSessionValidated(true);
   }, []);
 
-  const load = useCallback(async (signal) => {
+  const load = useCallback(async () => {
+    loadController.current?.abort();
+    const controller = new AbortController();
+    loadController.current = controller;
+    const { signal } = controller;
+    const epoch = ++loadEpoch.current;
+    const current = () => !signal.aborted && epoch === loadEpoch.current;
+    // 전송 이후 미확정인 작업만 새 본인 세션 조회로 확인한다. 전송 중 조회는 해제 근거가 아니다.
+    const verifying = scopeOperation.current?.phase === "unknown" ? scopeOperation.current : null;
     conceal();
+    setNotebooks([]);
+    setWorkspaceId(null);
+    setTenantScope(null);
     setState("loading");
     setErrorCode(null);
     try {
       const session = await getSession({ signal });
+      if (!current()) return;
       if (session.password_change_required) {
         navigate("/password-change");
         return;
@@ -55,7 +73,7 @@ export function NotebookHomeWorkspace({
       const [scopeResult, notebookResult] = await Promise.allSettled([
         listSessionTenants({ signal }), getNotebooks(session.workspace_id, { signal }),
       ]);
-      if (signal?.aborted) return;
+      if (!current()) return;
       if ([scopeResult, notebookResult].some((result) => result.status === "rejected"
         && result.reason?.message === "AUTHENTICATION_REQUIRED")) {
         navigate("/");
@@ -64,17 +82,26 @@ export function NotebookHomeWorkspace({
       setWorkspaceId(session.workspace_id);
       setUserId(session.login_id ?? session.user_id);
       setIsSystemAdmin(session.is_system_admin);
-      setTenantScope(scopeResult.status === "fulfilled" ? scopeResult.value : null);
+      const scopeValid = scopeResult.status === "fulfilled" && scopeResult.value.current_tenant_id === session.tenant_id;
+      setTenantScope(scopeValid ? scopeResult.value : null);
       setScopeError(scopeResult.status === "rejected"
         ? scopeResult.reason?.message ?? "TENANT_SCOPE_FAILED" : null);
-      setNotebooks(notebookResult.status === "fulfilled" ? notebookResult.value.data : []);
+      currentSession.current = session;
+      if (scopeValid && scopeOperation.current && (
+        !sameSession(session, scopeOperation.current.source)
+        || (verifying && scopeOperation.current === verifying))) {
+        scopeOperation.current = null;
+        setSwitchingScope(false);
+        setScopeError(null);
+      }
+      setNotebooks(scopeValid && notebookResult.status === "fulfilled" ? notebookResult.value.data : []);
       setErrorCode(notebookResult.status === "rejected"
         ? SAFE_ERRORS.has(notebookResult.reason?.message)
           ? notebookResult.reason.message : "NOTEBOOK_UNAVAILABLE" : null);
-      setState(notebookResult.status === "fulfilled" ? "ready" : "error");
+      setState(scopeValid && notebookResult.status === "fulfilled" ? "ready" : "error");
       reveal();
     } catch (error) {
-      if (signal?.aborted) return;
+      if (!current()) return;
       if (error?.message === "AUTHENTICATION_REQUIRED") {
         navigate("/");
         return;
@@ -84,7 +111,7 @@ export function NotebookHomeWorkspace({
       setIsSystemAdmin(false);
       setNotebooks([]);
       setTenantScope(null);
-      setScopeError(null);
+      setScopeError(scopeOperation.current ? "TENANT_SWITCH_UNCERTAIN" : "TENANT_SCOPE_FAILED");
       setErrorCode(SAFE_ERRORS.has(error?.message) ? error.message : "NOTEBOOK_UNAVAILABLE");
       setState("error");
       reveal();
@@ -92,35 +119,53 @@ export function NotebookHomeWorkspace({
   }, [conceal, getNotebooks, getSession, navigate, reveal]);
 
   useEffect(() => {
-    const controller = new AbortController();
-    void load(controller.signal);
-    return () => controller.abort();
-  }, [load]);
-
-  useEffect(() => {
-    let controller = null;
-    const revalidate = () => {
+    const invalidate = () => {
+      ++loadEpoch.current;
+      loadController.current?.abort();
       conceal();
-      controller?.abort();
-      controller = new AbortController();
-      void load(controller.signal);
+      setNotebooks([]);
+      setWorkspaceId(null);
+      setTenantScope(null);
     };
-    const onPageShow = (event) => { if (event.persisted) revalidate(); };
-    const onPageHide = () => concealProtectedRoute(protectedRoot.current);
+    const revalidate = () => { void load(); };
+    const onPageShow = () => revalidate();
+    const onPageHide = () => invalidate();
+    const onVisible = () => { if (document.visibilityState === "visible") revalidate(); else invalidate(); };
+    void load();
     window.addEventListener("pageshow", onPageShow);
     window.addEventListener("pagehide", onPageHide);
     window.addEventListener("popstate", revalidate);
+    window.addEventListener("focus", revalidate);
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
-      controller?.abort();
+      ++loadEpoch.current;
+      loadController.current?.abort();
       window.removeEventListener("pageshow", onPageShow);
       window.removeEventListener("pagehide", onPageHide);
       window.removeEventListener("popstate", revalidate);
+      window.removeEventListener("focus", revalidate);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, [conceal, load]);
 
   const handleCreate = async (input) => {
-    if (!workspaceId) throw new Error("NOTEBOOK_UNAVAILABLE");
+    const epoch = loadEpoch.current;
+    const source = currentSession.current;
+    if (!workspaceId || !source || source.workspace_id !== workspaceId || scopeOperation.current) throw new Error("NOTEBOOK_UNAVAILABLE");
     const result = await createNotebook(workspaceId, input, { idempotencyKey: notebookOperationKey("notebook") });
+    // 목록 변경과 호출자의 자동 열기는 같은 검증 뒤에만 허용한다. 서버 저장의 소급 취소는 아니다.
+    if (epoch !== loadEpoch.current || !sameSession(source, currentSession.current)) throw new Error("SESSION_RESPONSE_INVALID");
+    const verified = await getSession();
+    if (epoch !== loadEpoch.current || !sameSession(source, currentSession.current)
+      || !sameSession(source, verified) || verified.password_change_required) {
+      if (epoch === loadEpoch.current) {
+        conceal();
+        setNotebooks([]);
+        setWorkspaceId(null);
+        void load();
+      }
+      throw new Error("SESSION_RESPONSE_INVALID");
+    }
     setNotebooks((current) => [result.data, ...current.filter((item) => item.notebook_id !== result.data.notebook_id)]);
     return result.data;
   };
@@ -170,31 +215,55 @@ export function NotebookHomeWorkspace({
   };
 
   const handleSwitchTenant = async (tenantId) => {
-    if (switchingScope) return;
+    if (scopeOperation.current || !currentSession.current) return;
+    const operation = { phase: "checking", source: currentSession.current, target: tenantId };
+    scopeOperation.current = operation;
+    const epoch = loadEpoch.current;
     setSwitchingScope(true);
     setScopeError(null);
     try {
-      await switchSessionTenant(tenantId);
+      const session = await getSession();
+      if (epoch !== loadEpoch.current) return;
+      if (!sameSession(session, operation.source)) {
+        scopeOperation.current = null;
+        await load();
+        return;
+      }
+      operation.phase = "sending";
+      const result = await switchSessionTenant(operation.target);
+      if (scopeOperation.current !== operation) return;
+      if (result.user_id !== operation.source.user_id) throw new Error("SESSION_RESPONSE_INVALID");
+      const wasVisible = protectedRoot.current?.getAttribute("data-session-validated") === "true";
+      const stale = epoch !== loadEpoch.current;
+      scopeOperation.current = null;
+      ++loadEpoch.current;
+      loadController.current?.abort();
       conceal();
       setNotebooks([]);
       setWorkspaceId(null);
       setTenantScope(null);
+      if (stale && !wasVisible) return;
       window.location.replace("/notebooks");
     } catch (error) {
+      if (scopeOperation.current !== operation) return;
       if (["TENANT_SCOPE_403", "TENANT_SCOPE_404", "TENANT_SCOPE_422"].includes(error?.message)) {
+        scopeOperation.current = null;
         setScopeError(error.message);
         return;
       }
-      conceal();
-      setNotebooks([]);
-      setWorkspaceId(null);
-      setTenantScope(null);
-      setUserId(null);
-      setIsSystemAdmin(false);
-      setScopeError(null);
-      window.location.replace("/");
+      if (operation.phase === "sending") operation.phase = "unknown";
+      else scopeOperation.current = null;
+      if (epoch !== loadEpoch.current) {
+        if (operation.phase === "unknown" && sameSession(currentSession.current, operation.source)) {
+          setScopeError("TENANT_SWITCH_UNCERTAIN");
+        }
+        return;
+      }
+      setScopeError(operation.phase === "unknown" ? "TENANT_SWITCH_UNCERTAIN" : "TENANT_SCOPE_FAILED");
+      await load();
     } finally {
-      setSwitchingScope(false);
+      if (scopeOperation.current === operation && operation.phase === "checking") scopeOperation.current = null;
+      setSwitchingScope(Boolean(scopeOperation.current));
     }
   };
 

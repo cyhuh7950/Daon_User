@@ -1,5 +1,7 @@
 FROM python:3.14-slim
 WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-kor tesseract-ocr-eng \
+    && rm -rf /var/lib/apt/lists/*
 COPY services/api/src ./src
 COPY scripts/import-provider-credentials.py ./scripts/import-provider-credentials.py
 RUN pip install --no-cache-dir \
@@ -7,6 +9,7 @@ RUN pip install --no-cache-dir \
     cryptography==50.0.0 \
     fastapi==0.139.2 \
     minio==7.2.20 \
+    pillow==12.3.0 \
     'psycopg[binary,pool]==3.3.4' \
     reportlab==4.4.9 \
     uvicorn==0.51.0

@@ -60,6 +60,404 @@
     }
   ],
   "paths": {
+    "/api/v1/organization/admin/tenants": {"get":{"operationId":"listManagedOrganizations","tags":["Workspace"],"summary":"시스템 관리자 전용 실제 조직 목록","x-implementation-owner":"S39-L3","parameters":[],"responses":{"200":{"description":"시스템 관리자 전용 실제 조직 목록","headers":{"X-Trace-Id":{"$ref":"#/components/headers/XTraceId"},"ETag":{"$ref":"#/components/headers/ETag"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/OrganizationTenantsEnvelope"}}}},"400":{"$ref":"#/components/responses/BadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/NotFound"},"409":{"$ref":"#/components/responses/Conflict"},"412":{"$ref":"#/components/responses/PreconditionFailed"},"422":{"$ref":"#/components/responses/BadRequest"},"500":{"$ref":"#/components/responses/SafeFailure"},"503":{"$ref":"#/components/responses/SafeFailure"}}}},
+    "/api/v1/organization/tenants/{tenant_id}/workspaces": {"get":{"operationId":"listManagedOrganizationWorkspaces","tags":["Workspace"],"summary":"선택 조직의 실제 organization Workspace 목록","x-implementation-owner":"S39-L3","parameters":[{"name":"tenant_id","in":"path","required":true,"schema":{"$ref":"#/components/schemas/OpaqueId"}}],"responses":{"200":{"description":"선택 조직의 실제 organization Workspace 목록","headers":{"X-Trace-Id":{"$ref":"#/components/headers/XTraceId"},"ETag":{"$ref":"#/components/headers/ETag"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/OrganizationWorkspacesEnvelope"}}}},"400":{"$ref":"#/components/responses/BadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/NotFound"},"409":{"$ref":"#/components/responses/Conflict"},"412":{"$ref":"#/components/responses/PreconditionFailed"},"422":{"$ref":"#/components/responses/BadRequest"},"500":{"$ref":"#/components/responses/SafeFailure"},"503":{"$ref":"#/components/responses/SafeFailure"}}}},
+    "/api/v1/organization/tenants/{tenant_id}/invitations": {"get":{"operationId":"listOrganizationInvitations","tags":["Workspace"],"summary":"선택 조직의 안전 초대 목록","x-implementation-owner":"S39-L3","parameters":[{"name":"tenant_id","in":"path","required":true,"schema":{"$ref":"#/components/schemas/OpaqueId"}}],"responses":{"200":{"description":"선택 조직의 안전 초대 목록","headers":{"X-Trace-Id":{"$ref":"#/components/headers/XTraceId"},"ETag":{"$ref":"#/components/headers/ETag"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/OrganizationInvitationsEnvelope"}}}},"400":{"$ref":"#/components/responses/BadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/NotFound"},"409":{"$ref":"#/components/responses/Conflict"},"412":{"$ref":"#/components/responses/PreconditionFailed"},"422":{"$ref":"#/components/responses/BadRequest"},"500":{"$ref":"#/components/responses/SafeFailure"},"503":{"$ref":"#/components/responses/SafeFailure"}}},"post":{"operationId":"createOrganizationInvitation","tags":["Workspace"],"summary":"선택 Workspace에 고정한 초대 생성","x-implementation-owner":"S39-L3","parameters":[{"name":"tenant_id","in":"path","required":true,"schema":{"$ref":"#/components/schemas/OpaqueId"}},{"$ref":"#/components/parameters/IdempotencyKey"},{"$ref":"#/components/parameters/OrganizationExpectedSessionId"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/OrganizationInvitationCreate"}}}},"responses":{"201":{"description":"선택 Workspace에 고정한 초대 생성","headers":{"X-Trace-Id":{"$ref":"#/components/headers/XTraceId"},"ETag":{"$ref":"#/components/headers/ETag"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/OrganizationInvitationEnvelope"}}}},"400":{"$ref":"#/components/responses/BadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/NotFound"},"409":{"$ref":"#/components/responses/Conflict"},"412":{"$ref":"#/components/responses/PreconditionFailed"},"422":{"$ref":"#/components/responses/BadRequest"},"500":{"$ref":"#/components/responses/SafeFailure"},"503":{"$ref":"#/components/responses/SafeFailure"}}}},
+    "/api/v1/organization/tenants/{tenant_id}/invitations/{invitation_id}": {"delete":{"operationId":"revokeOrganizationInvitation","tags":["Workspace"],"summary":"현재 version 초대 폐기","x-implementation-owner":"S39-L3","parameters":[{"name":"tenant_id","in":"path","required":true,"schema":{"$ref":"#/components/schemas/OpaqueId"}},{"name":"invitation_id","in":"path","required":true,"schema":{"$ref":"#/components/schemas/OpaqueId"}},{"name":"expected_version","in":"query","required":true,"schema":{"type":"integer","minimum":1}},{"$ref":"#/components/parameters/IdempotencyKey"},{"$ref":"#/components/parameters/OrganizationExpectedSessionId"}],"responses":{"200":{"description":"현재 version 초대 폐기","headers":{"X-Trace-Id":{"$ref":"#/components/headers/XTraceId"},"ETag":{"$ref":"#/components/headers/ETag"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/OrganizationInvitationEnvelope"}}}},"400":{"$ref":"#/components/responses/BadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/NotFound"},"409":{"$ref":"#/components/responses/Conflict"},"412":{"$ref":"#/components/responses/PreconditionFailed"},"422":{"$ref":"#/components/responses/BadRequest"},"500":{"$ref":"#/components/responses/SafeFailure"},"503":{"$ref":"#/components/responses/SafeFailure"}}}},
+    "/api/v1/organization/tenants/{tenant_id}/members/{user_id}/role": {"patch":{"operationId":"changeOrganizationJoinRole","tags":["Workspace"],"summary":"연결 회원 실제 auth 역할 변경","x-implementation-owner":"S39-L3","parameters":[{"name":"tenant_id","in":"path","required":true,"schema":{"$ref":"#/components/schemas/OpaqueId"}},{"name":"user_id","in":"path","required":true,"schema":{"$ref":"#/components/schemas/OpaqueId"}},{"$ref":"#/components/parameters/IdempotencyKey"},{"$ref":"#/components/parameters/OrganizationExpectedSessionId"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/OrganizationRolePatch"}}}},"responses":{"200":{"description":"연결 회원 실제 auth 역할 변경","headers":{"X-Trace-Id":{"$ref":"#/components/headers/XTraceId"},"ETag":{"$ref":"#/components/headers/ETag"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/OrganizationMemberEnvelope"}}}},"400":{"$ref":"#/components/responses/BadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/NotFound"},"409":{"$ref":"#/components/responses/Conflict"},"412":{"$ref":"#/components/responses/PreconditionFailed"},"422":{"$ref":"#/components/responses/BadRequest"},"500":{"$ref":"#/components/responses/SafeFailure"},"503":{"$ref":"#/components/responses/SafeFailure"}}}},
+    "/api/v1/organization/tenants/{tenant_id}/members/{user_id}/state": {"patch":{"operationId":"changeOrganizationMemberState","tags":["Workspace"],"summary":"조직 workflow 상태 변경","x-implementation-owner":"S39-L3","parameters":[{"name":"tenant_id","in":"path","required":true,"schema":{"$ref":"#/components/schemas/OpaqueId"}},{"name":"user_id","in":"path","required":true,"schema":{"$ref":"#/components/schemas/OpaqueId"}},{"name":"active","in":"query","schema":{"type":"boolean","default":true}},{"$ref":"#/components/parameters/IdempotencyKey"},{"$ref":"#/components/parameters/OrganizationExpectedSessionId"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/OrganizationStatePatch"}}}},"responses":{"200":{"description":"조직 workflow 상태 변경","headers":{"X-Trace-Id":{"$ref":"#/components/headers/XTraceId"},"ETag":{"$ref":"#/components/headers/ETag"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/OrganizationMemberEnvelope"}}}},"400":{"$ref":"#/components/responses/BadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/NotFound"},"409":{"$ref":"#/components/responses/Conflict"},"412":{"$ref":"#/components/responses/PreconditionFailed"},"422":{"$ref":"#/components/responses/BadRequest"},"500":{"$ref":"#/components/responses/SafeFailure"},"503":{"$ref":"#/components/responses/SafeFailure"}}}},
+    "/api/v1/organization/join-requests": {"get":{"operationId":"listOwnOrganizationJoinRequests","tags":["Workspace"],"summary":"현재 본인 가입 신청 상태 조회","x-implementation-owner":"S39-J2","parameters":[],"responses":{"200":{"description":"본인 가입 신청 상태 목록","headers":{"X-Trace-Id":{"$ref":"#/components/headers/XTraceId"},"ETag":{"$ref":"#/components/headers/ETag"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/OrganizationOwnJoinListEnvelope"}}}},"400":{"$ref":"#/components/responses/BadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/NotFound"},"409":{"$ref":"#/components/responses/Conflict"},"412":{"$ref":"#/components/responses/PreconditionFailed"},"422":{"$ref":"#/components/responses/BadRequest"},"500":{"$ref":"#/components/responses/SafeFailure"},"503":{"$ref":"#/components/responses/SafeFailure"}}},"post":{"operationId":"submitOrganizationJoinRequest","tags":["Workspace"],"summary":"본인 조직 가입 신청","x-implementation-owner":"S39-L3","parameters":[{"$ref":"#/components/parameters/IdempotencyKey"},{"$ref":"#/components/parameters/OrganizationExpectedSessionId"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/OrganizationJoinCreate"}}}},"responses":{"202":{"description":"본인 조직 가입 신청","headers":{"X-Trace-Id":{"$ref":"#/components/headers/XTraceId"},"ETag":{"$ref":"#/components/headers/ETag"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/OrganizationJoinEnvelope"}}}},"400":{"$ref":"#/components/responses/BadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/NotFound"},"409":{"$ref":"#/components/responses/Conflict"},"412":{"$ref":"#/components/responses/PreconditionFailed"},"422":{"$ref":"#/components/responses/BadRequest"},"500":{"$ref":"#/components/responses/SafeFailure"},"503":{"$ref":"#/components/responses/SafeFailure"}}}},
+    "/api/v1/organization/join-requests/{request_id}/decision": {"post":{"operationId":"decideOrganizationJoinRequest","tags":["Workspace"],"summary":"pending 신청 승인 또는 거부","x-implementation-owner":"S39-L3","parameters":[{"name":"request_id","in":"path","required":true,"schema":{"$ref":"#/components/schemas/OpaqueId"}},{"$ref":"#/components/parameters/IdempotencyKey"},{"$ref":"#/components/parameters/OrganizationExpectedSessionId"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/OrganizationJoinDecision"}}}},"responses":{"200":{"description":"pending 신청 승인 또는 거부","headers":{"X-Trace-Id":{"$ref":"#/components/headers/XTraceId"},"ETag":{"$ref":"#/components/headers/ETag"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/OrganizationJoinEnvelope"}}}},"400":{"$ref":"#/components/responses/BadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/NotFound"},"409":{"$ref":"#/components/responses/Conflict"},"412":{"$ref":"#/components/responses/PreconditionFailed"},"422":{"$ref":"#/components/responses/BadRequest"},"500":{"$ref":"#/components/responses/SafeFailure"},"503":{"$ref":"#/components/responses/SafeFailure"}}}},
+    "/api/v1/account/profile": {
+      "get": {
+        "operationId": "getOwnAccountProfile", "tags": ["Session"], "summary": "본인 표시 이름과 저장 version 조회", "x-implementation-owner": "S36-C3",
+        "responses": {
+          "200": {"description": "본인 프로필", "headers": {"X-Trace-Id": {"$ref": "#/components/headers/XTraceId"}, "ETag": {"$ref": "#/components/headers/ETag"}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AccountProfileEnvelope"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "412": {"$ref": "#/components/responses/PreconditionFailed"}, "422": {"$ref": "#/components/responses/BadRequest"}, "500": {"$ref": "#/components/responses/SafeFailure"}, "503": {"$ref": "#/components/responses/SafeFailure"}
+        }
+      },
+      "patch": {
+        "operationId": "saveOwnAccountProfile", "tags": ["Session"], "summary": "본인 표시 이름만 원자적 저장", "x-implementation-owner": "S36-C3",
+        "description": "표시한 세션 ID를 원 요청에 고정한다. 인증된 실제 세션과 저장·replay 전에 대조하여 불일치는 409 ACCOUNT_SESSION_CHANGED, 헤더 누락/형식 오류는 422로 거부하며 프로필·요청·감사 변경을 남기지 않는다.",
+        "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}, {"$ref": "#/components/parameters/AccountExpectedSessionId"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AccountProfilePatch"}}}},
+        "responses": {
+          "200": {"description": "표시 이름 저장 영수증", "headers": {"X-Trace-Id": {"$ref": "#/components/headers/XTraceId"}, "ETag": {"$ref": "#/components/headers/ETag"}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AccountProfileMutationEnvelope"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "412": {"$ref": "#/components/responses/PreconditionFailed"}, "422": {"$ref": "#/components/responses/BadRequest"}, "500": {"$ref": "#/components/responses/SafeFailure"}, "503": {"$ref": "#/components/responses/SafeFailure"}
+        }
+      }
+    },
+    "/api/v1/account/devices": {
+      "get": {
+        "operationId": "listOwnAccountDevices", "tags": ["Device"], "summary": "현재 tenant 본인 등록 장치의 안전 projection", "x-implementation-owner": "S36-C3",
+        "parameters": [{"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}}, {"name": "cursor", "in": "query", "schema": {"type": "string", "minLength": 1, "maxLength": 2048}}],
+        "responses": {
+          "200": {"description": "본인 장치 페이지", "headers": {"X-Trace-Id": {"$ref": "#/components/headers/XTraceId"}, "ETag": {"$ref": "#/components/headers/ETag"}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AccountDevicesEnvelope"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "412": {"$ref": "#/components/responses/PreconditionFailed"}, "422": {"$ref": "#/components/responses/BadRequest"}, "500": {"$ref": "#/components/responses/SafeFailure"}, "503": {"$ref": "#/components/responses/SafeFailure"}
+        }
+      }
+    },
+    "/api/v1/account/sessions": {
+      "get": {
+        "operationId": "listOwnAccountSessions", "tags": ["Session"], "summary": "현재 tenant 본인 세션의 안전 projection", "x-implementation-owner": "S36-C3",
+        "parameters": [{"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}}, {"name": "cursor", "in": "query", "schema": {"type": "string", "minLength": 1, "maxLength": 2048}}],
+        "responses": {
+          "200": {"description": "본인 세션 페이지", "headers": {"X-Trace-Id": {"$ref": "#/components/headers/XTraceId"}, "ETag": {"$ref": "#/components/headers/ETag"}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AccountSessionsEnvelope"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "412": {"$ref": "#/components/responses/PreconditionFailed"}, "422": {"$ref": "#/components/responses/BadRequest"}, "500": {"$ref": "#/components/responses/SafeFailure"}, "503": {"$ref": "#/components/responses/SafeFailure"}
+        }
+      }
+    },
+    "/api/v1/workspaces/{id}/studio/approval-policy": {
+      "get": {
+        "operationId": "getStudioApprovalPolicy",
+        "tags": [
+          "Studio"
+        ],
+        "summary": "현재 승인 기한과 정책 관리 권한 조회",
+        "x-implementation-owner": "S24-L2",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "현재 승인 기한과 정책 관리 권한 조회",
+            "headers": {
+              "X-Trace-Id": {
+                "$ref": "#/components/headers/XTraceId"
+              },
+              "ETag": {
+                "$ref": "#/components/headers/ETag"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StudioApprovalPolicyEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      },
+      "patch": {
+        "operationId": "saveStudioApprovalPolicy",
+        "tags": [
+          "Studio"
+        ],
+        "summary": "현재 조직 보안 추가 인증과 정책 CAS로 승인 기한 저장",
+        "x-implementation-owner": "S24-L2",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StudioApprovalPolicyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "현재 조직 보안 추가 인증과 정책 CAS로 승인 기한 저장",
+            "headers": {
+              "X-Trace-Id": {
+                "$ref": "#/components/headers/XTraceId"
+              },
+              "ETag": {
+                "$ref": "#/components/headers/ETag"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StudioApprovalPolicyMutationEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
+    "/api/v1/approval-requests/{id}/withdraw": {
+      "post": {
+        "operationId": "withdrawStudioApprovalRequest",
+        "tags": [
+          "Studio"
+        ],
+        "summary": "본인 현재 Notebook 승인 요청 회수",
+        "x-implementation-owner": "S24-L2",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StudioApprovalWithdrawRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "본인 현재 Notebook 승인 요청 회수",
+            "headers": {
+              "X-Trace-Id": {
+                "$ref": "#/components/headers/XTraceId"
+              },
+              "ETag": {
+                "$ref": "#/components/headers/ETag"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StudioApprovalWithdrawReceiptMutationEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
+    "/api/v1/workspaces/{id}/studio/approval-notices": {
+      "get": {
+        "operationId": "listStudioApprovalNotices",
+        "tags": [
+          "Studio"
+        ],
+        "summary": "현재 Notebook의 본인 접근 가능한 승인 알림 최대 100건",
+        "x-implementation-owner": "S24-L2",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          },
+          {
+            "name": "notebook_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/OpaqueId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "현재 Notebook의 본인 접근 가능한 승인 알림 최대 100건",
+            "headers": {
+              "X-Trace-Id": {
+                "$ref": "#/components/headers/XTraceId"
+              },
+              "ETag": {
+                "$ref": "#/components/headers/ETag"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StudioApprovalNoticesEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
+    "/api/v1/workspaces/{id}/studio/approval-notices/{notification_id}": {
+      "patch": {
+        "operationId": "markStudioApprovalNoticeRead",
+        "tags": [
+          "Studio"
+        ],
+        "summary": "본인 알림 읽음 처리: 정확 알림 ETag와 멱등 키",
+        "x-implementation-owner": "S24-L2",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          },
+          {
+            "name": "notification_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/OpaqueId"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/IfMatch"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StudioApprovalNoticeReadRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "본인 알림 읽음 처리: 정확 알림 ETag와 멱등 키",
+            "headers": {
+              "X-Trace-Id": {
+                "$ref": "#/components/headers/XTraceId"
+              },
+              "ETag": {
+                "$ref": "#/components/headers/ETag"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StudioApprovalNoticeReadReceiptMutationEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
     "/api/v1/session": {
       "get": {
         "operationId": "getSession",
@@ -120,6 +518,32 @@
         "x-implementation-owner": "R1-M8-10",
         "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false, "required": ["theme"], "properties": {"theme": {"type": "string", "enum": ["system", "light", "dark"]}}}}}},
         "responses": {"200": {"$ref": "#/components/responses/SuccessResponse"}, "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "412": {"$ref": "#/components/responses/PreconditionFailed"}, "500": {"$ref": "#/components/responses/SafeFailure"}}
+      }
+    },
+    "/api/v1/session/native/logout": {
+      "post": {
+        "operationId": "logoutCurrentNativeSession",
+        "tags": ["Identity"],
+        "summary": "현재 Native Bearer Session과 Refresh family 철회",
+        "x-implementation-owner": "R1-AND-NATIVE-SELF-LOGOUT-20261013",
+        "description": "Authorization Bearer만 허용하며 Web Cookie 및 혼합 credential은 거부한다. 만료된 access도 digest가 현재 Native Session과 일치하면 본인 철회를 허용한다. 재시도에는 replayed=true를 반환한다.",
+        "parameters": [],
+        "requestBody": {
+          "required": false,
+          "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false, "maxProperties": 0}}}
+        },
+        "responses": {
+          "200": {"$ref": "#/components/responses/NativeSelfLogoutResponse"},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "412": {"$ref": "#/components/responses/PreconditionFailed"},
+          "431": {"$ref": "#/components/responses/RequestHeaderFieldsTooLarge"},
+          "500": {"$ref": "#/components/responses/SafeFailure"},
+          "503": {"$ref": "#/components/responses/ServiceUnavailable"}
+        }
       }
     },
     "/api/v1/session/logout": {
@@ -222,7 +646,10 @@
       "get": {
         "operationId": "getWorkspaceNotebookContext", "tags": ["Workspace"],
         "summary": "선택 Notebook Context 안전 조회", "x-implementation-owner": "R1-M8-10",
-        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }, { "name": "notebook_id", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } }],
+        "description": "미지정은 기존 기본 정상 대화다. run_id와 studio_job_id는 중복 없이 하나만 지정할 수 있다. 같은 Notebook·현재 자료 접근과 원요청자를 서버에서 검증하며 새 binding/Job/감사를 생성하지 않는다. 검증된 실패 Run은 409 QUESTION_FAILED이고 기존 정상 이력은 유지된다. 기존 공유 Job GET 권한은 변경하지 않는다.",
+        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }, { "name": "notebook_id", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } },
+          { "name": "run_id", "in": "query", "required": false, "description": "정확 Run 선택. studio_job_id와 상호배타적.", "schema": { "$ref": "#/components/schemas/OpaqueId" } },
+          { "name": "studio_job_id", "in": "query", "required": false, "description": "본인 Job 복귀 사전 검증. run_id와 상호배타적.", "schema": { "$ref": "#/components/schemas/OpaqueId" } }],
         "responses": {
           "200": { "description": "Selected Notebook Context", "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NotebookContextEnvelope" } } } },
           "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" },
@@ -553,6 +980,42 @@
         }
       }
     },
+    "/api/v1/workspaces/{id}/connectors/mcp-open-law-go-kr/law-search": {"post":{"operationId":"searchOpenLaw","tags":["Source"],"x-implementation-owner":"S15-L3","summary":"현재 Notebook의 국가법령 검증·소비","parameters":[{"$ref":"#/components/parameters/ResourceId"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/OpenLawSearchRequest"}}}},"responses":{"200":{"description":"검증한 법령 결과","headers":{"X-Trace-Id":{"$ref":"#/components/headers/XTraceId"},"ETag":{"$ref":"#/components/headers/ETag"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/OpenLawSearchEnvelope"}}}},"400":{"$ref":"#/components/responses/BadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/NotFound"},"409":{"$ref":"#/components/responses/Conflict"},"412":{"$ref":"#/components/responses/PreconditionFailed"},"413":{"$ref":"#/components/responses/SafeFailure"},"422":{"$ref":"#/components/responses/SafeFailure"},"500":{"$ref":"#/components/responses/SafeFailure"},"502":{"$ref":"#/components/responses/SafeFailure"},"503":{"$ref":"#/components/responses/SafeFailure"},"504":{"$ref":"#/components/responses/SafeFailure"}}}},
+    "/api/v1/workspaces/{id}/connectors/mcp-open-law-go-kr/law-preview": {"post":{"operationId":"previewOpenLaw","tags":["Source"],"x-implementation-owner":"S15-L3","summary":"현재 Notebook의 국가법령 검증·소비","parameters":[{"$ref":"#/components/parameters/ResourceId"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/OpenLawPreviewRequest"}}}},"responses":{"200":{"description":"검증한 법령 결과","headers":{"X-Trace-Id":{"$ref":"#/components/headers/XTraceId"},"ETag":{"$ref":"#/components/headers/ETag"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/OpenLawPreviewEnvelope"}}}},"400":{"$ref":"#/components/responses/BadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/NotFound"},"409":{"$ref":"#/components/responses/Conflict"},"412":{"$ref":"#/components/responses/PreconditionFailed"},"413":{"$ref":"#/components/responses/SafeFailure"},"422":{"$ref":"#/components/responses/SafeFailure"},"500":{"$ref":"#/components/responses/SafeFailure"},"502":{"$ref":"#/components/responses/SafeFailure"},"503":{"$ref":"#/components/responses/SafeFailure"},"504":{"$ref":"#/components/responses/SafeFailure"}}}},
+    "/api/v1/workspaces/{id}/connectors/mcp-open-law-go-kr/law-imports": {"post":{"operationId":"importOpenLaw","tags":["Source"],"x-implementation-owner":"S15-L3","summary":"현재 Notebook의 국가법령 검증·소비","parameters":[{"$ref":"#/components/parameters/ResourceId"},{"$ref":"#/components/parameters/IdempotencyKey"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/OpenLawImportRequest"}}}},"responses":{"200":{"description":"검증한 법령 결과","headers":{"X-Trace-Id":{"$ref":"#/components/headers/XTraceId"},"ETag":{"$ref":"#/components/headers/ETag"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/OpenLawImportEnvelope"}}}},"201":{"description":"검증한 법령 결과","headers":{"X-Trace-Id":{"$ref":"#/components/headers/XTraceId"},"ETag":{"$ref":"#/components/headers/ETag"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/OpenLawImportEnvelope"}}}},"400":{"$ref":"#/components/responses/BadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/NotFound"},"409":{"$ref":"#/components/responses/Conflict"},"412":{"$ref":"#/components/responses/PreconditionFailed"},"413":{"$ref":"#/components/responses/SafeFailure"},"422":{"$ref":"#/components/responses/SafeFailure"},"500":{"$ref":"#/components/responses/SafeFailure"},"502":{"$ref":"#/components/responses/SafeFailure"},"503":{"$ref":"#/components/responses/SafeFailure"},"504":{"$ref":"#/components/responses/SafeFailure"}}}},
+    "/api/v1/workspaces/{id}/source-versions/{version_id}/law-snapshot": {"get":{"operationId":"getOpenLawSnapshot","tags":["Source"],"x-implementation-owner":"S15-L3","summary":"현재 Notebook의 국가법령 검증·소비","parameters":[{"$ref":"#/components/parameters/ResourceId"},{"name":"version_id","in":"path","required":true,"schema":{"$ref":"#/components/schemas/OpaqueId"}},{"name":"notebook_id","in":"query","required":true,"schema":{"$ref":"#/components/schemas/OpaqueId"}}],"responses":{"200":{"description":"검증한 법령 결과","headers":{"X-Trace-Id":{"$ref":"#/components/headers/XTraceId"},"ETag":{"$ref":"#/components/headers/ETag"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/OpenLawSnapshotEnvelope"}}}},"400":{"$ref":"#/components/responses/BadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/NotFound"},"409":{"$ref":"#/components/responses/Conflict"},"412":{"$ref":"#/components/responses/PreconditionFailed"},"413":{"$ref":"#/components/responses/SafeFailure"},"422":{"$ref":"#/components/responses/SafeFailure"},"500":{"$ref":"#/components/responses/SafeFailure"},"502":{"$ref":"#/components/responses/SafeFailure"},"503":{"$ref":"#/components/responses/SafeFailure"},"504":{"$ref":"#/components/responses/SafeFailure"}}}},
+    "/api/v1/workspaces/{id}/website-imports": {
+      "post": {
+        "operationId": "importWebsiteSource", "tags": ["Source"], "x-implementation-owner": "S13-W3",
+        "summary": "확인된 공개 HTTPS 본문 수집·원자 등록(LLM 이해 아님)",
+        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WebsiteImportRequest" } } } },
+        "responses": {
+          "201": { "description": "원문·텍스트·SourceVersion·snapshot·Notebook 원자 확정", "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WebsiteImportEnvelope" } } } },
+          "200": { "description": "동일 요청 완료 replay", "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WebsiteImportEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }, "409": { "$ref": "#/components/responses/Conflict" },
+          "404": { "$ref": "#/components/responses/NotFound" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" },
+          "413": { "$ref": "#/components/responses/SafeFailure" }, "415": { "$ref": "#/components/responses/SafeFailure" }, "422": { "$ref": "#/components/responses/SafeFailure" }, "502": { "$ref": "#/components/responses/SafeFailure" },
+          "503": { "$ref": "#/components/responses/SafeFailure" }, "504": { "$ref": "#/components/responses/SafeFailure" }
+        }
+      }
+    },
+    "/api/v1/workspaces/{id}/source-versions/{version_id}/website-snapshot": {
+      "get": {
+        "operationId": "getWebsiteSnapshot", "tags": ["Source"], "x-implementation-owner": "S13-W3",
+        "summary": "현재 사용자·Notebook·웹 Version snapshot 정확13필드 조회",
+        "parameters": [{ "$ref": "#/components/parameters/ResourceId" },
+          { "name": "version_id", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } },
+          { "name": "notebook_id", "in": "query", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } }],
+        "responses": {
+          "200": { "description": "본문 없는 불변 snapshot", "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WebsiteSnapshotEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }, "503": { "$ref": "#/components/responses/SafeFailure" }
+          ,"404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" }
+        }
+      }
+    },
     "/api/v1/workspaces/{id}/sources": {
       "get": {
         "operationId": "listWorkspaceSources",
@@ -560,6 +1023,7 @@
           "Source"
         ],
         "summary": "Workspace Source 목록 조회",
+        "description": "기본·nonweb 항목은 정확6필드. website_source_version_id 지정 시 해당 접근 가능한 현재 웹 Version 한 항목만 website 원문(UTF8 512KiB·전체hash검증)을 추가. 전체 응답8MiB 이하.",
         "x-implementation-owner": "R1-M6-05",
         "responses": {
           "200": {
@@ -589,7 +1053,8 @@
         },
         "parameters": [
           { "$ref": "#/components/parameters/ResourceId" },
-          { "name": "notebook_id", "in": "query", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } }
+          { "name": "notebook_id", "in": "query", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } },
+          { "name": "website_source_version_id", "in": "query", "required": false, "schema": { "$ref": "#/components/schemas/OpaqueId" } }
         ]
       },
       "post": {
@@ -597,7 +1062,7 @@
         "tags": [
           "Source"
         ],
-        "summary": "단일 PDF Workspace Source 등록",
+        "summary": "단일 PDF/TXT/Markdown/CSV Workspace Source 등록",
         "x-implementation-owner": "R1-M6-10-C01",
         "responses": {
           "202": {
@@ -662,7 +1127,7 @@
             "required": true,
             "schema": {
               "type": "string",
-              "pattern": "^[^/\\\\\\u0000-\\u001f]{1,251}\\.pdf$",
+              "pattern": "^[^/\\\\\\u0000-\\u001f]{1,251}\\.(pdf|txt|md|csv|png|jpg|jpeg)$",
               "maxLength": 255
             }
           },
@@ -681,7 +1146,29 @@
                 "type": "string",
                 "format": "binary"
               }
-            }
+            },
+            "text/plain": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            },
+            "text/markdown": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            },
+            "text/csv": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            },
+            "image/png": { "schema": { "type": "string", "format": "binary", "maxLength": 26214400 } },
+            "image/jpeg": { "schema": { "type": "string", "format": "binary", "maxLength": 26214400 } },
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": { "schema": { "type": "string", "format": "binary", "maxLength": 26214400 } },
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document": { "schema": { "type": "string", "format": "binary", "maxLength": 26214400 } }
           }
         }
       }
@@ -842,7 +1329,8 @@
             "name": "citation_id", "in": "path", "required": true,
             "schema": { "$ref": "#/components/schemas/OpaqueId" }
           },
-          { "name": "notebook_id", "in": "query", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } }
+          { "name": "notebook_id", "in": "query", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } },
+          { "name": "representation", "in": "query", "required": false, "schema": { "type": "string", "enum": ["audio"] }, "description": "음성 Citation에 한해 원본 WAV를 반환한다. 생략하면 검증된 전사 JSON을 반환한다." }
         ],
         "responses": {
           "200": {
@@ -854,12 +1342,19 @@
                 "schema": { "type": "integer", "minimum": 1 }
               },
               "X-Citation-Locator-Kind": {
-                "schema": { "type": "string", "enum": ["page", "section"] }
+                "schema": { "type": "string", "enum": ["page", "section", "image_region", "sheet_cell", "docx_block", "pptx_block", "audio_segment"] }
+              },
+              "X-Citation-Region": {
+                "schema": { "type": "string", "pattern": "^(0|[1-9][0-9]*)(,(0|[1-9][0-9]*)){5}$", "description": "EXIF 보정 표시 기준 x,y,width,height,image_width,image_height. 크기와 영역 경계는 서버에서 검증한다." }
               }
             },
             "content": {
               "application/pdf": { "schema": { "type": "string", "format": "binary" } },
-              "text/plain": { "schema": { "type": "string", "maxLength": 1048576 } }
+              "text/plain": { "schema": { "type": "string", "maxLength": 1048576 } },
+              "image/png": { "schema": { "type": "string", "format": "binary" } },
+              "image/jpeg": { "schema": { "type": "string", "format": "binary" } },
+              "audio/wav": { "schema": { "type": "string", "format": "binary", "description": "최대25MiB 원본 WAV, private/no-store·nosniff. 현재 권한·Version·원본/전사 결속을 재검증한다." } },
+              "application/json": { "schema": { "oneOf": [{ "$ref": "#/components/schemas/SheetCellContent" }, { "$ref": "#/components/schemas/DocxBlockContent" }, { "$ref": "#/components/schemas/PptxBlockContent" }, { "$ref": "#/components/schemas/AudioSegmentContent" }] } }
             }
           },
           "400": { "$ref": "#/components/responses/BadRequest" },
@@ -1975,7 +2470,9 @@
         "x-implementation-owner": "R1-M6-05",
         "responses": {
           "201": {
-            "$ref": "#/components/responses/CreatedResponse"
+            "description":"새 재처리 Run 저장. Mode 미지정은 기존8필드, 명시는 저장된 processing_mode와 현재 scope 설정 auto_requeue_configured를 함께 반환한다. 설정 활성은 자동 실행·성공 증거가 아니다.",
+            "headers":{"X-Trace-Id":{"$ref":"#/components/headers/XTraceId"},"ETag":{"$ref":"#/components/headers/ETag"}},
+            "content":{"application/json":{"schema":{"$ref":"#/components/schemas/SourceReprocessingEnvelope"}}}
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
@@ -2008,7 +2505,8 @@
           }
         ],
         "requestBody": {
-          "$ref": "#/components/requestBodies/ResourceMutation"
+          "required":true,
+          "content":{"application/json":{"schema":{"$ref":"#/components/schemas/SourceReprocessingMutation"}}}
         }
       }
     },
@@ -2776,11 +3274,14 @@
         "operationId": "downloadStudioOutputVersionExport",
         "tags": ["Studio"],
         "summary": "승인된 Studio 산출물 Version의 실제 파일 다운로드",
+        "description": "추가 인증 target은 studio-export- + SHA256(JSON.stringify([workspace_id,notebook_id,output_id,version_id,format_name])) 소문자 64자이다. final_approval_or_knowledge_registration 그룹, 현재 사용자·세션·정책 및 studio.export.{format_name} 작업과 같은 Idempotency-Key에 결속된다. 토큰은 헤더로만 전송한다.",
         "x-implementation-owner": "R1-M8-09",
         "parameters": [
           { "$ref": "#/components/parameters/ResourceId" },
           { "name": "version_id", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } },
           { "name": "format_name", "in": "path", "required": true, "schema": { "type": "string", "enum": ["docx", "pdf", "xlsx", "csv", "json", "svg", "png"] } },
+          { "name": "X-Daon-Step-Up-Authorization", "in": "header", "required": true, "schema": { "type": "string", "minLength": 1, "maxLength": 4096 } },
+          { "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string", "minLength": 16, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" } },
           { "name": "workspace_id", "in": "query", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } },
           { "name": "notebook_id", "in": "query", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } }
         ],
@@ -3339,6 +3840,67 @@
         "description": "Windows Native 계층만 HTTPS로 호출하며 opaque credential은 브라우저 JavaScript에 전달하지 않는다."
       }
     },
+    "/api/v1/session/android/transactions": {
+      "post": {
+        "operationId": "beginAndroidBrowserAuthorization",
+        "tags": ["Identity"],
+        "summary": "Android 브라우저 인증 거래 시작",
+        "x-implementation-owner": "ANDROID-BROWSER-AUTH-20261012-T2",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AndroidTransactionRequest"}}}},
+        "responses": {
+          "201": {"$ref": "#/components/responses/AndroidTransactionResponse"},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "412": {"$ref": "#/components/responses/PreconditionFailed"},
+          "429": {"$ref": "#/components/responses/AndroidRateLimited"},
+          "500": {"$ref": "#/components/responses/SafeFailure"}
+        },
+        "description": "등록된 Android client와 HTTPS App Link redirect만 허용한다. Cookie와 Bearer를 받지 않는다."
+      }
+    },
+    "/api/v1/session/android/authorize": {
+      "post": {
+        "operationId": "authorizeAndroidBrowserTransaction",
+        "tags": ["Identity"],
+        "summary": "Web 브라우저 세션으로 Android 거래 승인",
+        "x-implementation-owner": "ANDROID-BROWSER-AUTH-20261012-T2",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AndroidAuthorizeRequest"}}}},
+        "responses": {
+          "200": {"$ref": "#/components/responses/AndroidAuthorizeResponse"},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "412": {"$ref": "#/components/responses/PreconditionFailed"},
+          "500": {"$ref": "#/components/responses/SafeFailure"}
+        },
+        "description": "현재 Web Cookie와 same-origin BFF CSRF 검증 후 등록 App Link URL만 반환한다."
+      }
+    },
+    "/api/v1/session/android/exchange": {
+      "post": {
+        "operationId": "exchangeAndroidBrowserCode",
+        "tags": ["Identity"],
+        "summary": "Android 일회용 코드와 PKCE 교환",
+        "x-implementation-owner": "ANDROID-BROWSER-AUTH-20261012-T2",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AndroidExchangeRequest"}}}},
+        "responses": {
+          "201": {"$ref": "#/components/responses/AndroidCredentialSessionResponse"},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "412": {"$ref": "#/components/responses/PreconditionFailed"},
+          "500": {"$ref": "#/components/responses/SafeFailure"}
+        },
+        "description": "Cookie 없이 Android Native Session credential을 발급한다."
+      }
+    },
     "/api/v1/session/oidc/transactions": {
       "post": {
         "operationId": "beginOidcLogin",
@@ -3782,25 +4344,184 @@
         }
       }
     },
-    "/api/v1/workspaces/{id}/operations/status": {
+    "/api/v1/system/operations/status": {
       "get": {
-        "operationId": "getWorkspaceOperationsStatus", "tags": ["Operations"],
-        "summary": "Workspace Provider API Storage Sync Queue 안전 운영상태", "x-implementation-owner": "R1-M8-10",
-        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }],
+        "operationId": "getSystemOperationsStatus",
+        "tags": [
+          "Operations"
+        ],
+        "x-implementation-owner": "S44-M2-S",
+        "summary": "현재 system-admin 전용 안전 시스템 관측. Workspace 자료 집계·Provider 호출·쓰기 없음",
+        "parameters": [
+          {
+            "name": "include_capacity",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1"
+              ]
+            }
+          }
+        ],
         "responses": {
           "200": {
-            "description": "Workspace operations status",
-            "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } },
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OperationsStatusEnvelope" } } }
+            "description": "시스템 상태와 미수집·미구현 범위 include_capacity=1은 기본 자원12행 뒤 고정 WSL CPU/RAM4행만 추가하며 미지정 응답은 기존12행이다.",
+            "headers": {
+              "ETag": {
+                "$ref": "#/components/headers/ETag"
+              },
+              "X-Trace-Id": {
+                "$ref": "#/components/headers/XTraceId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/SystemOperationsStatusEnvelope"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SystemOperationsStatusCapacityEnvelope"
+                    }
+                  ]
+                }
+              }
+            }
           },
-          "400": { "$ref": "#/components/responses/BadRequest" },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "404": { "$ref": "#/components/responses/NotFound" },
-          "409": { "$ref": "#/components/responses/Conflict" },
-          "412": { "$ref": "#/components/responses/PreconditionFailed" },
-          "500": { "$ref": "#/components/responses/SafeFailure" },
-          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
+    "/api/v1/workspaces/{id}/operations/status": {
+      "get": {
+        "operationId": "getWorkspaceOperationsStatus",
+        "tags": [
+          "Operations"
+        ],
+        "summary": "Workspace Provider API Storage Sync Queue 안전 운영상태",
+        "x-implementation-owner": "R1-M8-10",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "self",
+                "workspace_visible"
+              ],
+              "default": "self"
+            }
+          },
+          {
+            "name": "include_readiness",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1"
+              ]
+            }
+          },
+          {
+            "name": "include_capacity",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Workspace 운영 상태. include_readiness 미지정은 기존 event_counts 9행, 정확한 값 1을 지정한 요청만 Readiness 포함 15행을 반환한다. 서버와 클라이언트가 요청별 분기를 검증한다. include_capacity=1은 기본 자원12행 뒤 고정 WSL CPU/RAM4행만 추가하며 미지정 응답은 기존12행이다.",
+            "headers": {
+              "X-Trace-Id": {
+                "$ref": "#/components/headers/XTraceId"
+              },
+              "ETag": {
+                "$ref": "#/components/headers/ETag"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/OperationsStatusEnvelope"
+                    },
+                    {
+                      "$ref": "#/components/schemas/OperationsStatusReadinessEnvelope"
+                    },
+                    {
+                      "$ref": "#/components/schemas/OperationsStatusCapacityEnvelope"
+                    },
+                    {
+                      "$ref": "#/components/schemas/OperationsStatusReadinessCapacityEnvelope"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
         }
       }
     },
@@ -3921,7 +4642,7 @@
     "/api/v1/sources/{id}/deletion-requests": {
       "post": {
         "operationId": "createDeletionRequest", "tags": ["Retention"],
-        "summary": "Source를 즉시 비활성화하고 유예 삭제 요청 생성", "x-implementation-owner": "R1-M5-06",
+        "summary": "현재 Notebook과 추가 인증에 결속해 Source 영구 정리 요청·재시도", "x-implementation-owner": "R1-M5-06",
         "parameters": [{ "$ref": "#/components/parameters/ResourceId" }, { "$ref": "#/components/parameters/IfMatch" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DeletionCreateRequest" } } } },
         "responses": { "201": { "$ref": "#/components/responses/RetentionResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" } }
@@ -3970,13 +4691,22 @@
         "responses": { "200": { "$ref": "#/components/responses/LegalHoldResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" } }
       }
     },
+    "/api/v1/backups/selection-previews": {
+      "post": {
+        "operationId": "previewLineageSelection", "tags": ["Recovery"],
+        "summary": "현재 권한의 원 계보 선택을 쓰기 없이 사전 확인", "x-implementation-owner": "R1-M5-07",
+        "parameters": [],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LineageSelectionPreviewRequest" } } } },
+        "responses": { "200": { "$ref": "#/components/responses/LineageSelectionPreviewResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "413": { "$ref": "#/components/responses/SafeFailure" }, "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" } }
+      }
+    },
     "/api/v1/backups": {
       "post": {
         "operationId": "createBackup", "tags": ["Recovery"],
         "summary": "조직 관리자 수동 또는 자동 Backup 요청", "x-implementation-owner": "R1-M5-07",
         "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BackupCreateRequest" } } } },
-        "responses": { "201": { "$ref": "#/components/responses/BackupResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" } }
+        "responses": { "201": { "$ref": "#/components/responses/BackupResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "413": { "$ref": "#/components/responses/SafeFailure" }, "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" } }
       },
       "get": {
         "operationId": "listBackups", "tags": ["Recovery"],
@@ -3993,13 +4723,20 @@
         "responses": { "200": { "$ref": "#/components/responses/BackupResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" } }
       }
     },
+    "/api/v1/backups/{id}/restore-destinations": {
+      "get": {
+        "operationId":"listRestoreDestinations","tags":["Recovery"],"summary":"현재 v3 접근·서명 registry의 안전 목적지 요약","x-implementation-owner":"S44-D2-R4",
+        "parameters":[{"$ref":"#/components/parameters/ResourceId"}],
+        "responses":{"200":{"$ref":"#/components/responses/RegisteredDestinationsResponse"},"400":{"$ref":"#/components/responses/BadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/NotFound"},"409":{"$ref":"#/components/responses/Conflict"},"412":{"$ref":"#/components/responses/PreconditionFailed"},"500":{"$ref":"#/components/responses/SafeFailure"},"503":{"$ref":"#/components/responses/ServiceUnavailable"}}
+      }
+    },
     "/api/v1/backups/{id}/restore-previews": {
       "post": {
         "operationId": "createRestorePreview", "tags": ["Recovery"],
         "summary": "현재 Retention을 반영한 격리 Restore Preview", "x-implementation-owner": "R1-M5-07",
         "parameters": [{ "$ref": "#/components/parameters/ResourceId" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RestorePreviewRequest" } } } },
-        "responses": { "201": { "$ref": "#/components/responses/RestoreResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" } }
+        "responses": { "201": { "$ref": "#/components/responses/RestoreResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" } }
       }
     },
     "/api/v1/restore-requests/{id}": {
@@ -4013,10 +4750,10 @@
     "/api/v1/restore-requests/{id}/execute": {
       "post": {
         "operationId": "executeRestore", "tags": ["Recovery"],
-        "summary": "새 Step-up으로 Fixture-only 격리 Restore 실행", "x-implementation-owner": "R1-M5-07",
+        "summary": "별도 Step-up으로 등록 v3 격리 복원 실행 및 기존 Fixture 계약 보존", "x-implementation-owner": "R1-M5-07",
         "parameters": [{ "$ref": "#/components/parameters/ResourceId" }, { "$ref": "#/components/parameters/IfMatch" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RestoreExecuteRequest" } } } },
-        "responses": { "200": { "$ref": "#/components/responses/RestoreResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" } }
+        "responses": { "200": { "$ref": "#/components/responses/RestoreResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" } }
       }
     },
     "/api/v1/workspaces/{id}/model-defaults": {
@@ -4128,6 +4865,12 @@
   },
   "components": {
     "parameters": {
+      "OrganizationExpectedSessionId": {"name":"X-Daon-Expected-Session-Id","in":"header","required":true,"description":"S39 다섯 관리 쓰기와 S40 신청의 원 세션을 변경 및 replay 전에 비교한다.","schema":{"$ref":"#/components/schemas/OpaqueId"}},
+      "AccountExpectedSessionId": {
+        "name": "X-Daon-Expected-Session-Id", "in": "header", "required": true,
+        "description": "프로필 PATCH에만 필수. 표시 시 읽은 원래 세션 ID를 본문·멱등 키와 함께 고정하며 현재 인증 세션과 저장·replay 전에 비교한다.",
+        "schema": {"$ref": "#/components/schemas/OpaqueId"}
+      },
       "ResourceId": {
         "name": "id",
         "in": "path",
@@ -4731,6 +5474,26 @@
           }
         }
       },
+      "AndroidTransactionResponse": {
+        "description": "Android 브라우저 인증 거래",
+        "headers": {"X-Trace-Id": {"$ref": "#/components/headers/XTraceId"}},
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AndroidTransactionEnvelope"}}}
+      },
+      "AndroidAuthorizeResponse": {
+        "description": "등록된 Android App Link 승인 URL",
+        "headers": {"X-Trace-Id": {"$ref": "#/components/headers/XTraceId"}},
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AndroidAuthorizeEnvelope"}}}
+      },
+      "AndroidCredentialSessionResponse": {
+        "description": "Android Native opaque credential과 Session projection",
+        "headers": {"X-Trace-Id": {"$ref": "#/components/headers/XTraceId"}},
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/NativeCredentialSessionEnvelope"}}}
+      },
+      "AndroidRateLimited": {
+        "description": "Android 거래 시작 속도 제한",
+        "headers": {"X-Trace-Id": {"$ref": "#/components/headers/XTraceId"}},
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SafeErrorEnvelope"}}}
+      },
       "OidcLoginStartResponse": {
         "description": "OIDC PKCE 거래 생성",
         "headers": {
@@ -4796,6 +5559,11 @@
         },
         "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CurrentSessionLogoutEnvelope" } } }
       },
+      "NativeSelfLogoutResponse": {
+        "description": "현재 Native Session과 Refresh family 철회; Cookie를 설정하지 않음",
+        "headers": {"X-Trace-Id": {"$ref": "#/components/headers/XTraceId"}, "ETag": {"$ref": "#/components/headers/ETag"}},
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CurrentSessionLogoutEnvelope"}}}
+      },
       "KnowledgePackageListResponse": {
         "description": "현재 접근 가능한 승인 Knowledge Package",
         "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } },
@@ -4831,6 +5599,11 @@
         "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } },
         "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LegalHoldEnvelope" } } }
       },
+      "LineageSelectionPreviewResponse": {
+        "description": "현재 접근 가능한 exact 계보 선택의 사전 확인이며 Backup 생성이 아님",
+        "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LineageSelectionPreviewEnvelope" } } }
+      },
       "BackupResponse": {
         "description": "검증된 Backup 또는 Backup 목록",
         "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } },
@@ -4839,10 +5612,425 @@
       "RestoreResponse": {
         "description": "Restore Preview·상태·검증 결과",
         "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } },
-        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RecoveryEnvelope" } } }
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RestoreEnvelope" } } }
+      },
+      "RegisteredDestinationsResponse": {
+        "description":"등록된 목적지의 안전4필드만 반환",
+        "headers":{"X-Trace-Id":{"$ref":"#/components/headers/XTraceId"},"ETag":{"$ref":"#/components/headers/ETag"}},
+        "content":{"application/json":{"schema":{"$ref":"#/components/schemas/RegisteredDestinationsEnvelope"}}}
       }
     },
     "schemas": {
+      "OrganizationMeta": {"type":"object","additionalProperties":false,"required":["trace_id"],"properties":{"trace_id":{"$ref":"#/components/schemas/OpaqueId"}}},
+      "OrganizationManagedTenant": {"type":"object","additionalProperties":false,"required":["tenant_id","display_name"],"properties":{"tenant_id":{"$ref":"#/components/schemas/OpaqueId"},"display_name":{"type":"string","minLength":1,"maxLength":160}}},
+      "OrganizationManagedWorkspace": {"type":"object","additionalProperties":false,"required":["workspace_id","display_name"],"properties":{"workspace_id":{"$ref":"#/components/schemas/OpaqueId"},"display_name":{"type":"string","minLength":1,"maxLength":160}}},
+      "OrganizationInvitation": {"type":"object","additionalProperties":false,"required":["invitation_id","tenant_id","workspace_id","created_by","expires_at","max_uses","used_count","state","version","created_at","updated_at"],"properties":{"invitation_id":{"$ref":"#/components/schemas/OpaqueId"},"tenant_id":{"$ref":"#/components/schemas/OpaqueId"},"workspace_id":{"type":["string","null"],"minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},"created_by":{"$ref":"#/components/schemas/OpaqueId"},"expires_at":{"type":"string","format":"date-time"},"max_uses":{"type":"integer","minimum":1,"maximum":1000000},"used_count":{"type":"integer","minimum":0},"state":{"type":"string","enum":["active","expired","revoked"]},"version":{"type":"integer","minimum":1},"created_at":{"type":"string","format":"date-time"},"updated_at":{"type":"string","format":"date-time"}}},
+      "OrganizationMember": {"type":"object","additionalProperties":false,"required":["tenant_id","user_id","role","state","version","updated_at","join_workspace_id","access_role","access_state","access_version"],"properties":{"tenant_id":{"$ref":"#/components/schemas/OpaqueId"},"user_id":{"$ref":"#/components/schemas/OpaqueId"},"role":{"type":"string","minLength":1,"maxLength":160},"state":{"type":"string","enum":["active","suspended"]},"version":{"type":"integer","minimum":1},"updated_at":{"type":"string","format":"date-time"},"join_workspace_id":{"type":["string","null"],"minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},"access_role":{"type":["string","null"]},"access_state":{"type":["string","null"],"enum":["active","suspended",null]},"access_version":{"type":["integer","null"],"minimum":1}}},
+      "OrganizationJoin": {"type":"object","additionalProperties":false,"required":["request_id","tenant_id","user_id","invitation_id","state","decision_reason","decided_by","version","created_at","updated_at"],"properties":{"request_id":{"$ref":"#/components/schemas/OpaqueId"},"tenant_id":{"$ref":"#/components/schemas/OpaqueId"},"user_id":{"$ref":"#/components/schemas/OpaqueId"},"invitation_id":{"type":["string","null"],"minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},"state":{"type":"string","enum":["pending","approved","rejected"]},"decision_reason":{"type":["string","null"],"maxLength":1000},"decided_by":{"type":["string","null"],"minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},"version":{"type":"integer","minimum":1},"created_at":{"type":"string","format":"date-time"},"updated_at":{"type":"string","format":"date-time"}}},
+      "OrganizationInvitationCreate": {"type":"object","additionalProperties":false,"required":["workspace_id","code","expires_at","max_uses"],"properties":{"workspace_id":{"$ref":"#/components/schemas/OpaqueId"},"code":{"type":"string","minLength":1,"maxLength":160,"writeOnly":true},"expires_at":{"type":"string","format":"date-time"},"max_uses":{"type":"integer","minimum":1,"maximum":1000000}}},
+      "OrganizationRolePatch": {"type":"object","additionalProperties":false,"required":["role","workspace_id","expected_version","expected_auth_version"],"properties":{"role":{"type":"string","enum":["viewer","editor","reviewer","approver"]},"workspace_id":{"$ref":"#/components/schemas/OpaqueId"},"expected_version":{"type":"integer","minimum":1},"expected_auth_version":{"type":"integer","minimum":1},"reason":{"type":["string","null"],"maxLength":1000}}},
+      "OrganizationStatePatch": {"type":"object","additionalProperties":false,"required":["expected_version"],"properties":{"expected_version":{"type":"integer","minimum":1},"reason":{"type":["string","null"],"maxLength":1000}}},
+      "OrganizationJoinDecision": {"type":"object","additionalProperties":false,"required":["approved","expected_version"],"properties":{"approved":{"type":"boolean"},"expected_version":{"type":"integer","minimum":1},"reason":{"type":["string","null"],"maxLength":1000},"role":{"type":"string","enum":["member"],"default":"member"}}},
+      "OrganizationJoinCreate": {"type":"object","additionalProperties":false,"required":["invitation_code"],"properties":{"invitation_code":{"type":"string","minLength":1,"maxLength":160,"writeOnly":true}}},
+      "OrganizationTenantsEnvelope": {"type":"object","additionalProperties":false,"required":["data","meta"],"properties":{"data":{"type":"array","items":{"$ref":"#/components/schemas/OrganizationManagedTenant"}},"meta":{"$ref":"#/components/schemas/OrganizationMeta"}}},
+      "OrganizationWorkspacesEnvelope": {"type":"object","additionalProperties":false,"required":["data","meta"],"properties":{"data":{"type":"array","items":{"$ref":"#/components/schemas/OrganizationManagedWorkspace"}},"meta":{"$ref":"#/components/schemas/OrganizationMeta"}}},
+      "OrganizationInvitationsEnvelope": {"type":"object","additionalProperties":false,"required":["data","meta"],"properties":{"data":{"type":"array","items":{"$ref":"#/components/schemas/OrganizationInvitation"}},"meta":{"$ref":"#/components/schemas/OrganizationMeta"}}},
+      "OrganizationInvitationEnvelope": {"type":"object","additionalProperties":false,"required":["data","meta"],"properties":{"data":{"$ref":"#/components/schemas/OrganizationInvitation"},"meta":{"$ref":"#/components/schemas/OrganizationMeta"}}},
+      "OrganizationMemberEnvelope": {"type":"object","additionalProperties":false,"required":["data","meta"],"properties":{"data":{"$ref":"#/components/schemas/OrganizationMember"},"meta":{"$ref":"#/components/schemas/OrganizationMeta"}}},
+      "OrganizationJoinEnvelope": {"type":"object","additionalProperties":false,"required":["data","meta"],"properties":{"data":{"$ref":"#/components/schemas/OrganizationJoin"},"meta":{"$ref":"#/components/schemas/OrganizationMeta"}}},
+      "OrganizationOwnJoinListEnvelope": {"type":"object","additionalProperties":false,"required":["data","meta"],"properties":{"data":{"type":"array","items":{"$ref":"#/components/schemas/OrganizationJoin"}},"meta":{"$ref":"#/components/schemas/OrganizationMeta"}}},
+      "AccountMeta": {"type": "object", "additionalProperties": false, "required": ["trace_id"], "properties": {"trace_id": {"$ref": "#/components/schemas/OpaqueId"}}},
+      "AccountProfile": {"type": "object", "additionalProperties": false, "required": ["display_name", "version"], "properties": {
+        "display_name": {"type": ["string", "null"], "minLength": 1, "maxLength": 80}, "version": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}}},
+      "AccountProfilePatch": {"type": "object", "additionalProperties": false, "required": ["display_name", "expected_version"], "properties": {
+        "display_name": {"type": "string", "minLength": 1, "maxLength": 80, "description": "앞뒤 공백 제거 후 1~80자, Unicode 제어문자 거부"}, "expected_version": {"type": "integer", "minimum": 0, "maximum": 9007199254740990}}},
+      "AccountProfileMutation": {"type": "object", "additionalProperties": false, "required": ["display_name", "version", "replayed"], "properties": {
+        "display_name": {"type": "string", "minLength": 1, "maxLength": 80}, "version": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "replayed": {"type": "boolean"}}},
+      "AccountProfileEnvelope": {"type": "object", "additionalProperties": false, "required": ["data", "meta"], "properties": {"data": {"$ref": "#/components/schemas/AccountProfile"}, "meta": {"$ref": "#/components/schemas/AccountMeta"}}},
+      "AccountProfileMutationEnvelope": {"type": "object", "additionalProperties": false, "required": ["data", "meta"], "properties": {"data": {"$ref": "#/components/schemas/AccountProfileMutation"}, "meta": {"$ref": "#/components/schemas/AccountMeta"}}},
+      "AccountDevice": {"type": "object", "additionalProperties": false, "required": ["device_id", "platform", "state", "last_seen_at", "is_current"], "properties": {
+        "device_id": {"$ref": "#/components/schemas/OpaqueId"}, "platform": {"type": "string", "enum": ["web", "windows", "android", "ios"]}, "state": {"type": "string", "enum": ["registered", "trusted", "revoked"]}, "last_seen_at": {"type": "string", "format": "date-time"}, "is_current": {"type": "boolean"}}},
+      "AccountSession": {"type": "object", "additionalProperties": false, "required": ["session_id", "device_id", "client_kind", "state", "expires_at", "is_current"], "properties": {
+        "session_id": {"$ref": "#/components/schemas/OpaqueId"}, "device_id": {"$ref": "#/components/schemas/OpaqueId"}, "client_kind": {"type": "string", "enum": ["web", "native"]}, "state": {"type": "string", "enum": ["active", "revoked"]}, "expires_at": {"type": "string", "format": "date-time"}, "is_current": {"type": "boolean"}}},
+      "AccountDevicesPage": {"type": "object", "additionalProperties": false, "required": ["items", "next_cursor"], "properties": {"items": {"type": "array", "maxItems": 100, "items": {"$ref": "#/components/schemas/AccountDevice"}}, "next_cursor": {"type": ["string", "null"], "maxLength": 2048}}},
+      "AccountSessionsPage": {"type": "object", "additionalProperties": false, "required": ["items", "next_cursor"], "properties": {"items": {"type": "array", "maxItems": 100, "items": {"$ref": "#/components/schemas/AccountSession"}}, "next_cursor": {"type": ["string", "null"], "maxLength": 2048}}},
+      "AccountDevicesEnvelope": {"type": "object", "additionalProperties": false, "required": ["data", "meta"], "properties": {"data": {"$ref": "#/components/schemas/AccountDevicesPage"}, "meta": {"$ref": "#/components/schemas/AccountMeta"}}},
+      "AccountSessionsEnvelope": {"type": "object", "additionalProperties": false, "required": ["data", "meta"], "properties": {"data": {"$ref": "#/components/schemas/AccountSessionsPage"}, "meta": {"$ref": "#/components/schemas/AccountMeta"}}},
+      "StudioApprovalPolicy": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ttl_days",
+          "policy_version",
+          "can_manage",
+          "step_up_target_id"
+        ],
+        "properties": {
+          "ttl_days": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 30
+          },
+          "policy_version": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "can_manage": {
+            "type": "boolean"
+          },
+          "step_up_target_id": {
+            "type": "string",
+            "pattern": "^studio-approval-policy-[a-f0-9]{64}$"
+          }
+        }
+      },
+      "StudioApprovalPolicyRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ttl_days",
+          "expected_policy_version",
+          "step_up_authorization"
+        ],
+        "properties": {
+          "ttl_days": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 30
+          },
+          "expected_policy_version": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "step_up_authorization": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        }
+      },
+      "StudioApprovalWithdrawRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "workspace_id",
+          "notebook_id",
+          "output_version_id"
+        ],
+        "properties": {
+          "workspace_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "notebook_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "output_version_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          }
+        }
+      },
+      "StudioApprovalWithdrawReceipt": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "record_id",
+          "action",
+          "status",
+          "output_version_id"
+        ],
+        "properties": {
+          "record_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "withdraw"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "withdrawn"
+            ]
+          },
+          "output_version_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          }
+        }
+      },
+      "StudioApprovalNotice": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "notification_id",
+          "approval_request_id",
+          "output_version_id",
+          "event_kind",
+          "scheduled_at",
+          "created_at",
+          "read_at",
+          "version"
+        ],
+        "properties": {
+          "notification_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "approval_request_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "output_version_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "event_kind": {
+            "type": "string",
+            "enum": [
+              "due_24h",
+              "expired",
+              "withdrawn"
+            ]
+          },
+          "scheduled_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "read_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      },
+      "StudioApprovalNotices": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "items",
+          "unread_count"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/StudioApprovalNotice"
+            }
+          },
+          "unread_count": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100
+          }
+        }
+      },
+      "StudioApprovalNoticeReadRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "notebook_id",
+          "state"
+        ],
+        "properties": {
+          "notebook_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "read"
+            ]
+          }
+        }
+      },
+      "StudioApprovalNoticeReadReceipt": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "notification_id",
+          "version",
+          "read_at"
+        ],
+        "properties": {
+          "notification_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 2
+          },
+          "read_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "StudioApprovalPolicyEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data",
+          "meta"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/StudioApprovalPolicy"
+          },
+          "meta": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "trace_id",
+              "workspace_id"
+            ],
+            "properties": {
+              "trace_id": {
+                "type": "string"
+              },
+              "workspace_id": {
+                "$ref": "#/components/schemas/OpaqueId"
+              }
+            }
+          }
+        }
+      },
+      "StudioApprovalPolicyMutationEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data",
+          "meta"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/StudioApprovalPolicy"
+          },
+          "meta": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "trace_id",
+              "workspace_id",
+              "replayed"
+            ],
+            "properties": {
+              "trace_id": {
+                "type": "string"
+              },
+              "workspace_id": {
+                "$ref": "#/components/schemas/OpaqueId"
+              },
+              "replayed": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      },
+      "StudioApprovalWithdrawReceiptMutationEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data",
+          "meta"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/StudioApprovalWithdrawReceipt"
+          },
+          "meta": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "trace_id",
+              "workspace_id",
+              "replayed"
+            ],
+            "properties": {
+              "trace_id": {
+                "type": "string"
+              },
+              "workspace_id": {
+                "$ref": "#/components/schemas/OpaqueId"
+              },
+              "replayed": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      },
+      "StudioApprovalNoticesEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data",
+          "meta"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/StudioApprovalNotices"
+          },
+          "meta": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "trace_id",
+              "workspace_id"
+            ],
+            "properties": {
+              "trace_id": {
+                "type": "string"
+              },
+              "workspace_id": {
+                "$ref": "#/components/schemas/OpaqueId"
+              }
+            }
+          }
+        }
+      },
+      "StudioApprovalNoticeReadReceiptMutationEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data",
+          "meta"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/StudioApprovalNoticeReadReceipt"
+          },
+          "meta": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "trace_id",
+              "workspace_id",
+              "replayed"
+            ],
+            "properties": {
+              "trace_id": {
+                "type": "string"
+              },
+              "workspace_id": {
+                "$ref": "#/components/schemas/OpaqueId"
+              },
+              "replayed": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      },
       "EgressPolicyPayload": {
         "type": "object", "additionalProperties": false,
         "required": ["mode", "allowed_provider_kinds", "allowed_destinations", "classification", "max_bytes", "masking_required", "redaction_required", "required_approver"],
@@ -5460,10 +6648,13 @@
       },
       "StudioCitationLocator": {
         "type": "object", "additionalProperties": false, "required": ["kind", "value"],
+        "if": { "properties": { "kind": { "const": "audio_segment" } } },
+        "then": { "properties": { "value": { "$ref": "#/components/schemas/AudioSegmentLocatorValue" } } },
         "properties": {
-          "kind": { "type": "string", "enum": ["page", "section"] },
+          "kind": { "type": "string", "enum": ["page", "section", "image_region", "sheet_cell", "docx_block", "pptx_block", "audio_segment"] },
           "value": { "type": "string", "minLength": 1, "maxLength": 500 }
-        }
+        },
+        "allOf": [{ "if": { "properties": { "kind": { "const": "image_region" } } }, "then": { "properties": { "value": { "pattern": "^(0|[1-9][0-9]*)(,(0|[1-9][0-9]*)){5}$", "description": "EXIF 보정 표시 기준 x,y,width,height,image_width,image_height. 양수 크기 및 영역 경계는 서버에서 검증한다." } } } }, { "if": { "properties": { "kind": { "const": "sheet_cell" } } }, "then": { "properties": { "value": { "$ref": "#/components/schemas/SheetCellLocatorValue" } } } }, { "if": { "properties": { "kind": { "const": "docx_block" } } }, "then": { "properties": { "value": { "$ref": "#/components/schemas/DocxBlockLocatorValue" } } } }, { "if": { "properties": { "kind": { "const": "pptx_block" } } }, "then": { "properties": { "value": { "$ref": "#/components/schemas/PptxBlockLocatorValue" } } } }]
       },
       "StudioCitationProjection": {
         "type": "object", "additionalProperties": false,
@@ -5478,7 +6669,7 @@
       },
       "StudioVersionProjection": {
         "type": "object", "additionalProperties": false,
-        "required": ["output_version_id", "content_version", "previous_version_id", "status", "content", "revision_type", "change_reason", "settings_snapshot_id", "citations", "review_request_id", "approval_request_id", "approval_id", "delivery_id", "knowledge_registration_id", "output_format"],
+        "required": ["output_version_id", "content_version", "previous_version_id", "status", "content", "revision_type", "change_reason", "settings_snapshot_id", "citations", "review_request_id", "approval_request_id", "approval_id", "delivery_id", "knowledge_registration_id", "output_format", "approval_request_state", "approval_expires_at"],
         "properties": {
           "output_version_id": { "$ref": "#/components/schemas/OpaqueId" },
           "content_version": { "type": "integer", "minimum": 1 },
@@ -5494,7 +6685,9 @@
           "approval_id": { "oneOf": [{ "$ref": "#/components/schemas/OpaqueId" }, { "type": "null" }] },
           "delivery_id": { "oneOf": [{ "$ref": "#/components/schemas/OpaqueId" }, { "type": "null" }] },
           "knowledge_registration_id": { "oneOf": [{ "$ref": "#/components/schemas/OpaqueId" }, { "type": "null" }] },
-          "output_format": { "type": "string", "enum": ["docx", "pdf", "xlsx", "csv", "json", "svg", "png"] }
+          "output_format": { "type": "string", "enum": ["docx", "pdf", "xlsx", "csv", "json", "svg", "png"] },
+          "approval_request_state": { "type": ["string", "null"], "enum": ["pending", "approved", "rejected", "expired", "withdrawn", null] },
+          "approval_expires_at": { "type": ["string", "null"], "format": "date-time" }
         }
       },
       "StudioVersionHistoryEnvelope": {
@@ -5588,6 +6781,58 @@
           }
         }
       },
+      "OpenLawSearchRequest": {"type":"object","additionalProperties":false,"required":["notebook_id","query","page","public_query_confirmed"],"properties":{"notebook_id":{"$ref":"#/components/schemas/OpaqueId"},"query":{"type":"string","minLength":1,"maxLength":100},"page":{"type":"integer","minimum":1,"maximum":100},"public_query_confirmed":{"type":"boolean","const":true}}},
+      "OpenLawPreviewRequest": {"type":"object","additionalProperties":false,"required":["notebook_id","mst","effective_date","article_code"],"properties":{"notebook_id":{"$ref":"#/components/schemas/OpaqueId"},"mst":{"type":"string","pattern":"^[0-9]{1,20}$"},"effective_date":{"type":"string","pattern":"^[0-9]{8}$"},"article_code":{"type":["string","null"],"pattern":"^[0-9]{6}$"}}},
+      "OpenLawImportRequest": {"type":"object","additionalProperties":false,"required":["notebook_id","mst","effective_date","article_code","expected_raw_sha256","expected_text_sha256"],"properties":{"notebook_id":{"$ref":"#/components/schemas/OpaqueId"},"mst":{"type":"string","pattern":"^[0-9]{1,20}$"},"effective_date":{"type":"string","pattern":"^[0-9]{8}$"},"article_code":{"type":["string","null"],"pattern":"^[0-9]{6}$"},"expected_raw_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},"expected_text_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"}}},
+      "OpenLawSearchItem": {"type":"object","additionalProperties":false,"required":["mst","law_id","title","effective_date","promulgation_date","ministry"],"properties":{"mst":{"type":"string","pattern":"^[0-9]{1,20}$"},"law_id":{"type":"string","pattern":"^[0-9]{1,20}$"},"title":{"type":"string","minLength":1,"maxLength":300},"effective_date":{"type":"string","pattern":"^[0-9]{8}$"},"promulgation_date":{"type":["string","null"],"pattern":"^[0-9]{8}$"},"ministry":{"type":["string","null"],"maxLength":200}}},
+      "OpenLaw": {"type":"object","additionalProperties":false,"required":["mst","law_id","title","effective_date","promulgation_date","ministry","article_code"],"properties":{"mst":{"type":"string","pattern":"^[0-9]{1,20}$"},"law_id":{"type":"string","pattern":"^[0-9]{1,20}$"},"title":{"type":"string","minLength":1,"maxLength":300},"effective_date":{"type":"string","pattern":"^[0-9]{8}$"},"promulgation_date":{"type":["string","null"],"pattern":"^[0-9]{8}$"},"ministry":{"type":["string","null"],"maxLength":200},"article_code":{"type":["string","null"],"pattern":"^[0-9]{6}$"}}},
+      "OpenLawSearchEnvelope": {"type":"object","additionalProperties":false,"required":["data","meta"],"properties":{"data":{"type":"object","additionalProperties":false,"required":["items","page","total_count"],"properties":{"items":{"type":"array","maxItems":20,"items":{"$ref":"#/components/schemas/OpenLawSearchItem"}},"page":{"type":"integer","minimum":1,"maximum":100},"total_count":{"type":"integer","minimum":0}}},"meta":{"type":"object","additionalProperties":false,"required":["trace_id"],"properties":{"trace_id":{"$ref":"#/components/schemas/OpaqueId"}}}}},
+      "OpenLawPreviewEnvelope": {"type":"object","additionalProperties":false,"required":["data","meta"],"properties":{"data":{"type":"object","additionalProperties":false,"required":["law","text","raw_sha256","text_sha256","fetched_at","extraction_version"],"properties":{"law":{"$ref":"#/components/schemas/OpenLaw"},"text":{"type":"string","minLength":1,"maxLength":524288},"raw_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},"text_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},"fetched_at":{"type":"string","format":"date-time"},"extraction_version":{"type":"string","const":"open-law-text-v1"}}},"meta":{"type":"object","additionalProperties":false,"required":["trace_id"],"properties":{"trace_id":{"$ref":"#/components/schemas/OpaqueId"}}}}},
+      "OpenLawImportResult": {"type":"object","additionalProperties":false,"required":["source_id","source_version_id","snapshot_id","source_state","replayed"],"properties":{"source_id":{"$ref":"#/components/schemas/OpaqueId"},"source_version_id":{"$ref":"#/components/schemas/OpaqueId"},"snapshot_id":{"$ref":"#/components/schemas/OpaqueId"},"source_state":{"type":"string","const":"ready"},"replayed":{"type":"boolean"}}},
+      "OpenLawImportEnvelope": {"type":"object","additionalProperties":false,"required":["data","meta"],"properties":{"data":{"type":"object","additionalProperties":false,"required":["kind","id","version","attributes"],"properties":{"kind":{"type":"string","const":"open_law_import"},"id":{"$ref":"#/components/schemas/OpaqueId"},"version":{"type":"string","const":"1"},"attributes":{"$ref":"#/components/schemas/OpenLawImportResult"}}},"meta":{"type":"object","additionalProperties":false,"required":["trace_id"],"properties":{"trace_id":{"$ref":"#/components/schemas/OpaqueId"}}}}},
+      "OpenLawSnapshotView": {"type":"object","additionalProperties":false,"required":["snapshot_id","connector_id","source_id","source_version_id","mst","law_id","title","effective_date","promulgation_date","ministry","article_code","origin_uri","fetched_at","raw_sha256","text_sha256","extraction_version","license_status"],"properties":{"snapshot_id":{"$ref":"#/components/schemas/OpaqueId"},"connector_id":{"type":"string","const":"mcp-open-law-go-kr"},"source_id":{"$ref":"#/components/schemas/OpaqueId"},"source_version_id":{"$ref":"#/components/schemas/OpaqueId"},"mst":{"type":"string","pattern":"^[0-9]{1,20}$"},"law_id":{"type":"string","pattern":"^[0-9]{1,20}$"},"title":{"type":"string","minLength":1,"maxLength":300},"effective_date":{"type":"string","pattern":"^[0-9]{8}$"},"promulgation_date":{"type":["string","null"],"pattern":"^[0-9]{8}$"},"ministry":{"type":["string","null"],"maxLength":200},"article_code":{"type":["string","null"],"pattern":"^[0-9]{6}$"},"origin_uri":{"type":"string","format":"uri","maxLength":2048,"pattern":"^https:\\/\\/www\\.law\\.go\\.kr/LSW/lsInfoP\\.do\\?lsiSeq=[0-9]{1,20}&efYd=[0-9]{8}$"},"fetched_at":{"type":"string","format":"date-time"},"raw_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},"text_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},"extraction_version":{"type":"string","const":"open-law-text-v1"},"license_status":{"type":"string","const":"unknown"}}},
+      "OpenLawSnapshotEnvelope": {"type":"object","additionalProperties":false,"required":["data","meta"],"properties":{"data":{"type":"object","additionalProperties":false,"required":["snapshot","text"],"properties":{"snapshot":{"$ref":"#/components/schemas/OpenLawSnapshotView"},"text":{"type":"string","minLength":1,"maxLength":524288}}},"meta":{"type":"object","additionalProperties":false,"required":["trace_id"],"properties":{"trace_id":{"$ref":"#/components/schemas/OpaqueId"}}}}},
+      "WebsiteImportRequest": {
+        "type": "object", "additionalProperties": false, "required": ["notebook_id", "url", "public_page_confirmed"],
+        "properties": { "notebook_id": { "$ref": "#/components/schemas/OpaqueId" }, "url": { "type": "string", "minLength": 1, "maxLength": 2048, "format": "uri", "description": "HTTPS FQDN만, userinfo/IP/query/fragment 금지" }, "public_page_confirmed": { "type": "boolean", "const": true } }
+      },
+      "WebsiteImportResult": {
+        "type": "object", "additionalProperties": false, "required": ["snapshot_id", "source_id", "source_version_id", "source_state", "replayed"],
+        "properties": { "snapshot_id": { "$ref": "#/components/schemas/OpaqueId" }, "source_id": { "$ref": "#/components/schemas/OpaqueId" }, "source_version_id": { "$ref": "#/components/schemas/OpaqueId" }, "source_state": { "type": "string", "const": "ready" }, "replayed": { "type": "boolean" } }
+      },
+      "WebsiteImportEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": {
+          "data": { "type": "object", "additionalProperties": false, "required": ["kind", "id", "version", "attributes"], "properties": { "kind": { "type": "string", "const": "website_import" }, "id": { "$ref": "#/components/schemas/OpaqueId" }, "version": { "type": "string", "const": "1" }, "attributes": { "$ref": "#/components/schemas/WebsiteImportResult" } } },
+          "meta": { "type": "object", "additionalProperties": false, "required": ["trace_id"], "properties": { "trace_id": { "$ref": "#/components/schemas/OpaqueId" } } }
+        }
+      },
+      "WebsiteSnapshotView": {
+        "type": "object", "additionalProperties": false,
+        "required": ["snapshot_id", "source_id", "source_version_id", "requested_url", "final_url", "title", "published_at", "fetched_at", "license_status", "license_url", "raw_sha256", "text_sha256", "extraction_version"],
+        "properties": {
+          "snapshot_id": { "$ref": "#/components/schemas/OpaqueId" }, "source_id": { "$ref": "#/components/schemas/OpaqueId" }, "source_version_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "requested_url": { "type": "string", "format": "uri", "maxLength": 2048 }, "final_url": { "type": "string", "format": "uri", "maxLength": 2048 },
+          "title": { "type": "string", "minLength": 1, "maxLength": 255 }, "published_at": { "type": ["string", "null"], "format": "date-time" }, "fetched_at": { "type": "string", "format": "date-time" },
+          "license_status": { "type": "string", "enum": ["unknown", "publisher_declared"] }, "license_url": { "type": ["string", "null"], "format": "uri", "maxLength": 2048 },
+          "raw_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }, "text_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }, "extraction_version": { "type": "string", "const": "website-text-v1" }
+        }
+      },
+      "WebsiteSnapshotEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": { "data": { "$ref": "#/components/schemas/WebsiteSnapshotView" }, "meta": { "type": "object", "additionalProperties": false, "required": ["trace_id"], "properties": { "trace_id": { "$ref": "#/components/schemas/OpaqueId" } } } }
+      },
+      "WebsiteSourceOriginal": {
+        "type": "object", "additionalProperties": false,
+        "required": ["snapshot_id", "source_id", "source_version_id", "requested_url", "final_url", "title", "published_at", "fetched_at", "license_status", "license_url", "raw_sha256", "text_sha256", "extraction_version", "text"],
+        "properties": {
+          "snapshot_id": { "$ref": "#/components/schemas/WebsiteSnapshotView/properties/snapshot_id" }, "source_id": { "$ref": "#/components/schemas/WebsiteSnapshotView/properties/source_id" }, "source_version_id": { "$ref": "#/components/schemas/WebsiteSnapshotView/properties/source_version_id" },
+          "requested_url": { "$ref": "#/components/schemas/WebsiteSnapshotView/properties/requested_url" }, "final_url": { "$ref": "#/components/schemas/WebsiteSnapshotView/properties/final_url" }, "title": { "$ref": "#/components/schemas/WebsiteSnapshotView/properties/title" },
+          "published_at": { "$ref": "#/components/schemas/WebsiteSnapshotView/properties/published_at" }, "fetched_at": { "$ref": "#/components/schemas/WebsiteSnapshotView/properties/fetched_at" }, "license_status": { "$ref": "#/components/schemas/WebsiteSnapshotView/properties/license_status" }, "license_url": { "$ref": "#/components/schemas/WebsiteSnapshotView/properties/license_url" },
+          "raw_sha256": { "$ref": "#/components/schemas/WebsiteSnapshotView/properties/raw_sha256" }, "text_sha256": { "$ref": "#/components/schemas/WebsiteSnapshotView/properties/text_sha256" }, "extraction_version": { "$ref": "#/components/schemas/WebsiteSnapshotView/properties/extraction_version" },
+          "text": { "type": "string", "minLength": 1, "maxLength": 524288, "description": "저장 text Object의 전체UTF8 bytes<=512KiB/hash검증; 공백보존" }
+        }
+      },
       "WorkspaceSourceProjection": {
         "type": "object", "additionalProperties": false,
         "required": ["source_id", "source_version_id", "filename", "source_state", "processing_state", "job_state"],
@@ -5597,7 +6842,8 @@
           "filename": { "type": "string", "minLength": 1, "maxLength": 255 },
           "source_state": { "type": "string", "enum": ["registered", "security_check", "processing", "indexing", "ready"] },
           "processing_state": { "type": "string" },
-          "job_state": { "type": "string" }
+          "job_state": { "type": "string" },
+          "website": { "$ref": "#/components/schemas/WebsiteSourceOriginal" }
         }
       },
       "WorkspaceSourceListEnvelope": {
@@ -5811,9 +7057,246 @@
         "type": "object",
         "additionalProperties": false,
         "required": ["kind", "value"],
+        "if": { "properties": { "kind": { "const": "audio_segment" } } },
+        "then": { "properties": { "value": { "$ref": "#/components/schemas/AudioSegmentLocatorValue" } } },
         "properties": {
-          "kind": { "type": "string", "enum": ["page", "section"] },
+          "kind": { "type": "string", "enum": ["page", "section", "image_region", "sheet_cell", "docx_block", "pptx_block", "audio_segment"] },
           "value": { "type": "string", "minLength": 1, "maxLength": 255 }
+        },
+        "allOf": [{ "if": { "properties": { "kind": { "const": "image_region" } } }, "then": { "properties": { "value": { "pattern": "^(0|[1-9][0-9]*)(,(0|[1-9][0-9]*)){5}$", "description": "EXIF 보정 표시 기준 x,y,width,height,image_width,image_height. 양수 크기 및 영역 경계는 서버에서 검증한다." } } } }, { "if": { "properties": { "kind": { "const": "sheet_cell" } } }, "then": { "properties": { "value": { "$ref": "#/components/schemas/SheetCellLocatorValue" } } } }, { "if": { "properties": { "kind": { "const": "docx_block" } } }, "then": { "properties": { "value": { "$ref": "#/components/schemas/DocxBlockLocatorValue" } } } }, { "if": { "properties": { "kind": { "const": "pptx_block" } } }, "then": { "properties": { "value": { "$ref": "#/components/schemas/PptxBlockLocatorValue" } } } }]
+      },
+      "AudioSegmentLocatorValue": {
+        "type": "string", "minLength": 1, "maxLength": 256,
+        "pattern": "^\\{\"segment\":\"s:([1-9]|[1-5][0-9]|6[0-4])\",\"start_ms\":(0|[1-9][0-9]{0,5}),\"end_ms\":[1-9][0-9]{0,5},\"start\":(0|[1-9][0-9]{0,3}),\"end\":[1-9][0-9]{0,3}\\}$",
+        "description": "UTF8 256bytes 이내 exact canonical JSON. 정수 ms 0≤start_ms<end_ms≤120000, codepoint 0≤start<end≤2000. 원본 전사 segment 시간·substring 결속은 서버와 화면에서 재검증한다. 중복/추가키·bool·비정규 공백 거부."
+      },
+      "AudioSegmentContent": {
+        "type": "object", "additionalProperties": false,
+        "description": "UTF8 32KiB 이내. 주변 최대3개 연속 segment이며 실제 시간·codepoint·선택 구간·hash·Version을 소비자가 재검증한다.",
+        "required": ["source_version_id", "source_sha256", "transcript_sha256", "duration_ms", "selected_segment_id", "selected_start", "selected_end", "segments"],
+        "properties": {
+          "source_version_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "source_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "transcript_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "duration_ms": { "type": "integer", "minimum": 1000, "maximum": 120000 },
+          "selected_segment_id": { "type": "string", "pattern": "^s:([1-9]|[1-5][0-9]|6[0-4])$" },
+          "selected_start": { "type": "integer", "minimum": 0, "maximum": 1999 },
+          "selected_end": { "type": "integer", "minimum": 1, "maximum": 2000 },
+          "segments": { "type": "array", "minItems": 1, "maxItems": 3, "items": {
+            "type": "object", "additionalProperties": false, "required": ["segment_id", "start_ms", "end_ms", "text"],
+            "properties": {
+              "segment_id": { "type": "string", "pattern": "^s:([1-9]|[1-5][0-9]|6[0-4])$" },
+              "start_ms": { "type": "integer", "minimum": 0, "maximum": 119999 },
+              "end_ms": { "type": "integer", "minimum": 1, "maximum": 120000 },
+              "text": { "type": "string", "minLength": 1, "maxLength": 2000 }
+            }
+          } }
+        }
+      },
+      "SheetCellLocatorValue": {
+        "type": "string", "minLength": 1, "maxLength": 255,
+        "description": "정확 원본 시트명과 대문자 A1 범위를 키 순서 sheet,range의 compact canonical JSON으로 인코딩한다(UTF-8 512bytes 이내). 단일 셀은 A1, 범위는 B2:C3. 중복/추가키·공백·외부참조·정의명·절대주소·역방향을 거부한다. Excel XFD/1048576, 실제 시트 및 선택 256셀/확장 preview 324셀 상한은 동일 X1 계약으로 검증한다."
+      },
+      "SheetCellOriginal": {
+        "type": "object", "additionalProperties": false,
+        "required": ["address", "value_type", "raw_value", "display_value", "formula", "cached_value", "number_format", "hidden_row", "hidden_column"],
+        "properties": {
+          "address": { "type": "string", "pattern": "^[A-Z]{1,3}[1-9][0-9]{0,6}$" },
+          "value_type": { "type": "string", "enum": ["blank", "string", "number", "date", "boolean", "error"] },
+          "raw_value": { "type": ["string", "null"] },
+          "display_value": { "type": ["string", "null"] },
+          "formula": { "type": ["string", "null"] },
+          "cached_value": { "type": ["string", "null"] },
+          "number_format": { "type": ["string", "null"] },
+          "hidden_row": { "type": "boolean" },
+          "hidden_column": { "type": "boolean" }
+        }
+      },
+      "DocxBlockLocatorValue": {
+        "type": "string", "minLength": 1, "maxLength": 256,
+        "description": "block,start,end 순서의 compact canonical JSON. 문단 p:1..64 또는 표 t:body:r:row:c:column:p:paragraph(각 위치 1기반, body/row/column 최대64, paragraph128). offset은 Unicode code point, 0 <= start < end <= 2000. bool/문자열 숫자/중복키/추가키/비정규 ID 거부. 호환 page=1은 Word 페이지가 아니다."
+      },
+      "DocxOriginalBlock": {
+        "type": "object", "additionalProperties": false,
+        "required": ["block_id", "ordinal", "block_type", "text", "style_id", "outline_level", "table"],
+        "properties": {
+          "block_id": { "type": "string", "pattern": "^(p:[1-9][0-9]?|t:[1-9][0-9]?:r:[1-9][0-9]?:c:[1-9][0-9]?:p:[1-9][0-9]{0,2})$" },
+          "ordinal": { "type": "integer", "minimum": 1, "maximum": 128 },
+          "block_type": { "type": "string", "enum": ["paragraph", "table_cell_paragraph"] },
+          "text": { "type": "string", "maxLength": 2000 },
+          "style_id": { "type": ["string", "null"] },
+          "outline_level": { "type": ["integer", "null"], "minimum": 0, "maximum": 9 },
+          "table": {
+            "oneOf": [
+              { "type": "null" },
+              { "type": "object", "additionalProperties": false, "required": ["body_index", "row", "column", "paragraph"], "properties": {
+                "body_index": { "type": "integer", "minimum": 1, "maximum": 64 },
+                "row": { "type": "integer", "minimum": 1, "maximum": 64 },
+                "column": { "type": "integer", "minimum": 1, "maximum": 64 },
+                "paragraph": { "type": "integer", "minimum": 1, "maximum": 128 }
+              }}
+            ]
+          }
+        }
+      },
+      "DocxBlockContent": {
+        "type": "object", "additionalProperties": false,
+        "description": "Actor/Notebook/SourceVersion/Evidence/locator·완료 원본hash 재검증 후 읽기 전용 구조. 선택 문단과 원본 직전/직후 문단 최대3개, 최종 UTF8 JSON32KiB(절단 없음). code point 구간을 재검증하며 HTML/링크/Word 페이지 렌더링이나 다운로드 URL을 제공하지 않는다.",
+        "required": ["source_version_id", "source_sha256", "serialization_version", "selected_block_id", "selected_start", "selected_end", "blocks"],
+        "properties": {
+          "source_version_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "source_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "serialization_version": { "type": "string", "const": "docx-structure-v1" },
+          "selected_block_id": { "type": "string" },
+          "selected_start": { "type": "integer", "minimum": 0, "maximum": 1999 },
+          "selected_end": { "type": "integer", "minimum": 1, "maximum": 2000 },
+          "blocks": { "type": "array", "minItems": 1, "maxItems": 3, "items": { "$ref": "#/components/schemas/DocxOriginalBlock" } }
+        }
+      },
+        "PptxBlockLocatorValue": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "Exact compact block,start,end JSON. Slide1..16, positive uint32 object, paragraph1..128, row/column1..64. Unicode codepoint0<=start<end<=2000; duplicate/extra keys rejected; compatibility page1 is not a slide."
+        },
+        "PptxOriginalBlock": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "block_id",
+            "ordinal",
+            "slide",
+            "object_id",
+            "block_type",
+            "text",
+            "table"
+          ],
+          "properties": {
+            "block_id": {
+              "type": "string"
+            },
+            "ordinal": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 128
+            },
+            "slide": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 16
+            },
+            "object_id": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 4294967295
+            },
+            "block_type": {
+              "type": "string",
+              "enum": [
+                "shape_paragraph",
+                "table_cell_paragraph"
+              ]
+            },
+            "text": {
+              "type": "string",
+              "maxLength": 2000
+            },
+            "table": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "row",
+                    "column",
+                    "paragraph"
+                  ],
+                  "properties": {
+                    "row": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 64
+                    },
+                    "column": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 64
+                    },
+                    "paragraph": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 128
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "PptxBlockContent": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Actor/Notebook/SourceVersion/hash revalidated read-only PPTX original; max3 neighboring blocks on same slide, UTF8 JSON32KiB, codepoint ranges; no rendered PowerPoint page.",
+          "required": [
+            "source_version_id",
+            "source_sha256",
+            "serialization_version",
+            "selected_block_id",
+            "selected_start",
+            "selected_end",
+            "blocks"
+          ],
+          "properties": {
+            "source_version_id": {
+              "$ref": "#/components/schemas/OpaqueId"
+            },
+            "source_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "serialization_version": {
+              "type": "string",
+              "const": "pptx-structure-v1"
+            },
+            "selected_block_id": {
+              "type": "string"
+            },
+            "selected_start": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1999
+            },
+            "selected_end": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2000
+            },
+            "blocks": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 3,
+              "items": {
+                "$ref": "#/components/schemas/PptxOriginalBlock"
+              }
+            }
+          }
+        },
+      "SheetCellContent": {
+        "type": "object", "additionalProperties": false,
+        "description": "원본 hash·SourceVersion·Notebook·완료 manifest 결속 후 X1 읽기 전용 투영. 선택 영역 256셀, 주변 한 행/열 확장 preview 324셀 상한. Excel XFD/1048576 및 실제 시트 범위 검증, 중복 주소 금지. formula 실행·cached 값 재계산 없음.",
+        "required": ["source_version_id", "source_sha256", "sheet_name", "sheet_visibility", "selected_range", "view_range", "cells", "merged_ranges"],
+        "properties": {
+          "source_version_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "source_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "sheet_name": { "type": "string", "minLength": 1, "maxLength": 31 },
+          "sheet_visibility": { "type": "string", "enum": ["visible", "hidden", "veryHidden"] },
+          "selected_range": { "type": "string", "pattern": "^[A-Z]{1,3}[1-9][0-9]{0,6}(:[A-Z]{1,3}[1-9][0-9]{0,6})?$" },
+          "view_range": { "type": "string", "pattern": "^[A-Z]{1,3}[1-9][0-9]{0,6}(:[A-Z]{1,3}[1-9][0-9]{0,6})?$" },
+          "cells": { "type": "array", "minItems": 1, "maxItems": 324, "items": { "$ref": "#/components/schemas/SheetCellOriginal" } },
+          "merged_ranges": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Z]{1,3}[1-9][0-9]{0,6}(:[A-Z]{1,3}[1-9][0-9]{0,6})?$" } }
         }
       },
       "GroundedAnswer": {
@@ -5989,6 +7472,7 @@
       "SafeErrorCode": {
         "type": "string",
         "enum": [
+          "QUESTION_FAILED",
           "AUTHENTICATION_REQUIRED",
           "FORBIDDEN",
           "RESOURCE_UNAVAILABLE",
@@ -6019,7 +7503,16 @@
           "DELETION_CLEANUP_PENDING",
           "IMPORTANT_KNOWLEDGE_CONFLICT",
           "NO_AVAILABLE_UNDERSTANDING_MODEL",
-          "NO_AVAILABLE_DEPLOYMENT"
+          "NO_AVAILABLE_DEPLOYMENT",
+          "ACCOUNT_SESSION_CHANGED",
+          "WEBSITE_URL_INVALID", "WEBSITE_ACCESS_DENIED", "WEBSITE_FETCH_BLOCKED",
+          "WEBSITE_IDEMPOTENCY_KEY_REUSED", "WEBSITE_IMPORT_IN_PROGRESS", "WEBSITE_CONTENT_TOO_LARGE",
+          "WEBSITE_MEDIA_UNSUPPORTED", "WEBSITE_TEXT_UNAVAILABLE", "WEBSITE_FETCH_FAILED", "WEBSITE_STORAGE_UNAVAILABLE", "WEBSITE_FETCH_TIMEOUT",
+          "OPEN_LAW_INPUT_INVALID", "OPEN_LAW_ACCESS_DENIED", "OPEN_LAW_EGRESS_BLOCKED", "OPEN_LAW_NOT_FOUND",
+          "OPEN_LAW_PREVIEW_CHANGED", "OPEN_LAW_IMPORT_CONFLICT", "OPEN_LAW_IMPORT_IN_PROGRESS", "OPEN_LAW_BINDING_CONFLICT",
+          "OPEN_LAW_CONTENT_TOO_LARGE", "OPEN_LAW_TEXT_UNAVAILABLE", "OPEN_LAW_PROTOCOL_INVALID", "OPEN_LAW_UPSTREAM_FAILED",
+          "OPEN_LAW_CREDENTIAL_REQUIRED", "OPEN_LAW_UNAVAILABLE", "OPEN_LAW_BUSY", "OPEN_LAW_STORAGE_UNAVAILABLE", "OPEN_LAW_TIMEOUT",
+          "APPROVAL_REQUEST_EXPIRED", "APPROVAL_REQUEST_PENDING", "APPROVAL_REQUEST_REQUIRED", "PRECONDITION_FAILED"
         ]
       },
       "CostLimitExceededDetails": {
@@ -6571,6 +8064,58 @@
           }
         }
       },
+      "AndroidTransactionRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["client_id", "redirect_uri", "state", "code_challenge", "code_challenge_method"],
+        "properties": {
+          "client_id": {"type": "string", "minLength": 1},
+          "redirect_uri": {"type": "string", "format": "uri"},
+          "state": {"type": "string", "minLength": 16, "maxLength": 512, "writeOnly": true},
+          "code_challenge": {"type": "string", "minLength": 43, "maxLength": 43, "writeOnly": true},
+          "code_challenge_method": {"type": "string", "const": "S256"}
+        }
+      },
+      "AndroidAuthorizeRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["transaction_id"],
+        "properties": {"transaction_id": {"$ref": "#/components/schemas/OpaqueId"}}
+      },
+      "AndroidExchangeRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["transaction_id", "code", "code_verifier", "redirect_uri"],
+        "properties": {
+          "transaction_id": {"$ref": "#/components/schemas/OpaqueId"},
+          "code": {"type": "string", "minLength": 1, "maxLength": 512, "writeOnly": true},
+          "code_verifier": {"type": "string", "minLength": 43, "maxLength": 128, "writeOnly": true},
+          "redirect_uri": {"type": "string", "format": "uri"}
+        }
+      },
+      "AndroidTransactionEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": {
+          "data": {
+            "type": "object", "additionalProperties": false,
+            "required": ["transaction_id", "authorization_url", "expires_at"],
+            "properties": {
+              "transaction_id": {"$ref": "#/components/schemas/OpaqueId"},
+              "authorization_url": {"type": "string", "format": "uri"},
+              "expires_at": {"type": "string", "format": "date-time"}
+            }
+          },
+          "meta": {"type": "object", "required": ["trace_id"], "properties": {"trace_id": {"type": "string"}}}
+        }
+      },
+      "AndroidAuthorizeEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": {
+          "data": {
+            "type": "object", "additionalProperties": false,
+            "required": ["authorization_url"],
+            "properties": {"authorization_url": {"type": "string", "format": "uri"}}
+          },
+          "meta": {"type": "object", "required": ["trace_id"], "properties": {"trace_id": {"type": "string"}}}
+        }
+      },
       "OidcLoginStartRequest": {
         "type": "object",
         "additionalProperties": false,
@@ -7041,8 +8586,12 @@
       },
       "DeletionCreateRequest": {
         "type": "object", "additionalProperties": false,
-        "description": "Derivative inventory는 서버가 current Source 정본에서 산출합니다.",
-        "properties": {}
+        "description": "같은 요청 키로 정리를 재개합니다. Inventory와 Object 키는 서버에서만 산출하며 실제 정리 완료 전 purged가 아닙니다.",
+        "required": ["notebook_id", "step_up_authorization_id"],
+        "properties": {
+          "notebook_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "step_up_authorization_id": { "type": "string", "minLength": 1, "maxLength": 4096, "writeOnly": true }
+        }
       },
       "SensitiveRetentionRequest": {
         "type": "object", "additionalProperties": false, "required": ["step_up_authorization_id"],
@@ -7066,6 +8615,69 @@
         }
       },
       "BackupCreateRequest": {
+        "oneOf": [
+          { "$ref": "#/components/schemas/BackupLegacyCreateRequest" },
+          { "$ref": "#/components/schemas/BackupSelectionCreateRequest" },
+          { "$ref": "#/components/schemas/LineageBackupCreateRequest" }
+        ]
+      },
+      "LineageSelectionPreviewRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["workspace_id", "notebook_id", "source_version_ids", "lineage_mode"],
+        "properties": {
+          "workspace_id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}(?![\\s\\S])" },
+          "notebook_id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}(?![\\s\\S])" },
+          "source_version_ids": { "type": "array", "minItems": 1, "maxItems": 100, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}(?![\\s\\S])" } },
+          "lineage_mode": { "type": "string", "const": "exact" }
+        }
+      },
+      "LineageClosureConsent": {
+        "type": "object", "additionalProperties": false, "required": ["include_prior_versions", "closure_fingerprint"],
+        "properties": { "include_prior_versions": { "type": "boolean", "const": true }, "closure_fingerprint": { "type": "string", "pattern": "^[0-9a-f]{64}$" } }
+      },
+      "LineageBackupCreateRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["workspace_id", "notebook_id", "source_version_ids", "lineage_mode", "trigger", "closure_consent"],
+        "properties": {
+          "workspace_id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}(?![\\s\\S])" },
+          "notebook_id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}(?![\\s\\S])" },
+          "source_version_ids": { "type": "array", "minItems": 1, "maxItems": 100, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}(?![\\s\\S])" } },
+          "lineage_mode": { "type": "string", "const": "exact" }, "trigger": { "type": "string", "enum": ["manual"] },
+          "closure_consent": { "$ref": "#/components/schemas/LineageClosureConsent" }
+        }
+      },
+      "LineageSelectionPreview": {
+        "type": "object", "additionalProperties": false,
+        "required": ["root_source_version_ids", "dependency_source_version_ids", "dependency_source_ids", "source_version_count", "source_count", "unique_object_count", "total_bytes", "metadata_bytes", "closure_fingerprint"],
+        "properties": {
+          "root_source_version_ids": { "type": "array", "minItems": 1, "maxItems": 100, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}(?![\\s\\S])" } },
+          "dependency_source_version_ids": { "type": "array", "minItems": 0, "maxItems": 100, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}(?![\\s\\S])" } },
+          "dependency_source_ids": { "type": "array", "minItems": 0, "maxItems": 100, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}(?![\\s\\S])" } },
+          "source_version_count": { "type": "integer", "minimum": 1, "maximum": 100 },
+          "source_count": { "type": "integer", "minimum": 1, "maximum": 100 },
+          "unique_object_count": { "type": "integer", "minimum": 1, "maximum": 100 },
+          "total_bytes": { "type": "integer", "minimum": 0, "maximum": 536870912 },
+          "metadata_bytes": { "type": "integer", "minimum": 1, "maximum": 33554432 },
+          "closure_fingerprint": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+        }
+      },
+      "LineageSelectionPreviewEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": { "data": { "$ref": "#/components/schemas/LineageSelectionPreview" }, "meta": { "type": "object", "additionalProperties": false, "required": ["trace_id"], "properties": { "trace_id": { "$ref": "#/components/schemas/OpaqueId" } } } }
+      },
+      "BackupSelectionCreateRequest": {
+        "type": "object", "additionalProperties": false,
+        "description": "Server-resolved canonical selection; at most 512 MiB canonical bytes. No capture-ready result without independent DB/Object preservation.",
+        "required": ["workspace_id", "notebook_id", "trigger", "source_version_ids"],
+        "properties": {
+          "workspace_id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}(?![\\s\\S])" },
+          "notebook_id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}(?![\\s\\S])" },
+          "trigger": { "type": "string", "enum": ["manual"] },
+          "source_version_ids": { "type": "array", "minItems": 1, "maxItems": 100, "uniqueItems": true,
+            "items": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}(?![\\s\\S])" } }
+        }
+      },
+      "BackupLegacyCreateRequest": {
         "type": "object", "additionalProperties": false,
         "required": ["workspace_id", "trigger", "schema_revision", "retention_watermark", "objects"],
         "properties": {
@@ -7086,7 +8698,8 @@
           "bucket_id": { "type": "string", "pattern": "^fixture-" }
         }
       },
-      "RestorePreviewRequest": {
+      "RestorePreviewRequest": {"oneOf":[{"$ref":"#/components/schemas/LegacyRestorePreviewRequest"},{"$ref":"#/components/schemas/RegisteredRestorePreviewRequest"}]},
+      "LegacyRestorePreviewRequest": {
         "type": "object", "additionalProperties": false,
         "required": ["destination", "step_up_authorization_id"],
         "properties": {
@@ -7101,6 +8714,38 @@
           "preview_version": { "type": "integer", "minimum": 1 },
           "step_up_authorization_id": { "type": "string", "minLength": 1, "maxLength": 512, "writeOnly": true }
         }
+      },
+      "RegisteredRestorePreviewRequest": {
+        "type":"object","additionalProperties":false,"required":["workspace_id","destination_id","destination_version","step_up_authorization_id"],
+        "properties":{
+          "workspace_id":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}(?![\\s\\S])"},
+          "destination_id":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}(?![\\s\\S])"},
+          "destination_version":{"type":"integer","minimum":1,"maximum":2147483647},
+          "step_up_authorization_id":{"type":"string","minLength":1,"maxLength":512,"writeOnly":true}
+        }
+      },
+      "RegisteredDestinationSummary": {
+        "type":"object","additionalProperties":false,"required":["destination_id","version","display_name","expires_at"],
+        "properties":{"destination_id":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}(?![\\s\\S])"},"version":{"type":"integer","minimum":1,"maximum":2147483647},"display_name":{"type":"string","minLength":1,"maxLength":80},"expires_at":{"type":"string","format":"date-time"}}
+      },
+      "RegisteredDestinationsEnvelope": {
+        "type":"object","additionalProperties":false,"required":["data","meta"],
+        "properties":{"data":{"type":"array","maxItems":1000,"items":{"$ref":"#/components/schemas/RegisteredDestinationSummary"}},"meta":{"$ref":"#/components/schemas/OrganizationMeta"}}
+      },
+      "LegacyRestorePreview": {
+        "type":"object","additionalProperties":false,"required":["version","included_object_ids","excluded_object_ids","exclusion_reasons","destination","created_at"],
+        "properties":{"version":{"type":"integer","minimum":1},"included_object_ids":{"type":"array","uniqueItems":true,"items":{"$ref":"#/components/schemas/OpaqueId"}},"excluded_object_ids":{"type":"array","uniqueItems":true,"items":{"$ref":"#/components/schemas/OpaqueId"}},"exclusion_reasons":{"type":"array","items":{"type":"array","minItems":2,"maxItems":2,"prefixItems":[{"$ref":"#/components/schemas/OpaqueId"},{"type":"string","enum":["purged","held","tombstoned"]}]}},"destination":{"$ref":"#/components/schemas/RestoreDestination"},"created_at":{"type":"string","format":"date-time"}}
+      },
+      "RegisteredRestorePreview": {
+        "type":"object","additionalProperties":false,"required":["kind","version","created_at","expires_at","destination","source_manifest_digest","closure_fingerprint","included_root_count","excluded_root_count","exclusion_counts"],
+        "properties":{"kind":{"type":"string","const":"selected_source_lineage"},"version":{"type":"integer","minimum":1},"created_at":{"type":"string","format":"date-time"},"expires_at":{"type":"string","format":"date-time"},"destination":{"$ref":"#/components/schemas/RegisteredDestinationSummary"},"source_manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"},"closure_fingerprint":{"type":"string","pattern":"^[0-9a-f]{64}$"},"included_root_count":{"type":"integer","minimum":1,"maximum":100},"excluded_root_count":{"type":"integer","minimum":0,"maximum":100},"exclusion_counts":{"type":"object","additionalProperties":false,"required":["purged","held","tombstoned"],"properties":{"purged":{"type":"integer","minimum":0,"maximum":100},"held":{"type":"integer","minimum":0,"maximum":100},"tombstoned":{"type":"integer","minimum":0,"maximum":100}}}}
+      },
+      "RestoreRequestView": {
+        "type":"object","additionalProperties":false,"required":["request_id","backup_id","tenant_id","workspace_id","state","version","preview","transitions","verification_digest"],
+        "properties":{"request_id":{"$ref":"#/components/schemas/OpaqueId"},"backup_id":{"$ref":"#/components/schemas/OpaqueId"},"tenant_id":{"$ref":"#/components/schemas/OpaqueId"},"workspace_id":{"$ref":"#/components/schemas/OpaqueId"},"state":{"type":"string","enum":["requested","preview_ready","authorized","restoring","verifying","completed","failed","cancelled"]},"version":{"type":"integer","minimum":1},"preview":{"oneOf":[{"$ref":"#/components/schemas/LegacyRestorePreview"},{"$ref":"#/components/schemas/RegisteredRestorePreview"}]},"transitions":{"type":"array","items":{"type":"string","enum":["requested","preview_ready","authorized","restoring","verifying","completed","failed","cancelled"]}},"verification_digest":{"oneOf":[{"type":"string","pattern":"^[0-9a-f]{64}$"},{"type":"null"}]}}
+      },
+      "RestoreEnvelope": {
+        "type":"object","additionalProperties":false,"required":["data","meta"],"properties":{"data":{"$ref":"#/components/schemas/RestoreRequestView"},"meta":{"$ref":"#/components/schemas/OrganizationMeta"}}
       },
       "LicenseResourceUsage": {
         "type": "object", "additionalProperties": false,
@@ -7155,13 +8800,209 @@
           "meta": { "type": "object", "additionalProperties": true }
         }
       },
+      "OperationsObservation": {
+        "type": "object", "additionalProperties": false,
+        "required": ["metric_id", "state", "value", "unit", "observed_at", "coverage", "safe_code"],
+        "properties": {
+          "metric_id": { "type": "string" },
+          "state": { "type": "string", "enum": ["measured", "partial", "not_collected", "unavailable"] },
+          "value": { "type": ["integer", "null"], "minimum": 0, "maximum": 9007199254740991 },
+          "unit": { "type": "string", "enum": ["count", "bytes", "tokens", "seconds"] },
+          "observed_at": { "type": ["string", "null"], "format": "date-time", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$" },
+          "coverage": { "type": "string", "enum": ["actor_accessible_records", "workspace_operational_counts"] },
+          "safe_code": { "type": "string", "enum": ["METRIC_RECORDED", "METRIC_PARTIAL", "METRIC_NOT_COLLECTED", "METRIC_UNAVAILABLE"] }
+        },
+        "allOf": [
+          { "oneOf": [
+            { "properties": { "metric_id": { "enum": ["document_pending", "document_retry_wait", "document_leased", "document_dead_letter", "object_pending", "object_retry_wait", "object_leased", "object_dead_letter"] }, "unit": { "const": "count" }, "coverage": { "const": "workspace_operational_counts" } } },
+            { "properties": { "metric_id": { "const": "object_oldest_pending_seconds" }, "unit": { "const": "seconds" }, "coverage": { "const": "workspace_operational_counts" } } },
+            { "properties": { "metric_id": { "enum": ["source_waiting_model", "index_records_current", "attempts_without_reported_usage"] }, "unit": { "const": "count" }, "coverage": { "const": "actor_accessible_records" } } },
+            { "properties": { "metric_id": { "const": "source_storage_bytes" }, "unit": { "const": "bytes" }, "coverage": { "const": "actor_accessible_records" } } },
+            { "properties": { "metric_id": { "enum": ["reported_prompt_tokens", "reported_completion_tokens", "reported_total_tokens"] }, "unit": { "const": "tokens" }, "coverage": { "const": "actor_accessible_records" } } }
+          ] },
+          { "oneOf": [
+            { "properties": { "state": { "const": "measured" }, "safe_code": { "const": "METRIC_RECORDED" }, "value": { "type": "integer" }, "observed_at": { "type": "string" } } },
+            { "properties": { "state": { "const": "partial" }, "safe_code": { "const": "METRIC_PARTIAL" }, "value": { "type": "integer" }, "observed_at": { "type": "string" } } },
+            { "properties": { "state": { "const": "not_collected" }, "safe_code": { "const": "METRIC_NOT_COLLECTED" }, "value": { "type": "null" }, "observed_at": { "type": "null" } } },
+            { "properties": { "state": { "const": "unavailable" }, "safe_code": { "const": "METRIC_UNAVAILABLE" }, "value": { "type": "null" }, "observed_at": { "type": "null" } } }
+          ] }
+        ]
+      },
+      "SystemObservationTime": { "type": ["string", "null"], "format": "date-time", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$" },
+      "SystemObservationTiming": {
+        "type": "object", "required": ["state", "observed_at", "received_at", "safe_code"],
+        "properties": {
+          "state": { "enum": ["fresh", "stale", "measured", "partial", "not_collected", "not_reported", "unavailable"] },
+          "observed_at": { "$ref": "#/components/schemas/SystemObservationTime" }, "received_at": { "$ref": "#/components/schemas/SystemObservationTime" },
+          "safe_code": { "enum": ["TELEMETRY_FRESH", "TELEMETRY_STALE", "TELEMETRY_MEASURED", "TELEMETRY_PARTIAL", "TELEMETRY_NOT_COLLECTED", "TELEMETRY_NOT_REPORTED", "TELEMETRY_UNAVAILABLE"] }
+        },
+        "allOf": [
+          { "if": { "properties": { "state": { "enum": ["not_collected", "not_reported", "unavailable"] } } }, "then": { "properties": { "observed_at": { "type": "null" }, "received_at": { "type": "null" } } }, "else": { "properties": { "observed_at": { "type": "string" }, "received_at": { "type": "string" } } } },
+          { "oneOf": [
+            { "properties": { "state": { "const": "fresh" }, "safe_code": { "const": "TELEMETRY_FRESH" } } },
+            { "properties": { "state": { "const": "stale" }, "safe_code": { "const": "TELEMETRY_STALE" } } },
+            { "properties": { "state": { "const": "measured" }, "safe_code": { "const": "TELEMETRY_MEASURED" } } },
+            { "properties": { "state": { "const": "partial" }, "safe_code": { "const": "TELEMETRY_PARTIAL" } } },
+            { "properties": { "state": { "const": "not_collected" }, "safe_code": { "const": "TELEMETRY_NOT_COLLECTED" } } },
+            { "properties": { "state": { "const": "not_reported" }, "safe_code": { "const": "TELEMETRY_NOT_REPORTED" } } },
+            { "properties": { "state": { "const": "unavailable" }, "safe_code": { "const": "TELEMETRY_UNAVAILABLE" } } }
+          ] }
+        ]
+      },
+      "SystemOperationsHealth": {
+        "type": "object", "additionalProperties": false, "required": ["component_id", "state", "checked_at", "safe_code"],
+        "properties": { "component_id": { "enum": ["api", "database", "object_storage"] }, "state": { "enum": ["ready", "unavailable"] },
+          "checked_at": { "allOf": [{ "$ref": "#/components/schemas/SystemObservationTime" }, { "type": "string" }] },
+          "safe_code": { "enum": ["API_READY", "API_UNAVAILABLE", "DATABASE_READY", "DATABASE_UNAVAILABLE", "OBJECT_STORAGE_READY", "OBJECT_STORAGE_UNAVAILABLE"] } },
+        "oneOf": [
+          { "properties": { "component_id": { "const": "api" }, "state": { "const": "ready" }, "safe_code": { "const": "API_READY" } } },
+          { "properties": { "component_id": { "const": "api" }, "state": { "const": "unavailable" }, "safe_code": { "const": "API_UNAVAILABLE" } } },
+          { "properties": { "component_id": { "const": "database" }, "state": { "const": "ready" }, "safe_code": { "const": "DATABASE_READY" } } },
+          { "properties": { "component_id": { "const": "database" }, "state": { "const": "unavailable" }, "safe_code": { "const": "DATABASE_UNAVAILABLE" } } },
+          { "properties": { "component_id": { "const": "object_storage" }, "state": { "const": "ready" }, "safe_code": { "const": "OBJECT_STORAGE_READY" } } },
+          { "properties": { "component_id": { "const": "object_storage" }, "state": { "const": "unavailable" }, "safe_code": { "const": "OBJECT_STORAGE_UNAVAILABLE" } } }
+        ]
+      },
+      "SystemWorkerSample": {
+        "type": "object", "additionalProperties": false,
+        "required": ["state", "observed_at", "received_at", "safe_code", "worker_kind", "process_state", "poll_started_at", "poll_finished_at", "active_started_at"],
+        "properties": { "state": { "enum": ["fresh", "stale", "not_collected", "unavailable"] }, "observed_at": { "$ref": "#/components/schemas/SystemObservationTime" }, "received_at": { "$ref": "#/components/schemas/SystemObservationTime" }, "safe_code": { "type": "string" },
+          "worker_kind": { "enum": ["document", "studio", "object"] }, "process_state": { "enum": ["alive", "processing", "poll_stale", "stopped", "unknown"] },
+          "poll_started_at": { "$ref": "#/components/schemas/SystemObservationTime" }, "poll_finished_at": { "$ref": "#/components/schemas/SystemObservationTime" }, "active_started_at": { "$ref": "#/components/schemas/SystemObservationTime" } },
+        "allOf": [{ "$ref": "#/components/schemas/SystemObservationTiming" },
+          { "if": { "properties": { "state": { "enum": ["not_collected", "unavailable"] } } }, "then": { "properties": { "process_state": { "const": "unknown" }, "poll_started_at": { "type": "null" }, "poll_finished_at": { "type": "null" }, "active_started_at": { "type": "null" } } } },
+          { "if": { "properties": { "process_state": { "const": "processing" } } }, "then": { "properties": { "active_started_at": { "type": "string" } } } }
+        ]
+      },
+      "SystemResourceSample": {
+        "type": "object", "additionalProperties": false,
+        "required": ["state", "observed_at", "received_at", "safe_code", "worker_kind", "metric_id", "value", "unit"],
+        "properties": { "state": { "type": "string" }, "observed_at": { "$ref": "#/components/schemas/SystemObservationTime" }, "received_at": { "$ref": "#/components/schemas/SystemObservationTime" }, "safe_code": { "type": "string" },
+          "worker_kind": { "enum": ["document", "studio", "object"] }, "metric_id": { "enum": ["cpu_quota_millicores", "memory_limit_bytes", "memory_current_bytes", "runtime_available_bytes"] }, "value": { "type": ["integer", "null"], "minimum": 0, "maximum": 9007199254740991 }, "unit": { "enum": ["millicores", "bytes"] } },
+        "allOf": [{ "$ref": "#/components/schemas/SystemObservationTiming" },
+          { "if": { "properties": { "state": { "enum": ["not_collected", "not_reported", "unavailable"] } } }, "then": { "properties": { "value": { "type": "null" } } }, "else": { "properties": { "value": { "type": "integer" } } } }
+        ]
+      },
+      "SystemDeploymentSummary": {
+        "type": "object", "additionalProperties": false,
+        "required": ["state", "observed_at", "received_at", "safe_code", "operation", "code_revision", "image_digest", "previous_image_digest", "result"],
+        "properties": { "state": { "type": "string" }, "observed_at": { "$ref": "#/components/schemas/SystemObservationTime" }, "received_at": { "$ref": "#/components/schemas/SystemObservationTime" }, "safe_code": { "type": "string" },
+          "operation": { "enum": [null, "deploy", "rollback"] }, "code_revision": { "type": ["string", "null"], "pattern": "^[a-f0-9]{40}$" }, "image_digest": { "type": ["string", "null"], "pattern": "^sha256:[a-f0-9]{64}$" }, "previous_image_digest": { "type": ["string", "null"], "pattern": "^sha256:[a-f0-9]{64}$" }, "result": { "enum": [null, "succeeded", "failed", "uncertain"] } },
+        "allOf": [{ "$ref": "#/components/schemas/SystemObservationTiming" },
+          { "if": { "properties": { "state": { "enum": ["not_collected", "not_reported", "unavailable"] } } }, "then": { "properties": { "operation": { "type": "null" }, "code_revision": { "type": "null" }, "image_digest": { "type": "null" }, "previous_image_digest": { "type": "null" }, "result": { "type": "null" } } } }
+        ]
+      },
+      "SystemOperationsStatus": {
+        "type": "object", "additionalProperties": false, "required": ["schema_version", "checked_at", "health", "worker_samples", "resource_samples", "deployment_summary", "unimplemented"],
+        "properties": { "schema_version": { "const": 1 }, "checked_at": { "allOf": [{ "$ref": "#/components/schemas/SystemObservationTime" }, { "type": "string" }] },
+          "health": { "type": "array", "minItems": 3, "maxItems": 3, "items": false, "prefixItems": [
+            { "allOf": [{ "$ref": "#/components/schemas/SystemOperationsHealth" }, { "properties": { "component_id": { "const": "api" } } }] },
+            { "allOf": [{ "$ref": "#/components/schemas/SystemOperationsHealth" }, { "properties": { "component_id": { "const": "database" } } }] },
+            { "allOf": [{ "$ref": "#/components/schemas/SystemOperationsHealth" }, { "properties": { "component_id": { "const": "object_storage" } } }] }
+          ] },
+          "worker_samples": { "type": "array", "minItems": 3, "maxItems": 3, "items": false, "prefixItems": [
+            { "allOf": [{ "$ref": "#/components/schemas/SystemWorkerSample" }, { "properties": { "worker_kind": { "const": "document" } } }] },
+            { "allOf": [{ "$ref": "#/components/schemas/SystemWorkerSample" }, { "properties": { "worker_kind": { "const": "studio" } } }] },
+            { "allOf": [{ "$ref": "#/components/schemas/SystemWorkerSample" }, { "properties": { "worker_kind": { "const": "object" } } }] }
+          ] },
+          "resource_samples": { "type": "array", "minItems": 12, "maxItems": 12, "items": false, "prefixItems": [
+            { "allOf": [{ "$ref": "#/components/schemas/SystemResourceSample" }, { "properties": { "worker_kind": { "const": "document" }, "metric_id": { "const": "cpu_quota_millicores" }, "unit": { "const": "millicores" } } }] },
+            { "allOf": [{ "$ref": "#/components/schemas/SystemResourceSample" }, { "properties": { "worker_kind": { "const": "document" }, "metric_id": { "const": "memory_limit_bytes" }, "unit": { "const": "bytes" } } }] },
+            { "allOf": [{ "$ref": "#/components/schemas/SystemResourceSample" }, { "properties": { "worker_kind": { "const": "document" }, "metric_id": { "const": "memory_current_bytes" }, "unit": { "const": "bytes" } } }] },
+            { "allOf": [{ "$ref": "#/components/schemas/SystemResourceSample" }, { "properties": { "worker_kind": { "const": "document" }, "metric_id": { "const": "runtime_available_bytes" }, "unit": { "const": "bytes" } } }] },
+            { "allOf": [{ "$ref": "#/components/schemas/SystemResourceSample" }, { "properties": { "worker_kind": { "const": "studio" }, "metric_id": { "const": "cpu_quota_millicores" }, "unit": { "const": "millicores" } } }] },
+            { "allOf": [{ "$ref": "#/components/schemas/SystemResourceSample" }, { "properties": { "worker_kind": { "const": "studio" }, "metric_id": { "const": "memory_limit_bytes" }, "unit": { "const": "bytes" } } }] },
+            { "allOf": [{ "$ref": "#/components/schemas/SystemResourceSample" }, { "properties": { "worker_kind": { "const": "studio" }, "metric_id": { "const": "memory_current_bytes" }, "unit": { "const": "bytes" } } }] },
+            { "allOf": [{ "$ref": "#/components/schemas/SystemResourceSample" }, { "properties": { "worker_kind": { "const": "studio" }, "metric_id": { "const": "runtime_available_bytes" }, "unit": { "const": "bytes" } } }] },
+            { "allOf": [{ "$ref": "#/components/schemas/SystemResourceSample" }, { "properties": { "worker_kind": { "const": "object" }, "metric_id": { "const": "cpu_quota_millicores" }, "unit": { "const": "millicores" } } }] },
+            { "allOf": [{ "$ref": "#/components/schemas/SystemResourceSample" }, { "properties": { "worker_kind": { "const": "object" }, "metric_id": { "const": "memory_limit_bytes" }, "unit": { "const": "bytes" } } }] },
+            { "allOf": [{ "$ref": "#/components/schemas/SystemResourceSample" }, { "properties": { "worker_kind": { "const": "object" }, "metric_id": { "const": "memory_current_bytes" }, "unit": { "const": "bytes" } } }] },
+            { "allOf": [{ "$ref": "#/components/schemas/SystemResourceSample" }, { "properties": { "worker_kind": { "const": "object" }, "metric_id": { "const": "runtime_available_bytes" }, "unit": { "const": "bytes" } } }] }
+          ] },
+          "deployment_summary": { "$ref": "#/components/schemas/SystemDeploymentSummary" },
+          "unimplemented": { "type": "array", "maxItems": 3, "uniqueItems": true, "items": { "type": "object", "additionalProperties": false, "required": ["producer_id", "safe_code", "impact_code"],
+            "properties": { "producer_id": { "enum": ["worker_observation_producer", "resource_observation_producer", "deployment_receipt_writer"] }, "safe_code": { "const": "PRODUCER_NOT_IMPLEMENTED" }, "impact_code": { "enum": ["WORKER_STATE_UNKNOWN", "CAPACITY_UNKNOWN", "DEPLOYMENT_HISTORY_UNKNOWN"] } },
+            "oneOf": [
+              { "properties": { "producer_id": { "const": "worker_observation_producer" }, "impact_code": { "const": "WORKER_STATE_UNKNOWN" } } },
+              { "properties": { "producer_id": { "const": "resource_observation_producer" }, "impact_code": { "const": "CAPACITY_UNKNOWN" } } },
+              { "properties": { "producer_id": { "const": "deployment_receipt_writer" }, "impact_code": { "const": "DEPLOYMENT_HISTORY_UNKNOWN" } } }
+            ] } }
+        }
+      },
+      "SystemOperationsStatusEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"], "properties": {
+          "data": { "$ref": "#/components/schemas/SystemOperationsStatus" }, "meta": { "type": "object", "additionalProperties": false, "required": ["trace_id"], "properties": { "trace_id": { "$ref": "#/components/schemas/OpaqueId" } } }
+        }
+      },
+      "WorkspaceWorkerSample": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["state","observed_at","received_at","coverage","safe_code","worker_kind","process_state","poll_started_at","poll_finished_at","active_started_at"],
+        "properties": {"state":{"enum":["fresh","stale","not_collected","unavailable"]},"observed_at":{"$ref":"#/components/schemas/SystemObservationTime"},"received_at":{"$ref":"#/components/schemas/SystemObservationTime"},"safe_code":{"type":"string"},"worker_kind":{"enum":["document","studio","object"]},"process_state":{"enum":["alive","processing","poll_stale","stopped","unknown"]},"poll_started_at":{"$ref":"#/components/schemas/SystemObservationTime"},"poll_finished_at":{"$ref":"#/components/schemas/SystemObservationTime"},"active_started_at":{"$ref":"#/components/schemas/SystemObservationTime"},"coverage":{"const":"workspace_operational_counts"}},
+        "allOf": [{"$ref":"#/components/schemas/SystemObservationTiming"},{"if":{"properties":{"state":{"enum":["not_collected","unavailable"]}}},"then":{"properties":{"process_state":{"const":"unknown"},"poll_started_at":{"type":"null"},"poll_finished_at":{"type":"null"},"active_started_at":{"type":"null"}}}},{"if":{"properties":{"process_state":{"const":"processing"}}},"then":{"properties":{"active_started_at":{"type":"string"}}}}]
+      },
+      "WorkspaceResourceSample": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["state","observed_at","received_at","coverage","safe_code","worker_kind","metric_id","value","unit"],
+        "properties": {"state":{"enum":["fresh","stale","not_collected","unavailable"]},"observed_at":{"$ref":"#/components/schemas/SystemObservationTime"},"received_at":{"$ref":"#/components/schemas/SystemObservationTime"},"safe_code":{"type":"string"},"worker_kind":{"enum":["document","studio","object"]},"metric_id":{"enum":["cpu_quota_millicores","memory_limit_bytes","memory_current_bytes","runtime_available_bytes"]},"value":{"type":["integer","null"],"minimum":0,"maximum":9007199254740991},"unit":{"enum":["millicores","bytes"]},"coverage":{"const":"workspace_operational_counts"}},
+        "allOf": [{"$ref":"#/components/schemas/SystemObservationTiming"},{"if":{"properties":{"state":{"enum":["not_collected","not_reported","unavailable"]}}},"then":{"properties":{"value":{"type":"null"}}},"else":{"properties":{"value":{"type":"integer"}}}}]
+      },
+      "WorkspaceEventCount": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["state","observed_at","received_at","coverage","safe_code","metric_id","value","unit","window_start","window_end"],
+        "properties": {"state":{"enum":["measured","partial","not_collected","unavailable"]},"observed_at":{"$ref":"#/components/schemas/SystemObservationTime"},"received_at":{"$ref":"#/components/schemas/SystemObservationTime"},"coverage":{"const":"actor_accessible_records"},"safe_code":{"type":"string"},"metric_id":{"enum":["manual_reprocess_pending","readiness_reprocess_pending","retry_wait","backoff_wait","step_up_denied_24h","step_up_expired_24h","access_blocked_24h","access_masked_24h","egress_denied_24h"]},"value":{"type":["integer","null"],"minimum":0,"maximum":9007199254740991},"unit":{"const":"count"},"window_start":{"$ref":"#/components/schemas/SystemObservationTime"},"window_end":{"$ref":"#/components/schemas/SystemObservationTime"}},
+        "allOf": [{"$ref":"#/components/schemas/SystemObservationTiming"},{"if":{"properties":{"state":{"enum":["not_collected","not_reported","unavailable"]}}},"then":{"properties":{"value":{"type":"null"},"window_start":{"type":"null"},"window_end":{"type":"null"}}}},{"if":{"properties":{"state":{"enum":["measured","partial"]}}},"then":{"properties":{"value":{"type":"integer"}}}}]
+      },
+      "WorkspaceCostSummary": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["state","observed_at","received_at","coverage","safe_code","known_amounts","unknown_attempt_count","unconfirmed_run_count","coverage_start","coverage_end"],
+        "properties": {"state":{"enum":["measured","partial","not_collected","not_reported","unavailable"]},"observed_at":{"$ref":"#/components/schemas/SystemObservationTime"},"received_at":{"$ref":"#/components/schemas/SystemObservationTime"},"coverage":{"const":"actor_accessible_records"},"safe_code":{"type":"string"},"known_amounts":{"type":"array","uniqueItems":true,"items":{"type":"object","additionalProperties":false,"required":["currency","amount"],"properties":{"currency":{"type":"string","pattern":"^[A-Z]{3}$"},"amount":{"type":"string","pattern":"^(?:0|[1-9][0-9]{0,23})(?:\\.[0-9]{1,9})?$"}}}},"unknown_attempt_count":{"type":["integer","null"],"minimum":0,"maximum":9007199254740991},"unconfirmed_run_count":{"type":["integer","null"],"minimum":0,"maximum":9007199254740991},"coverage_start":{"$ref":"#/components/schemas/SystemObservationTime"},"coverage_end":{"$ref":"#/components/schemas/SystemObservationTime"}},
+        "allOf": [{"$ref":"#/components/schemas/SystemObservationTiming"},{"if":{"properties":{"state":{"enum":["not_collected","not_reported","unavailable"]}}},"then":{"properties":{"unknown_attempt_count":{"type":"null"},"unconfirmed_run_count":{"type":"null"},"coverage_start":{"type":"null"},"coverage_end":{"type":"null"},"known_amounts":{"maxItems":0}}}},{"if":{"properties":{"state":{"enum":["measured","partial"]}}},"then":{"properties":{"unknown_attempt_count":{"type":"integer"},"unconfirmed_run_count":{"type":"integer"}}}}]
+      },
+      "WorkspaceDeploymentSummary": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["state","observed_at","received_at","coverage","safe_code","operation","code_revision","image_digest","previous_image_digest","result"],
+        "properties": {"state":{"enum":["measured","not_collected","unavailable"]},"observed_at":{"$ref":"#/components/schemas/SystemObservationTime"},"received_at":{"$ref":"#/components/schemas/SystemObservationTime"},"safe_code":{"type":"string"},"operation":{"enum":[null,"deploy","rollback"]},"code_revision":{"type":["string","null"],"pattern":"^[a-f0-9]{40}$"},"image_digest":{"type":["string","null"],"pattern":"^sha256:[a-f0-9]{64}$"},"previous_image_digest":{"type":["string","null"],"pattern":"^sha256:[a-f0-9]{64}$"},"result":{"enum":[null,"succeeded","failed","uncertain"]},"coverage":{"const":"actor_accessible_records"}},
+        "allOf": [{"$ref":"#/components/schemas/SystemObservationTiming"},{"if":{"properties":{"state":{"enum":["not_collected","not_reported","unavailable"]}}},"then":{"properties":{"operation":{"type":"null"},"code_revision":{"type":"null"},"image_digest":{"type":"null"},"previous_image_digest":{"type":"null"},"result":{"type":"null"}}}},{"if":{"properties":{"result":{"const":"succeeded"}}},"then":{"properties":{"code_revision":{"type":"string"},"image_digest":{"type":"string"},"operation":{"enum":["deploy","rollback"]}}}},{"if":{"properties":{"result":{"const":"succeeded"},"operation":{"const":"rollback"}}},"then":{"properties":{"previous_image_digest":{"type":"string"}}}}]
+      },
       "OperationsStatus": {
         "type": "object", "additionalProperties": false,
-        "required": ["workspace_id", "overall_status", "checked_at", "components"],
+        "required": ["workspace_id", "overall_status", "checked_at", "components", "observations", "worker_samples", "resource_samples", "event_counts", "cost_summary", "deployment_summary", "unimplemented"],
         "properties": {
           "workspace_id": { "$ref": "#/components/schemas/OpaqueId" },
           "overall_status": { "type": "string", "enum": ["ready", "warning", "error"] },
           "checked_at": { "type": "string", "format": "date-time" },
+          "worker_samples": {"type":"array","minItems":3,"maxItems":3,"items":false,"prefixItems":[{"allOf":[{"$ref":"#/components/schemas/WorkspaceWorkerSample"},{"properties":{"worker_kind":{"const":"document"}}}]},{"allOf":[{"$ref":"#/components/schemas/WorkspaceWorkerSample"},{"properties":{"worker_kind":{"const":"studio"}}}]},{"allOf":[{"$ref":"#/components/schemas/WorkspaceWorkerSample"},{"properties":{"worker_kind":{"const":"object"}}}]}]},
+          "resource_samples": {"type":"array","minItems":12,"maxItems":12,"items":false,"prefixItems":[{"allOf":[{"$ref":"#/components/schemas/WorkspaceResourceSample"},{"properties":{"worker_kind":{"const":"document"},"metric_id":{"const":"cpu_quota_millicores"},"unit":{"const":"millicores"}}}]},{"allOf":[{"$ref":"#/components/schemas/WorkspaceResourceSample"},{"properties":{"worker_kind":{"const":"document"},"metric_id":{"const":"memory_limit_bytes"},"unit":{"const":"bytes"}}}]},{"allOf":[{"$ref":"#/components/schemas/WorkspaceResourceSample"},{"properties":{"worker_kind":{"const":"document"},"metric_id":{"const":"memory_current_bytes"},"unit":{"const":"bytes"}}}]},{"allOf":[{"$ref":"#/components/schemas/WorkspaceResourceSample"},{"properties":{"worker_kind":{"const":"document"},"metric_id":{"const":"runtime_available_bytes"},"unit":{"const":"bytes"}}}]},{"allOf":[{"$ref":"#/components/schemas/WorkspaceResourceSample"},{"properties":{"worker_kind":{"const":"studio"},"metric_id":{"const":"cpu_quota_millicores"},"unit":{"const":"millicores"}}}]},{"allOf":[{"$ref":"#/components/schemas/WorkspaceResourceSample"},{"properties":{"worker_kind":{"const":"studio"},"metric_id":{"const":"memory_limit_bytes"},"unit":{"const":"bytes"}}}]},{"allOf":[{"$ref":"#/components/schemas/WorkspaceResourceSample"},{"properties":{"worker_kind":{"const":"studio"},"metric_id":{"const":"memory_current_bytes"},"unit":{"const":"bytes"}}}]},{"allOf":[{"$ref":"#/components/schemas/WorkspaceResourceSample"},{"properties":{"worker_kind":{"const":"studio"},"metric_id":{"const":"runtime_available_bytes"},"unit":{"const":"bytes"}}}]},{"allOf":[{"$ref":"#/components/schemas/WorkspaceResourceSample"},{"properties":{"worker_kind":{"const":"object"},"metric_id":{"const":"cpu_quota_millicores"},"unit":{"const":"millicores"}}}]},{"allOf":[{"$ref":"#/components/schemas/WorkspaceResourceSample"},{"properties":{"worker_kind":{"const":"object"},"metric_id":{"const":"memory_limit_bytes"},"unit":{"const":"bytes"}}}]},{"allOf":[{"$ref":"#/components/schemas/WorkspaceResourceSample"},{"properties":{"worker_kind":{"const":"object"},"metric_id":{"const":"memory_current_bytes"},"unit":{"const":"bytes"}}}]},{"allOf":[{"$ref":"#/components/schemas/WorkspaceResourceSample"},{"properties":{"worker_kind":{"const":"object"},"metric_id":{"const":"runtime_available_bytes"},"unit":{"const":"bytes"}}}]}]},
+          "event_counts": {"type":"array","minItems":9,"maxItems":9,"items":false,"prefixItems":[{"allOf":[{"$ref":"#/components/schemas/WorkspaceEventCount"},{"properties":{"metric_id":{"const":"manual_reprocess_pending"},"window_start":{"type":"null"},"window_end":{"type":"null"}}}]},{"allOf":[{"$ref":"#/components/schemas/WorkspaceEventCount"},{"properties":{"metric_id":{"const":"readiness_reprocess_pending"},"window_start":{"type":"null"},"window_end":{"type":"null"}}}]},{"allOf":[{"$ref":"#/components/schemas/WorkspaceEventCount"},{"properties":{"metric_id":{"const":"retry_wait"},"window_start":{"type":"null"},"window_end":{"type":"null"}}}]},{"allOf":[{"$ref":"#/components/schemas/WorkspaceEventCount"},{"properties":{"metric_id":{"const":"backoff_wait"},"window_start":{"type":"null"},"window_end":{"type":"null"}}}]},{"allOf":[{"$ref":"#/components/schemas/WorkspaceEventCount"},{"properties":{"metric_id":{"const":"step_up_denied_24h"}}}]},{"allOf":[{"$ref":"#/components/schemas/WorkspaceEventCount"},{"properties":{"metric_id":{"const":"step_up_expired_24h"}}}]},{"allOf":[{"$ref":"#/components/schemas/WorkspaceEventCount"},{"properties":{"metric_id":{"const":"access_blocked_24h"}}}]},{"allOf":[{"$ref":"#/components/schemas/WorkspaceEventCount"},{"properties":{"metric_id":{"const":"access_masked_24h"}}}]},{"allOf":[{"$ref":"#/components/schemas/WorkspaceEventCount"},{"properties":{"metric_id":{"const":"egress_denied_24h"}}}]}]},
+          "cost_summary": {"$ref":"#/components/schemas/WorkspaceCostSummary"},
+          "deployment_summary": {"$ref":"#/components/schemas/WorkspaceDeploymentSummary"},
+          "unimplemented": {"type":"array","maxItems":7,"uniqueItems":true,"items":{"type":"object","additionalProperties":false,"required":["producer_id","safe_code","impact_code"],"properties":{"producer_id":{"enum":["waiting_role_producer","readiness_event_producer","retry_suppression_receipt","node_capacity_producer","provider_capacity_reporter","deployment_receipt_writer","cost_receipt_writer"]},"safe_code":{"const":"PRODUCER_NOT_IMPLEMENTED"},"impact_code":{"enum":["ROLE_READINESS_UNKNOWN","AUTOMATIC_REPROCESS_UNOBSERVED","DEDUP_NOT_OBSERVED","CAPACITY_UNKNOWN","DEPLOYMENT_HISTORY_UNKNOWN","COST_UNKNOWN"]}},"oneOf":[{"properties":{"producer_id":{"const":"waiting_role_producer"},"impact_code":{"const":"ROLE_READINESS_UNKNOWN"}}},{"properties":{"producer_id":{"const":"readiness_event_producer"},"impact_code":{"const":"AUTOMATIC_REPROCESS_UNOBSERVED"}}},{"properties":{"producer_id":{"const":"retry_suppression_receipt"},"impact_code":{"const":"DEDUP_NOT_OBSERVED"}}},{"properties":{"producer_id":{"const":"node_capacity_producer"},"impact_code":{"const":"CAPACITY_UNKNOWN"}}},{"properties":{"producer_id":{"const":"provider_capacity_reporter"},"impact_code":{"const":"CAPACITY_UNKNOWN"}}},{"properties":{"producer_id":{"const":"deployment_receipt_writer"},"impact_code":{"const":"DEPLOYMENT_HISTORY_UNKNOWN"}}},{"properties":{"producer_id":{"const":"cost_receipt_writer"},"impact_code":{"const":"COST_UNKNOWN"}}}]}},
+          "observations": {
+            "type": "array", "minItems": 16, "maxItems": 16, "items": false,
+            "prefixItems": [
+              { "allOf": [{ "$ref": "#/components/schemas/OperationsObservation" }, { "properties": { "metric_id": { "const": "document_pending" } } }] },
+              { "allOf": [{ "$ref": "#/components/schemas/OperationsObservation" }, { "properties": { "metric_id": { "const": "document_retry_wait" } } }] },
+              { "allOf": [{ "$ref": "#/components/schemas/OperationsObservation" }, { "properties": { "metric_id": { "const": "document_leased" } } }] },
+              { "allOf": [{ "$ref": "#/components/schemas/OperationsObservation" }, { "properties": { "metric_id": { "const": "document_dead_letter" } } }] },
+              { "allOf": [{ "$ref": "#/components/schemas/OperationsObservation" }, { "properties": { "metric_id": { "const": "object_pending" } } }] },
+              { "allOf": [{ "$ref": "#/components/schemas/OperationsObservation" }, { "properties": { "metric_id": { "const": "object_retry_wait" } } }] },
+              { "allOf": [{ "$ref": "#/components/schemas/OperationsObservation" }, { "properties": { "metric_id": { "const": "object_leased" } } }] },
+              { "allOf": [{ "$ref": "#/components/schemas/OperationsObservation" }, { "properties": { "metric_id": { "const": "object_dead_letter" } } }] },
+              { "allOf": [{ "$ref": "#/components/schemas/OperationsObservation" }, { "properties": { "metric_id": { "const": "object_oldest_pending_seconds" } } }] },
+              { "allOf": [{ "$ref": "#/components/schemas/OperationsObservation" }, { "properties": { "metric_id": { "const": "source_waiting_model" } } }] },
+              { "allOf": [{ "$ref": "#/components/schemas/OperationsObservation" }, { "properties": { "metric_id": { "const": "index_records_current" } } }] },
+              { "allOf": [{ "$ref": "#/components/schemas/OperationsObservation" }, { "properties": { "metric_id": { "const": "source_storage_bytes" } } }] },
+              { "allOf": [{ "$ref": "#/components/schemas/OperationsObservation" }, { "properties": { "metric_id": { "const": "reported_prompt_tokens" } } }] },
+              { "allOf": [{ "$ref": "#/components/schemas/OperationsObservation" }, { "properties": { "metric_id": { "const": "reported_completion_tokens" } } }] },
+              { "allOf": [{ "$ref": "#/components/schemas/OperationsObservation" }, { "properties": { "metric_id": { "const": "reported_total_tokens" } } }] },
+              { "allOf": [{ "$ref": "#/components/schemas/OperationsObservation" }, { "properties": { "metric_id": { "const": "attempts_without_reported_usage" } } }] }
+            ]
+          },
           "components": {
             "type": "array", "minItems": 5, "maxItems": 5,
             "items": {
@@ -7193,6 +9034,111 @@
             "type": "object", "additionalProperties": false, "required": ["trace_id", "workspace_id"],
             "properties": { "trace_id": { "$ref": "#/components/schemas/OpaqueId" }, "workspace_id": { "$ref": "#/components/schemas/OpaqueId" } }
           }
+        }
+      },
+      "WorkspaceReadinessEventCount": {
+        "type": "object", "additionalProperties": false,
+        "required": ["state","observed_at","received_at","coverage","safe_code","metric_id","value","unit","window_start","window_end"],
+        "properties": {
+          "state": {"$ref":"#/components/schemas/WorkspaceEventCount/properties/state"},
+          "observed_at": {"$ref":"#/components/schemas/WorkspaceEventCount/properties/observed_at"},
+          "received_at": {"$ref":"#/components/schemas/WorkspaceEventCount/properties/received_at"},
+          "coverage": {"$ref":"#/components/schemas/WorkspaceEventCount/properties/coverage"},
+          "safe_code": {"$ref":"#/components/schemas/WorkspaceEventCount/properties/safe_code"},
+          "metric_id": {"enum":["waiting_text_generation","waiting_image_understanding","waiting_document_parsing","waiting_speech_to_text","waiting_role_unknown","retry_suppressed_contexts_24h"]},
+          "value": {"$ref":"#/components/schemas/WorkspaceEventCount/properties/value"},
+          "unit": {"$ref":"#/components/schemas/WorkspaceEventCount/properties/unit"},
+          "window_start": {"$ref":"#/components/schemas/WorkspaceEventCount/properties/window_start"},
+          "window_end": {"$ref":"#/components/schemas/WorkspaceEventCount/properties/window_end"}
+        },
+        "allOf": [{"$ref":"#/components/schemas/WorkspaceEventCount/allOf/0"},{"$ref":"#/components/schemas/WorkspaceEventCount/allOf/1"},{"$ref":"#/components/schemas/WorkspaceEventCount/allOf/2"}]
+      },
+      "SystemHostCapacitySample": {"type":"object","additionalProperties":false,"required":["state","observed_at","received_at","safe_code","worker_kind","metric_id","value","unit"],"properties":{"state":{"enum":["fresh","stale","not_collected","unavailable"]},"observed_at":{"$ref":"#/components/schemas/SystemObservationTime"},"received_at":{"$ref":"#/components/schemas/SystemObservationTime"},"safe_code":{"type":"string"},"worker_kind":{"const":"server_host"},"metric_id":{"enum":["cpu_logical_millicores","cpu_usage_basis_points","memory_total_bytes","memory_available_bytes"]},"value":{"type":["integer","null"],"minimum":0,"maximum":9007199254740991},"unit":{"enum":["millicores","basis_points","bytes"]}},"allOf":[{"$ref":"#/components/schemas/SystemObservationTiming"},{"if":{"properties":{"state":{"enum":["not_collected","unavailable"]}}},"then":{"properties":{"value":{"type":"null"}}},"else":{"properties":{"value":{"type":"integer"}}}},{"oneOf":[{"properties":{"metric_id":{"const":"cpu_logical_millicores"},"unit":{"const":"millicores"},"value":{"type":["integer","null"],"minimum":1000,"maximum":32768000,"multipleOf":1000}}},{"properties":{"metric_id":{"const":"cpu_usage_basis_points"},"unit":{"const":"basis_points"},"value":{"type":["integer","null"],"minimum":0,"maximum":10000}}},{"properties":{"metric_id":{"const":"memory_total_bytes"},"unit":{"const":"bytes"},"value":{"type":["integer","null"],"minimum":1,"maximum":9007199254740991}}},{"properties":{"metric_id":{"const":"memory_available_bytes"},"unit":{"const":"bytes"},"value":{"type":["integer","null"],"minimum":0,"maximum":9007199254740991}}}]}]},
+      "WorkspaceHostCapacitySample": {"type":"object","additionalProperties":false,"required":["state","observed_at","received_at","coverage","safe_code","worker_kind","metric_id","value","unit"],"properties":{"state":{"$ref":"#/components/schemas/SystemHostCapacitySample/properties/state"},"observed_at":{"$ref":"#/components/schemas/SystemHostCapacitySample/properties/observed_at"},"received_at":{"$ref":"#/components/schemas/SystemHostCapacitySample/properties/received_at"},"safe_code":{"$ref":"#/components/schemas/SystemHostCapacitySample/properties/safe_code"},"worker_kind":{"$ref":"#/components/schemas/SystemHostCapacitySample/properties/worker_kind"},"metric_id":{"$ref":"#/components/schemas/SystemHostCapacitySample/properties/metric_id"},"value":{"$ref":"#/components/schemas/SystemHostCapacitySample/properties/value"},"unit":{"$ref":"#/components/schemas/SystemHostCapacitySample/properties/unit"},"coverage":{"const":"server_host_observation"}},"allOf":[{"$ref":"#/components/schemas/SystemHostCapacitySample/allOf/0"},{"$ref":"#/components/schemas/SystemHostCapacitySample/allOf/1"},{"$ref":"#/components/schemas/SystemHostCapacitySample/allOf/2"}]},
+      "SystemOperationsStatusWithCapacity": {"type":"object","additionalProperties":false,"required":["schema_version","checked_at","health","worker_samples","resource_samples","deployment_summary","unimplemented"],"properties":{"schema_version":{"$ref":"#/components/schemas/SystemOperationsStatus/properties/schema_version"},"checked_at":{"$ref":"#/components/schemas/SystemOperationsStatus/properties/checked_at"},"health":{"$ref":"#/components/schemas/SystemOperationsStatus/properties/health"},"worker_samples":{"$ref":"#/components/schemas/SystemOperationsStatus/properties/worker_samples"},"resource_samples":{"type":"array","minItems":16,"maxItems":16,"items":false,"prefixItems":[{"$ref":"#/components/schemas/SystemOperationsStatus/properties/resource_samples/prefixItems/0"},{"$ref":"#/components/schemas/SystemOperationsStatus/properties/resource_samples/prefixItems/1"},{"$ref":"#/components/schemas/SystemOperationsStatus/properties/resource_samples/prefixItems/2"},{"$ref":"#/components/schemas/SystemOperationsStatus/properties/resource_samples/prefixItems/3"},{"$ref":"#/components/schemas/SystemOperationsStatus/properties/resource_samples/prefixItems/4"},{"$ref":"#/components/schemas/SystemOperationsStatus/properties/resource_samples/prefixItems/5"},{"$ref":"#/components/schemas/SystemOperationsStatus/properties/resource_samples/prefixItems/6"},{"$ref":"#/components/schemas/SystemOperationsStatus/properties/resource_samples/prefixItems/7"},{"$ref":"#/components/schemas/SystemOperationsStatus/properties/resource_samples/prefixItems/8"},{"$ref":"#/components/schemas/SystemOperationsStatus/properties/resource_samples/prefixItems/9"},{"$ref":"#/components/schemas/SystemOperationsStatus/properties/resource_samples/prefixItems/10"},{"$ref":"#/components/schemas/SystemOperationsStatus/properties/resource_samples/prefixItems/11"},{"allOf":[{"$ref":"#/components/schemas/SystemHostCapacitySample"},{"properties":{"worker_kind":{"const":"server_host"},"metric_id":{"const":"cpu_logical_millicores"},"unit":{"const":"millicores"}}}]},{"allOf":[{"$ref":"#/components/schemas/SystemHostCapacitySample"},{"properties":{"worker_kind":{"const":"server_host"},"metric_id":{"const":"cpu_usage_basis_points"},"unit":{"const":"basis_points"}}}]},{"allOf":[{"$ref":"#/components/schemas/SystemHostCapacitySample"},{"properties":{"worker_kind":{"const":"server_host"},"metric_id":{"const":"memory_total_bytes"},"unit":{"const":"bytes"}}}]},{"allOf":[{"$ref":"#/components/schemas/SystemHostCapacitySample"},{"properties":{"worker_kind":{"const":"server_host"},"metric_id":{"const":"memory_available_bytes"},"unit":{"const":"bytes"}}}]}]},"deployment_summary":{"$ref":"#/components/schemas/SystemOperationsStatus/properties/deployment_summary"},"unimplemented":{"$ref":"#/components/schemas/SystemOperationsStatus/properties/unimplemented"}}},
+      "OperationsStatusWithCapacity": {"type":"object","additionalProperties":false,"required":["workspace_id","overall_status","checked_at","components","observations","worker_samples","resource_samples","event_counts","cost_summary","deployment_summary","unimplemented"],"properties":{"workspace_id":{"$ref":"#/components/schemas/OperationsStatus/properties/workspace_id"},"overall_status":{"$ref":"#/components/schemas/OperationsStatus/properties/overall_status"},"checked_at":{"$ref":"#/components/schemas/OperationsStatus/properties/checked_at"},"components":{"$ref":"#/components/schemas/OperationsStatus/properties/components"},"observations":{"$ref":"#/components/schemas/OperationsStatus/properties/observations"},"worker_samples":{"$ref":"#/components/schemas/OperationsStatus/properties/worker_samples"},"resource_samples":{"type":"array","minItems":16,"maxItems":16,"items":false,"prefixItems":[{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/0"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/1"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/2"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/3"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/4"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/5"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/6"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/7"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/8"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/9"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/10"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/11"},{"allOf":[{"$ref":"#/components/schemas/WorkspaceHostCapacitySample"},{"properties":{"worker_kind":{"const":"server_host"},"metric_id":{"const":"cpu_logical_millicores"},"unit":{"const":"millicores"}}}]},{"allOf":[{"$ref":"#/components/schemas/WorkspaceHostCapacitySample"},{"properties":{"worker_kind":{"const":"server_host"},"metric_id":{"const":"cpu_usage_basis_points"},"unit":{"const":"basis_points"}}}]},{"allOf":[{"$ref":"#/components/schemas/WorkspaceHostCapacitySample"},{"properties":{"worker_kind":{"const":"server_host"},"metric_id":{"const":"memory_total_bytes"},"unit":{"const":"bytes"}}}]},{"allOf":[{"$ref":"#/components/schemas/WorkspaceHostCapacitySample"},{"properties":{"worker_kind":{"const":"server_host"},"metric_id":{"const":"memory_available_bytes"},"unit":{"const":"bytes"}}}]}]},"event_counts":{"$ref":"#/components/schemas/OperationsStatus/properties/event_counts"},"cost_summary":{"$ref":"#/components/schemas/OperationsStatus/properties/cost_summary"},"deployment_summary":{"$ref":"#/components/schemas/OperationsStatus/properties/deployment_summary"},"unimplemented":{"$ref":"#/components/schemas/OperationsStatus/properties/unimplemented"}}},
+      "OperationsStatusWithReadinessCapacity": {"type":"object","additionalProperties":false,"required":["workspace_id","overall_status","checked_at","components","observations","worker_samples","resource_samples","event_counts","cost_summary","deployment_summary","unimplemented"],"properties":{"workspace_id":{"$ref":"#/components/schemas/OperationsStatus/properties/workspace_id"},"overall_status":{"$ref":"#/components/schemas/OperationsStatus/properties/overall_status"},"checked_at":{"$ref":"#/components/schemas/OperationsStatus/properties/checked_at"},"components":{"$ref":"#/components/schemas/OperationsStatus/properties/components"},"observations":{"$ref":"#/components/schemas/OperationsStatus/properties/observations"},"worker_samples":{"$ref":"#/components/schemas/OperationsStatus/properties/worker_samples"},"resource_samples":{"type":"array","minItems":16,"maxItems":16,"items":false,"prefixItems":[{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/0"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/1"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/2"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/3"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/4"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/5"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/6"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/7"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/8"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/9"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/10"},{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples/prefixItems/11"},{"allOf":[{"$ref":"#/components/schemas/WorkspaceHostCapacitySample"},{"properties":{"worker_kind":{"const":"server_host"},"metric_id":{"const":"cpu_logical_millicores"},"unit":{"const":"millicores"}}}]},{"allOf":[{"$ref":"#/components/schemas/WorkspaceHostCapacitySample"},{"properties":{"worker_kind":{"const":"server_host"},"metric_id":{"const":"cpu_usage_basis_points"},"unit":{"const":"basis_points"}}}]},{"allOf":[{"$ref":"#/components/schemas/WorkspaceHostCapacitySample"},{"properties":{"worker_kind":{"const":"server_host"},"metric_id":{"const":"memory_total_bytes"},"unit":{"const":"bytes"}}}]},{"allOf":[{"$ref":"#/components/schemas/WorkspaceHostCapacitySample"},{"properties":{"worker_kind":{"const":"server_host"},"metric_id":{"const":"memory_available_bytes"},"unit":{"const":"bytes"}}}]}]},"event_counts":{"$ref":"#/components/schemas/OperationsStatusWithReadiness/properties/event_counts"},"cost_summary":{"$ref":"#/components/schemas/OperationsStatus/properties/cost_summary"},"deployment_summary":{"$ref":"#/components/schemas/OperationsStatus/properties/deployment_summary"},"unimplemented":{"$ref":"#/components/schemas/OperationsStatus/properties/unimplemented"}}},
+      "SystemOperationsStatusCapacityEnvelope": {"type":"object","additionalProperties":false,"required":["data","meta"],"properties":{"data":{"$ref":"#/components/schemas/SystemOperationsStatusWithCapacity"},"meta":{"$ref":"#/components/schemas/SystemOperationsStatusEnvelope/properties/meta"}}},
+      "OperationsStatusCapacityEnvelope": {"type":"object","additionalProperties":false,"required":["data","meta"],"properties":{"data":{"$ref":"#/components/schemas/OperationsStatusWithCapacity"},"meta":{"$ref":"#/components/schemas/OperationsStatusEnvelope/properties/meta"}}},
+      "OperationsStatusReadinessCapacityEnvelope": {"type":"object","additionalProperties":false,"required":["data","meta"],"properties":{"data":{"$ref":"#/components/schemas/OperationsStatusWithReadinessCapacity"},"meta":{"$ref":"#/components/schemas/OperationsStatusEnvelope/properties/meta"}}},
+      "OperationsStatusWithReadiness": {
+        "type":"object", "additionalProperties":false,
+        "required":["workspace_id","overall_status","checked_at","components","observations","worker_samples","resource_samples","event_counts","cost_summary","deployment_summary","unimplemented"],
+        "properties": {
+          "workspace_id":{"$ref":"#/components/schemas/OperationsStatus/properties/workspace_id"},
+          "overall_status":{"$ref":"#/components/schemas/OperationsStatus/properties/overall_status"},
+          "checked_at":{"$ref":"#/components/schemas/OperationsStatus/properties/checked_at"},
+          "components":{"$ref":"#/components/schemas/OperationsStatus/properties/components"},
+          "observations":{"$ref":"#/components/schemas/OperationsStatus/properties/observations"},
+          "worker_samples":{"$ref":"#/components/schemas/OperationsStatus/properties/worker_samples"},
+          "resource_samples":{"$ref":"#/components/schemas/OperationsStatus/properties/resource_samples"},
+          "event_counts": {"type":"array","minItems":15,"maxItems":15,"items":false,"prefixItems":[
+            {"$ref":"#/components/schemas/OperationsStatus/properties/event_counts/prefixItems/0"},
+            {"$ref":"#/components/schemas/OperationsStatus/properties/event_counts/prefixItems/1"},
+            {"$ref":"#/components/schemas/OperationsStatus/properties/event_counts/prefixItems/2"},
+            {"$ref":"#/components/schemas/OperationsStatus/properties/event_counts/prefixItems/3"},
+            {"$ref":"#/components/schemas/OperationsStatus/properties/event_counts/prefixItems/4"},
+            {"$ref":"#/components/schemas/OperationsStatus/properties/event_counts/prefixItems/5"},
+            {"$ref":"#/components/schemas/OperationsStatus/properties/event_counts/prefixItems/6"},
+            {"$ref":"#/components/schemas/OperationsStatus/properties/event_counts/prefixItems/7"},
+            {"$ref":"#/components/schemas/OperationsStatus/properties/event_counts/prefixItems/8"},
+            {"allOf":[{"$ref":"#/components/schemas/WorkspaceReadinessEventCount"},{"properties":{"metric_id":{"const":"waiting_text_generation"},"window_start":{"type":"null"},"window_end":{"type":"null"}}}]},
+            {"allOf":[{"$ref":"#/components/schemas/WorkspaceReadinessEventCount"},{"properties":{"metric_id":{"const":"waiting_image_understanding"},"window_start":{"type":"null"},"window_end":{"type":"null"}}}]},
+            {"allOf":[{"$ref":"#/components/schemas/WorkspaceReadinessEventCount"},{"properties":{"metric_id":{"const":"waiting_document_parsing"},"window_start":{"type":"null"},"window_end":{"type":"null"}}}]},
+            {"allOf":[{"$ref":"#/components/schemas/WorkspaceReadinessEventCount"},{"properties":{"metric_id":{"const":"waiting_speech_to_text"},"window_start":{"type":"null"},"window_end":{"type":"null"}}}]},
+            {"allOf":[{"$ref":"#/components/schemas/WorkspaceReadinessEventCount"},{"properties":{"metric_id":{"const":"waiting_role_unknown"},"window_start":{"type":"null"},"window_end":{"type":"null"}}}]},
+            {"allOf":[{"$ref":"#/components/schemas/WorkspaceReadinessEventCount"},{"properties":{"metric_id":{"const":"retry_suppressed_contexts_24h"}}}],"x-window-seconds":86400}
+          ]},
+          "cost_summary":{"$ref":"#/components/schemas/OperationsStatus/properties/cost_summary"},
+          "deployment_summary":{"$ref":"#/components/schemas/OperationsStatus/properties/deployment_summary"},
+          "unimplemented":{"$ref":"#/components/schemas/OperationsStatus/properties/unimplemented"}
+        }
+      },
+      "OperationsStatusReadinessEnvelope": {
+        "type":"object", "additionalProperties":false, "required":["data","meta"],
+        "properties": {
+          "data":{"$ref":"#/components/schemas/OperationsStatusWithReadiness"},
+          "meta":{"$ref":"#/components/schemas/OperationsStatusEnvelope/properties/meta"}
+        }
+      },
+      "SourceReprocessingMutation": {
+        "type":"object","additionalProperties":false,"required":["kind","attributes"],
+        "properties":{
+          "kind":{"const":"processing_run"},
+          "step_up_authorization_id":{"type":"null"},
+          "attributes":{"type":"object","additionalProperties":false,
+            "required":["workspace_id","notebook_id","source_version_id"],
+            "properties":{
+              "workspace_id":{"$ref":"#/components/schemas/OpaqueId","maxLength":128},
+              "notebook_id":{"$ref":"#/components/schemas/OpaqueId","maxLength":128},
+              "source_version_id":{"$ref":"#/components/schemas/OpaqueId","maxLength":128},
+              "processing_mode":{"type":"string","enum":["auto","local_only","pinned"]}
+            }}
+        }
+      },
+      "SourceReprocessingResult": {
+        "type":"object","additionalProperties":false,
+        "required":["processing_run_id","source_id","source_version_id","retry_of_processing_run_id","processing_state","source_state","job_state","replayed"],
+        "properties":{
+          "processing_run_id":{"$ref":"#/components/schemas/OpaqueId"},
+          "source_id":{"$ref":"#/components/schemas/OpaqueId"},
+          "source_version_id":{"$ref":"#/components/schemas/OpaqueId"},
+          "retry_of_processing_run_id":{"$ref":"#/components/schemas/OpaqueId"},
+          "processing_state":{"enum":["vision_llm_understanding","speech_to_text"]},
+          "source_state":{"const":"processing"},"job_state":{"const":"pending"},"replayed":{"type":"boolean"},
+          "processing_mode":{"type":"string","enum":["auto","local_only","pinned"]},
+          "auto_requeue_configured":{"type":"boolean"}
+        },
+        "dependentRequired":{"processing_mode":["auto_requeue_configured"],"auto_requeue_configured":["processing_mode"]},
+        "allOf":[{"if":{"required":["processing_mode"],"properties":{"processing_mode":{"const":"pinned"}}},"then":{"properties":{"auto_requeue_configured":{"const":false}}}}]
+      },
+      "SourceReprocessingEnvelope": {
+        "type":"object","additionalProperties":false,"required":["data","trace_id"],
+        "properties":{
+          "data":{"type":"object","additionalProperties":false,"required":["id","kind","version","attributes"],"properties":{
+            "id":{"$ref":"#/components/schemas/OpaqueId"},"kind":{"const":"processing_run"},"version":{"const":"2"},
+            "attributes":{"$ref":"#/components/schemas/SourceReprocessingResult"}}},
+          "trace_id":{"$ref":"#/components/schemas/OpaqueId"}
         }
       },
       "OutputFormatDefaults": {
@@ -7300,7 +9246,7 @@
           "studio_output_ids": { "type": "array", "maxItems": 1000, "uniqueItems": true, "items": { "$ref": "#/components/schemas/OpaqueId" } },
           "output_version_ids": { "type": "array", "maxItems": 1000, "uniqueItems": true, "items": { "$ref": "#/components/schemas/OpaqueId" } },
           "generation_settings_ids": { "type": "array", "maxItems": 1000, "uniqueItems": true, "items": { "$ref": "#/components/schemas/OpaqueId" } },
-          "source_deletion_requests": { "type": "array", "maxItems": 1000, "items": { "type": "object", "additionalProperties": false, "required": ["request_id", "source_id", "state", "version", "grace_until", "legal_hold_active"], "properties": { "request_id": { "$ref": "#/components/schemas/OpaqueId" }, "source_id": { "$ref": "#/components/schemas/OpaqueId" }, "state": { "type": "string", "enum": ["grace_period", "blocked_by_hold", "awaiting_ack", "cleanup_pending"] }, "version": { "type": "integer", "minimum": 1 }, "grace_until": { "type": "string", "format": "date-time" }, "legal_hold_active": { "type": "boolean" } } } },
+          "source_deletion_requests": { "type": "array", "maxItems": 1000, "items": { "type": "object", "additionalProperties": false, "required": ["request_id", "source_id", "state", "version", "grace_until", "legal_hold_active"], "properties": { "request_id": { "$ref": "#/components/schemas/OpaqueId" }, "source_id": { "$ref": "#/components/schemas/OpaqueId" }, "state": { "type": "string", "enum": ["grace_period", "blocked_by_hold", "awaiting_ack", "cleanup_pending", "failed", "purged"] }, "version": { "type": "integer", "minimum": 1 }, "grace_until": { "type": "string", "format": "date-time" }, "legal_hold_active": { "type": "boolean" } } } },
           "conversation": {
             "oneOf": [
               { "type": "null" },

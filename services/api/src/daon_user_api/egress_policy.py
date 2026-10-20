@@ -55,8 +55,11 @@ class EgressPolicyPayload:
     masking_required: bool
     redaction_required: bool
     required_approver: str
+    question_step_up_required: bool = True
 
     def __post_init__(self) -> None:
+        if type(self.question_step_up_required) is not bool or (self.mode == "deny_external" and not self.question_step_up_required):
+            raise EgressPolicyError("EGRESS_POLICY_PAYLOAD_INVALID")
         if self.mode not in {"deny_external", "allow_approved_external"}:
             raise EgressPolicyError("EGRESS_POLICY_PAYLOAD_INVALID")
         if self.classification not in _CLASSIFICATION_RANK:
@@ -91,7 +94,7 @@ class EgressPolicyPayload:
         )
 
     def as_dict(self) -> dict[str, object]:
-        return {
+        result = {
             "allowed_destinations": list(self.allowed_destinations),
             "allowed_provider_kinds": list(self.allowed_provider_kinds),
             "classification": self.classification,
@@ -101,6 +104,9 @@ class EgressPolicyPayload:
             "redaction_required": self.redaction_required,
             "required_approver": self.required_approver,
         }
+        if not self.question_step_up_required:
+            result["question_step_up_required"] = False
+        return result
 
     @property
     def canonical_text(self) -> str:
@@ -152,9 +158,10 @@ class EffectiveEgressPolicy:
     workspace_etag: str
     organization_policy: Mapping[str, object]
     workspace_policy: Mapping[str, object]
+    question_step_up_required: bool = True
 
     def frozen_context(self) -> dict[str, object]:
-        return {
+        result = {
             "organization_policy_version_id": self.organization_policy_version_id,
             "organization_binding_id": self.organization_binding_id,
             "workspace_policy_version_id": self.workspace_policy_version_id,
@@ -169,6 +176,9 @@ class EffectiveEgressPolicy:
             "required_approver": self.required_approver,
             "fingerprint": self.fingerprint,
         }
+        if not self.question_step_up_required:
+            result["question_step_up_required"] = False
+        return result
 
 
 class EgressPolicyRepository(Protocol):
@@ -210,6 +220,7 @@ def resolve_effective_payload(
         masking_required=organization.masking_required or workspace.masking_required,
         redaction_required=organization.redaction_required or workspace.redaction_required,
         required_approver=max((organization.required_approver, workspace.required_approver), key=_APPROVER_RANK.__getitem__),
+        question_step_up_required=organization.question_step_up_required or workspace.question_step_up_required,
     ), False
 
 
@@ -244,6 +255,7 @@ class EgressPolicyService:
             payload.redaction_required, payload.required_approver, parent_locked,
             fingerprint, etag, organization.etag, workspace.etag,
             organization.payload.as_dict(), workspace.payload.as_dict(),
+            payload.question_step_up_required,
         )
 
     def create_and_activate(

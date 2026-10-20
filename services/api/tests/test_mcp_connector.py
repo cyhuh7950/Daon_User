@@ -14,6 +14,12 @@ from daon_user_api.mcp_connector import (
 
 
 class ConnectorContractTests(unittest.TestCase):
+    def test_key_presence_never_means_connected(self):
+        connector=create_open_law_connector(api_key='fixture-oc')
+        self.assertEqual(connector.status,'unavailable')
+        self.assertEqual(connector.error_code,'CONNECTOR_NOT_VERIFIED')
+        self.assertEqual(ConnectorRegistry((connector,)).reconnect(connector.connector_id).status,'unavailable')
+
     def test_open_law_connector_is_unavailable_without_server_credential(self) -> None:
         connector = create_open_law_connector()
         self.assertEqual(connector.kind, "mcp")

@@ -1,10 +1,15 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Platform } from "react-native";
 import { MobileShell } from "./MobileShell.tsx";
+import { AndroidAuthScreen } from "./AndroidAuthScreen.tsx";
+import { androidAuth } from "./android-auth-adapter.ts";
+import { createAndroidWorkspacePublicApiClient } from "./android-workspace-client.ts";
 import { androidPermissionAdapter, restoreNavigationRoute as restoreAndroidNavigationRoute, saveNavigationRoute as saveAndroidNavigationRoute, subscribeAndroidDeepLinks, subscribeAndroidLifecycle } from "./platform/android-host.ts";
 import { iosPermissionAdapter, restoreIOSNavigationRoute, saveIOSNavigationRoute, subscribeIOSDeepLinks, subscribeIOSLifecycle } from "./platform/ios-host.ts";
 
 export type MobileHostProps = { clientType?: unknown };
+
+const androidWorkspaceClient = createAndroidWorkspacePublicApiClient(() => androidAuth.getSessionState());
 
 export default function App({ clientType }: MobileHostProps) {
   const resolvedClientType = clientType ?? Platform.OS;
@@ -37,5 +42,6 @@ export default function App({ clientType }: MobileHostProps) {
   }, []);
 
   const permissionAdapter = Platform.OS === "android" ? androidPermissionAdapter : Platform.OS === "ios" ? iosPermissionAdapter : undefined;
+  if (Platform.OS === "android") return <AndroidAuthScreen authenticatedContent={<MobileShell clientType={resolvedClientType} initialNativeRouteKey={initialNativeRouteKey} requestedNativeRouteKey={requestedNativeRouteKey} hostNavigationAdapter={hostNavigationAdapter} permissionAdapter={permissionAdapter} publicApiClient={androidWorkspaceClient} />} />;
   return <MobileShell clientType={resolvedClientType} initialNativeRouteKey={initialNativeRouteKey} requestedNativeRouteKey={requestedNativeRouteKey} hostNavigationAdapter={hostNavigationAdapter} permissionAdapter={permissionAdapter} />;
 }

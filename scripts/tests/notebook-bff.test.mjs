@@ -1,6 +1,25 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+test('S42 context BFF는 단일 정확 선택만 전달하고 중복·동시·빈 선택은 upstream 전에 거부한다', async () => {
+  const captured = [];
+  const proxy = makeProxy(captured);
+  const segments = ['workspaces','workspace-1','notebooks','notebook-1','context'];
+  const base = `${ORIGIN}/bff/api/workspaces/workspace-1/notebooks/notebook-1/context`;
+  for (const query of ['run_id=run-1', 'studio_job_id=job-1']) {
+    const response = await proxy(new Request(`${base}?${query}`, { headers:{ Cookie:COOKIE } }), segments);
+    assert.equal(response.status, 200);
+    assert.equal(captured.at(-1).url, `https://api.example.com/api/v1/workspaces/workspace-1/notebooks/notebook-1/context?${query}`);
+  }
+  for (const query of ['run_id=a&run_id=b','studio_job_id=a&studio_job_id=b',
+    'run_id=a&studio_job_id=b','run_id=','studio_job_id=','run_id=a&extra=b','run_id=a%0A']) {
+    const response = await proxy(new Request(`${base}?${query}`, { headers:{ Cookie:COOKIE } }), segments);
+    assert.equal(response.status, 400, query);
+    assert.equal((await response.json()).error.code, 'INVALID_REQUEST', query);
+  }
+  assert.equal(captured.length, 2);
+});
+
 import { createBffProxy } from "../../apps/web/lib/bff-api-proxy.js";
 
 const COOKIE = "__Host-daon_session=opaque-session";

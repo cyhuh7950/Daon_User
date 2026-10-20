@@ -6,7 +6,7 @@ import hashlib
 import json
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch as mock_patch
 
 import psycopg
@@ -15,8 +15,56 @@ from daon_user_api.studio_workspace import (
     StudioContext, StudioError, StudioGenerationRequest, StudioWorkspaceService, build_structured_output,
 )
 from daon_user_api.studio_workspace_postgres import PostgresStudioWorkspaceRepository
+from daon_user_api.studio_generation_queue import PostgresStudioGenerationQueue
 from daon_user_api.object_queue import StagedObject, StoredObject
 from daon_user_api.license import LicenseError
+
+
+class StudioJobNotebookBoundaryTests(unittest.TestCase):
+    def repository(self, notebook_id="notebook-1"):
+        store = MagicMock()
+        row = (
+            "tenant-1", "workspace-1", "studio-job-1", "actor-1", "trace-1", "policy-1",
+            "key-1", {"notebook_id": notebook_id, "output_type": "evidence_report", "purpose": "QA", "source_version_ids": ["source-version-1"]},
+            "failed", 1, 3, "POLICY_PROJECTION_MISMATCH", None, None, None, None,
+        )
+        current = Connection()
+        store._transaction.return_value.__enter__.return_value.execute.side_effect = (
+            lambda sql, params=(): Result(row) if "FROM studio_generation_jobs" in sql else current.execute(sql, params)
+        )
+        queue = object.__new__(PostgresStudioGenerationQueue)
+        queue._cloud_store = store
+        repository = PostgresStudioWorkspaceRepository(None)
+        repository._cloud_store = store
+        repository._generation_queue = queue
+        return repository, store
+
+    def test_failed_job_in_selected_notebook_returns_current_safe_error(self):
+        repository, store = self.repository()
+        context = StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1", "notebook-1")
+        result = repository.get_generation_job(context, "studio-job-1")
+        self.assertEqual((result["status"], result["error_code"]), ("failed", "POLICY_PROJECTION_MISMATCH"))
+        calls = [call.args for call in store._transaction.return_value.__enter__.return_value.execute.call_args_list
+            if "FROM studio_generation_jobs" in call.args[0]]
+        self.assertEqual(len(calls), 1)
+        query, params = calls[0]
+        self.assertIn("tenant_id=%s AND workspace_id=%s AND job_id=%s", query)
+        self.assertEqual(params, ("tenant-1", "workspace-1", "studio-job-1"))
+
+    def test_other_or_missing_notebook_cannot_read_job(self):
+        for selected, stored in (("notebook-2", "notebook-1"), (None, "notebook-1"), ("notebook-1", None)):
+            with self.subTest(selected=selected, stored=stored):
+                repository, _ = self.repository(stored)
+                context = StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1", selected)
+                with self.assertRaises(StudioError) as denied:
+                    repository.get_generation_job(context, "studio-job-1")
+                self.assertEqual((denied.exception.status, denied.exception.code), (404, "RESOURCE_UNAVAILABLE"))
+
+    def test_s16_shared_view_actor_keeps_existing_job_read_access(self):
+        repository, _ = self.repository()
+        context = StudioContext("tenant-1", "workspace-1", "actor-2", "trace-1", "policy-1", "notebook-1")
+        result = repository.get_generation_job(context, "studio-job-1")
+        self.assertEqual((result["status"], result["error_code"]), ("failed", "POLICY_PROJECTION_MISMATCH"))
 
 
 class Result:
@@ -28,6 +76,12 @@ class Result:
 class Connection:
     def __init__(self): self.statements = []
     def execute(self, sql, params=()):
+        if sql.startswith("SELECT state FROM identity_users"): return Result(("active",))
+        if "FROM identity_auth_workspaces" in sql:
+            return Result({"tenant_id": "tenant-1", "workspace_id": "workspace-1", "workspace_kind": "personal", "acl_version": 3})
+        if "FROM identity_auth_tenant_roles" in sql:
+            return Result({"role": "personal_owner", "version": 1, "state": "active"})
+        if sql.startswith('SELECT canonical_json FROM source_versions'):return Result(({},))
         self.statements.append((sql, params))
         if "FROM workspace_policies" in sql:
             common = {"active": True, "current": True, "workspace_id": "workspace-1", "version": 3}
@@ -111,20 +165,118 @@ class VersionHistoryConnection(Connection):
         return super().execute(sql, params)
 
 
+class S24LifecycleProjectionTests(unittest.TestCase):
+    def test_s24_lifecycle_output_source_explicit_deny_is_scoped_for_view_edit_delivery(self):
+        import sqlite3
+        from daon_user_api.authorization import Action
+        database=sqlite3.connect(':memory:')
+        database.executescript('CREATE TABLE evidence_references(tenant_id,workspace_id,output_version_id,source_version_id);'
+            'CREATE TABLE source_versions(tenant_id,workspace_id,record_id,source_id);'
+            'CREATE TABLE identity_auth_source_access(tenant_id,workspace_id,source_version_id,user_id,allowed);')
+        database.execute('INSERT INTO evidence_references VALUES(?,?,?,?)',('tenant-1','workspace-1','version-1','sv-1'))
+        database.execute('INSERT INTO source_versions VALUES(?,?,?,?)',('tenant-1','workspace-1','sv-1','source-1'))
+        class SqlBoundary:
+            def execute(self,sql,params=()):
+                if sql.startswith('SELECT canonical_json FROM source_versions'): return Result(({},))
+                return database.execute(sql.replace('%s','?'),params)
+        repo=PostgresStudioWorkspaceRepository(None); connection=SqlBoundary()
+        context=StudioContext('tenant-1','workspace-1','actor-1','trace-1','policy-1','notebook-1')
+        try:
+            for row in (('tenant-1','workspace-1','sv-1','actor-2',0),('tenant-2','workspace-1','sv-1','actor-1',0),
+                        ('tenant-1','workspace-2','sv-1','actor-1',0),('tenant-1','workspace-1','sv-2','actor-1',0),
+                        ('tenant-1','workspace-1','sv-1','actor-1',1)):
+                database.execute('INSERT INTO identity_auth_source_access VALUES(?,?,?,?,?)',row)
+            for action in (Action.VIEW,Action.EDIT,Action.DELIVER):
+                repo._require_output_sources(connection,context,'version-1',action=action)
+            database.execute('INSERT INTO identity_auth_source_access VALUES(?,?,?,?,?)',('tenant-1','workspace-1','sv-1','actor-1',0))
+            for action in (Action.VIEW,Action.EDIT,Action.DELIVER):
+                with self.subTest(action=action):
+                    with self.assertRaises(StudioError) as denied:
+                        repo._require_output_sources(connection,context,'version-1',action=action)
+                    self.assertEqual((denied.exception.code,denied.exception.status),('RESOURCE_UNAVAILABLE',404))
+        finally:
+            database.close()
+
+    def test_s24_lifecycle_version_projection_preserves_request_deadline_without_new_db_function(self):
+        now=datetime(2026,10,16,tzinfo=timezone.utc)
+        class History(VersionHistoryConnection):
+            def execute(self,sql,params=()):
+                result=super().execute(sql,params)
+                if "FROM output_versions ov" in sql and "ORDER BY ov.content_version DESC" in sql:
+                    result.rows=tuple((*row,None,"pending" if index==0 else None,{} if index==0 else None,now if index==0 else None)
+                        for index,row in enumerate(result.rows))
+                return result
+        cloud=Cloud(); cloud.connection=History()
+        result=PostgresStudioWorkspaceRepository(cloud).list_versions(StudioContext("tenant-1","workspace-1","actor-1","trace-1","policy-1","notebook-1"),"output-1")
+        self.assertEqual(result[0]["approval_request_state"],"pending")
+        self.assertEqual(result[0]["approval_expires_at"],"2026-10-23T00:00:00Z")
+        self.assertIsNone(result[1]["approval_request_state"])
+        self.assertIsNone(result[1]["approval_expires_at"])
+
+
 class ApprovalTransitionConnection(Connection):
     def __init__(self):
         super().__init__(); self.transition_ids = set()
 
+    def transaction(self): return Transaction(self)
+
     def execute(self, sql, params=()):
         self.statements.append((sql, params))
+        if "lock_studio_approval_version" in sql: return Result((True,))
         if "FROM idempotency_records" in sql: return Result()
         if "SELECT state,version FROM output_versions" in sql: return Result(("in_review", 4))
         if "SELECT state,version FROM approval_requests" in sql: return Result(("pending", 1))
+        if "SELECT state,version,studio_approval_deadline" in sql:
+            now = datetime.now(timezone.utc)
+            return Result(("pending", 1, now + timedelta(days=7), now))
         if "transition_canon_state" in sql:
             if params[4] in self.transition_ids: return Result((params[3], params[2], "failed", "TRANSITION_ID_CONFLICT"))
             self.transition_ids.add(params[4])
             return Result((params[3], int(params[2]) + 1, "succeeded", None))
         return Result()
+
+
+class LegacyReportHistoryConnection(Connection):
+    """Read/copy seam with the legacy payload produced by create_report."""
+    def __init__(self):
+        super().__init__()
+        self.payload = {'output_type': 'evidence_report', 'title': '법령 근거 보고', 'purpose': '근거 확인',
+                        'content': '# 원문\n한글 "인용"', 'run_id': 'run-1', 'run_result_id': 'result-1'}
+        self.settings = {'provider_code': 'upstage', 'model_id': 'solar-pro4', 'output_type': 'evidence_report',
+                         'source_version_id': 'source-version-1', 'run_result_id': 'result-1'}
+        self.reference = {'citation_id': 'citation-1', 'source_id': 'source-1', 'source_version_id': 'source-version-1',
+                          'evidence_span_id': 'span-1', 'page': 1}
+        self.persisted = {'source_id': 'source-1', 'source_version_id': 'source-version-1', 'evidence_span_id': 'span-1',
+                          'origin': 'raw_source', 'locator': {'kind': 'section', 'value': 'span-1'}}
+        self.versions = [('version-1', 1, None, self.payload)]
+        self.references = {'version-1': [self.reference]}
+
+    def execute(self, sql, params=()):
+        self.statements.append((sql, params))
+        if 'FROM output_versions ov' in sql and 'ORDER BY ov.content_version DESC' in sql:
+            if params != ('tenant-1', 'workspace-1', 'output-1', 'notebook-1'):
+                return Result(rows=())
+            refs = lambda version: [{**ref, **({'_persisted_citation': self.persisted} if '_persisted_citation' in sql else {})}
+                                    for ref in self.references[version]]
+            return Result(rows=[(version, number, previous, 'draft', payload, 'settings-old', refs(version),
+                                 None, None, None, None, None, self.settings)
+                                for version, number, previous, payload in reversed(self.versions)])
+        if sql.startswith('SELECT DISTINCT er.source_version_id FROM evidence_references er'):
+            return Result(rows=(('source-version-1',),))
+        if 'FROM output_versions WHERE' in sql:
+            version = next(item for item in self.versions if item[0] == params[3])
+            return Result(('aggregate-1', version[1], 'settings-old', version[3], 'draft'))
+        if sql.startswith('SELECT record_id,source_version_id,evidence_span_id,canonical_json FROM evidence_references'):
+            return Result(rows=[('evidence-old', ref['source_version_id'], ref['evidence_span_id'], ref)
+                                for ref in self.references[params[2]]])
+        if sql.startswith('INSERT INTO output_versions'):
+            self.versions.append((params[2], params[4], params[5], params[6].obj))
+            self.references[params[2]] = []
+            return Result()
+        if sql.startswith('INSERT INTO evidence_references'):
+            self.references[params[-3]].append(params[6].obj)
+            return Result()
+        return super().execute(sql, params)
 
 
 class ExportConnection(Connection):
@@ -164,6 +316,10 @@ class KnowledgeRegistrationConnection(Connection):
 
 class RevisionConnection(Connection):
     def execute(self, sql, params=()):
+        if sql.startswith('SELECT DISTINCT er.source_version_id FROM evidence_references er'):
+            return Result(rows=(('source-version-1',),))
+        if sql.startswith('SELECT canonical_json FROM source_versions'):
+            return Result(({},))
         self.statements.append((sql, params))
         if "FROM workspace_policies" in sql:
             return super().execute(sql, params)
@@ -208,6 +364,31 @@ class ObjectStorage:
 
 
 class StudioWorkspacePostgresContractTests(unittest.TestCase):
+    def test_s16_enqueue_replay_cannot_retarget_notebook_or_versions(self):
+        from dataclasses import asdict, replace
+        request = self.request()
+        payload = asdict(request)
+        payload["source_version_ids"] = list(request.source_version_ids)
+        payload["notebook_id"] = "notebook-1"
+        class ExistingJobConnection(Connection):
+            def execute(self, sql, params=()):
+                if "FROM studio_generation_jobs" in sql:
+                    return Result(("job-original", "queued", None, None, None, None, None, payload))
+                return super().execute(sql, params)
+        cloud = Cloud()
+        cloud.connection = ExistingJobConnection()
+        repository = PostgresStudioWorkspaceRepository(cloud)
+        context = StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1", "notebook-1")
+        for ctx, changed in ((replace(context, notebook_id="notebook-2"), request),
+            (context, replace(request, source_version_ids=("source-version-2",)))):
+            with self.subTest(notebook=ctx.notebook_id, versions=changed.source_version_ids):
+                with self.assertRaisesRegex(StudioError, "IDEMPOTENCY_CONFLICT") as denied:
+                    repository.enqueue_generation(ctx, changed, "s16-original-job-key")
+                self.assertEqual(denied.exception.status, 409)
+        result, replayed = repository.enqueue_generation(context, request, "s16-original-job-key")
+        self.assertTrue(replayed)
+        self.assertEqual((result["job_id"], result["status"]), ("job-original", "queued"))
+
     def test_app_role_fixture_seeds_with_admin_and_runs_with_app_dsn(self) -> None:
         case = StudioWorkspaceAppRolePostgresIntegrationTests("test_app_role_review_approval_export_and_scope_denial")
         case.admin_dsn = "admin-only"
@@ -345,6 +526,97 @@ class StudioWorkspacePostgresContractTests(unittest.TestCase):
         self.assertEqual(versions[0]["approval_request_id"], "approval-request-1")
         self.assertEqual(versions[0]["approval_id"], "approval-1")
 
+    def test_legacy_report_version_read_restores_exact_citation_and_ui_pdf_default(self):
+        cloud = Cloud(); cloud.connection = LegacyReportHistoryConnection()
+        context = StudioContext('tenant-1', 'workspace-1', 'actor-1', 'trace-1', 'policy-1', 'notebook-1')
+        versions = PostgresStudioWorkspaceRepository(cloud).list_versions(context, 'output-1')
+        self.assertEqual(versions[0]['output_format'], 'pdf')
+        self.assertEqual(versions[0]['content'], '# 원문\n한글 "인용"')
+        self.assertEqual(versions[0]['citations'], [{'citation_id': 'citation-1', 'source_version_id': 'source-version-1',
+                         'evidence_span_id': 'span-1', 'origin': 'raw_source', 'locator': {'kind': 'section', 'value': 'span-1'}}])
+        query = cloud.connection.statements[0][0]
+        for predicate in ('c.tenant_id=er.tenant_id', 'c.workspace_id=er.workspace_id',
+                          "c.record_id=er.canonical_json->>'citation_id'", 'c.source_version_id=er.source_version_id',
+                          'c.evidence_span_id=er.evidence_span_id'):
+            self.assertIn(predicate, query)
+
+    def test_legacy_read_never_defaults_modern_unknown_or_unverified_format(self):
+        from copy import deepcopy
+        cases = [('source_lineage', {}), ('metadata', {}), ('output_format', 'mystery'),
+                 ('content', {'body': 'modern'}), ('settings_mismatch', None)]
+        for field, value in cases:
+            with self.subTest(field=field):
+                cloud = Cloud(); cloud.connection = LegacyReportHistoryConnection()
+                if field == 'settings_mismatch': cloud.connection.settings['run_result_id'] = 'other-result'
+                else: cloud.connection.payload[field] = value
+                before = deepcopy(cloud.connection.payload)
+                with self.assertRaises(StudioError):
+                    PostgresStudioWorkspaceRepository(cloud).list_versions(
+                        StudioContext('tenant-1', 'workspace-1', 'actor-1', 'trace-1', 'policy-1', 'notebook-1'), 'output-1')
+                self.assertEqual(cloud.connection.payload, before)
+
+    def test_legacy_missing_or_conflicting_persisted_locator_fails_closed_and_scope_is_preserved(self):
+        from dataclasses import replace
+        context = StudioContext('tenant-1', 'workspace-1', 'actor-1', 'trace-1', 'policy-1', 'notebook-1')
+        for fault in ('missing', 'source_version', 'span', 'locator'):
+            with self.subTest(fault=fault):
+                cloud = Cloud(); cloud.connection = LegacyReportHistoryConnection()
+                if fault == 'missing': cloud.connection.persisted = None
+                elif fault == 'source_version': cloud.connection.persisted['source_version_id'] = 'other-version'
+                elif fault == 'span': cloud.connection.persisted['evidence_span_id'] = 'other-span'
+                else: cloud.connection.reference['locator'] = {'kind': 'page', 'value': '1'}
+                with self.assertRaises(StudioError):
+                    PostgresStudioWorkspaceRepository(cloud).list_versions(context, 'output-1')
+        for changed in ({'tenant_id': 'other-tenant'}, {'workspace_id': 'other-workspace'}, {'notebook_id': 'other-notebook'}):
+            with self.subTest(changed=changed):
+                cloud = Cloud(); cloud.connection = LegacyReportHistoryConnection()
+                with self.assertRaisesRegex(StudioError, '^RESOURCE_UNAVAILABLE$'):
+                    PostgresStudioWorkspaceRepository(cloud).list_versions(replace(context, **changed), 'output-1')
+
+    def test_legacy_user_edit_v2_keeps_previous_reference_scope_and_original_content(self):
+        cloud = Cloud(); cloud.connection = LegacyReportHistoryConnection()
+        repository = PostgresStudioWorkspaceRepository(cloud)
+        context = StudioContext('tenant-1', 'workspace-1', 'actor-1', 'trace-1', 'policy-1', 'notebook-1')
+        original_hash = hashlib.sha256(cloud.connection.payload['content'].encode()).hexdigest()
+        result, replayed = repository.create_version(context, 'output-1', {
+            'previous_version_id': 'version-1', 'revision_type': 'user_edit', 'change_reason': '사용자 문구 편집',
+            'content': '편집한 본문', 'settings': None,
+        }, 'legacy-edit-key-0001')
+        versions = repository.list_versions(context, 'output-1')
+        self.assertFalse(replayed)
+        self.assertEqual([(version['content_version'], version['previous_version_id'], version['output_format'])
+                          for version in versions], [(2, 'version-1', 'pdf'), (1, None, 'pdf')])
+        self.assertEqual(versions[0]['output_version_id'], result['output_version_id'])
+        self.assertEqual(versions[0]['citations'], versions[1]['citations'])
+        self.assertEqual(versions[0]['content'], '편집한 본문')
+        self.assertEqual(hashlib.sha256(versions[1]['content'].encode()).hexdigest(), original_hash)
+        self.assertFalse(any('UPDATE output_versions' in sql or 'INSERT INTO generation_requests' in sql
+                             for sql, _ in cloud.connection.statements))
+
+    def test_legacy_ai_and_settings_missing_generation_inputs_fail_safely_without_writes(self):
+        from copy import deepcopy
+        from dataclasses import asdict
+        for revision_type in ('ai_regeneration', 'settings_change'):
+            with self.subTest(revision_type=revision_type):
+                cloud = Cloud(); cloud.connection = LegacyReportHistoryConnection()
+                before_versions = deepcopy(cloud.connection.versions)
+                before_references = deepcopy(cloud.connection.references)
+                revision = {'previous_version_id': 'version-1', 'revision_type': revision_type,
+                            'change_reason': '지원되지 않는 재생성', 'content': '미저장 요청 본문'}
+                if revision_type == 'settings_change':
+                    revision['settings'] = asdict(self.request())
+                with mock_patch('daon_user_api.studio_workspace_postgres.build_structured_output') as generate:
+                    with self.assertRaises(StudioError) as denied:
+                        PostgresStudioWorkspaceRepository(cloud).create_version(
+                            StudioContext('tenant-1', 'workspace-1', 'actor-1', 'trace-1', 'policy-1', 'notebook-1'),
+                            'output-1', revision, 'legacy-safe-reject-0001')
+                    self.assertEqual((denied.exception.code, denied.exception.status), ('STUDIO_INPUT_INVALID', 400))
+                    generate.assert_not_called()
+                self.assertEqual(cloud.connection.versions, before_versions)
+                self.assertEqual(cloud.connection.references, before_references)
+                self.assertFalse(any(sql.lstrip().startswith(('INSERT', 'UPDATE', 'DELETE'))
+                                     for sql, _ in cloud.connection.statements))
+
     def test_approval_uses_distinct_transition_ids_for_request_and_output(self) -> None:
         cloud = Cloud(); cloud.connection = ApprovalTransitionConnection()
         result, replayed = PostgresStudioWorkspaceRepository(cloud).record_action(
@@ -421,6 +693,17 @@ class StudioWorkspacePostgresContractTests(unittest.TestCase):
         self.assertEqual(evidence_insert[6].obj["kind"], "approved_knowledge_snapshot")
         self.assertIn("검증된 지식 본문", evidence_insert[6].obj["text"])
         self.assertEqual(index_insert[6].obj["chunks"][0]["text"], evidence_insert[6].obj["text"])
+        bindings = [(sql, params) for sql, params in cloud.connection.statements if "INSERT INTO notebook_bindings" in sql]
+        self.assertEqual(len(bindings), 1)
+        sql, params = bindings[0]
+        self.assertIn("'source'", sql)
+        self.assertIn("ON CONFLICT DO NOTHING", sql)
+        self.assertIn("INSERT INTO notebook_activities", sql)
+        self.assertIn("'context_bound'", sql)
+        self.assertEqual(params[:3], ("tenant-1", "workspace-1", "notebook-1"))
+        self.assertIn(result["registered_source_version_id"], params)
+        source_id = next(params[2] for sql, params in cloud.connection.statements if sql.startswith("INSERT INTO sources"))
+        self.assertIn(source_id, params)
 
     def test_ai_and_settings_revisions_create_new_request_snapshot_and_resubmit_rejection(self) -> None:
         for revision_type in ("ai_regeneration", "settings_change"):
@@ -439,6 +722,33 @@ class StudioWorkspacePostgresContractTests(unittest.TestCase):
             self.assertTrue(result["resubmission_of_rejected_version"])
             self.assertEqual(result["content"]["body"], "새 생성 답변")
             if revision_type == "settings_change": self.assertIn("새 목적", repr(cloud.connection.statements))
+
+    def test_settings_change_cannot_add_revoked_law_from_saved_mixed_run(self) -> None:
+        class MixedRevision(RevisionConnection):
+            def execute(self,sql,params=()):
+                if sql.startswith('SELECT canonical_json FROM source_versions'):
+                    self.statements.append((sql,params))
+                    return Result(({'origin_kind':'mcp_open_law','connector_id':'mcp-open-law-go-kr',
+                        'snapshot_id':'law-snapshot-B'} if params[-1]=='law-version-B' else {},))
+                if 'FROM runs r JOIN run_results' in sql:
+                    self.statements.append((sql,params))
+                    return Result(({'answer':'A와 B의 저장된 답변','insufficient':False},2,True,True))
+                if 'FROM citations' in sql:
+                    self.statements.append((sql,params))
+                    return Result(rows=(('citation-1','source-version-1','span-1',{'page':1}),
+                        ('citation-B','law-version-B','law-span-B',{'page':1})))
+                return super().execute(sql,params)
+        cloud=Cloud();cloud.connection=MixedRevision()
+        revision={'previous_version_id':'version-1','revision_type':'settings_change',
+            'change_reason':'새 선택 B 추가','content':'','settings':{'purpose':'새 목적','audience':'검토자',
+                'source_version_ids':['source-version-1','law-version-B'],'ruleset_version_id':'ruleset-v3',
+                'length':'short','structure':'summary','output_format':'pdf','review_condition':'review_required'}}
+        with mock_patch.dict(os.environ,{'DAON_OPEN_LAW_ENABLED':'false'}):
+            with self.assertRaisesRegex(StudioError,'^RESOURCE_UNAVAILABLE$'):
+                PostgresStudioWorkspaceRepository(cloud).create_version(
+                    StudioContext('tenant-1','workspace-1','actor-1','trace-1','policy-1','notebook-1'),
+                    'output-1',revision,'settings-add-revoked-law')
+        self.assertFalse(any(sql.startswith('INSERT INTO') for sql,_ in cloud.connection.statements))
 
     def test_user_edit_version_copies_previous_evidence_references(self) -> None:
         cloud = Cloud(); cloud.connection = RevisionConnection()
@@ -621,6 +931,8 @@ class StudioWorkspaceRealPostgresIntegrationTests(unittest.TestCase):
             for target in ("draft", "review_requested", "in_review", "approved"):
                 connection.execute("SELECT * FROM transition_canon_state('OutputVersion','output-version-it',%s,%s,%s,'IT','trace-it','policy-it')", (output_version, target, f"transition-output-{target}"))
                 output_version += 1
+            self._canonical(connection, "approvals", "approval-knowledge-it", {"decision": "approved"},
+                extra=(("output_version_id", "output-version-it"), ("decision", "approved")))
             self._bind_output(connection, "output-it", "output-version-it")
             self._canonical(connection, "evidence_spans", "span-original", {"text": "원본 근거", "page": 2}, extra=(("source_version_id", "source-version-original"),))
             self._canonical(connection, "evidence_references", "evidence-original", {
@@ -655,6 +967,40 @@ class StudioWorkspaceRealPostgresIntegrationTests(unittest.TestCase):
             )
             self.assertFalse(replayed)
             self.assertTrue(result["searchable"])
+            from daon_user_api.studio_report_postgres import PostgresStudioReportRepository
+            from daon_user_api.studio_report import StudioReportContext
+            sources = PostgresStudioReportRepository(store).list_sources(StudioReportContext(
+                "tenant-it", "workspace-it", "actor-it", "trace-it", "policy-it", self.notebook_id,
+            ))
+            derived = next(item for item in sources if item.source_version_id == result["registered_source_version_id"])
+            self.assertEqual((derived.source_state, derived.processing_state, derived.job_state), ("ready", "completed", "completed"))
+            other_sources = PostgresStudioReportRepository(store).list_sources(StudioReportContext(
+                "tenant-it", "workspace-it", "actor-it", "trace-it", "policy-it", "other-notebook",
+            ))
+            self.assertFalse(any(item.source_version_id == derived.source_version_id for item in other_sources))
+            replay, replayed = PostgresStudioWorkspaceRepository(store).record_action(
+                StudioContext("tenant-it", "workspace-it", "actor-it", "trace-it", "policy-it", self.notebook_id),
+                "knowledge_registration", {"output_version_id": "output-version-it", "explicit": True},
+                "knowledge-real-pg-0001",
+            )
+            self.assertTrue(replayed)
+            self.assertEqual(replay, result)
+            from daon_user_api.cloud_storage import CloudAccessContext
+            with store._transaction(CloudAccessContext("tenant-it", "workspace-it", "actor-it", "studio.verify")) as scoped:
+                self.assertEqual(scoped.execute(
+                    "SELECT count(*) FROM notebook_bindings WHERE tenant_id=%s AND workspace_id=%s AND notebook_id=%s "
+                    "AND binding_kind='source' AND version_id=%s",
+                    ("tenant-it", "workspace-it", self.notebook_id, derived.source_version_id),
+                ).fetchone()[0], 1)
+                version = scoped.execute("SELECT version FROM output_versions WHERE record_id='output-version-it'").fetchone()[0]
+                PostgresStudioWorkspaceRepository._transition(scoped,
+                    StudioContext("tenant-it", "workspace-it", "actor-it", "trace-it", "policy-it", self.notebook_id),
+                    "OutputVersion", "output-version-it", version, "delivered", "transition-knowledge-delivered-it")
+            delivered = PostgresStudioReportRepository(store).list_sources(StudioReportContext(
+                "tenant-it", "workspace-it", "actor-it", "trace-it", "policy-it", self.notebook_id,
+            ))
+            self.assertTrue(any(item.source_version_id == derived.source_version_id
+                and item.processing_state == item.job_state == "completed" for item in delivered))
             with psycopg.connect(self.dsn) as connection:
                 self.assertIsNotNone(connection.execute("SELECT 1 FROM source_versions WHERE record_id=%s", (result["registered_source_version_id"],)).fetchone())
                 self.assertIsNotNone(connection.execute("SELECT 1 FROM knowledge_registrations WHERE registered_source_version_id=%s AND state='registered'", (result["registered_source_version_id"],)).fetchone())

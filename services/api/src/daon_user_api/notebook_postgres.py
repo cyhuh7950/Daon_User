@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from dataclasses import replace
 from typing import Mapping, cast
 
+from psycopg import Error as PostgresError
 from psycopg.types.json import Jsonb
 
 from .cloud_storage import CloudAccessContext, CloudDatabaseError, PostgresCloudStore
@@ -114,7 +116,12 @@ class PostgresNotebookRepository:
                 active = connection.execute("SELECT 1 FROM notebook_deletion_requests WHERE tenant_id=%s AND workspace_id=%s AND notebook_id=%s AND state IN ('accepted','deleting')", (context.tenant_id, context.workspace_id, notebook_id)).fetchone()
                 if active is not None: raise NotebookError("NOTEBOOK_DELETION_IN_PROGRESS", 409)
                 request_id = "notebook-deletion-" + hashlib.sha256(f"{context.tenant_id}|{context.workspace_id}|{notebook_id}|{idempotency_key}".encode()).hexdigest()[:32]
-                inserted = connection.execute("INSERT INTO notebook_deletion_requests (request_id,tenant_id,workspace_id,notebook_id,actor_id,title_fingerprint,state,current_step,attempts,safe_error_code,requested_at,idempotency_key,expected_version,request_fingerprint) VALUES (%s,%s,%s,%s,%s,%s,'accepted','accepted',0,NULL,%s,%s,%s,%s) RETURNING request_id,notebook_id,state,current_step,attempts,safe_error_code,requested_at,completed_at", (request_id, context.tenant_id, context.workspace_id, notebook_id, context.actor_id, hashlib.sha256(title_confirmation.encode()).hexdigest(), now, idempotency_key, int(row[0]), request_fingerprint)).fetchone()
+                try:
+                    inserted = connection.execute("INSERT INTO notebook_deletion_requests (request_id,tenant_id,workspace_id,notebook_id,actor_id,title_fingerprint,state,current_step,attempts,safe_error_code,requested_at,idempotency_key,expected_version,request_fingerprint) VALUES (%s,%s,%s,%s,%s,%s,'accepted','accepted',0,NULL,%s,%s,%s,%s) RETURNING request_id,notebook_id,state,current_step,attempts,safe_error_code,requested_at,completed_at", (request_id, context.tenant_id, context.workspace_id, notebook_id, context.actor_id, hashlib.sha256(title_confirmation.encode()).hexdigest(), now, idempotency_key, int(row[0]), request_fingerprint)).fetchone()
+                except PostgresError as error:
+                    if error.sqlstate == "55000" and error.diag.message_primary == "NOTEBOOK_DELETION_IN_PROGRESS":
+                        raise NotebookError("NOTEBOOK_DELETION_IN_PROGRESS", 409) from None
+                    raise
                 connection.execute("INSERT INTO audit_events (event_id,tenant_id,workspace_id,actor_id,action,target_type,target_id,outcome,trace_id,policy_version,after_value,metadata) VALUES (%s,%s,%s,%s,'notebook.deletion_requested','notebook',%s,'succeeded',%s,%s,%s,%s)", ("notebook-audit-" + hashlib.sha256(request_id.encode()).hexdigest()[:24], context.tenant_id, context.workspace_id, context.actor_id, notebook_id, context.trace_id, context.policy_version, Jsonb({"request_id": request_id}), Jsonb({"reason_code": "NOTEBOOK_DELETION_REQUESTED"})))
                 return self._deletion_view(inserted), False
         except NotebookError: raise
@@ -263,7 +270,105 @@ class PostgresNotebookRepository:
         except CloudDatabaseError as error:
             raise NotebookError("NOTEBOOK_UNAVAILABLE", 503) from error
 
-    def read_selected_context(self, context: NotebookContext, notebook_id: str) -> NotebookSelectedContext:
+    def _read_exact_context(self, context, notebook_id, *, run_id=None, studio_job_id=None):
+        """새 선택 경로만 실제 원장에 결속한다. 기본 조회와 공유 Job GET 정책은 유지한다."""
+        from types import SimpleNamespace
+        from .notification import NotificationError, _checked_id
+        from .notification_events import _completed_event_access, _snapshot_read_scope
+        from .question_answering_postgres import PostgresQuestionAnsweringRepository, QuestionContext, QuestionRepositoryError
+        from .studio_workspace import StudioContext, StudioError
+        from .studio_workspace_postgres import PostgresStudioWorkspaceRepository
+        from .authorization import Action
+
+        if run_id is not None and studio_job_id is not None:
+            raise NotebookError('INVALID_REQUEST')
+        try:
+            _checked_id(run_id if run_id is not None else studio_job_id)
+        except NotificationError:
+            raise NotebookError('INVALID_REQUEST') from None
+        conversation = None
+        failed_fingerprint = None
+        try:
+            with self._store._transaction(self._context(context)) as connection:
+                active = connection.execute('SELECT 1 FROM notebooks n WHERE tenant_id=%s AND workspace_id=%s '
+                    'AND notebook_id=%s AND NOT EXISTS(SELECT 1 FROM notebook_deletion_requests d '
+                    'WHERE d.tenant_id=n.tenant_id AND d.workspace_id=n.workspace_id AND d.notebook_id=n.notebook_id '
+                    "AND d.state IN ('accepted','deleting','completed'))",
+                    (context.tenant_id, context.workspace_id, notebook_id)).fetchone()
+                if active is None:
+                    raise NotebookError('NOTEBOOK_NOT_FOUND', 404)
+                if studio_job_id is not None:
+                    job = connection.execute('SELECT request_json FROM studio_generation_jobs WHERE tenant_id=%s '
+                        'AND workspace_id=%s AND job_id=%s AND actor_id=%s',
+                        (context.tenant_id, context.workspace_id, studio_job_id, context.actor_id)).fetchone()
+                    if job is None or not isinstance(job[0], Mapping) or job[0].get('notebook_id') != notebook_id:
+                        raise NotebookError('NOTEBOOK_NOT_FOUND', 404)
+                    studio_context = StudioContext(context.tenant_id, context.workspace_id, context.actor_id,
+                        context.trace_id, context.policy_version, notebook_id=notebook_id)
+                    PostgresStudioWorkspaceRepository(self._store)._require_generation_scope(connection, studio_context,
+                        tuple(job[0].get('source_version_ids', ())), action=Action.VIEW)
+                else:
+                    run = connection.execute('SELECT r.state,r.conversation_id,r.canonical_json,r.trace_id '
+                        'FROM runs r JOIN notebook_bindings b ON b.tenant_id=r.tenant_id AND b.workspace_id=r.workspace_id '
+                        "AND b.binding_kind='conversation_thread' AND b.record_id=r.conversation_id "
+                        'AND b.notebook_id=%s WHERE r.tenant_id=%s AND r.workspace_id=%s AND r.record_id=%s AND r.created_by=%s',
+                        (notebook_id, context.tenant_id, context.workspace_id, run_id, context.actor_id)).fetchone()
+                    if run is None or run[0] not in {'completed', 'failed'}:
+                        raise NotebookError('NOTEBOOK_NOT_FOUND', 404)
+                    if run[0] == 'failed':
+                        failed_fingerprint = run[2].get('request_fingerprint') if isinstance(run[2], Mapping) else None
+                        if not isinstance(failed_fingerprint, str):
+                            raise NotebookError('NOTEBOOK_NOT_FOUND', 404)
+                    else:
+                        scope = SimpleNamespace(tenant_id=context.tenant_id, workspace_id=context.workspace_id,
+                            actor_id=context.actor_id, trace_id=context.trace_id, policy_version=context.policy_version,
+                            notebook_id=notebook_id)
+                        with _snapshot_read_scope(connection, scope):
+                            target = _completed_event_access(connection, scope,
+                                origin_event_id=PostgresQuestionAnsweringRepository._opaque_id('audit', run_id),
+                                notebook_id=notebook_id)
+                        if target is None or target.actor_id != context.actor_id:
+                            raise NotebookError('NOTEBOOK_NOT_FOUND', 404)
+                        rows = connection.execute('SELECT rr.record_id,rr.canonical_json,c.record_id,c.canonical_json '
+                            'FROM run_results rr LEFT JOIN citations c ON c.tenant_id=rr.tenant_id AND c.workspace_id=rr.workspace_id '
+                            'AND c.run_result_id=rr.record_id WHERE rr.tenant_id=%s AND rr.workspace_id=%s AND rr.run_id=%s '
+                            'ORDER BY c.record_id', (context.tenant_id, context.workspace_id, run_id)).fetchall()
+                        if not rows:
+                            raise NotebookError('NOTEBOOK_NOT_FOUND', 404)
+                        payload = rows[0][1]
+                        citations = tuple(NotebookConversationCitation(str(row[2]), item['source_id'], item['source_version_id'],
+                            item['evidence_span_id'], item['page'], item.get('origin', 'raw_source'),
+                            item.get('context_item_id', item['source_version_id']),
+                            item.get('locator', {'kind':'page','value':str(item['page'])}))
+                            for row in rows if row[2] is not None for item in (row[3],))
+                        conversation = NotebookConversationView(run[1], run_id, rows[0][0], payload['answer'],
+                            payload['insufficient'], citations)
+            if failed_fingerprint is not None:
+                question_context = QuestionContext(context.tenant_id, context.workspace_id, context.actor_id,
+                    context.trace_id, context.policy_version, notebook_id=notebook_id)
+                # 기존 엄격 실패 원장 검증을 재사용한다. Object/Provider 호출·쓰기 경로는 없다.
+                repository = PostgresQuestionAnsweringRepository(self._store, None)
+                if not repository.load_failed_for_replay(question_context, run_id, failed_fingerprint):
+                    raise NotebookError('NOTEBOOK_NOT_FOUND', 404)
+                raise NotebookError('QUESTION_FAILED', 409)
+        except (NotificationError, QuestionRepositoryError, StudioError) as error:
+            status = error.http_status if isinstance(error, NotificationError) else error.status
+            if status >= 500:
+                raise NotebookError('NOTEBOOK_UNAVAILABLE', 503) from None
+            raise NotebookError('NOTEBOOK_NOT_FOUND', 404) from None
+        except CloudDatabaseError:
+            raise NotebookError('NOTEBOOK_UNAVAILABLE', 503) from None
+        selected = self.read_selected_context(context, notebook_id)
+        if conversation is None:
+            return selected
+        return replace(selected, conversation=conversation,
+            conversation_thread_ids=(conversation.conversation_thread_id,))
+
+    def read_selected_context(self, context: NotebookContext, notebook_id: str, *,
+        run_id: str | None = None, studio_job_id: str | None = None,
+    ) -> NotebookSelectedContext:
+        if run_id is not None or studio_job_id is not None:
+            return self._read_exact_context(context, notebook_id, run_id=run_id, studio_job_id=studio_job_id)
         try:
             with self._store._transaction(self._context(context)) as connection:
                 notebook = connection.execute(
@@ -282,9 +387,14 @@ class PostgresNotebookRepository:
                     "AND NOT (binding_kind='source' AND EXISTS (SELECT 1 FROM deletion_requests dr "
                     "WHERE dr.tenant_id=notebook_bindings.tenant_id AND dr.workspace_id=notebook_bindings.workspace_id "
                     "AND dr.source_id=notebook_bindings.record_id AND dr.source_active=false)) "
+                    "AND NOT (binding_kind='source' AND EXISTS (SELECT 1 FROM identity_auth_source_access a "
+                    "WHERE a.tenant_id=notebook_bindings.tenant_id AND a.workspace_id=notebook_bindings.workspace_id "
+                    "AND a.user_id=%s AND a.source_version_id=notebook_bindings.version_id AND a.allowed=0)) "
                     "ORDER BY binding_kind,created_at,record_id",
-                    (context.tenant_id, context.workspace_id, notebook_id),
+                    (context.tenant_id, context.workspace_id, notebook_id, context.actor_id),
                 ).fetchall()
+                # 최신 완료 대화의 현재 접근 거부/결과 누락을 과거 답변으로 우회하지 않는다.
+                # failed/nonterminal binding만 최신 완료 판정에서 제외한다.
                 conversation_rows = connection.execute(
                     "SELECT nb.record_id,r.record_id,rr.record_id,rr.canonical_json,c.record_id,c.canonical_json "
                     "FROM notebook_bindings nb JOIN conversations cv ON cv.tenant_id=nb.tenant_id "
@@ -298,6 +408,9 @@ class PostgresNotebookRepository:
                     "AND nb.binding_kind='conversation_thread' AND NOT EXISTS (SELECT 1 "
                     "FROM notebook_bindings newer WHERE newer.tenant_id=nb.tenant_id "
                     "AND newer.workspace_id=nb.workspace_id AND newer.notebook_id=nb.notebook_id "
+                    "AND EXISTS (SELECT 1 FROM runs newer_run WHERE newer_run.tenant_id=newer.tenant_id "
+                    "AND newer_run.workspace_id=newer.workspace_id AND newer_run.conversation_id=newer.record_id "
+                    "AND newer_run.state='completed') "
                     "AND newer.binding_kind='conversation_thread' AND (newer.created_at>nb.created_at "
                     "OR (newer.created_at=nb.created_at AND newer.record_id>nb.record_id))) "
                     "AND NOT EXISTS (SELECT 1 FROM citations blocked_citation JOIN deletion_requests dr ON "
@@ -305,25 +418,46 @@ class PostgresNotebookRepository:
                     "AND dr.source_id=blocked_citation.canonical_json->>'source_id' AND dr.source_active=false "
                     "WHERE blocked_citation.tenant_id=rr.tenant_id AND blocked_citation.workspace_id=rr.workspace_id "
                     "AND blocked_citation.run_result_id=rr.record_id) "
+                    "AND NOT EXISTS (SELECT 1 FROM identity_auth_source_access a "
+                    "WHERE a.tenant_id=r.tenant_id AND a.workspace_id=r.workspace_id AND a.user_id=%s AND a.allowed=0 "
+                    "AND (a.source_version_id=r.canonical_json->>'source_version_id' "
+                    "OR EXISTS (SELECT 1 FROM citations denied_citation WHERE denied_citation.tenant_id=rr.tenant_id "
+                    "AND denied_citation.workspace_id=rr.workspace_id AND denied_citation.run_result_id=rr.record_id "
+                    "AND denied_citation.source_version_id=a.source_version_id) "
+                    "OR EXISTS (SELECT 1 FROM run_snapshots rs JOIN scope_snapshots ss ON ss.tenant_id=rs.tenant_id "
+                    "AND ss.workspace_id=rs.workspace_id AND ss.record_id=rs.scope_snapshot_id "
+                    "WHERE rs.tenant_id=r.tenant_id AND rs.workspace_id=r.workspace_id AND rs.run_id=r.record_id "
+                    "AND (ss.canonical_json->'source_version_ids') ? a.source_version_id))) "
                     "ORDER BY c.record_id",
-                    (context.tenant_id, context.workspace_id, notebook_id),
+                    (context.tenant_id, context.workspace_id, notebook_id, context.actor_id),
                 ).fetchall()
                 binding_version = 1 + int(connection.execute(
                     "SELECT count(*) FROM notebook_source_unbindings WHERE tenant_id=%s AND workspace_id=%s AND notebook_id=%s",
                     (context.tenant_id, context.workspace_id, notebook_id),
                 ).fetchone()[0])
+                cleanup_scope = ""
+                deletion_params = (context.tenant_id, context.workspace_id, notebook_id)
+                if connection.execute("SELECT to_regclass('public.source_cleanup_requests')").fetchone()[0] is not None:
+                    cleanup_scope = (
+                        " OR EXISTS(SELECT 1 FROM source_cleanup_requests c WHERE c.tenant_id=dr.tenant_id "
+                        "AND c.workspace_id=dr.workspace_id AND c.request_id=dr.request_id AND c.actor_id=%s AND c.notebook_id=%s "
+                        "AND NOT EXISTS(SELECT 1 FROM identity_auth_source_access a WHERE a.tenant_id=c.tenant_id "
+                        "AND a.workspace_id=c.workspace_id AND a.user_id=c.actor_id AND a.allowed=0 "
+                        "AND a.source_version_id=ANY(c.source_version_ids)))"
+                    )
+                    deletion_params += (context.actor_id, notebook_id)
                 deletion_rows = connection.execute(
                     "SELECT dr.request_id,dr.source_id,dr.state,dr.version,dr.grace_until,"
                     "EXISTS (SELECT 1 FROM legal_holds h WHERE h.tenant_id=dr.tenant_id "
                     "AND h.workspace_id=dr.workspace_id AND h.source_id=dr.source_id AND h.state='active') "
                     "FROM deletion_requests dr WHERE dr.tenant_id=%s AND dr.workspace_id=%s "
-                    "AND dr.source_active=false AND EXISTS (SELECT 1 FROM notebook_bindings b "
+                    "AND dr.source_active=false AND (EXISTS (SELECT 1 FROM notebook_bindings b "
                     "WHERE b.tenant_id=dr.tenant_id AND b.workspace_id=dr.workspace_id "
                     "AND b.notebook_id=%s AND b.binding_kind='source' AND b.record_id=dr.source_id "
                     "AND NOT EXISTS (SELECT 1 FROM notebook_source_unbindings u WHERE u.tenant_id=b.tenant_id "
                     "AND u.workspace_id=b.workspace_id AND u.notebook_id=b.notebook_id "
-                    "AND u.source_id=b.record_id AND u.source_version_id=b.version_id)) ORDER BY dr.request_id",
-                    (context.tenant_id, context.workspace_id, notebook_id),
+                    "AND u.source_id=b.record_id AND u.source_version_id=b.version_id))" + cleanup_scope + ") ORDER BY dr.request_id",
+                    deletion_params,
                 ).fetchall()
             bindings = tuple(NotebookBinding(
                 context.tenant_id, context.workspace_id, notebook_id,
@@ -350,6 +484,14 @@ class PostgresNotebookRepository:
                     str(conversation_rows[0][2]), str(result_payload["answer"]),
                     bool(result_payload["insufficient"]), citations,
                 )
+                active_sources = {
+                    (binding.record_id, binding.version_id)
+                    for binding in bindings if binding.binding_kind == "source"
+                }
+                if any(citation.origin == "raw_source" and
+                       (citation.source_id, citation.source_version_id) not in active_sources
+                       for citation in citations):
+                    conversation = None
             selected = _selected_context(notebook_id, bindings, conversation, binding_version)
             return NotebookSelectedContext(
                 notebook_id=selected.notebook_id, sources=selected.sources,

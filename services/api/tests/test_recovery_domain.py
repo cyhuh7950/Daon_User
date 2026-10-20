@@ -18,6 +18,54 @@ NOW = datetime(2026, 7, 31, 5, 0, tzinfo=UTC)
 
 
 class RecoveryDomainTests(unittest.TestCase):
+    def test_l2_parent_canon_id_256_preserved_without_expanding_selection_ids(self):
+        from daon_user_api.recovery import BackupSelectionInput, _resolved_backup_metadata
+        selected = BackupSelectionInput("notebook-a", ("version-a",))
+        item = BackupObjectInput("object-a", "a" * 64, 7)
+        receipt = _resolved_backup_metadata(self.context, selected, "schema-a", "watermark-a",
+            (("version-a", "s" * 256, item, "b" * 64),))
+        self.assertEqual(receipt.selection.source_version_ids, ("version-a",))
+        for parent in ("s" * 257, "unsafe/path", None):
+            with self.assertRaises(RecoveryError):
+                _resolved_backup_metadata(self.context, selected, "schema-a", "watermark-a",
+                    (("version-a", parent, item, "b" * 64),))
+        with self.assertRaises(RecoveryError): BackupSelectionInput("notebook-a", ("v" * 256,))
+
+    def test_l1_selection_is_safe_bounded_unique_and_order_independent(self) -> None:
+        from daon_user_api import recovery
+        selection_type = getattr(recovery, "BackupSelectionInput", None)
+        self.assertTrue(callable(selection_type), "실제 L1 선택 검증 타입 필요")
+        first = selection_type("notebook-a", ("version-b", "version-a"))
+        self.assertEqual(first.source_version_ids, ("version-a", "version-b"))
+        for ids in ((), ("version-a",) * 2, tuple(f"v-{i}" for i in range(101)), ("unsafe/path",), (1,)):
+            with self.subTest(ids_count=len(ids)), self.assertRaises(RecoveryError) as caught:
+                selection_type("notebook-a", ids)
+            self.assertEqual(caught.exception.status, 400)
+
+    def test_l1_resolved_metadata_limit_fingerprint_and_legacy_comparison(self) -> None:
+        from daon_user_api import recovery
+        resolve = getattr(recovery, "_resolved_backup_metadata", None)
+        self.assertTrue(callable(resolve), "정본 metadata 검증/지문 기능 필요")
+        selection = recovery.BackupSelectionInput("notebook-a", ("version-b", "version-a"))
+        bindings = (("version-a", "source-a", BackupObjectInput("object-a", "a" * 64, 512 * 1024 * 1024), "c" * 64),
+                    ("version-b", "source-b", BackupObjectInput("object-b", "b" * 64, 0), "d" * 64))
+        first = resolve(self.context, selection, "test-revision", "e" * 64, bindings)
+        second = resolve(self.context, selection, "test-revision", "e" * 64, tuple(reversed(bindings)))
+        self.assertEqual(first.fingerprint, second.fingerprint)
+        first.require_legacy_match(schema_revision="test-revision", retention_watermark="e" * 64, objects=tuple(reversed(first.objects)))
+        for change in ({"schema_revision": "forged"}, {"retention_watermark": "forged"},
+                       {"objects": (BackupObjectInput("object-a", "f" * 64, 1),)}):
+            kwargs = dict(schema_revision=first.schema_revision, retention_watermark=first.retention_watermark, objects=first.objects)
+            with self.assertRaises(RecoveryError): first.require_legacy_match(**{**kwargs, **change})
+        oversize = (bindings[0], ("version-b", "source-b", BackupObjectInput("object-b", "b" * 64, 1), "d" * 64))
+        with self.assertRaises(RecoveryError) as caught:
+            resolve(self.context, selection, "test-revision", "e" * 64, oversize)
+        self.assertEqual(caught.exception.status, 413)
+        changed = resolve(self.context, selection, "test-revision", "f" * 64, bindings)
+        with self.assertRaises(RecoveryError) as caught: changed.require_replay(first.fingerprint)
+        self.assertEqual((caught.exception.code, caught.exception.status), ("IDEMPOTENCY_KEY_REUSED", 409))
+
+
     def setUp(self) -> None:
         self.now = NOW
         self.repository = ReferenceRecoveryRepository()

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from .open_law_source_access import OpenLawAccessError,require_open_law_source_access
+from .authorization import Action
+
 import hashlib
 import json
 from dataclasses import asdict
@@ -104,7 +107,35 @@ class PostgresStudioReportRepository:
             with self._cloud_store._transaction(self._cloud(context, "source.read")) as connection:
                 rows = connection.execute(
                     "SELECT s.record_id,sv.record_id,sv.canonical_json->>'filename',s.state,"
-                    "COALESCE(pr.state,'accepted'),COALESCE(oq.state,'pending') FROM sources s "
+                    "COALESCE(pr.state,'accepted'),COALESCE(oq.state,'pending'), "
+                    "(s.state='ready' AND s.canonical_json->>'kind'='studio_output' "
+                    "AND pr.record_id IS NULL AND oq.state IS NULL AND EXISTS ("
+                    "SELECT 1 FROM knowledge_registrations kr JOIN output_versions ov "
+                    "ON ov.tenant_id=kr.tenant_id AND ov.workspace_id=kr.workspace_id AND ov.record_id=kr.output_version_id "
+                    "JOIN notebook_bindings bound ON bound.tenant_id=ov.tenant_id AND bound.workspace_id=ov.workspace_id "
+                    "AND bound.notebook_id=nb.notebook_id AND bound.binding_kind='output_version' AND bound.record_id=ov.record_id "
+                    "WHERE kr.tenant_id=sv.tenant_id AND kr.workspace_id=sv.workspace_id "
+                    "AND kr.registered_source_version_id=sv.record_id AND kr.state='registered' AND ov.state IN ('approved','delivered') "
+                    "AND EXISTS (SELECT 1 FROM approvals approval WHERE approval.tenant_id=ov.tenant_id "
+                    "AND approval.workspace_id=ov.workspace_id AND approval.output_version_id=ov.record_id AND approval.decision='approved') "
+                    "AND kr.canonical_json->>'explicit'='true' "
+                    "AND s.canonical_json->>'derived_output_version_id'=ov.record_id "
+                    "AND sv.canonical_json->>'derived_output_version_id'=ov.record_id "
+                    "AND EXISTS (SELECT 1 FROM index_versions iv JOIN evidence_spans es "
+                    "ON es.tenant_id=iv.tenant_id AND es.workspace_id=iv.workspace_id AND es.source_version_id=iv.source_version_id "
+                    "WHERE iv.tenant_id=sv.tenant_id AND iv.workspace_id=sv.workspace_id AND iv.source_version_id=sv.record_id "
+                    "AND iv.canonical_json->>'strategy'='approved_knowledge_snapshot' "
+                    "AND iv.canonical_json->'lineage'->>'knowledge_registration_id'=kr.record_id "
+                    "AND iv.canonical_json->'lineage'->>'output_version_id'=ov.record_id "
+                    "AND es.canonical_json->>'kind'='approved_knowledge_snapshot' "
+                    "AND es.canonical_json->>'source_id'=s.record_id "
+                    "AND es.canonical_json->>'output_version_id'=ov.record_id "
+                    "AND EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(iv.canonical_json->'chunks')='array' "
+                    "THEN iv.canonical_json->'chunks' ELSE '[]'::jsonb END) chunk "
+                    "WHERE chunk->>'evidence_span_id'=es.record_id AND chunk->>'source_id'=s.record_id "
+                    "AND chunk->>'source_version_id'=sv.record_id "
+                    "AND length(chunk->>'text')>0 AND chunk->>'text'=es.canonical_json->>'text')))) AS approved_knowledge "
+                    "FROM sources s "
                     "JOIN source_versions sv ON sv.tenant_id=s.tenant_id AND sv.workspace_id=s.workspace_id "
                     "AND sv.source_id=s.record_id JOIN notebook_bindings nb ON nb.tenant_id=sv.tenant_id "
                     "AND nb.workspace_id=sv.workspace_id AND nb.notebook_id=%s AND nb.binding_kind='source' "
@@ -125,9 +156,23 @@ class PostgresStudioReportRepository:
                     "AND newer.source_id=sv.source_id AND newer.version>sv.version) ORDER BY s.created_at, s.record_id",
                     (context.notebook_id,),
                 ).fetchall()
+                accessible=[]
+                for row in rows:
+                    try:require_open_law_source_access(context,str(row[1]),connection)
+                    except OpenLawAccessError:continue
+                    accessible.append(row)
+                rows=accessible
         except CloudDatabaseError as error:
             raise StudioReportError("STUDIO_DATABASE_UNAVAILABLE", status=503, retryable=error.retryable) from None
-        return tuple(WorkspaceSourceProjection(*(str(item) for item in row)) for row in rows)
+        # Approved knowledge is a directly registered/indexed OutputVersion
+        # snapshot, not a document-processing job. Reuse the existing public
+        # completion projection only when the catalog proves that exact path;
+        # never create a fake ProcessingRun/job or upgrade an unready upload.
+        return tuple(WorkspaceSourceProjection(
+            *(str(item) for item in row[:4]),
+            *(('completed', 'completed') if len(row) == 7 and row[6] is True and row[3] == 'ready'
+              else (str(row[4]), str(row[5]))),
+        ) for row in rows)
 
     def create_report(self, context: StudioReportContext, request: StudioReportCreateRequest,
                       idempotency_key: str) -> tuple[StudioOutputProjection, bool]:
@@ -141,6 +186,8 @@ class PostgresStudioReportRepository:
         id_scope = self._id_scope(context, operation, idempotency_key)
         try:
             with self._cloud_store._transaction(self._cloud(context, "studio.create")) as connection:
+                try:require_open_law_source_access(context,request.source_version_id,connection,action=Action.GENERATE)
+                except OpenLawAccessError:raise StudioReportError('RESOURCE_UNAVAILABLE',status=404) from None
                 connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", (
                     f"{context.tenant_id}|{context.workspace_id}|{context.actor_id}|{operation}|{idempotency_key}",
                 ))
@@ -302,28 +349,56 @@ class PostgresStudioReportRepository:
         try:
             with self._cloud_store._transaction(self._cloud(context, "studio.read")) as connection:
                 rows = connection.execute(
-                    "SELECT ov.canonical_json,ov.state,so.record_id,ov.record_id,er.canonical_json FROM output_versions ov "
-                    "JOIN studio_outputs so ON so.tenant_id=ov.tenant_id AND so.workspace_id=ov.workspace_id "
-                    "AND so.record_id=ov.studio_output_id LEFT JOIN evidence_references er ON "
-                    "er.tenant_id=ov.tenant_id AND er.workspace_id=ov.workspace_id "
+                    "SELECT ov.canonical_json,ov.state,so.record_id,ov.record_id,er.canonical_json,so.canonical_json "
+                    "FROM studio_outputs so JOIN LATERAL (SELECT v.canonical_json,v.state,v.record_id "
+                    "FROM output_versions v WHERE v.tenant_id=so.tenant_id AND v.workspace_id=so.workspace_id "
+                    "AND v.studio_output_id=so.record_id ORDER BY v.content_version DESC,v.record_id DESC LIMIT 1) ov ON true "
+                    "LEFT JOIN evidence_references er ON "
+                    "er.tenant_id=so.tenant_id AND er.workspace_id=so.workspace_id "
                     "AND er.output_version_id=ov.record_id WHERE so.canonical_json->>'output_type'='evidence_report' "
                     "AND EXISTS (SELECT 1 FROM notebook_bindings nb WHERE nb.tenant_id=so.tenant_id "
                     "AND nb.workspace_id=so.workspace_id AND nb.notebook_id=%s "
                     "AND nb.binding_kind='studio_output' AND nb.record_id=so.record_id) "
+                    "AND so.tenant_id=%s AND so.workspace_id=%s "
                     "ORDER BY so.created_at,so.record_id,er.record_id"
-                    , (context.notebook_id,),
+                    , (context.notebook_id, context.tenant_id, context.workspace_id),
                 ).fetchall()
+                blocked=set()
+                for row in rows:
+                    citation=row[4]
+                    if isinstance(citation,Mapping) and citation.get('source_version_id'):
+                        try:require_open_law_source_access(context,str(citation['source_version_id']),connection)
+                        except OpenLawAccessError:blocked.add(str(row[3]))
+                rows=[row for row in rows if str(row[3]) not in blocked]
         except CloudDatabaseError as error:
             raise StudioReportError("STUDIO_DATABASE_UNAVAILABLE", status=503, retryable=error.retryable) from None
-        grouped: dict[str, dict[str, object]] = {}
-        for row in rows:
-            payload = dict(cast(Mapping[str, object], row[0]))
-            item = grouped.setdefault(str(row[2]), {
-                "studio_output_id": str(row[2]), "output_version_id": str(row[3]),
-                "output_type": payload["output_type"], "title": payload["title"], "purpose": payload["purpose"],
-                "status": str(row[1]), "content": payload["content"], "run_id": payload["run_id"],
-                "run_result_id": payload["run_result_id"], "citations": [],
-            })
-            if row[4] is not None:
-                cast(list, item["citations"]).append(dict(cast(Mapping[str, object], row[4])))
-        return tuple(self._projection(value) for value in grouped.values())
+        try:
+            grouped: dict[str, dict[str, object]] = {}
+            for row in rows:
+                output_id = str(row[2])
+                if output_id not in grouped:
+                    payload = dict(cast(Mapping[str, object], row[0]))
+                    parent = dict(cast(Mapping[str, object], row[5]))
+                    content = payload["content"]
+                    if isinstance(content, Mapping):
+                        # The legacy DTO is text. Preserve every structured
+                        # value as JSON, never a regenerated/abridged report.
+                        content = json.dumps(dict(content), ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+                    elif not isinstance(content, str):
+                        raise ValueError("STUDIO_RESULT_INVALID")
+                    grouped[output_id] = {
+                        "studio_output_id": output_id, "output_version_id": str(row[3]),
+                        "output_type": parent["output_type"], "title": parent["title"], "purpose": parent["purpose"],
+                        "status": str(row[1]), "content": content, "run_id": payload["run_id"],
+                        "run_result_id": payload["run_result_id"], "citations": [],
+                    }
+                if row[4] is not None:
+                    citation = cast(Mapping[str, object], row[4])
+                    cast(list, grouped[output_id]["citations"]).append({
+                        key: citation[key] for key in (
+                            "citation_id", "source_id", "source_version_id", "evidence_span_id", "page",
+                        )
+                    })
+            return tuple(self._projection(value) for value in grouped.values())
+        except (KeyError, TypeError, ValueError):
+            raise StudioReportError("STUDIO_RESULT_INVALID", status=500) from None

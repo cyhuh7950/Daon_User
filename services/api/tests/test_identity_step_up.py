@@ -16,6 +16,90 @@ from daon_user_api.identity import ClientKind, DevicePlatform, IdentityError, MI
 
 
 class IdentityStepUpTests(unittest.TestCase):
+    def test_optional_scope_rejected_by_existing_audit_validator_keeps_original_binding_denial(self):
+        from daon_user_api.operations_audit_scope import VerifiedOperationsScope
+        with tempfile.TemporaryDirectory() as directory:
+            service,repository,audit,_=create_service(Path(directory)/"audit-rejected-scope.sqlite3")
+            self.addCleanup(repository.close);credentials=native_login(service)
+            args=dict(access_token=credentials.access_token,action_group="permanent_delete_or_restore_rollback",policy_version=POLICY_VERSION,trace_id=TRACE_ID)
+            issued=service.issue_step_up(**args,target_id="source-a")
+            scope=VerifiedOperationsScope.for_workspace(credentials.tenant_id,credentials.user_id,credentials.session_id,credentials.device_id,"127.0.0.1")
+            with self.assertRaises(IdentityError) as error:
+                service.consume_step_up(**args,target_id="source-b",step_up_authorization=issued.authorization,operations_scope=scope)
+            self.assertEqual(error.exception.code,"STEP_UP_BINDING_DENIED")
+            denial=[e for e in audit.list(tenant_id=credentials.tenant_id).items if e.action=="identity.step_up.binding_denied"][-1]
+            self.assertEqual(set(denial.metadata),{"reason_code"})
+            self.assertTrue(audit.verify_integrity().valid)
+
+    def test_operations_denial_scope_belongs_to_consuming_actor_not_foreign_token_owner(self):
+        from daon_user_api.operations_audit_scope import VerifiedOperationsScope
+        from test_identity_support import FakeVerifiedOidcProvider
+        with tempfile.TemporaryDirectory() as directory:
+            service,repository,audit,_=create_service(Path(directory)/"foreign-scope.sqlite3")
+            self.addCleanup(repository.close)
+            owner=native_login(service)
+            consumer=native_login(service,FakeVerifiedOidcProvider(subject="other-consuming-actor"))
+            self.assertNotEqual(owner.user_id,consumer.user_id)
+            args=dict(action_group="permanent_delete_or_restore_rollback",target_id="source-a",policy_version=POLICY_VERSION,trace_id=TRACE_ID)
+            issued=service.issue_step_up(access_token=owner.access_token,**args)
+            scope=VerifiedOperationsScope.for_workspace(consumer.tenant_id,consumer.user_id,consumer.session_id,consumer.device_id,"workspace-consumer")
+            with self.assertRaises(IdentityError) as error:
+                service.consume_step_up(access_token=consumer.access_token,step_up_authorization=issued.authorization,operations_scope=scope,**args)
+            self.assertEqual(error.exception.code,"STEP_UP_BINDING_DENIED")
+            denial=[e for e in audit.list(tenant_id=consumer.tenant_id).items if e.action=="identity.step_up.binding_denied"][-1]
+            self.assertEqual(denial.actor_id,consumer.user_id)
+            self.assertEqual(denial.metadata["operations_scope"]["workspace_id"],"workspace-consumer")
+            self.assertNotIn(owner.user_id,str(denial.metadata))
+            self.assertTrue(audit.verify_integrity().valid)
+
+    def test_operations_scope_is_added_only_to_the_three_denials_and_preserves_used_metadata(self):
+        from daon_user_api.operations_audit_scope import VerifiedOperationsScope
+        for mode,expected in (("binding","STEP_UP_BINDING_DENIED"),("reuse","STEP_UP_REUSED"),("expired","STEP_UP_EXPIRED")):
+            with self.subTest(mode=mode),tempfile.TemporaryDirectory() as directory:
+                service,repository,audit,clock=create_service(Path(directory)/"scope.sqlite3")
+                self.addCleanup(repository.close)
+                credentials=native_login(service)
+                scope=VerifiedOperationsScope.for_workspace(credentials.tenant_id,credentials.user_id,credentials.session_id,credentials.device_id,"workspace-observation")
+                args=dict(access_token=credentials.access_token,action_group="permanent_delete_or_restore_rollback",target_id="source-a",policy_version=POLICY_VERSION,trace_id=TRACE_ID)
+                issued=service.issue_step_up(**args,ttl_seconds=30)
+                if mode=="reuse":service.consume_step_up(**args,step_up_authorization=issued.authorization)
+                if mode=="expired":clock.advance(seconds=31)
+                if mode=="binding":args["target_id"]="source-b"
+                with self.assertRaises(IdentityError) as error:
+                    service.consume_step_up(**args,step_up_authorization=issued.authorization,operations_scope=scope)
+                self.assertEqual(error.exception.code,expected)
+                denial=[e for e in audit.list(tenant_id=credentials.tenant_id).items if e.action in {"identity.step_up.binding_denied","identity.step_up.reuse_denied","identity.step_up.expired"}][-1]
+                self.assertIsNone(denial.workspace_id)
+                self.assertEqual(denial.actor_id,credentials.user_id)
+                self.assertEqual(set(denial.metadata),{"reason_code","operations_scope"})
+                stored=denial.metadata["operations_scope"]
+                self.assertEqual(stored["workspace_id"],"workspace-observation")
+                self.assertEqual(stored["source_version_ids"],())
+                self.assertNotIn("session_id",stored)
+                for event in audit.list(tenant_id=credentials.tenant_id).items:
+                    if event.action=="identity.step_up.used":self.assertEqual(dict(event.metadata),{"action_group":"permanent_delete_or_restore_rollback"})
+                self.assertTrue(audit.verify_integrity().valid)
+
+    def test_invalid_optional_scope_preserves_binding_denial_and_does_not_swallow_audit_failure(self):
+        from daon_user_api.operations_audit_scope import VerifiedOperationsScope
+        with tempfile.TemporaryDirectory() as directory:
+            service,repository,audit,_=create_service(Path(directory)/"scope.sqlite3")
+            self.addCleanup(repository.close);credentials=native_login(service)
+            args=dict(access_token=credentials.access_token,action_group="permanent_delete_or_restore_rollback",target_id="source-a",policy_version=POLICY_VERSION,trace_id=TRACE_ID)
+            issued=service.issue_step_up(**args)
+            wrong=VerifiedOperationsScope.for_workspace(credentials.tenant_id,"other-actor",credentials.session_id,credentials.device_id,"workspace-other")
+            for scope in (None,wrong,{"token":"PRIVATE_SCOPE_CANARY"}):
+                with self.assertRaises(IdentityError) as error:
+                    service.consume_step_up(**{**args,"target_id":"source-b"},step_up_authorization=issued.authorization,operations_scope=scope)
+                self.assertEqual(error.exception.code,"STEP_UP_BINDING_DENIED")
+            denials=[e for e in audit.list(tenant_id=credentials.tenant_id).items if e.action=="identity.step_up.binding_denied"]
+            self.assertEqual(len(denials),3)
+            self.assertTrue(all(set(e.metadata)=={"reason_code"} for e in denials))
+            service._audit_store=FailingAuditStore()
+            with self.assertRaises(IdentityError) as error:
+                service.consume_step_up(**{**args,"target_id":"source-b"},step_up_authorization=issued.authorization,operations_scope=wrong)
+            self.assertEqual(error.exception.code,"AUDIT_WRITE_FAILED")
+
     def test_add_tenant_membership_seeds_mandatory_step_up_actions_atomically(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             _, repository, _, _ = create_service(Path(directory) / "identity.sqlite3")

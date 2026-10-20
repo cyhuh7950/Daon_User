@@ -1,7 +1,7 @@
 # Daon 지식·LLM 활용 가이드
 
 - Release: 1.0.0
-- 문서 업데이트: 2026-09-17
+- 문서 업데이트: 2026-10-17
 - 언어: 한국어(ko-KR)
 - 대상: 지식 관리자, 업무 사용자, 검토자, Workspace 관리자, LLM 운영 담당자
 - 목표: Source, Daon 승인 지식, 모델, Citation과 외부 전송을 현재 구현 범위 안에서 안전하게 사용합니다.
@@ -26,8 +26,9 @@
 - Source Version: 특정 시점 Source의 변경 불가능한 Version
 - Evidence: 질문 처리에 실제 사용된 근거 조각
 - Citation: 답변에서 Evidence 위치를 가리키는 참조
-- Provider 연결: 이름, Endpoint, Credential과 모델 카탈로그를 묶은 시스템 공용 연결
+- Provider 연결: 이름, Endpoint, 인증 방식과 허용 모델을 묶은 연결
 - Workspace 기본 모델: 작업 기능별로 선택한 Provider 연결과 모델
+- Model Deployment: 과거 모델 배치와 실행 계보에서 사용하는 개념이며 현재 연결·기본값 선택 화면과 구분합니다.
 - Run: 한 번의 질문 또는 생성 실행
 - RunSnapshot: 실행 시점의 선택과 정책 기록
 - RuleSet: 결과에 적용할 규칙 집합
@@ -138,58 +139,57 @@ Source와 승인 지식을 선택하지 않으면 `작업 상담 · 근거 미�
 
 ## 7. Provider와 모델
 
-### 7.1 시스템 공용 Provider 연결
+### 7.1 시스템 Provider 연결과 호환 방식
 
-시스템 관리자는 `LLM 설정`에서 이름 있는 Provider 연결을 등록합니다. 한 번 등록한 연결은 모든 Workspace가 공유하지만, 각 Workspace가 어떤 모델을 기본으로 사용할지는 별도로 선택합니다. Credential과 Endpoint 원문은 화면에 다시 표시하지 않습니다.
+시스템 관리자는 `LLM 설정`에서 이름 있는 Provider 연결을 등록하고 Endpoint, 호환 방식과 허용 모델을 관리합니다. 연결은 여러 Workspace에서 참조할 수 있지만 Credential 사용 범위와 Workspace 기본값은 별도로 확인해야 합니다. Credential 원문은 다시 표시하지 않습니다.
 
-현재 질문·일반 대화 실행 경로가 지원하는 Provider는 다음과 같습니다.
+OpenAI 호환은 Chat Completions, Anthropic 호환은 Messages 규격을 사용합니다. 이 호환 연결의 내부 Provider 코드는 CUSTOM입니다. Media Bridge는 CUSTOM의 OpenAI 호환 연결로 등록합니다.
 
-- Ollama
-- Groq
-- Mistral
-- Upstage
-- OpenRouter
-- OmniRoute
-- Eoul Gateway
+현재 질문·일반 대화 실행 경로에는 Ollama, Groq, Mistral, Upstage, OpenRouter, OmniRoute, Eoul Gateway와 지원되는 CUSTOM Adapter가 연결되어 있습니다. 과거 OpenAI·Anthropic 등 Provider 코드의 존재와 해당 서비스의 호환 연결 지원은 구분합니다. 미지원 코드·Adapter를 운영 기본값으로 사용하지 않습니다.
 
-Cerebras, OpenAI, Gemini와 Anthropic은 Provider 코드가 남아 있더라도 현재 질문 실행 Adapter가 없습니다. 카드 표시, Credential 저장, 실제 질문 실행은 서로 다른 검증 단계이므로 실행 Adapter가 없는 Provider를 운영 기본값으로 사용하지 않습니다.
+모델 목록 조회가 지원되지 않으면 실제 모델 ID를 직접 입력할 수 있습니다. 허용 모델은 최대 4개이며 조회 목록 전체를 자동 허용하지 않습니다. `연결 시험 및 저장`에는 짧은 실제 Provider 요청과 비용이 발생할 수 있습니다. `사용 대기 연결 등록`은 실행 확인 완료가 아닙니다.
 
 ### 7.2 모델 기능과 Workspace 기본값
 
-Daon User는 수동 `역할 매핑` 화면을 사용하지 않습니다. 연결 확인 때 조회한 모델 카탈로그와 기능 정보를 바탕으로 다음 세 기능의 Workspace 기본값을 선택합니다.
+현재 `Workspace 기본 모델` 화면에서는 `텍스트 생성`의 연결·모델을 선택한 뒤 `기본 모델 저장`으로 저장합니다. 수동 역할 매핑 화면을 사용하지 않습니다.
 
-- 텍스트 생성(`text_generation`): 질문, 일반 대화와 텍스트 생성
-- 이미지 이해(`image_understanding`): 이미지·스캔·도표 이해
-- 문서 분석(`document_parsing`): 문서 구조와 내용 분석
-
-임베딩, 재정렬, 오디오 이해, 음성 변환, 동영상 이해와 생성 기능은 내부 구분을 유지하지만 실행 Adapter가 연결되지 않은 기능은 `준비 중`으로 표시됩니다. 시스템 관리자의 기능 보정은 Provider 보고값의 오류를 바로잡는 용도이며, 준비 중인 실행 코드를 새로 만드는 기능이 아닙니다.
+모델 카탈로그는 텍스트 생성, 이미지 이해, 문서 분석, 임베딩, 재정렬, 오디오·음성·동영상·이미지 생성 등의 기능을 구분할 수 있습니다. 이 표시는 모든 기능의 선택기와 실행 Adapter가 준비되었다는 뜻이 아닙니다. `준비 중` 기능은 모델 기능 보정만으로 실행 가능해지지 않습니다. 실제 Source 처리 경로와 필요한 모델의 준비 상태를 따로 확인합니다.
 
 ### 7.3 Ollama 여러 연결
 
-Ollama는 Endpoint마다 고유 Connection ID와 이름을 부여해 여러 개를 동시에 등록합니다. 사내 LAN Ollama, HTTPS로 공개한 Ollama와 추가 서버를 각각 등록할 수 있습니다. Daon은 Ollama 모델을 자동 설치하거나 삭제하지 않으며, API 컨테이너가 Endpoint에 접근할 수 있어야 합니다.
+Ollama는 Endpoint마다 고유 연결 이름을 부여해 여러 개를 동시에 등록합니다. 사내 연결과 승인된 Gateway 연결 등 실제 운영자가 확인한 주소를 사용합니다. Daon은 Ollama 모델을 자동 설치하거나 삭제하지 않으며 Daon User 서버가 Endpoint에 접근할 수 있어야 합니다.
 
-각 연결에서 모델 카탈로그를 확인한 뒤 Workspace 기본값에서 `연결 이름 · 모델 ID`를 선택합니다. 한 개의 전역 `OLLAMA_BASE_URL`로 모든 Workspace를 묶지 않습니다.
+각 연결의 모델 카탈로그를 확인한 뒤 Workspace 기본값에서 `연결 이름 · 모델 ID`를 선택합니다. 한 개의 전역 `OLLAMA_BASE_URL`로 모든 Workspace를 묶지 않습니다.
 
-### 7.4 OpenRouter·OmniRoute·Eoul Gateway
+### 7.4 OpenRouter·OmniRoute·Eoul Gateway·Media Bridge
 
-OpenRouter는 OpenAI 호환 모델 카탈로그와 API를 사용합니다. OmniRoute와 Eoul Gateway는 동등한 Gateway 유형으로 취급하며, Daon User에는 Gateway Endpoint, Client Key와 Logical model ID를 등록합니다.
+OpenRouter는 실제 API와 모델 카탈로그를 사용합니다. OmniRoute와 Eoul Gateway는 실제 Gateway Endpoint, Client Key와 모델 ID를 등록합니다. Media Bridge는 CUSTOM의 OpenAI 호환 연결로 실제 API Endpoint와 모델 ID를 등록합니다.
 
-Eoul Gateway가 Daon User와 같은 서버에 설치되었는지 별도 서버에 배포되었는지는 연결 방식의 차이일 뿐입니다. 실제 설치 토폴로지에서 API 컨테이너가 접근할 수 있는 주소를 등록합니다. 하위 Provider 선택, 우선순위와 Fallback은 Gateway가 담당하고 Daon User는 선택한 논리 모델을 한 번 호출합니다.
+Gateway의 설치형·별도 배포형은 실제 서버 접근 경로의 차이입니다. Console 화면 주소와 API Endpoint를 혼동하지 않습니다. 하위 Provider 선택·우선순위·Fallback은 Gateway가 담당하고 Daon User는 선택한 논리 모델을 호출합니다.
+
+OmniRoute의 `auto`, OpenRouter의 `openrouter/auto`는 하나의 모델 선택입니다. OpenAI 호환 연결의 `라우터 Auto 사용`에서는 실제 Auto 모델 ID를 지정합니다. 카탈로그에 없는 Auto에는 `논리 모델` 표시가 붙습니다. 모델 미지정과 Auto 선택은 다르며 Combo 자동 선택 기능으로 설명하지 않습니다.
 
 ### 7.5 Credential 수명주기
 
-Credential은 DB에 암호화해 저장하며 시스템 범위의 연결별 키 하나를 모든 Workspace가 공유합니다. 키 원문은 조회 API, 화면, 감사 이벤트나 오류 메시지에 포함하지 않습니다.
+Credential은 DB에 암호화해 저장합니다. 공용 연결은 관리자 Key를 사용하며 비공용 연결은 본인 계정의 개인 Key를 사용합니다. 비공용 연결에서 개인 Key가 없을 때 시스템 Key로 fallback하는 경로는 없습니다. Key 원문은 조회 API, 화면, 감사 이벤트나 오류 메시지에 포함하지 않습니다.
 
-- 교체: 새 키와 현재 관리자 비밀번호만 입력합니다. Endpoint 재입력과 worker 재생성은 필요하지 않습니다.
-- 삭제: 연결과 카탈로그는 유지되지만 실행은 차단됩니다.
+- 교체: 공용 관리자 Key 또는 본인 개인 Key의 정확한 범위를 확인합니다. 키 교체만 필요한 경우 Endpoint 재입력과 worker 재생성은 필요하지 않습니다.
+- 개인 Key: `내 계정 키 시험 및 저장`과 `내 계정 키 삭제`는 본인 계정만 대상으로 합니다.
+- 삭제: 연결·카탈로그 삭제와는 구분하며 필요한 Credential이 없으면 실행이 차단될 수 있습니다.
 - master key: API와 실제 Provider 호출 worker에 read-only Secret 파일로만 제공합니다.
-- 이전 환경변수: 1회 이관 후 런타임 fallback으로 사용하지 않습니다.
+- Provider 설정 화면에 없는 비밀번호 입력을 임의로 요구하지 않습니다. 외부 전송 등 민감 작업의 정식 Step-up은 별도로 수행합니다.
+
+### 7.6 기존 환경변수 키 이관(운영자)
+
+기존 환경변수 Credential을 사용하던 배포에서만 1회 이관합니다. 운영자는 비공개 master key 제공과 migration 0040 이후의 기존 연결 구조를 확인하고 `scripts/import-provider-credentials.py`를 사용합니다. 명령에는 키 값 대신 기존 환경변수 이름을 전달하고 결과 개수만 기록합니다.
+
+이미 Credential이 있는 연결은 덮어쓰지 않습니다. 대응 연결이 없으면 새 Endpoint를 추측하지 않습니다. 검증 후 기존 키 환경변수와 `OLLAMA_BASE_URL` 의존을 제거하며 런타임 fallback으로 사용하지 않습니다. 일반 사용자의 등록·교체 절차와 이 운영자 이관 절차를 혼동하지 않습니다.
 
 ## 8. 모델 선택과 Routing의 현재 동작
 
-질문 실행은 현재 Workspace에서 해당 기능의 기본값으로 선택된 단일 연결·모델을 사용합니다. 실행 시 선택, Provider와 정책 정보가 RoutingDecision과 RunSnapshot에 기록될 수 있습니다.
+질문 실행은 현재 Workspace의 기본값으로 선택된 단일 연결·모델을 사용합니다. 실행 시 선택, Provider와 정책 정보가 RoutingDecision과 RunSnapshot에 기록될 수 있습니다.
 
-현재 서버가 설계서의 다중 후보 우선순위를 계산해 자동 정렬하고, 장애 시 다음 모델로 자동 Fallback한다고 설명할 수는 없습니다. 실제 기록의 후보 순서는 선택된 연결·모델 한 개를 중심으로 구성됩니다.
+현재 서버가 다중 후보 우선순위를 자동 정렬하고 장애 시 다른 연결·모델로 자동 Fallback한다고 설명할 수는 없습니다. 실제 후보는 선택한 연결·모델 한 개일 수 있습니다. Gateway의 Auto 내부 라우팅과 Daon User의 모델 자동 교체는 구분합니다.
 
 따라서 다음 원칙을 지킵니다.
 
@@ -304,9 +304,9 @@ AI 오디오와 동영상은 계약에 등록되어 있지만 전용 Provider가
 
 ## 13. 예상 결과와 권장 운영 절차
 
-1. 시스템 관리자가 이름 있는 Provider 연결과 Credential을 설정합니다.
-2. 연결 확인과 모델 카탈로그 조회를 완료합니다.
-3. Workspace에서 기능별 기본 모델을 선택합니다.
+1. 시스템 관리자가 이름 있는 Provider 연결과 호환 방식·허용 모델을 설정합니다.
+2. 연결 확인과 모델 목록 조회를 완료하고 공용·개인 Credential 범위를 확인합니다.
+3. Workspace의 텍스트 생성 기본 모델을 선택하고 저장합니다.
 4. 실제 지원 Provider로 작은 비민감 질문을 시험합니다.
 5. 조직 Egress 정책과 실행 기록을 확인합니다.
 6. PDF Source로 질문·Citation 수직 흐름을 검증합니다.
@@ -319,11 +319,11 @@ AI 오디오와 동영상은 계약에 등록되어 있지만 전용 Provider가
 
 ### Provider 설정이 필요함
 
-시스템 연결의 활성 상태, Credential 설정 여부, 연결 확인 결과, 모델 카탈로그와 Workspace의 텍스트 생성 기본값을 확인합니다. Credential 값을 화면이나 로그로 확인하려 하지 않습니다.
+연결 활성 상태, 현재 사용자의 Credential, 연결 확인 결과, 허용 모델과 Workspace의 텍스트 생성 기본값을 확인합니다. Credential 값을 화면이나 로그로 확인하려 하지 않습니다.
 
 ### TEXT_PROVIDER_UNAVAILABLE
 
-선택 Provider가 현재 질문 Adapter 지원 범위인지 확인합니다. Ollama, Groq, Mistral, Upstage, OpenRouter, OmniRoute와 Eoul Gateway만 현재 질문 경로에 연결되어 있습니다.
+선택 Provider와 Adapter의 현재 질문 실행 지원을 확인합니다. Ollama, Groq, Mistral, Upstage, OpenRouter, OmniRoute, Eoul Gateway와 지원되는 CUSTOM 호환 연결을 구분하며 미지원 코드만 보고 실행 가능하다고 판단하지 않습니다.
 
 ### TEXT_MODEL_NOT_SELECTED 또는 모델 선택 오류
 
@@ -335,7 +335,7 @@ Workspace의 `텍스트 생성` 기본 연결·모델을 선택합니다. 변경
 
 ### Source가 모델 대기 상태
 
-필요한 문서 분석, 이미지 이해, 오디오 이해, 음성 변환 또는 텍스트 생성 기능이 준비되었는지 확인합니다. Source 원본은 보존하고 준비 후 새 처리 Run을 시작합니다.
+필요한 문서 분석, 이미지 이해, 오디오 이해, 음성 변환 또는 텍스트 생성 경로가 준비되었는지 확인합니다. 기능 이름의 표시만으로 실행 가능하다고 가정하지 않습니다. Source 원본은 보존하고 준비 후 새 처리 Run을 시작합니다.
 
 ### QUESTION_RESPONSE_INVALID 또는 CITATION_RESPONSE_INVALID
 
@@ -352,7 +352,7 @@ Workspace의 `텍스트 생성` 기본 연결·모델을 선택합니다. 변경
 ## 15. 관리자 점검표
 
 - Provider 연결과 실제 질문 실행 지원을 구분했습니다.
-- Workspace의 기능별 기본 연결·모델이 명시적으로 선택되었습니다.
+- Workspace의 텍스트 생성 기본 연결·모델이 명시적으로 선택되었습니다.
 - Source 형식별 실제 처리 수준을 확인했습니다.
 - 외부 전송 정책과 마스킹 조건을 확인했습니다.
 - PDF 질문과 Citation을 실제로 열어 보았습니다.
@@ -367,6 +367,6 @@ Workspace의 `텍스트 생성` 기본 연결·모델을 선택합니다. 변경
 - 다중 후보 모델 정렬과 자동 Fallback은 현재 실제 질문 서비스 기능으로 제공되지 않습니다.
 - RoutingDecision과 RunSnapshot 저장이 있더라도 후보가 단일 선택 모델일 수 있습니다.
 - PDF 외 등록 형식 전체의 운영 의미 이해는 미완료입니다.
-- 실제 질문 Adapter는 Ollama, Groq, Mistral, Upstage, OpenRouter, OmniRoute와 Eoul Gateway를 지원합니다. 나머지 Provider 코드는 실행 준비가 되지 않았습니다.
+- Provider 코드·호환 방식·현재 Credential·정책과 실제 실행 Adapter 지원은 별도로 확인합니다. 카드나 모델 카탈로그만으로 실행 성공을 보장하지 않습니다.
 - AI 오디오·동영상은 전용 Provider가 없으면 사용할 수 없습니다.
 - Mobile과 실제 기기에서의 지식·모델 흐름은 별도 검증이 필요합니다.

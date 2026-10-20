@@ -26,8 +26,13 @@ function exactKeys(value, expected) {
     && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...expected].sort());
 }
 
+function policyKeys(value, expected) {
+  return exactKeys(value, value && Object.hasOwn(value, "question_step_up_required")
+    ? [...expected, "question_step_up_required"] : expected);
+}
+
 function normalizePolicy(value) {
-  if (!exactKeys(value, POLICY_KEYS)) throw new Error("EGRESS_POLICY_RESPONSE_INVALID");
+  if (!policyKeys(value, POLICY_KEYS)) throw new Error("EGRESS_POLICY_RESPONSE_INVALID");
   const providers = value.allowed_provider_kinds;
   const destinations = value.allowed_destinations;
   if (
@@ -40,13 +45,15 @@ function normalizePolicy(value) {
     || !Number.isInteger(value.max_bytes) || value.max_bytes < 0 || value.max_bytes > 104_857_600
     || typeof value.masking_required !== "boolean" || typeof value.redaction_required !== "boolean"
     || !["workspace_manager", "organization_admin"].includes(value.required_approver)
+    || (Object.hasOwn(value, "question_step_up_required") && typeof value.question_step_up_required !== "boolean")
+    || (value.mode === "deny_external" && value.question_step_up_required === false)
     || (value.mode === "deny_external" && (providers.length || destinations.length || value.max_bytes !== 0))
   ) throw new Error("EGRESS_POLICY_RESPONSE_INVALID");
   return Object.freeze({ ...value, allowed_provider_kinds: Object.freeze([...providers]), allowed_destinations: Object.freeze([...destinations]) });
 }
 
 function normalizeEffectivePolicy(value) {
-  if (!exactKeys(value, EFFECTIVE_KEYS)) throw new Error("EGRESS_POLICY_RESPONSE_INVALID");
+  if (!policyKeys(value, EFFECTIVE_KEYS)) throw new Error("EGRESS_POLICY_RESPONSE_INVALID");
   for (const key of ["organization_policy_version_id", "organization_binding_id", "workspace_policy_version_id", "workspace_binding_id"]) {
     if (typeof value[key] !== "string" || !SAFE_ID.test(value[key])) throw new Error("EGRESS_POLICY_RESPONSE_INVALID");
   }
@@ -56,7 +63,8 @@ function normalizeEffectivePolicy(value) {
     || typeof value.workspace_etag !== "string" || value.workspace_etag.length > 512
     || typeof value.fingerprint !== "string" || !/^sha256:[0-9a-f]{64}$/u.test(value.fingerprint)
   ) throw new Error("EGRESS_POLICY_RESPONSE_INVALID");
-  const effective = normalizePolicy(Object.fromEntries(POLICY_KEYS.map((key) => [key, value[key]])));
+  const effective = normalizePolicy({ ...Object.fromEntries(POLICY_KEYS.map((key) => [key, value[key]])),
+    ...(Object.hasOwn(value, "question_step_up_required") ? { question_step_up_required: value.question_step_up_required } : {}) });
   return Object.freeze({
     ...value, ...effective,
     organization_policy: normalizePolicy(value.organization_policy),
@@ -105,6 +113,9 @@ async function saveEgressPolicy({
   fetchImpl, scope, scopeId, etag, idempotencyKey, draft, sensitive, signal,
 }) {
   try {
+    const { question_step_up_required: required = true, ...legacyDraft } = draft;
+    if (typeof required !== "boolean" || (draft.mode === "deny_external" && !required)) throw new Error("EGRESS_POLICY_PAYLOAD_INVALID");
+    const payload = required ? legacyDraft : { ...legacyDraft, question_step_up_required: false };
     const stepUp = await safeJson(await fetchImpl("/bff/api/session/step-up", {
       method: "POST", credentials: "same-origin",
       signal,
@@ -130,7 +141,7 @@ async function saveEgressPolicy({
           "idempotency-key": idempotencyKey,
         },
         body: JSON.stringify({
-          ...draft,
+          ...payload,
           step_up_authorization_id: sensitive.stepUpAuthorization,
         }),
       },

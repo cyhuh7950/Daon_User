@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createServer } from "node:http";
+import { once } from "node:events";
+import { channel } from "node:diagnostics_channel";
+import { gzipSync, deflateSync, brotliCompressSync } from "node:zlib";
 
 import {
   BffConfigurationError,
@@ -8,6 +12,343 @@ import {
   parseInternalApiBase,
   parsePublicGatewayOrigin,
 } from "../../apps/web/lib/bff-api-proxy.js";
+
+test('native ASR registration resolves only the exact server-managed endpoint in existing admin writes',async()=>{
+  const calls=[];const proxy=createBffProxy({baseUrl:new URL('https://api.example.com'),fetchImpl:async(url,init)=>{
+    calls.push({url:String(url),body:JSON.parse(Buffer.from(init.body).toString()),headers:init.headers});return Response.json({error:{code:'ACCESS_DENIED'}},{status:403});
+  }});
+  const body={provider_code:'CUSTOM',adapter_type:'asr_base_native',base_url:'server-managed-asr',credential_requirement:'none',access_mode:'public'};
+  for(const method of ['POST','PUT']){
+    const parts=['admin','provider-connections',...(method==='PUT'?['asr-native']:[])];
+    const response=await proxy(new Request('https://app.example.com/bff/api/'+parts.join('/'),{method,headers:{origin:'https://app.example.com','content-type':'application/json',cookie:'daon_session=opaque-session','idempotency-key':'asr-write-key'},body:JSON.stringify(body)}),parts);
+    assert.equal(response.status,403,'normal server permission refusal is preserved');
+    assert.deepEqual(calls.at(-1).body,{...body,base_url:'http://asr-base:8080'});
+    assert.equal(calls.at(-1).headers.get('idempotency-key'),'asr-write-key');
+  }
+  for(const patch of [{base_url:'server-managed-asr-other'},{adapter_type:'openai_compatible',base_url:'https://api.example.net'}]){
+    const input={...body,...patch};
+    await proxy(new Request('https://app.example.com/bff/api/admin/provider-connections',{method:'POST',headers:{origin:'https://app.example.com','content-type':'application/json'},body:JSON.stringify(input)}),['admin','provider-connections']);
+    assert.deepEqual(calls.at(-1).body,input);
+  }
+  const before=calls.length;
+  for(const patch of [{provider_code:'OPENAI'},{adapter_type:'openai_compatible'},{credential_requirement:'required'},{access_mode:'personal'},{credential:'fixture-only'}]) {
+    const wrong={...body,...patch};
+    assert.equal((await proxy(new Request('https://app.example.com/bff/api/admin/provider-connections',{method:'POST',headers:{origin:'https://app.example.com','content-type':'application/json'},body:JSON.stringify(wrong)}),['admin','provider-connections'])).status,400);
+  }
+  assert.equal(calls.length,before);
+  const previewParts=['admin','provider-connections','model-preview'];
+  await proxy(new Request('https://app.example.com/bff/api/'+previewParts.join('/'),{method:'POST',headers:{origin:'https://app.example.com','content-type':'application/json'},body:JSON.stringify(body)}),previewParts);
+  assert.deepEqual(calls.at(-1).body,body,'different existing routes never expand the sentinel');
+  const after=calls.length;
+  assert.equal((await proxy(new Request('https://app.example.com/bff/api/admin/provider-connections/asr-native',{method:'PATCH',headers:{origin:'https://app.example.com','content-type':'application/json'},body:JSON.stringify(body)}),['admin','provider-connections','asr-native'])).status,405);
+  assert.equal((await proxy(new Request('https://app.example.com/bff/api/admin/provider-connections',{method:'POST',headers:{origin:'https://foreign.example','content-type':'application/json'},body:JSON.stringify(body)}),['admin','provider-connections'])).status,403);
+  assert.equal(calls.length,after,'unsupported methods and foreign origins never reach the server');
+});
+
+test('S44 capacity BFF forwards only literal1 on workspace and system paths',async()=>{
+  const calls=[];
+  const proxy=createBffProxy({baseUrl:new URL('https://api.example.com'),fetchImpl:async url=>{
+    calls.push(String(url));return Response.json({data:{}});
+  }});
+  for(const parts of [['workspaces','workspace-a','operations','status'],['system','operations','status']]){
+    const suffix=parts.join('/'),root='https://app.example.com/bff/api/'+suffix;
+    assert.equal((await proxy(new Request(root+'?include_capacity=1'),parts)).status,200);
+    assert.equal(calls.at(-1),'https://api.example.com/api/v1/'+suffix+'?include_capacity=1');
+    const before=calls.length;
+    for(const query of ['include_capacity=0','include_capacity=true','include_capacity=',
+      'include_capacity=1&include_capacity=1','include_capacity=1&actor_id=other']){
+      assert.equal((await proxy(new Request(root+'?'+query),parts)).status,400);
+    }
+    assert.equal(calls.length,before);
+  }
+});
+
+test("R4 readiness workspace BFF forwards only literal1 without duplicate or hidden scope",async()=>{
+  const calls=[];
+  const proxy=createBffProxy({baseUrl:new URL("https://api.example.com"),fetchImpl:async url=>{
+    calls.push(String(url));return Response.json({data:{}});
+  }});
+  const root="https://app.example.com/bff/api/workspaces/workspace-a/operations/status";
+  const parts=["workspaces","workspace-a","operations","status"];
+  assert.equal((await proxy(new Request(root+"?scope=workspace_visible&include_readiness=1"),parts)).status,200);
+  assert.deepEqual(calls,["https://api.example.com/api/v1/workspaces/workspace-a/operations/status?scope=workspace_visible&include_readiness=1"]);
+  for(const query of ["include_readiness=0","include_readiness=true","include_readiness=",
+    "include_readiness=1&include_readiness=1","scope=self&scope=self&include_readiness=1",
+    "scope=all&include_readiness=1","include_readiness=1&actor_id=foreign"]){
+    assert.equal((await proxy(new Request(root+"?"+query),parts)).status,400,query);
+  }
+  assert.equal(calls.length,1);
+});
+
+test("M2 workspace status BFF preserves only exact self or workspace_visible scope",async()=>{
+  const calls=[];
+  const proxy=createBffProxy({baseUrl:new URL("https://api.example.com"),fetchImpl:async(url)=>{calls.push(String(url));return Response.json({data:{}});}});
+  const url="https://app.example.com/bff/api/workspaces/workspace-a/operations/status",parts=["workspaces","workspace-a","operations","status"];
+  assert.equal((await proxy(new Request(url+"?scope=workspace_visible"),parts)).status,200);
+  assert.deepEqual(calls,["https://api.example.com/api/v1/workspaces/workspace-a/operations/status?scope=workspace_visible"]);
+  for(const query of ["?scope=all","?scope=","?scope=self&scope=workspace_visible","?workspace_id=foreign"]){
+    assert.equal((await proxy(new Request(url+query),parts)).status,400);
+  }
+  assert.equal(calls.length,1);
+});
+
+test("M2-S system status GET literal is closed in web and native",async()=>{
+  const {createNativeBffProxy}=await import("../../apps/web/lib/bff-api-proxy.js");
+  for(const native of [false,true]){
+    const calls=[];const proxy=(native?createNativeBffProxy:createBffProxy)({baseUrl:new URL("https://api.example.com"),fetchImpl:async(url)=>{
+      calls.push(String(url));return Response.json({data:{}});
+    }});
+    const headers=native?{Authorization:"Bearer synthetic-native-credential"}:{};
+    const url="https://app.example.com/"+(native?"api/v1/":"bff/api/")+"system/operations/status";
+    const parts=["system","operations","status"];
+    assert.equal((await proxy(new Request(url,{headers}),parts)).status,200);
+    assert.deepEqual(calls,["https://api.example.com/api/v1/system/operations/status"]);
+    assert.equal((await proxy(new Request(url+"?scope=workspace_visible",{headers}),parts)).status,native?404:400);
+    assert.equal((await proxy(new Request(url,{method:"POST",headers:{...headers,Origin:"https://app.example.com","Content-Type":"application/json"},body:"{}"}),parts)).status,405);
+    assert.equal((await proxy(new Request(url+"/extra",{headers}),[...parts,"extra"])).status,404);
+    assert.equal(calls.length,1);
+  }
+});
+
+test("R4 registered destination GET literal is exact in web and native",async()=>{
+  const {createNativeBffProxy}=await import("../../apps/web/lib/bff-api-proxy.js");
+  for(const native of [false,true]){
+    const calls=[];
+    const proxy=(native?createNativeBffProxy:createBffProxy)({baseUrl:new URL("https://api.example.com"),fetchImpl:async(url,init)=>{
+      calls.push({url:String(url),method:init.method});return Response.json({data:[]});
+    }});
+    const headers=native?{Authorization:"Bearer opaque-native-credential"}:{};
+    const root="https://app.example.com/"+(native?"api/v1/":"bff/api/")+"backups/backup-a/restore-destinations";
+    const parts=["backups","backup-a","restore-destinations"];
+    assert.equal((await proxy(new Request(root,{headers}),parts)).status,200);
+    assert.equal(calls[0].url,"https://api.example.com/api/v1/backups/backup-a/restore-destinations");
+    assert.equal((await proxy(new Request(root+"?destination_id=forged",{headers}),parts)).status,native?404:400);
+    assert.equal((await proxy(new Request(root,{method:"POST",headers:{...headers,Origin:"https://app.example.com","Content-Type":"application/json"},body:"{}"}),parts)).status,405);
+    assert.equal((await proxy(new Request(root+"/extra",{headers}),[...parts,"extra"])).status,404);
+    assert.equal(calls.length,1);
+  }
+});
+
+test("R1-C exact preflight literal precedes generic backup id in web and native", async () => {
+  const { createNativeBffProxy } = await import("../../apps/web/lib/bff-api-proxy.js");
+  const body = JSON.stringify({workspace_id:"workspace-a",notebook_id:"notebook-a",source_version_ids:["version-a"],lineage_mode:"exact"});
+  for (const native of [false,true]) {
+    const calls=[];
+    const proxy=(native?createNativeBffProxy:createBffProxy)({baseUrl:new URL("https://api.example.com"),fetchImpl:async(url,init)=>{
+      calls.push({url:String(url),body:Buffer.from(init.body).toString(),headers:init.headers});return Response.json({data:{}});
+    }});
+    const headers=native?{Authorization:"Bearer opaque-native-credential","content-type":"application/json"}:{Origin:"https://app.example.com","content-type":"application/json"};
+    const url="https://app.example.com/"+(native?"api/v1/":"bff/api/")+"backups/selection-previews";
+    const segments=["backups","selection-previews"];
+    assert.equal((await proxy(new Request(url,{method:"POST",headers,body}),segments)).status,200);
+    assert.equal(calls.length,1);assert.equal(calls[0].url,"https://api.example.com/api/v1/backups/selection-previews");
+    assert.equal(calls[0].body,body);
+    assert.equal((await proxy(new Request(url,{headers}),segments)).status,405);
+    assert.equal((await proxy(new Request(url+"?actor_id=other",{method:"POST",headers,body}),segments)).status,native?404:400);
+    assert.equal(calls.length,1);
+  }
+});
+
+test('S24 lifecycle BFF routes preserve only exact notebook body conditional and idempotency headers',async()=>{
+  const calls=[]; const proxy=createBffProxy({baseUrl:new URL('https://api.example.com'),fetchImpl:async(url,init)=>{
+    calls.push({url:String(url),init}); return Response.json({data:{},meta:{}});
+  }});
+  const paths=[['workspaces/workspace-1/studio/approval-policy','GET',null],
+    ['workspaces/workspace-1/studio/approval-policy','PATCH',{ttl_days:1,expected_policy_version:0,step_up_authorization:'opaque-fixture'}],
+    ['approval-requests/request-1/withdraw','POST',{workspace_id:'workspace-1',notebook_id:'notebook-1',output_version_id:'version-1'}],
+    ['workspaces/workspace-1/studio/approval-notices?notebook_id=notebook-1','GET',null],
+    ['workspaces/workspace-1/studio/approval-notices/notice-1','PATCH',{notebook_id:'notebook-1',state:'read'}]];
+  for(const [path,method,body] of paths) {
+    const req=new Request('https://app.example.com/bff/api/'+path,{method,headers:{Origin:'https://app.example.com','Content-Type':'application/json',
+      'Idempotency-Key':'s24-lifecycle-key-001','If-Match':'"studio-approval-notice:notice-1:1"','X-Daon-Step-Up-Authorization':'do-not-forward'},...(body?{body:JSON.stringify(body)}:{})});
+    assert.equal((await proxy(req,path.split('?')[0].split('/'))).status,200);
+  }
+  assert.equal(calls.length,5);
+  assert.equal(calls[4].init.headers.get('If-Match'),'"studio-approval-notice:notice-1:1"');
+  assert.ok(calls.every(call=>!call.init.headers.has('X-Daon-Step-Up-Authorization')));
+  const invalid=await proxy(new Request('https://app.example.com/bff/api/workspaces/workspace-1/studio/approval-policy?actor_id=other'),['workspaces','workspace-1','studio','approval-policy']);
+  assert.equal(invalid.status,400); assert.equal(calls.length,5);
+});
+
+test('S24 BFF forwards export proof only to the exact Studio export route', async () => {
+  const calls=[];
+  const proxy=createBffProxy({baseUrl:new URL('https://api.example.com'),fetchImpl:async(url,init)=>{
+    calls.push({url:String(url),init}); return new Response('%PDF-',{headers:{'content-type':'application/pdf'}});
+  }});
+  for(const segments of [
+    ['studio-outputs','output-1','versions','version-1','exports','pdf'],
+    ['studio-outputs','output-1','versions'],
+    ['workspaces','workspace-1','sources'],
+  ]) {
+    const response=await proxy(new Request('https://app.example.com/bff/api/'+segments.join('/')+'?workspace_id=workspace-1&notebook_id=notebook-1',
+      {headers:{'X-Daon-Step-Up-Authorization':'opaque-s24-proof','Idempotency-Key':'s24-download-key-001'}}),segments);
+    assert.equal(response.status,200);
+  }
+  assert.equal(calls[0].init.headers.get('X-Daon-Step-Up-Authorization'),'opaque-s24-proof');
+  assert.equal(calls[0].init.headers.get('Idempotency-Key'),'s24-download-key-001');
+  assert.ok(calls.slice(1).every(call=>!call.init.headers.has('X-Daon-Step-Up-Authorization')));
+  const {createNativeBffProxy}=await import('../../apps/web/lib/bff-api-proxy.js');
+  let nativeHeaders;
+  const native=createNativeBffProxy({baseUrl:new URL('https://api.example.com'),fetchImpl:async(_url,init)=>{nativeHeaders=init.headers;return Response.json({data:{}});}});
+  const response=await native(new Request('https://app.example.com/api/v1/workspaces/workspace-1/sources?notebook_id=notebook-1',
+    {headers:{Authorization:'Bearer opaque-native-fixture', 'X-Daon-Step-Up-Authorization':'s24-must-not-forward'}}),['workspaces','workspace-1','sources']);
+  assert.equal(response.status,200);assert.equal(nativeHeaders.has('X-Daon-Step-Up-Authorization'),false);
+});
+
+test('open law BFF admits exactly four same-origin Notebook routes and rejects extra query/method',async()=>{
+  const calls=[];
+  const proxy=createBffProxy({baseUrl:new URL('https://api.example.com'),fetchImpl:async(url,init)=>{
+    calls.push({url:String(url),init});return Response.json({data:{},meta:{trace_id:'trace-law'}});
+  }});
+  const root=['workspaces','workspace-law','connectors','mcp-open-law-go-kr'];
+  for(const tail of ['law-search','law-preview','law-imports']){
+    const segments=[...root,tail],url='https://app.example.com/bff/api/'+segments.join('/');
+    const response=await proxy(new Request(url,{method:'POST',headers:{'content-type':'application/json','origin':'https://app.example.com','referer':'https://app.example.com/notebooks/qa'},body:'{}'}),segments);
+    assert.equal(response.status,200);
+    assert.equal((await proxy(new Request(url),segments)).status,405);
+    assert.equal((await proxy(new Request(url+'?actor_id=other',{method:'POST',headers:{'content-type':'application/json','origin':'https://app.example.com','referer':'https://app.example.com/notebooks/qa'},body:'{}'}),segments)).status,400);
+  }
+  const segments=['workspaces','workspace-law','source-versions','law-version-1','law-snapshot'];
+  const url='https://app.example.com/bff/api/'+segments.join('/');
+  assert.equal((await proxy(new Request(url+'?notebook_id=notebook-law'),segments)).status,200);
+  assert.equal((await proxy(new Request(url+'?notebook_id=notebook-law&notebook_id=other'),segments)).status,400);
+  assert.equal((await proxy(new Request(url),segments)).status,400);
+  assert.equal(calls.length,4);
+  assert.ok(calls.every(call=>call.init.signal instanceof AbortSignal));
+});
+
+test('open law BFF reads the bounded stream instead of allocating an unbounded request body',async()=>{
+  let calls=0;
+  const proxy=createBffProxy({baseUrl:new URL('https://api.example.com'),fetchImpl:async()=>{calls++;return Response.json({});}});
+  const segments=['workspaces','workspace-law','connectors','mcp-open-law-go-kr','law-search'];
+  const request=new Request('https://app.example.com/bff/api/'+segments.join('/'),{method:'POST',headers:{'content-type':'application/json','origin':'https://app.example.com','referer':'https://app.example.com/notebooks/qa'},body:'{}'});
+  request.arrayBuffer=()=>{throw Error('unbounded allocation forbidden');};
+  const result=await proxy(request,segments);assert.equal(result.status,200);assert.equal(calls,1);
+});
+
+test('audio BFF keeps same-origin Notebook scope and fixed binary MIME',async()=>{
+  const calls=[];
+  const proxy=createBffProxy({baseUrl:new URL('https://api.example.com'),fetchImpl:async(url,init)=>{
+    calls.push({url:String(url),init});return new Response(new Uint8Array([82,73,70,70]),
+      {headers:{'Content-Type':'audio/wav','X-Citation-Locator-Kind':'audio_segment'}});
+  }});
+  const response=await proxy(new Request('https://app.example.com/bff/api/workspaces/workspace-1/citations/citation-audio/content?notebook_id=notebook-1&representation=audio'),
+    ['workspaces','workspace-1','citations','citation-audio','content']);
+  assert.equal(response.status,200);
+  assert.equal(response.headers.get('content-type'),'audio/wav');
+  assert.equal(response.headers.get('cache-control'),'private, no-store');
+  assert.match(calls[0].url,/notebook_id=notebook-1&representation=audio$/);
+});
+
+test('native audio BFF requires exact scope and refuses unknown or duplicate representation',async()=>{
+  const {createNativeBffProxy}=await import('../../apps/web/lib/bff-api-proxy.js');
+  const calls=[];
+  const proxy=createNativeBffProxy({baseUrl:new URL('https://api.example.com'),fetchImpl:async(url,init)=>{
+    calls.push(String(url));return init.method==='POST'?Response.json({data:{}},{status:202}):new Response(new Uint8Array([82,73,70,70]),{headers:{'Content-Type':'audio/wav'}});
+  }});
+  const headers={Authorization:'Bearer opaque-native-credential'};
+  const path=['workspaces','workspace-1','citations','citation-audio','content'];
+  const base='https://app.example.com/api/v1/workspaces/workspace-1/citations/citation-audio/content?';
+  assert.equal((await proxy(new Request(base+'notebook_id=notebook-1&representation=audio',{headers}),path)).status,200);
+  const count=calls.length;
+  for(const query of ['notebook_id=notebook-1&representation=invalid','notebook_id=notebook-1&representation=audio&representation=audio','representation=audio'])
+    assert.notEqual((await proxy(new Request(base+query,{headers}),path)).status,200);
+  assert.equal(calls.length,count);
+  const uploaded=await proxy(new Request('https://app.example.com/api/v1/workspaces/workspace-1/sources',{method:'POST',headers:{...headers,'Content-Type':'audio/wav','X-Source-Filename':'qa.wav'},body:new Uint8Array([82,73,70,70])}),['workspaces','workspace-1','sources']);
+  assert.equal(uploaded.status,202);
+});
+
+test("DOCX BFF existing route permits exact MIME, scoped JSON and CSRF while retaining kind header", async () => {
+  const calls=[];const proxy=createBffProxy({baseUrl:new URL("https://api.example.com"),fetchImpl:async(url,init)=>{
+    calls.push({url:String(url),init});return init.method==="POST"?Response.json({data:{}},{status:202}):Response.json({source_version_id:"sv-docx"},{headers:{"X-Citation-Locator-Kind":"docx_block"}});
+  }});
+  const mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  const upload=origin=>new Request("https://app.example.com/bff/api/workspaces/workspace-1/sources",{method:"POST",headers:{Origin:origin,Cookie:"__Host-daon_session=fixture","Content-Type":mime,"Idempotency-Key":"docx-1","X-Source-Filename":"qa.docx","X-Notebook-Id":"notebook-1"},body:new Uint8Array([80,75,3,4])});
+  assert.equal((await proxy(upload("https://app.example.com"),["workspaces","workspace-1","sources"])).status,202);
+  assert.equal(new Headers(calls[0].init.headers).get("content-type"),mime);
+  assert.equal((await proxy(upload("https://evil.example"),["workspaces","workspace-1","sources"])).status,403);
+  assert.equal(calls.length,1);
+  const content=await proxy(new Request("https://app.example.com/bff/api/workspaces/workspace-1/citations/citation-docx/content?notebook_id=notebook-1",{headers:{Cookie:"__Host-daon_session=fixture"}}),["workspaces","workspace-1","citations","citation-docx","content"]);
+  assert.equal(content.status,200);assert.equal(content.headers.get("x-citation-locator-kind"),"docx_block");
+  assert.equal(content.headers.get("x-citation-page"),null);assert.equal((await content.json()).source_version_id,"sv-docx");
+});
+
+test("XLSX BFF forwards upload and exact original-cell JSON through existing scoped routes", async () => {
+  const calls = [];
+  const body = { source_version_id: "version-1", source_sha256: "a".repeat(64), sheet_name: "예산", sheet_visibility: "visible", selected_range: "A1", view_range: "A1:B2", cells: [], merged_ranges: [] };
+  const proxy = createBffProxy({ baseUrl: new URL("https://api.example.com"), fetchImpl: async (url, init) => {
+    calls.push({ url: String(url), init });
+    return init.method === "POST" ? Response.json({ data: {} }, { status: 202 }) : Response.json(body, { headers: { "X-Citation-Locator-Kind": "sheet_cell" } });
+  } });
+  const mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  const uploaded = await proxy(new Request("https://app.example.com/bff/api/workspaces/workspace-1/sources", { method: "POST", headers: { Origin: "https://app.example.com", Cookie: "__Host-daon_session=fixture", "Content-Type": mime, "Idempotency-Key": "xlsx-upload-1", "X-Source-Filename": "qa.xlsx", "X-Notebook-Id": "notebook-1" }, body: new Uint8Array([80, 75, 3, 4]) }), ["workspaces", "workspace-1", "sources"]);
+  assert.equal(uploaded.status, 202);
+  assert.equal(new Headers(calls[0].init.headers).get("content-type"), mime);
+  const content = await proxy(new Request("https://app.example.com/bff/api/workspaces/workspace-1/citations/citation-1/content?notebook_id=notebook-1", { headers: { Cookie: "__Host-daon_session=fixture" } }), ["workspaces", "workspace-1", "citations", "citation-1", "content"]);
+  assert.equal(content.status, 200);
+  assert.deepEqual(await content.json(), body);
+  assert.equal(content.headers.get("x-citation-locator-kind"), "sheet_cell");
+  assert.equal(calls[1].url, "https://api.example.com/api/v1/workspaces/workspace-1/citations/citation-1/content?notebook_id=notebook-1");
+});
+
+test("Native DOCX BFF permits approved exact MIME without changing authentication", async()=>{
+  const {createNativeBffProxy}=await import("../../apps/web/lib/bff-api-proxy.js");let calls=0;
+  const proxy=createNativeBffProxy({baseUrl:new URL("https://api.example.com"),fetchImpl:async()=>{calls++;return Response.json({data:{}},{status:202});}});
+  const response=await proxy(new Request("https://app.example.com/api/v1/workspaces/workspace-1/sources",{method:"POST",headers:{Authorization:"Bearer opaque-native-credential","Content-Type":"application/vnd.openxmlformats-officedocument.wordprocessingml.document","X-Source-Filename":"qa.docx"},body:new Uint8Array([80,75,3,4])}),["workspaces","workspace-1","sources"]);
+  assert.equal(response.status,202);assert.equal(calls,1);
+});
+test("Native XLSX BFF permits only registered upload MIME and scoped JSON content", async () => {
+  const { createNativeBffProxy } = await import("../../apps/web/lib/bff-api-proxy.js");
+  const calls = [];
+  const proxy = createNativeBffProxy({ baseUrl: new URL("https://api.example.com"), fetchImpl: async (url, init) => {
+    calls.push(String(url));
+    return init.method === "POST" ? Response.json({ data: {} }, { status: 202 }) : Response.json({ source_version_id: "version-1" }, { headers: { "X-Citation-Locator-Kind": "sheet_cell" } });
+  } });
+  const headers = { Authorization: "Bearer opaque-native-credential" };
+  const upload = await proxy(new Request("https://app.example.com/api/v1/workspaces/workspace-1/sources", { method: "POST", headers: { ...headers, "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "X-Source-Filename": "qa.xlsx" }, body: new Uint8Array([80, 75, 3, 4]) }), ["workspaces", "workspace-1", "sources"]);
+  assert.equal(upload.status, 202);
+  const content = await proxy(new Request("https://app.example.com/api/v1/workspaces/workspace-1/citations/citation-1/content?notebook_id=notebook-1", { headers }), ["workspaces", "workspace-1", "citations", "citation-1", "content"]);
+  assert.equal(content.status, 200);
+  assert.equal((await content.json()).source_version_id, "version-1");
+  assert.equal(content.headers.get("x-citation-locator-kind"), "sheet_cell");
+  assert.equal(calls.length, 2);
+});
+
+test("Image BFF는 PNG/JPEG 업로드와 Region 원문 header를 기존 인증 경계로 연결한다", async () => {
+  for (const mime of ["image/png", "image/jpeg"]) {
+    const calls = [];
+    const proxy = createBffProxy({ baseUrl: new URL("https://api.example.com"), fetchImpl: async (url, init) => {
+      calls.push({ url: String(url), init });
+      return init.method === "POST" ? Response.json({ data: {} }, { status: 202 }) : new Response(new Uint8Array([1, 2, 3]), { headers: { "Content-Type": mime, "X-Citation-Locator-Kind": "image_region", "X-Citation-Region": "5,7,80,20,120,60" } });
+    } });
+    const uploaded = await proxy(new Request("https://app.example.com/bff/api/workspaces/workspace-1/sources", { method: "POST", headers: { Origin: "https://app.example.com", Cookie: "__Host-daon_session=fixture", "Content-Type": mime, "Idempotency-Key": "image-upload-1", "X-Source-Filename": mime === "image/png" ? "qa.png" : "qa.jpg", "X-Notebook-Id": "notebook-1" }, body: new Uint8Array([1, 2, 3]) }), ["workspaces", "workspace-1", "sources"]);
+    assert.equal(uploaded.status, 202);
+    const content = await proxy(new Request("https://app.example.com/bff/api/workspaces/workspace-1/citations/citation-1/content?notebook_id=notebook-1", { headers: { Cookie: "__Host-daon_session=fixture" } }), ["workspaces", "workspace-1", "citations", "citation-1", "content"]);
+    assert.equal(content.status, 200);
+    assert.equal(content.headers.get("content-type"), mime);
+    assert.equal(content.headers.get("x-citation-region"), "5,7,80,20,120,60");
+    assert.equal(calls.length, 2);
+  }
+});
+
+test("실패 Source 재처리 BFF는 기존 POST 경로와 Cookie·Origin 경계를 유지한다", async () => {
+  const calls = [];
+  const proxy = createBffProxy({ baseUrl: new URL("https://api.example.com"), fetchImpl: async (url, init) => {
+    calls.push({ url: String(url), init });
+    return Response.json({ data: { id: "run-2", kind: "processing_run", version: "2", attributes: {} }, trace_id: "trace-1" }, { status: 201 });
+  } });
+  const request = (origin) => new Request("https://app.example.com/bff/api/sources/source-1/processing-runs", {
+    method: "POST", headers: { Origin: origin, Cookie: "__Host-daon_session=fixture", "Content-Type": "application/json", "Idempotency-Key": "retry-1" },
+    body: JSON.stringify({ kind: "processing_run", attributes: { workspace_id: "workspace-1", notebook_id: "notebook-1", source_version_id: "version-1" } }),
+  });
+  const result = await proxy(request("https://app.example.com"), ["sources", "source-1", "processing-runs"]);
+  assert.equal(result.status, 201);
+  assert.equal(calls[0].url, "https://api.example.com/api/v1/sources/source-1/processing-runs");
+  assert.equal(new Headers(calls[0].init.headers).get("Idempotency-Key"), "retry-1");
+  const rejected = await proxy(request("https://other.example.com"), ["sources", "source-1", "processing-runs"]);
+  assert.equal(rejected.status, 403);
+  assert.equal(calls.length, 1);
+});
 
 test("BFF local_test public origin은 exact loopback HTTP만 허용하고 production은 계속 HTTPS를 강제한다", () => {
   assert.equal(parsePublicGatewayOrigin("http://localhost:3080", "local_test").origin, "http://localhost:3080");
@@ -174,6 +515,63 @@ test("Native BFF exact Workspace·Recovery Route와 query만 허용하고 다른
     assert.equal((await proxy(request, segments)).status, status);
   }
   assert.equal(captured.length, acceptedCalls);
+});
+
+test("Native BFF permits exact TXT upload and original-text Citation without relaxing other media", async () => {
+  const { createNativeBffProxy } = await import("../../apps/web/lib/bff-api-proxy.js");
+  const calls = [];
+  const proxy = createNativeBffProxy({
+    baseUrl: new URL("https://api.example.com"),
+    fetchImpl: async (url, init) => {
+      calls.push({ url: String(url), type: init.headers.get("content-type") });
+      return String(url).endsWith("/sources")
+        ? Response.json({ data: {}, meta: {} }, { status: 202 })
+        : new Response("Original TXT fact", { headers: { "Content-Type": "text/plain; charset=utf-8" } });
+    },
+  });
+  const bearer = { Authorization: "Bearer opaque-native-credential" };
+  const upload = await proxy(new Request("https://app.example.com/api/v1/workspaces/workspace-1/sources", {
+    method: "POST", headers: { ...bearer, "Content-Type": "text/plain", "X-Source-Filename": "notes.txt" },
+    body: "Original TXT fact",
+  }), ["workspaces", "workspace-1", "sources"]);
+  const citation = await proxy(new Request(
+    "https://app.example.com/api/v1/workspaces/workspace-1/citations/citation-1/content?notebook_id=notebook-1",
+    { headers: bearer },
+  ), ["workspaces", "workspace-1", "citations", "citation-1", "content"]);
+  assert.equal(upload.status, 202);
+  assert.equal(citation.status, 200);
+  assert.equal(citation.headers.get("content-type"), "text/plain; charset=utf-8");
+  assert.equal(await citation.text(), "Original TXT fact");
+  assert.equal(calls.length, 2);
+  const unsupported = await proxy(new Request("https://app.example.com/api/v1/workspaces/workspace-1/sources", {
+    method: "POST", headers: { ...bearer, "Content-Type": "application/msword" }, body: "a,b",
+  }), ["workspaces", "workspace-1", "sources"]);
+  assert.equal(unsupported.status, 415);
+  assert.equal(calls.length, 2);
+});
+
+test("Native BFF forwards registered Markdown and CSV upload media exactly", async () => {
+  const { createNativeBffProxy } = await import("../../apps/web/lib/bff-api-proxy.js");
+  const seen = [];
+  const proxy = createNativeBffProxy({
+    baseUrl: new URL("https://api.example.com"),
+    fetchImpl: async (_url, init) => {
+      seen.push(init.headers.get("content-type"));
+      return Response.json({ data: {}, meta: {} }, { status: 202 });
+    },
+  });
+  for (const [filename, mime] of [["notes.md", "text/markdown"], ["notes.csv", "text/csv"]]) {
+    const response = await proxy(new Request("https://app.example.com/api/v1/workspaces/workspace-1/sources", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer opaque-native-credential", "Content-Type": mime,
+        "X-Source-Filename": filename,
+      },
+      body: "ORANGE-COMPASS-42,active",
+    }), ["workspaces", "workspace-1", "sources"]);
+    assert.equal(response.status, 202);
+  }
+  assert.deepEqual(seen, ["text/markdown", "text/csv"]);
 });
 
 test("Native BFF는 Set-Cookie·redirect·oversize·Credential 반사를 fail-close한다", async () => {
@@ -740,7 +1138,207 @@ test("BFF exposes only approved Notification and Inbox paths with same-origin CS
   assert.equal(crossOriginCalls, 0);
 });
 
-test("BFF는 grounded question만 model 상한 100초를 사용하고 일반 route 10초는 유지한다", async () => {
+async function localQuestionServer(t, handler) {
+  const server = createServer(handler);
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+  });
+  return new URL(`http://127.0.0.1:${server.address().port}`);
+}
+
+function localQuestionRequest(body = '{}', signal) {
+  return new Request('https://app.example.com/bff/api/workspaces/workspace-a/questions', {
+    method: 'POST', signal, body,
+    headers: { Origin: 'https://app.example.com', 'Content-Type': 'application/json',
+      Cookie: '__Host-daon_session=opaque; unrelated=not-forwarded' },
+  });
+}
+
+test('BFF native 질문은 실제 지연 headers/body와 압축을 읽고 일반 fetch는 유지한다', { timeout: 4000 }, async t => {
+  const seen = [], timeouts = [];
+  const baseUrl = await localQuestionServer(t, async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const mode = JSON.parse(Buffer.concat(chunks).toString()).mode;
+    seen.push({ method: request.method, path: request.url, cookie: request.headers.cookie });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    if (mode === 'empty') { response.writeHead(204); response.end(); return; }
+    const payload = Buffer.from(JSON.stringify({ data: { answer: '지연된 응답' }, meta: {} }));
+    const bytes = mode === 'gzip' ? gzipSync(payload) : mode === 'deflate' ? deflateSync(payload)
+      : mode === 'br' ? brotliCompressSync(payload) : payload;
+    response.writeHead(200, { 'Content-Type': 'application/json',
+      ...(mode === 'identity' ? {} : { 'Content-Encoding': mode }),
+      'Set-Cookie': '__Host-daon_session=rotated; Path=/; Secure; HttpOnly', 'X-Trace-Id': 'trace-native' });
+    response.flushHeaders();
+    response.write(bytes.subarray(0, 2));
+    await new Promise(resolve => setTimeout(resolve, 20));
+    response.end(bytes.subarray(2));
+  });
+  const observe = ({ request }) => {
+    if (request.getHeader('host') === baseUrl.host) request.once('response', () => timeouts.push(request.socket.timeout));
+  };
+  channel('http.client.request.start').subscribe(observe);
+  t.after(() => channel('http.client.request.start').unsubscribe(observe));
+  const priorFetch = globalThis.fetch, fetchCalls = [];
+  globalThis.fetch = async url => { fetchCalls.push(String(url)); return Response.json({ ordinary: true }, { status: 202 }); };
+  t.after(() => { globalThis.fetch = priorFetch; });
+  const proxy = createBffProxy({ baseUrl, timeoutMs: 5 });
+  for (const mode of ['identity', 'gzip', 'deflate', 'br', 'empty']) {
+    const result = await proxy(localQuestionRequest(JSON.stringify({ mode })), ['workspaces', 'workspace-a', 'questions']);
+    assert.equal(result.status, mode === 'empty' ? 204 : 200);
+    if (mode === 'empty') assert.equal(await result.text(), '');
+    else {
+      assert.equal((await result.json()).data.answer, '지연된 응답');
+      assert.equal(result.headers.get('set-cookie'), '__Host-daon_session=rotated; Path=/; Secure; HttpOnly');
+      assert.equal(result.headers.has('content-encoding'), false);
+      assert.equal(result.headers.has('content-length'), false);
+      assert.equal(result.headers.get('x-trace-id'), 'trace-native');
+    }
+  }
+  assert.deepEqual(timeouts, [0, 0, 0, 0, 0]);
+  assert.equal(seen.length, 5);
+  assert.ok(seen.every(value => value.method === 'POST'
+    && value.path === '/api/v1/workspaces/workspace-a/questions' && value.cookie === '__Host-daon_session=opaque'));
+  assert.equal((await proxy(new Request('https://app.example.com/bff/api/session'), ['session'])).status, 202);
+  assert.equal((await proxy(localQuestionRequest(), ['workspaces', 'workspace-a', 'questions', 'authorization'])).status, 202);
+  assert.equal(fetchCalls.length, 2);
+  const injected = createBffProxy({ baseUrl, fetchImpl: async () => Response.json({ injected: true }, { status: 201 }) });
+  assert.equal((await injected(localQuestionRequest(), ['workspaces', 'workspace-a', 'questions'])).status, 201);
+});
+
+test('BFF native 질문 client abort는 headers/body 대기 socket을 닫고 499로 정리한다', { timeout: 4000 }, async t => {
+  for (const phase of ['headers', 'body']) {
+    let received, closed;
+    const ready = new Promise(resolve => { received = resolve; });
+    const socketClosed = new Promise(resolve => { closed = resolve; });
+    const baseUrl = await localQuestionServer(t, (request, response) => {
+      request.socket.once('close', closed);
+      if (phase === 'body') { response.writeHead(200, { 'Content-Type': 'application/json' }); response.write('{'); }
+      received();
+    });
+    const proxy = createBffProxy({ baseUrl });
+    const controller = new AbortController();
+    const pending = proxy(localQuestionRequest('{}', controller.signal), ['workspaces', 'workspace-a', 'questions']);
+    await ready;
+    // Let the response stream reach the BFF for the body-phase cancellation.
+    if (phase === 'body') await new Promise(resolve => setTimeout(resolve, 20));
+    controller.abort();
+    const result = await pending;
+    assert.equal(result.status, 499);
+    assert.equal((await result.json()).error.code, 'CLIENT_REQUEST_ABORTED');
+    await socketClosed;
+  }
+});
+
+test('BFF native 질문은 실제 socket 종료를 안전오류로 반환하고 redirect를 추적하지 않는다', { timeout: 4000 }, async t => {
+  let redirectsFollowed = 0;
+  const baseUrl = await localQuestionServer(t, async (request, response) => {
+    if (request.url === '/redirect-target') { redirectsFollowed++; response.end('not allowed'); return; }
+    const chunks = []; for await (const chunk of request) chunks.push(chunk);
+    const mode = JSON.parse(Buffer.concat(chunks).toString()).mode;
+    if (mode === 'redirect') { response.writeHead(302, { Location: '/redirect-target' }); response.end(); }
+    else if (mode === 'broken-body') {
+      response.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': '100' });
+      response.write('{'); setTimeout(() => response.destroy(), 10);
+    } else request.socket.destroy();
+  });
+  const proxy = createBffProxy({ baseUrl });
+  for (const [mode, status, code] of [
+    ['closed', 503, 'GATEWAY_UNAVAILABLE'], ['broken-body', 502, 'UPSTREAM_RESPONSE_INVALID'],
+    ['redirect', 502, 'UPSTREAM_REDIRECT_REJECTED'],
+  ]) {
+    const result = await proxy(localQuestionRequest(JSON.stringify({ mode })), ['workspaces', 'workspace-a', 'questions']);
+    assert.equal(result.status, status); assert.equal((await result.json()).error.code, code);
+    assert.equal(result.headers.has('location'), false);
+  }
+  assert.equal(redirectsFollowed, 0);
+});
+
+test('BFF native 질문은 HTTP 101 upgrade를 503으로 종료하고 upgraded socket을 닫는다', { timeout: 2000 }, async t => {
+  const controller = new AbortController();
+  let abortTimer, closed;
+  const socketClosed = new Promise(resolve => { closed = resolve; });
+  const baseUrl = await localQuestionServer(t, (request, response) => {
+    request.resume();
+    request.socket.once('close', closed);
+    response.writeHead(101, { Connection: 'Upgrade', Upgrade: 'fixture-private-protocol' });
+    response.flushHeaders();
+    // Observation bound only: a stranded helper returns 499 when this fires.
+    abortTimer = setTimeout(() => controller.abort(), 100);
+  });
+  try {
+    const proxy = createBffProxy({ baseUrl });
+    const result = await proxy(localQuestionRequest('{}', controller.signal), ['workspaces', 'workspace-a', 'questions']);
+    assert.equal(result.status, 503);
+    assert.equal((await result.json()).error.code, 'GATEWAY_UNAVAILABLE');
+    assert.equal(controller.signal.aborted, false);
+    assert.equal(result.headers.has('upgrade'), false);
+    await socketClosed;
+  } finally {
+    clearTimeout(abortTimer);
+    controller.abort();
+  }
+});
+
+test('BFF 질문 기본 대기는 timer 미등록이며 지연 응답 뒤 abort listener를 정리한다',async()=>{
+  const priorSet=globalThis.setTimeout,priorClear=globalThis.clearTimeout;
+  const timers=[],cleared=[];let finish,started;
+  const ready=new Promise(resolve=>{started=resolve;});const controller=new AbortController();
+  let adds=0,removes=0;
+  const signal=controller.signal,add=signal.addEventListener.bind(signal),remove=signal.removeEventListener.bind(signal);
+  signal.addEventListener=(...args)=>{if(args[0]==='abort')adds++;return add(...args);};
+  signal.removeEventListener=(...args)=>{if(args[0]==='abort')removes++;return remove(...args);};
+  globalThis.setTimeout=(fn,ms)=>{const id={fn,ms};timers.push(id);return id;};
+  globalThis.clearTimeout=id=>cleared.push(id);
+  let pending;
+  try{
+    const proxy=createBffProxy({baseUrl:new URL('https://api.example.com'),fetchImpl:async()=>{started();return new Promise(resolve=>{finish=resolve;});}});
+    const request=new Request('https://app.example.com/bff/api/workspaces/workspace-a/questions',{method:'POST',headers:{Origin:'https://app.example.com'},body:'{}'});
+    Object.defineProperty(request,'signal',{value:signal});
+    pending=proxy(request,['workspaces','workspace-a','questions']);await ready;
+    assert.equal(timers.length,0);
+    finish(Response.json({data:{answer:'late fixture'},meta:{}}));
+    assert.equal((await pending).status,200);assert.equal(adds,removes);assert.deepEqual(cleared,[]);
+  }finally{finish?.(Response.json({}));await pending?.catch(()=>{});globalThis.setTimeout=priorSet;globalThis.clearTimeout=priorClear;}
+});
+
+test('BFF 무제한 질문도 client abort는 499이고 upstream과 listener를 정리한다',async()=>{
+  let upstream;const controller=new AbortController();let started;
+  const ready=new Promise(resolve=>{started=resolve;});
+  const proxy=createBffProxy({baseUrl:new URL('https://api.example.com'),questionTimeoutMs:null,fetchImpl:async(_url,init)=>{upstream=init.signal;started();return new Promise(()=>{});}});
+  let adds=0,removes=0;const add=controller.signal.addEventListener.bind(controller.signal),remove=controller.signal.removeEventListener.bind(controller.signal);
+  controller.signal.addEventListener=(...args)=>{if(args[0]==='abort')adds++;return add(...args);};
+  controller.signal.removeEventListener=(...args)=>{if(args[0]==='abort')removes++;return remove(...args);};
+  const request=new Request('https://app.example.com/bff/api/workspaces/workspace-a/questions',{method:'POST',headers:{Origin:'https://app.example.com'},body:'{}'});
+  Object.defineProperty(request,'signal',{value:controller.signal});
+  const result=proxy(request,['workspaces','workspace-a','questions']);
+  await ready;controller.abort();const response=await result;
+  assert.equal(response.status,499);assert.equal((await response.json()).error.code,'CLIENT_REQUEST_ABORTED');assert.equal(upstream.aborted,true);assert.equal(adds,removes);
+});
+
+test('BFF 질문 authorization과 법령 조회는 기존 유한 timer를 유지한다',async()=>{
+  const priorSet=globalThis.setTimeout,priorClear=globalThis.clearTimeout;const timers=[];
+  globalThis.setTimeout=(fn,ms)=>{timers.push(ms);return{};};globalThis.clearTimeout=()=>{};
+  try{
+    const proxy=createBffProxy({baseUrl:new URL('https://api.example.com'),fetchImpl:async()=>Response.json({})});
+    for(const tail of ['questions/authorization','connectors/mcp-open-law-go-kr/law-search']){
+      const path=['workspaces','workspace-a',...tail.split('/')];
+      const result=await proxy(new Request('https://app.example.com/bff/api/'+path.join('/'),{method:'POST',headers:{Origin:'https://app.example.com','Content-Type':'application/json',Referer:'https://app.example.com/notebooks/test'},body:'{}'}),path);
+      assert.equal(result.status,200);
+    }
+    assert.deepEqual(timers,[100000,30000]);
+  }finally{globalThis.setTimeout=priorSet;globalThis.clearTimeout=priorClear;}
+});
+
+test('BFF 질문 timeout은 null 또는 유효한 유한값만 허용한다',()=>{
+  for(const value of [undefined,null,10])assert.doesNotThrow(()=>createBffProxy({baseUrl:new URL('https://api.example.com'),questionTimeoutMs:value}));
+  for(const value of [0,-1,true,false,'100',Infinity,NaN,2147483648])assert.throws(()=>createBffProxy({baseUrl:new URL('https://api.example.com'),questionTimeoutMs:value}),BffConfigurationError);
+});
+
+test("BFF는 질문의 명시 유한 예산과 일반 route의 기존 상한을 유지한다", async () => {
   const calls = [];
   const proxy = createBffProxy({
     baseUrl: new URL("https://api.example.com"),
@@ -1041,7 +1639,12 @@ test("BFF는 Workspace 운영상태 GET만 same-origin 안전 경로로 전달�
   const response = await proxy(new Request(
     "https://app.example.com/bff/api/workspaces/workspace-001/operations/status?secret=blocked",
   ), ["workspaces", "workspace-001", "operations", "status"]);
-  assert.equal(response.status, 200);
+  assert.equal(response.status, 400);
+  assert.deepEqual(captured, []);
+  const allowed = await proxy(new Request(
+    "https://app.example.com/bff/api/workspaces/workspace-001/operations/status",
+  ), ["workspaces", "workspace-001", "operations", "status"]);
+  assert.equal(allowed.status, 200);
   assert.deepEqual(captured, [{
     url: "https://api.example.com/api/v1/workspaces/workspace-001/operations/status",
     method: "GET",

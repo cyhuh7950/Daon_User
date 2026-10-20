@@ -74,6 +74,7 @@ class KnowledgeQuestionSource:
     source_id: str
     source_version_id: str
     digest_sha256: str
+    knowledge_registration_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,7 +181,7 @@ class KnowledgePackageService:
                     raise KnowledgePackageError("KNOWLEDGE_PACKAGE_UNAVAILABLE", 404)
                 resolved.append(KnowledgeQuestionSource(
                     package_id, record.registered_source_id,
-                    record.registered_source_version_id, record.digest_sha256,
+                    record.registered_source_version_id, record.digest_sha256, record.knowledge_registration_id,
                 ))
             return tuple(resolved)
 

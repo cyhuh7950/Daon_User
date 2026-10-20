@@ -24,6 +24,181 @@ from daon_user_api.provider_catalog import DiscoveredModel
 from daon_user_api.provider_connection_adapters import AdapterRegistry, TransportResponse
 
 
+@pytest.mark.parametrize("outcome", ["verified", "failed", "observer_failed", "probe_failed", "off", "personal", "custom"])
+def test_existing_health_result_emits_readiness_only_after_real_check_and_commit(monkeypatch, outcome):
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    from daon_user_api.provider_connection_adapters import AdapterError
+    events, probes, verified_at = [], [], []
+    class Database:
+        active = False
+        @contextmanager
+        def _transaction(self, context):
+            self.active = True
+            try:
+                yield self
+            except BaseException:
+                events.append("rollback")
+                raise
+            else:
+                events.append("commit")
+            finally:
+                self.active = False
+        def execute(self, sql, params=()):
+            assert sql.startswith("UPDATE system_provider_connections SET verification_status=")
+            events.append("health_update")
+            return Cursor()
+    db = Database()
+    row = ["health-a", "OLLAMA", "QA", "http://model.internal:11434", None, None, None, None, 0,
+           outcome != "off", "unverified", None, 7, "personal" if outcome == "personal" else "public",
+           "none", "QA", "OLLAMA", "QA", None]
+    if outcome == "custom": row[1] = row[16] = "CUSTOM"
+    class Adapter:
+        def verify(self, profile, credential):
+            events.append("actual_verify")
+            verified_at.append(datetime.now(timezone.utc))
+            if outcome == "failed": raise AdapterError("PROVIDER_UNAVAILABLE", 503)
+    monkeypatch.setattr(provider_connection_admin_module, "AdapterRegistry",
+                        lambda **kwargs: SimpleNamespace(adapter=lambda *args: Adapter()))
+    if outcome == "probe_failed":
+        def fail_event_id():
+            raise RuntimeError("PRIVATE_PROBE_FAILURE")
+        monkeypatch.setattr(provider_connection_admin_module.uuid, "uuid4", fail_event_id)
+    def observe(probe):
+        assert not db.active, "health Tx 확정 전에 readiness 저장을 시도함"
+        assert events[-1] == "commit"
+        probes.append(probe)
+        if outcome == "observer_failed": raise RuntimeError("PRIVATE_UPSTREAM_BODY")
+    service = PostgresProviderConnectionService(db, ProviderCredentialCipher(b"p" * 32, encryption_key_version=1),
+                                              readiness_observer=observe)
+    monkeypatch.setattr(service, "_load", lambda *args: tuple(row))
+    result = service.check_active_connection(context(), "health-a")
+    expected = "skipped" if outcome in {"off", "personal", "custom"} else "failed" if outcome == "failed" else "verified"
+    assert result["status"] == expected
+    if outcome == "probe_failed":
+        assert probes == [] and events.count("actual_verify") == 1
+        assert service.readiness_observation_status == "unavailable"
+    elif expected == "skipped":
+        assert probes == [] and "actual_verify" not in events
+    else:
+        assert len(probes) == 1 and events.count("actual_verify") == 1
+        probe = probes[0]
+        assert set(probe) == {"event_id", "connection_id", "adapter_type", "configuration_version", "observed_at",
+                              "probe_kind", "capability", "status"}
+        assert probe["connection_id"] == "health-a" and probe["configuration_version"] == 7
+        assert probe["capability"] is None and probe["probe_kind"] == "provider_connection_check"
+        assert probe["status"] == ("unavailable" if expected == "failed" else "healthy")
+        assert probe["observed_at"] >= verified_at[0]
+        assert probe["observed_at"].utcoffset().total_seconds() == 0
+        assert probe["event_id"].startswith("rdy-") and len(probe["event_id"]) == 36
+        assert "PRIVATE_UPSTREAM_BODY" not in repr(result)
+        if outcome == "observer_failed":
+            assert service.readiness_observation_status == "unavailable"
+
+
+def test_native_asr_connection_policy_keeps_fixed_internal_endpoint_without_key():
+    assert validate_connection_policy("CUSTOM", "public", "none", "AS", "asr_base_native",
+                                      "http://asr-base:8080") == "public"
+    for mode, requirement, endpoint in (("personal", "required", "http://asr-base:8080"),
+            ("public", "required", "http://asr-base:8080"), ("public", "none", "https://other.example")):
+        with pytest.raises(ProviderConnectionAdminError):
+            validate_connection_policy("CUSTOM", mode, requirement, "AS", "asr_base_native", endpoint)
+
+
+def test_native_asr_actual_metadata_ready_create_refresh_and_replay_emit_after_commit(monkeypatch):
+    from test_provider_connection_adapters import FakeTransport
+    transport, database, probes = FakeTransport(), CompatibleDatabase(), []
+    transport.responses["http://asr-base:8080/v1/metadata"] = TransportResponse(200, {
+        "model_id": "faster-whisper-base", "model_digest": "d01c3014881c9c6f3133c182f3d2887eb6ca1c789a7538c5c007196857a0a6a9",
+        "revision": "ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66", "capability": "speech_to_text", "runtime": "cpu-int8-local"})
+    transport.responses["http://asr-base:8080/health/ready"] = TransportResponse(200, {"status": "ready"})
+    monkeypatch.setattr(provider_connection_admin_module, "AdapterRegistry",
+                        lambda **kwargs: AdapterRegistry(transport=transport, **kwargs))
+    monkeypatch.setenv("DAON_QA_STRUCTURED_OLLAMA_WORKSPACE_ID", "qa-workspace")
+    class TrackedStore(CompatibleStore):
+        active = False
+        fail_commit = False
+        @contextmanager
+        def _transaction(self, context):
+            self.active = True
+            try:
+                with super()._transaction(context) as connection:
+                    yield connection
+                    if self.fail_commit:
+                        raise RuntimeError("QA_COMMIT_FAILURE")
+            finally:
+                self.active = False
+    store = TrackedStore(database)
+    def observe(probe):
+        assert not store.active
+        assert database.system_connection["verification_status"] == "verified"
+        probes.append(probe)
+    service = PostgresProviderConnectionService(store,
+        ProviderCredentialCipher(b"p" * 32, encryption_key_version=1), readiness_observer=observe)
+    command = ProviderConnectionCreateCommand(connection_id="asr-qa", provider_code="CUSTOM",
+        display_name="QA CPU base ASR", base_url="http://asr-base:8080", credential=None,
+        logical_model_ids=(), enabled=True, expected_version=0, adapter_type="asr_base_native",
+        access_mode="public", credential_requirement="none", short_code="AS", provider_name="QA Native ASR",
+        allowed_model_ids=("faster-whisper-base",))
+    service.create_connection(context(), command, "native-asr-observer-create")
+    assert len(probes) == 1
+    assert (probes[0]["probe_kind"], probes[0]["capability"], probes[0]["configuration_version"], probes[0]["status"]) == (
+        "native_asr_ready", "speech_to_text", 1, "healthy")
+    assert service.create_connection(context(), command, "native-asr-observer-create")[1] is True
+    assert len(probes) == 1 and len(transport.requests) == 2
+    service.refresh_catalog(context(), "asr-qa", 1, "native-asr-observer-refresh")
+    assert len(probes) == 2 and len(transport.requests) == 4
+    assert probes[1]["configuration_version"] == 2 and probes[1]["event_id"] != probes[0]["event_id"]
+    assert all(request.method == "GET" for request in transport.requests)
+    assert service.refresh_catalog(context(), "asr-qa", 1, "native-asr-observer-refresh")[1] is True
+    assert len(probes) == 2 and len(transport.requests) == 4
+    store.fail_commit = True
+    with pytest.raises(RuntimeError, match="QA_COMMIT_FAILURE"):
+        service.refresh_catalog(context(), "asr-qa", 2, "native-asr-observer-rollback")
+    assert len(probes) == 2 and database.system_connection["version"] == 2
+    assert len(transport.requests) == 6  # 실제 새 검사 대역은 수행됐으나 rollback 결과를 관측으로 내보내지 않음.
+
+
+def test_native_asr_create_binds_sql_columns_and_reads_metadata_without_inference(monkeypatch):
+    from test_provider_connection_adapters import FakeTransport
+    transport = FakeTransport()
+    metadata = {"model_id": "faster-whisper-base",
+        "model_digest": "d01c3014881c9c6f3133c182f3d2887eb6ca1c789a7538c5c007196857a0a6a9",
+        "revision": "ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66",
+        "capability": "speech_to_text", "runtime": "cpu-int8-local"}
+    transport.responses["http://asr-base:8080/v1/metadata"] = TransportResponse(200, metadata)
+    transport.responses["http://asr-base:8080/health/ready"] = TransportResponse(200, {"status": "ready"})
+    monkeypatch.setattr(provider_connection_admin_module, "AdapterRegistry",
+                        lambda **kwargs: AdapterRegistry(transport=transport, **kwargs))
+    monkeypatch.setenv("DAON_QA_STRUCTURED_OLLAMA_WORKSPACE_ID", "qa-workspace")
+    database = CompatibleDatabase()
+    service = PostgresProviderConnectionService(CompatibleStore(database),
+        ProviderCredentialCipher(b"p" * 32, encryption_key_version=1))
+    command = ProviderConnectionCreateCommand(connection_id="asr-qa", provider_code="CUSTOM",
+        display_name="QA CPU base ASR", base_url="http://asr-base:8080", credential=None,
+        logical_model_ids=(), enabled=True, expected_version=0, adapter_type="asr_base_native",
+        access_mode="public", credential_requirement="none", short_code="AS",
+        provider_name="QA Native ASR", allowed_model_ids=("faster-whisper-base",))
+    saved, replayed = service.create_connection(context(), command, "native-asr-create")
+    assert replayed is False
+    assert saved["base_url"] == "http://asr-base:8080"
+    assert saved["allowed_model_ids"] == ["faster-whisper-base"]
+    assert saved["models"][0]["reported_capabilities"] == ["speech_to_text"]
+    assert {key: database.system_connection[key] for key in (
+        "version", "updated_by", "trace_id", "policy_version", "access_mode",
+        "credential_requirement", "short_code", "adapter_type", "provider_name", "auto_model_id",
+        "encrypted_credential", "credential_version", "verification_status",
+    )} == {
+        "version": 1, "updated_by": "system-admin", "trace_id": "trace-001",
+        "policy_version": "policy-v1", "access_mode": "public", "credential_requirement": "none",
+        "short_code": "AS", "adapter_type": "asr_base_native", "provider_name": "QA Native ASR",
+        "auto_model_id": None, "encrypted_credential": None, "credential_version": 0,
+        "verification_status": "verified",
+    }
+    assert database.system_connection["verified_at"] is not None
+    assert [r.method for r in transport.requests] == ["GET", "GET"]
+
+
 class Cursor:
     def __init__(self, row=None, rows=None):
         self._row = row
@@ -142,13 +317,21 @@ class CompatibleConnection(Connection):
                 "credential_requirement", "short_code", "adapter_type", "provider_name", "auto_model_id",
             )))
         if normalized.startswith("INSERT INTO system_provider_connections"):
-            self.database.system_connection = dict(zip((
+            columns_sql, values_sql = normalized.split(" VALUES ", 1)
+            columns = tuple(columns_sql.split("(", 1)[1].rstrip(")").split(","))
+            values = tuple(values_sql.removeprefix("(").removesuffix(")").split(","))
+            assert normalized.count("%s") == len(params), "SQL bound parameter count mismatch"
+            assert len(columns) == len(values), "SQL column/value count mismatch"
+            assert columns == (
                 "connection_id", "provider_code", "display_name", "base_url", "encrypted_credential",
                 "credential_nonce", "encryption_key_version", "credential_schema_version", "credential_version",
-                "enabled", "verification_status", "verified_at", "updated_by", "trace_id", "policy_version",
+                "enabled", "verification_status", "verified_at", "version", "updated_by", "trace_id", "policy_version",
                 "access_mode", "credential_requirement", "short_code", "adapter_type", "provider_name", "auto_model_id",
-            ), params))
-            self.database.system_connection.update(version=1, catalog_status="stale", catalog_version=0)
+            )
+            assert values[12] == "1" and all(value == "%s" for value in values[:12] + values[13:])
+            bound_values = (*params[:12], 1, *params[12:])
+            self.database.system_connection = dict(zip(columns, bound_values, strict=True))
+            self.database.system_connection.update(catalog_status="stale", catalog_version=0)
             return Cursor()
         if normalized.startswith("UPDATE system_provider_connections SET display_name="):
             if record is None or record["connection_id"] != params[-2] or record["version"] != params[-1]:
@@ -754,6 +937,14 @@ def test_update_omits_auto_model_id_preserves_existing_router(monkeypatch) -> No
     service, database = compatible_service(monkeypatch, transport)
     created, _ = service.create_connection(context(), route_command(), "route-auto-create")
     assert created["auto_model_id"] == "auto"
+    assert {key: database.system_connection[key] for key in (
+        "version", "updated_by", "trace_id", "policy_version", "access_mode",
+        "credential_requirement", "short_code", "adapter_type", "provider_name", "auto_model_id",
+    )} == {
+        "version": 1, "updated_by": "system-admin", "trace_id": "trace-001",
+        "policy_version": "policy-v1", "access_mode": "public", "credential_requirement": "required",
+        "short_code": "OM", "adapter_type": "OMNIROUTE", "provider_name": "OmniRoute", "auto_model_id": "auto",
+    }
     updated, _ = service.update_connection(context(), "route-1", ProviderConnectionUpdateCommand(
         display_name="OmniRoute renamed", base_url="https://omniroute.example/v1", credential=None,
         logical_model_ids=("auto",), enabled=True, expected_version=1,
@@ -2017,3 +2208,22 @@ def test_existing_ollama_public_health_still_checks_and_updates(
     assert [(item[0], item[1]) for item in transport.requests] == [
         ("GET", "http://ollama.internal:11434/api/tags"),
     ]
+
+
+def test_logical_embedding_catalog_without_runtime_request_is_not_readiness_observation(monkeypatch):
+    transport, probes = FixtureTransport(), []
+    service, database = compatible_service(monkeypatch, transport)
+    database.system_connection = {
+        "connection_id": "embedding-local", "provider_code": "SENTENCE_TRANSFORMERS", "display_name": "QA embedding",
+        "base_url": "http://embedding.internal:8500", "encrypted_credential": None, "credential_nonce": None,
+        "encryption_key_version": None, "credential_schema_version": None, "credential_version": 0,
+        "enabled": True, "verification_status": "unverified", "verified_at": None, "version": 1,
+        "access_mode": "public", "credential_requirement": "none", "short_code": "EM",
+        "adapter_type": "SENTENCE_TRANSFORMERS", "provider_name": "QA embedding"}
+    database.health_updates = []
+    service._store = HealthStore(database)
+    service._readiness_observer = probes.append
+    result = service.check_active_connection(context(), "embedding-local")
+    assert result["status"] == "failed"  # 기존 health 경로에는 논리 목록 주입이 없어 실패하며 이 판정은 유지한다.
+    assert transport.requests == []
+    assert probes == []  # 실제 런타임 호출 없는 논리 catalog를 연결 복귀로 승격하지 않는다.

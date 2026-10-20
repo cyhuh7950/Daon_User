@@ -20,6 +20,8 @@ from .identity import IdentityError, SqliteIdentityRepository
 
 
 _TABLES = (
+    "account_profiles",
+    "account_requests",
     "tenants",
     "users",
     "bootstrap_state",
@@ -37,6 +39,7 @@ _TABLES = (
     "auth_memberships",
     "admin_audit_outbox",
     "oidc_transactions",
+    "android_auth_transactions",
     "tenant_step_up_actions",
     "step_up_authorizations",
     "step_up_idempotency",
@@ -70,6 +73,10 @@ class _CursorProxy:
     def __iter__(self):
         return (_compat_row(row) for row in self._cursor)
 
+    @property
+    def rowcount(self) -> int:
+        return self._cursor.rowcount
+
 
 class _PostgresCompatConnection:
     def __init__(self, dsn: str) -> None:
@@ -81,6 +88,7 @@ class _PostgresCompatConnection:
         statement = re.sub(r"\bINSERT\s+OR\s+IGNORE\s+INTO\b", "INSERT INTO", statement, flags=re.I)
         if statement.lstrip().upper().startswith("BEGIN IMMEDIATE"):
             statement = re.sub(r"BEGIN\s+IMMEDIATE", "BEGIN", statement, flags=re.I)
+        statement = re.sub(r"\btenant_memberships\b", "identity_org_tenant_memberships", statement)
         for table in _TABLES:
             statement = re.sub(rf"\b{table}\b", f"identity_{table}", statement)
         # SQLite accepts AUTHORIZATION as an unquoted table alias, while

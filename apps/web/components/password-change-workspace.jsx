@@ -1,14 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { changeCurrentPassword } from "../lib/auth-api.js";
-import { getCurrentNotebookSession } from "../lib/notebook-api.js";
+import { authEntryPath, changeCurrentPassword, getCurrentAuthSession } from "../lib/auth-api.js";
 
 const SAFE_ERRORS = new Set(["AUTHENTICATION_REQUIRED", "PASSWORD_POLICY_FAILED", "PASSWORD_CHANGE_FAILED", "PASSWORD_CHANGE_RESPONSE_INVALID"]);
 const replaceLocation = (path) => window.location.replace(path);
 
 export function PasswordChangeWorkspace({
-  getSession = getCurrentNotebookSession,
+  getSession = getCurrentAuthSession,
   changePassword = changeCurrentPassword,
   navigate = replaceLocation,
 }) {
@@ -24,7 +23,9 @@ export function PasswordChangeWorkspace({
     setValidated(false); setError(null);
     try {
       const session = await getSession({ signal });
-      if (!session.password_change_required) { navigate("/notebooks"); return; }
+      if (signal?.aborted) return;
+      const destination = authEntryPath(session);
+      if (destination !== "/password-change") { navigate(destination); return; }
       if (!signal?.aborted) setValidated(true);
     } catch (caught) {
       if (signal?.aborted) return;

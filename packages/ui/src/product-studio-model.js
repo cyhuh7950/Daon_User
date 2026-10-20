@@ -8,8 +8,8 @@ export const OUTPUT_TYPES = Object.freeze([
   Object.freeze({ id: "infographic", label: "인포그래픽", formats: ["svg", "png", "pdf", "json"] }),
   Object.freeze({ id: "flashcards", label: "플래시카드", formats: ["json", "csv", "pdf"] }),
   Object.freeze({ id: "quiz", label: "퀴즈", formats: ["json", "csv", "pdf"] }),
-  Object.freeze({ id: "audio", label: "AI 오디오", formats: ["json"] }),
-  Object.freeze({ id: "video", label: "동영상", formats: ["json"] }),
+  Object.freeze({ id: "audio", label: "AI 오디오", formats: ["json"], generationUnavailable: true }),
+  Object.freeze({ id: "video", label: "동영상", formats: ["json"], generationUnavailable: true }),
 ]);
 
 const OUTPUT_TYPE_IDS = new Set(OUTPUT_TYPES.map((item) => item.id));
@@ -37,13 +37,15 @@ export function createProductStudioState({ workspaceId = null, grounded = null, 
 
 export function selectOutputType(state, outputType) {
   if (!OUTPUT_TYPE_IDS.has(outputType)) throw new Error("STUDIO_OUTPUT_TYPE_INVALID");
+  if (OUTPUT_TYPES.find((item) => item.id === outputType).generationUnavailable) throw new Error("STUDIO_OUTPUT_UNAVAILABLE");
   return {
-    ...state, selectedOutputType: outputType,
-    settings: state.settings?.sourceVersionIds?.length
+    ...state, selectedOutputType: outputType, selectedOutputId: null, safeError: null,
+    settings: { ...(state.settings?.sourceVersionIds?.length
       ? { language: "ko", sourceVersionIds: [...state.settings.sourceVersionIds] }
       : state.grounded?.sourceVersionIds?.length
       ? { language: "ko", sourceVersionIds: [...state.grounded.sourceVersionIds] }
-      : state.grounded?.sourceVersionId ? { language: "ko", sourceVersionIds: [state.grounded.sourceVersionId] } : { language: "ko" },
+      : state.grounded?.sourceVersionId ? { language: "ko", sourceVersionIds: [state.grounded.sourceVersionId] } : { language: "ko" }),
+      ...Object.fromEntries(state.locks.map((lock) => [lock.field, lock.value])) },
     settingsConfirmed: false, settingsSnapshot: null,
   };
 }
@@ -66,6 +68,7 @@ function completeSettings(state) {
     return Array.isArray(value) ? value.length > 0 : typeof value === "string" && value.trim().length > 0;
   })) return false;
   const type = OUTPUT_TYPES.find((item) => item.id === state.selectedOutputType);
+  if (type.generationUnavailable) return false;
   const groundedVersions = state.grounded
     ? (state.grounded.sourceVersionIds ?? [state.grounded.sourceVersionId])
     : (Array.isArray(state.sources) ? state.sources.filter((source) => source.ready).map((source) => source.sourceVersionId) : []);
@@ -74,8 +77,12 @@ function completeSettings(state) {
     && state.settings.sourceVersionIds.length > 0;
 }
 
+export function canConfirmGenerationSettings(state) {
+  return state?.pending !== true && completeSettings(state);
+}
+
 export function confirmGenerationSettings(state) {
-  if (!completeSettings(state)) throw new Error("STUDIO_SETTINGS_INCOMPLETE");
+  if (!canConfirmGenerationSettings(state)) throw new Error("STUDIO_SETTINGS_INCOMPLETE");
   return { ...state, settingsConfirmed: true, settingsSnapshot: Object.freeze({ ...state.settings }) };
 }
 

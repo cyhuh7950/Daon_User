@@ -1,0 +1,22 @@
+name: daon_user_asr
+services:
+  asr-base:
+    image: ${DAON_ASR_IMAGE:?exact ASR image required}
+    container_name: daon_user-asr-base
+    cpus: 1.0
+    mem_limit: 1536m
+    memswap_limit: 1536m
+    pids_limit: 64
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks:
+      daon_user:
+        aliases: [asr-base]
+    restart: unless-stopped
+networks:
+  daon_user:
+    external: true
+    name: daon_user_network

@@ -51,6 +51,7 @@
     "verify:quality-gate": "node scripts/verify-quality-gate.mjs"
   },
   "devDependencies": {
+    "@babel/parser": "7.29.7",
     "typescript": "7.0.2"
   },
   "dependencies": {

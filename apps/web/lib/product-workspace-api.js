@@ -1,5 +1,164 @@
 "use client";
 
+import { secureUuid } from "@daon-user/ui/secure-uuid";
+import { parseImageRegion } from "@daon-user/ui/product-workspace-model";
+import { parseSheetCell } from "./sheet-cell-locator.js";
+import { parseDocxBlock } from "./docx-block-locator.js";
+import { parsePptxBlock } from "./pptx-block-locator.js";
+import { parseAudioSegment } from "./audio-segment-locator.js";
+import { validWebsiteSnapshot, readWebsiteJson } from "./website-source-api.js";
+import { citationContentUrl } from './question-answering-api.js';
+
+const LAW_FIELDS = ["mst","law_id","title","effective_date","promulgation_date","ministry"];
+const LAW_SNAPSHOT_FIELDS = ["snapshot_id","connector_id","source_id","source_version_id",...LAW_FIELDS,"article_code",
+  "origin_uri","fetched_at","raw_sha256","text_sha256","extraction_version","license_status"];
+const LAW_HASH = /^[a-f0-9]{64}$/u;
+const LAW_ERRORS=new Set(['OPEN_LAW_INPUT_INVALID','OPEN_LAW_ACCESS_DENIED','OPEN_LAW_EGRESS_BLOCKED','OPEN_LAW_NOT_FOUND',
+  'OPEN_LAW_PREVIEW_CHANGED','OPEN_LAW_IMPORT_CONFLICT','OPEN_LAW_IMPORT_IN_PROGRESS','OPEN_LAW_BINDING_CONFLICT',
+  'OPEN_LAW_CONTENT_TOO_LARGE','OPEN_LAW_TEXT_UNAVAILABLE','OPEN_LAW_PROTOCOL_INVALID','OPEN_LAW_UPSTREAM_FAILED',
+  'OPEN_LAW_CREDENTIAL_REQUIRED','OPEN_LAW_UNAVAILABLE','OPEN_LAW_BUSY','OPEN_LAW_STORAGE_UNAVAILABLE','OPEN_LAW_TIMEOUT']);
+const lawDate = value => typeof value === 'string' && /^[0-9]{8}$/u.test(value)
+  && Number.isFinite(Date.parse(`${value.slice(0,4)}-${value.slice(4,6)}-${value.slice(6,8)}T00:00:00Z`))
+  && new Date(`${value.slice(0,4)}-${value.slice(4,6)}-${value.slice(6,8)}T00:00:00Z`).toISOString().slice(0,10).replaceAll('-','') === value;
+const lawId = value => typeof value === 'string' && /^[0-9]{1,20}$/u.test(value);
+const lawBoundId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value);
+const lawString = (value,max) => typeof value === 'string' && value.trim().length>0 && Array.from(value).length<=max && !/[\u0000-\u001f\u007f]/u.test(value);
+const lawSelection = value => lawId(value.mst) && lawDate(value.effective_date)
+  && (value.article_code === null || typeof value.article_code === 'string' && /^[0-9]{6}$/u.test(value.article_code));
+function validLaw(value, article=true) {
+  return exact(value,article?[...LAW_FIELDS,'article_code']:LAW_FIELDS) && lawId(value.mst) && lawId(value.law_id)
+    && lawString(value.title,300) && lawDate(value.effective_date)
+    && (value.promulgation_date===null || lawDate(value.promulgation_date))
+    && (value.ministry===null || lawString(value.ministry,200)) && (!article || lawSelection(value));
+}
+const lawPair = (source,version) => /^law-source-[0-9a-f]{32}$/u.test(source)
+  && version===`law-version-${source.slice('law-source-'.length)}`;
+const lawStamp = value => typeof value === 'string' && value.length<=64 && /^\d{4}-\d{2}-\d{2}T/u.test(value) && Number.isFinite(Date.parse(value));
+export function lawSha256(bytes) {
+  // SHA-256 on the already bounded UTF-8 bytes, including HTTP development
+  // origins where SubtleCrypto is unavailable. No server hash is trusted alone.
+  const constants=[0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];
+  const state=new Uint32Array([0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19]);
+  const padded=new Uint8Array(Math.ceil((bytes.length+9)/64)*64);padded.set(bytes);padded[bytes.length]=0x80;
+  const view=new DataView(padded.buffer);view.setUint32(padded.length-4,bytes.length*8);
+  const words=new Uint32Array(64),rotate=(value,count)=>(value>>>count)|(value<<(32-count));
+  for(let offset=0;offset<padded.length;offset+=64){
+    for(let i=0;i<16;i++)words[i]=view.getUint32(offset+i*4);
+    for(let i=16;i<64;i++){const x=words[i-15],y=words[i-2];words[i]=(words[i-16]+(rotate(x,7)^rotate(x,18)^(x>>>3))+words[i-7]+(rotate(y,17)^rotate(y,19)^(y>>>10)))>>>0;}
+    let [a,b,c,d,e,f,g,h]=state;
+    for(let i=0;i<64;i++){const t1=(h+(rotate(e,6)^rotate(e,11)^rotate(e,25))+((e&f)^(~e&g))+constants[i]+words[i])>>>0;
+      const t2=((rotate(a,2)^rotate(a,13)^rotate(a,22))+((a&b)^(a&c)^(b&c)))>>>0;
+      h=g;g=f;f=e;e=(d+t1)>>>0;d=c;c=b;b=a;a=(t1+t2)>>>0;}
+    [a,b,c,d,e,f,g,h].forEach((value,i)=>{state[i]=(state[i]+value)>>>0;});
+  }
+  return Array.from(state,value=>value.toString(16).padStart(8,'0')).join('');
+}
+async function lawText(text,digest) {
+  if(typeof text!=='string' || !text.trim() || !LAW_HASH.test(digest))return false;
+  const bytes=new TextEncoder().encode(text);if(bytes.length>524288)return false;
+  return lawSha256(bytes)===digest;
+}
+async function lawResponse(response,signal) {
+  const payload=await readWebsiteJson(response,4*1024*1024,'OPEN_LAW_RESPONSE_INVALID',signal);
+  if(!response.ok){
+    const code=payload?.error?.code;
+    throw Error(LAW_ERRORS.has(code) ? code : 'OPEN_LAW_REQUEST_FAILED');
+  }
+  if(!exact(payload,['data','meta']) || !exact(payload.meta,['trace_id']) || !lawBoundId(payload.meta.trace_id))throw Error('OPEN_LAW_RESPONSE_INVALID');
+  return payload.data;
+}
+async function lawPost(workspaceId,route,input,{fetchImpl=fetch,signal,idempotencyKey}={}) {
+  if(!lawBoundId(workspaceId))throw Error('OPEN_LAW_INPUT_INVALID');
+  const headers={'Content-Type':'application/json'};if(idempotencyKey)headers['Idempotency-Key']=idempotencyKey;
+  const response=await fetchImpl(`/bff/api/workspaces/${encodeURIComponent(workspaceId)}/connectors/mcp-open-law-go-kr/${route}`,
+    {method:'POST',credentials:'same-origin',cache:'no-store',headers,body:JSON.stringify(input),signal});
+  return {data:await lawResponse(response,signal),status:response.status};
+}
+export async function searchOpenLaw(workspaceId,input,options={}) {
+  if(!exact(input,['notebook_id','query','page','public_query_confirmed']) || !lawBoundId(input.notebook_id)
+    || !lawString(input.query,100) || !Number.isSafeInteger(input.page) || input.page<1 || input.page>100 || input.public_query_confirmed!==true)throw Error('OPEN_LAW_INPUT_INVALID');
+  const {data,status}=await lawPost(workspaceId,'law-search',input,options);
+  if(status!==200 || !exact(data,['items','page','total_count']) || !Array.isArray(data.items) || data.items.length>20
+    || !data.items.every(item=>validLaw(item,false)) || data.page!==input.page || !Number.isSafeInteger(data.total_count) || data.total_count<0)throw Error('OPEN_LAW_RESPONSE_INVALID');
+  return data;
+}
+export async function previewOpenLaw(workspaceId,input,options={}) {
+  if(!exact(input,['notebook_id','mst','effective_date','article_code']) || !lawBoundId(input.notebook_id) || !lawSelection(input))throw Error('OPEN_LAW_INPUT_INVALID');
+  const {data,status}=await lawPost(workspaceId,'law-preview',input,options);
+  if(status!==200 || !exact(data,['law','text','raw_sha256','text_sha256','fetched_at','extraction_version']) || !validLaw(data.law)
+    || ['mst','effective_date','article_code'].some(key=>data.law[key]!==input[key]) || !LAW_HASH.test(data.raw_sha256)
+    || !lawStamp(data.fetched_at) || data.extraction_version!=='open-law-text-v1' || !await lawText(data.text,data.text_sha256))throw Error('OPEN_LAW_RESPONSE_INVALID');
+  return data;
+}
+export async function importOpenLaw(workspaceId,input,options={}) {
+  if(!exact(input,['notebook_id','mst','effective_date','article_code','expected_raw_sha256','expected_text_sha256']) || !lawBoundId(input.notebook_id)
+    || !lawSelection(input) || !LAW_HASH.test(input.expected_raw_sha256) || !LAW_HASH.test(input.expected_text_sha256)
+    || !safeIdempotencyKey(options.idempotencyKey))throw Error('OPEN_LAW_INPUT_INVALID');
+  const {data,status}=await lawPost(workspaceId,'law-imports',input,options),result=data?.attributes;
+  if(!exact(data,['kind','id','version','attributes']) || data.kind!=='open_law_import' || data.version!=='1'
+    || !exact(result,['snapshot_id','source_id','source_version_id','source_state','replayed']) || !/^law-snapshot-[0-9a-f]{32}$/u.test(result.snapshot_id)
+    || data.id!==result.snapshot_id || !lawPair(result.source_id,result.source_version_id) || result.source_state!=='ready'
+    || typeof result.replayed!=='boolean' || status!==(result.replayed?200:201))throw Error('OPEN_LAW_RESPONSE_INVALID');
+  return result;
+}
+export async function getOpenLawSnapshot(workspaceId,sourceVersionId,{notebookId,fetchImpl=fetch,signal}={}) {
+  if(!lawBoundId(workspaceId) || !lawBoundId(notebookId) || !/^law-version-[0-9a-f]{32}$/u.test(sourceVersionId))throw Error('OPEN_LAW_INPUT_INVALID');
+  const response=await fetchImpl(`/bff/api/workspaces/${encodeURIComponent(workspaceId)}/source-versions/${encodeURIComponent(sourceVersionId)}/law-snapshot?notebook_id=${encodeURIComponent(notebookId)}`,
+    {method:'GET',credentials:'same-origin',cache:'no-store',signal});
+  const data=await lawResponse(response,signal),s=data?.snapshot;
+  if(response.status!==200 || !exact(data,['snapshot','text']) || !exact(s,LAW_SNAPSHOT_FIELDS) || !validLaw(Object.fromEntries([...LAW_FIELDS,'article_code'].map(key=>[key,s[key]])))
+    || !/^law-snapshot-[0-9a-f]{32}$/u.test(s.snapshot_id) || s.connector_id!=='mcp-open-law-go-kr' || !lawPair(s.source_id,s.source_version_id)
+    || s.source_version_id!==sourceVersionId || s.origin_uri!==`https${URL_SEPARATOR}www.law.go.kr/LSW/lsInfoP.do?lsiSeq=${s.mst}&efYd=${s.effective_date}`
+    || !lawStamp(s.fetched_at) || !LAW_HASH.test(s.raw_sha256) || s.extraction_version!=='open-law-text-v1' || s.license_status!=='unknown'
+    || !await lawText(data.text,s.text_sha256))throw Error('OPEN_LAW_RESPONSE_INVALID');
+  return data;
+}
+
+export async function getOpenLawCitation(workspaceId,citation,{notebookId,fetchImpl=fetch,signal}={}) {
+  const keys=['citation_id','source_id','source_version_id','evidence_span_id','page','origin','context_item_id','locator'];
+  if(!(exact(citation,keys) || exact(citation,[...keys,'content_url'])) || !lawBoundId(workspaceId) || !lawBoundId(notebookId)
+    || !lawBoundId(citation.citation_id) || !lawPair(citation.source_id,citation.source_version_id)
+    || citation.origin!=='raw_source' || citation.context_item_id!==citation.source_id || citation.page!==1
+    || !/^law-span-[0-9a-f]{32}$/u.test(citation.evidence_span_id) || !exact(citation.locator,['kind','value'])
+    || citation.locator.kind!=='section' || citation.locator.value!==citation.evidence_span_id)throw Error('OPEN_LAW_INPUT_INVALID');
+  const url=citationContentUrl(workspaceId,citation,{notebookId});
+  if(citation.content_url!==undefined && citation.content_url!==url)throw Error('OPEN_LAW_INPUT_INVALID');
+  const response=await fetchImpl(url,{method:'GET',credentials:'same-origin',cache:'no-store',signal});
+  if(!response.ok)await lawResponse(response,signal);
+  const declared=response.headers.get('content-length');
+  if(response.headers.get('content-type')?.split(';',1)[0].trim().toLowerCase()!=='text/plain'
+    || response.headers.get('x-citation-locator-kind')!=='section' || !response.body
+    || declared!==null && (!/^[0-9]+$/u.test(declared) || Number(declared)>524288)){
+    await response.body?.cancel();throw Error('OPEN_LAW_RESPONSE_INVALID');
+  }
+  const reader=response.body.getReader(),chunks=[];let size=0,original;
+  const abort=()=>{void reader.cancel().catch(()=>{});};signal?.addEventListener('abort',abort,{once:true});
+  try{
+    while(true){if(signal?.aborted)throw Error();const {done,value}=await reader.read();if(done)break;
+      if(value.byteLength>524288-size)throw Error();chunks.push(value);size+=value.byteLength;}
+    if(signal?.aborted)throw Error();const raw=new Uint8Array(size);let offset=0;
+    for(const chunk of chunks){raw.set(chunk,offset);offset+=chunk.byteLength;}
+    original=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(raw);
+  }catch{throw Error('OPEN_LAW_RESPONSE_INVALID');}
+  finally{signal?.removeEventListener('abort',abort);await reader.cancel().catch(()=>{});reader.releaseLock();}
+  const data=await getOpenLawSnapshot(workspaceId,citation.source_version_id,{notebookId,fetchImpl,signal});
+  if(data.snapshot.source_id!==citation.source_id || data.text!==original || !await lawText(original,data.snapshot.text_sha256))throw Error('OPEN_LAW_RESPONSE_INVALID');
+  const points=Array.from(original),matches=[];
+  for(let start=0;start<points.length;start+=1024){
+    const suffix=lawSha256(new TextEncoder().encode(`${citation.source_version_id}|${start}`)).slice(0,32);
+    if(`law-span-${suffix}`===citation.evidence_span_id && points.slice(start,start+1024).join('').trim())matches.push(start);
+  }
+  if(signal?.aborted || matches.length!==1)throw Error('OPEN_LAW_RESPONSE_INVALID');
+  return {source_version_id:citation.source_version_id,text:original,start:matches[0],end:Math.min(points.length,matches[0]+1024)};
+}
+
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u;
 const SAFE_FILENAME = /^[^/\\\u0000-\u001f]{1,255}$/u;
 const URL_SEPARATOR = String.fromCharCode(58, 47, 47);
@@ -121,25 +280,34 @@ function safeResponseError(payload, fallback) {
   return error;
 }
 
-export async function listWorkspaceSources(workspaceId, { notebookId, fetchImpl = fetch, signal } = {}) {
+export async function listWorkspaceSources(workspaceId, { notebookId, websiteSourceVersionId, fetchImpl = fetch, signal } = {}) {
   const workspace = requiredWorkspace(workspaceId, "SOURCE_LIST_INPUT_INVALID");
   const notebook = requiredWorkspace(notebookId, "SOURCE_LIST_INPUT_INVALID");
-  const response = await fetchImpl(`/bff/api/workspaces/${encodeURIComponent(workspace)}/sources?notebook_id=${encodeURIComponent(notebook)}`, {
+  if (websiteSourceVersionId !== undefined && !safeId(websiteSourceVersionId)) throw new Error("SOURCE_LIST_INPUT_INVALID");
+  const selectedQuery = websiteSourceVersionId === undefined ? "" : `&website_source_version_id=${encodeURIComponent(websiteSourceVersionId)}`;
+  const response = await fetchImpl(`/bff/api/workspaces/${encodeURIComponent(workspace)}/sources?notebook_id=${encodeURIComponent(notebook)}${selectedQuery}`, {
     method: "GET", credentials: "same-origin", cache: "no-store", signal,
   });
-  const payload = await json(response, "SOURCE_LIST_RESPONSE_INVALID");
+  const payload = websiteSourceVersionId === undefined ? await json(response, "SOURCE_LIST_RESPONSE_INVALID")
+    : await readWebsiteJson(response,8388608,'SOURCE_LIST_RESPONSE_INVALID',signal);
   if (!response.ok) throw safeResponseError(payload, "SOURCE_LIST_FAILED");
   const valid = exact(payload, ["data", "meta"])
     && exact(payload.data, ["sources"])
     && Array.isArray(payload.data.sources)
     && payload.data.sources.length <= 1_000
     && validMeta(payload.meta, workspace)
-    && payload.data.sources.every((source) => exact(source, SOURCE_KEYS)
+    && payload.data.sources.every((source) => (exact(source, SOURCE_KEYS)
+      || (websiteSourceVersionId !== undefined && source.source_version_id === websiteSourceVersionId
+        && exact(source, [...SOURCE_KEYS, "website"]) && source.source_state === "ready"
+        && typeof source.website?.text === "string" && new TextEncoder().encode(source.website.text).length <= 524288
+        && source.website.text.length > 0 && source.website.source_id === source.source_id
+        && validWebsiteSnapshot(Object.fromEntries(Object.entries(source.website).filter(([key]) => key !== "text")), websiteSourceVersionId)))
       && safeId(source.source_id) && safeId(source.source_version_id)
       && typeof source.filename === "string" && SAFE_FILENAME.test(source.filename)
       && SOURCE_STATES.includes(source.source_state)
       && typeof source.processing_state === "string" && typeof source.job_state === "string");
-  if (!valid) throw new Error("SOURCE_LIST_RESPONSE_INVALID");
+  if (!valid || (websiteSourceVersionId !== undefined && (new TextEncoder().encode(JSON.stringify(payload)).length > 8388608
+      || payload.data.sources.filter(source => Object.hasOwn(source,"website")).length !== 1))) throw new Error("SOURCE_LIST_RESPONSE_INVALID");
   return payload.data.sources;
 }
 
@@ -161,6 +329,18 @@ async function connectorRequest(workspaceId, path, options = {}) {
   if (!response.ok) throw safeResponseError(payload, "CONNECTOR_REQUEST_FAILED");
   if (!exact(payload, ["data", "meta"]) || !validMeta(payload.meta, workspace)) throw new Error("CONNECTOR_RESPONSE_INVALID");
   return payload.data;
+}
+
+export async function listWorkspaceConnectorSources(workspaceId,connectorId,{fetchImpl=fetch,signal}={}) {
+  const workspace=requiredWorkspace(workspaceId,'CONNECTOR_INPUT_INVALID');
+  if(!safeId(connectorId))throw Error('CONNECTOR_INPUT_INVALID');
+  const data=await connectorRequest(workspace,`/bff/api/workspaces/${encodeURIComponent(workspace)}/connectors/${encodeURIComponent(connectorId)}/sources`,{
+    fetchImpl,init:{method:'GET',credentials:'same-origin',cache:'no-store',signal}});
+  if(!exact(data,['sources']) || !Array.isArray(data.sources)
+    || data.sources.length>1000 || !data.sources.every(item=>exact(item,['source_id','connector_id','title','source_state','usable','content_digest'])
+      && safeId(item.source_id) && item.connector_id===connectorId && typeof item.title==='string' && item.title.length<=300
+      && typeof item.source_state==='string' && typeof item.usable==='boolean' && (item.content_digest===null || LAW_HASH.test(item.content_digest))))throw Error('CONNECTOR_RESPONSE_INVALID');
+  return data.sources;
 }
 
 export async function listWorkspaceConnectors(workspaceId, { fetchImpl = fetch, signal } = {}) {
@@ -194,7 +374,8 @@ export async function reconnectWorkspaceConnector(workspaceId, connectorId, { fe
   if (!safeId(connectorId)) throw new Error("CONNECTOR_INPUT_INVALID");
   const data = await connectorRequest(workspace, `/bff/api/workspaces/${encodeURIComponent(workspace)}/connectors/${encodeURIComponent(connectorId)}/reconnect`, {
     fetchImpl,
-    init: { method: "POST", credentials: "same-origin", cache: "no-store", signal },
+    init: { method: "POST", credentials: "same-origin", cache: "no-store", signal,
+      ...(connectorId === "mcp-open-law-go-kr" ? { headers: { "Content-Type": "application/json" }, body: "{}" } : {}) },
   });
   if (!validConnector(data)) throw new Error("CONNECTOR_RESPONSE_INVALID");
   return data;
@@ -205,7 +386,8 @@ export async function disconnectWorkspaceConnector(workspaceId, connectorId, { f
   if (!safeId(connectorId)) throw new Error("CONNECTOR_INPUT_INVALID");
   const data = await connectorRequest(workspace, `/bff/api/workspaces/${encodeURIComponent(workspace)}/connectors/${encodeURIComponent(connectorId)}/disconnect`, {
     fetchImpl,
-    init: { method: "POST", credentials: "same-origin", cache: "no-store", signal },
+    init: { method: "POST", credentials: "same-origin", cache: "no-store", signal,
+      ...(connectorId === "mcp-open-law-go-kr" ? { headers: { "Content-Type": "application/json" }, body: "{}" } : {}) },
   });
   if (!validConnector(data)) throw new Error("CONNECTOR_RESPONSE_INVALID");
   return data;
@@ -216,6 +398,7 @@ export async function unregisterWorkspaceConnector(workspaceId, connectorId, { f
   if (!safeId(connectorId)) throw new Error("CONNECTOR_INPUT_INVALID");
   const response = await fetchImpl(`/bff/api/workspaces/${encodeURIComponent(workspace)}/connectors/${encodeURIComponent(connectorId)}`, {
     method: "DELETE", credentials: "same-origin", cache: "no-store", signal,
+    ...(connectorId === "mcp-open-law-go-kr" ? { headers: { "Content-Type": "application/json" }, body: "{}" } : {}),
   });
   if (!response.ok) {
     const payload = await json(response, "CONNECTOR_DELETE_FAILED");
@@ -296,12 +479,97 @@ export async function listWorkspaceKnowledgePackages(
   return payload.data.items;
 }
 
+const OPERATIONS_METRICS = Object.freeze(["document_pending", "document_retry_wait", "document_leased", "document_dead_letter",
+  "object_pending", "object_retry_wait", "object_leased", "object_dead_letter", "object_oldest_pending_seconds",
+  "source_waiting_model", "index_records_current", "source_storage_bytes", "reported_prompt_tokens", "reported_completion_tokens",
+  "reported_total_tokens", "attempts_without_reported_usage"]);
+const OBSERVATION_CODES = { measured: "METRIC_RECORDED", partial: "METRIC_PARTIAL", not_collected: "METRIC_NOT_COLLECTED", unavailable: "METRIC_UNAVAILABLE" };
+function observationTime(value) {
+  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/u.test(value)
+    && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 19) === value.slice(0, 19);
+}
+function validObservations(rows) {
+  return Array.isArray(rows) && rows.length === 16 && rows.every((row, index) =>
+    exact(row, ["metric_id", "state", "value", "unit", "observed_at", "coverage", "safe_code"])
+    && row.metric_id === OPERATIONS_METRICS[index] && typeof row.state === "string" && Object.hasOwn(OBSERVATION_CODES, row.state)
+    && row.safe_code === OBSERVATION_CODES[row.state]
+    && row.unit === (index === 8 ? "seconds" : index === 11 ? "bytes" : index >= 12 && index <= 14 ? "tokens" : "count")
+    && row.coverage === (index < 9 ? "workspace_operational_counts" : "actor_accessible_records")
+    && (["not_collected", "unavailable"].includes(row.state) ? row.value === null && row.observed_at === null
+      : Number.isSafeInteger(row.value) && row.value >= 0 && observationTime(row.observed_at)));
+}
+
+const TELEMETRY_FIELDS=["worker_samples","resource_samples","event_counts","cost_summary","deployment_summary","unimplemented"];
+const EVENT_METRICS=["manual_reprocess_pending","readiness_reprocess_pending","retry_wait","backoff_wait","step_up_denied_24h","step_up_expired_24h","access_blocked_24h","access_masked_24h","egress_denied_24h"];
+const READINESS_EVENT_METRICS=["waiting_text_generation","waiting_image_understanding","waiting_document_parsing","waiting_speech_to_text","waiting_role_unknown","retry_suppressed_contexts_24h"];
+function validWorkspaceTelemetry(data,includeReadiness=false,includeCapacity=false){
+  const eventMetrics=includeReadiness?[...EVENT_METRICS,...READINESS_EVENT_METRICS]:EVENT_METRICS;
+  const common=["state","observed_at","received_at","coverage","safe_code"],unknown=r=>["not_collected","not_reported","unavailable"].includes(r.state);
+  const number=v=>Number.isSafeInteger(v)&&v>=0,nullable=v=>v===null||observationTime(v);
+  const base=(r,fields,coverage,states)=>exact(r,[...common,...fields])&&states.includes(r.state)&&r.coverage===coverage
+    &&r.safe_code===`TELEMETRY_${r.state.toUpperCase()}`
+    &&(unknown(r)?r.observed_at===null&&r.received_at===null:observationTime(r.observed_at)&&observationTime(r.received_at));
+  const kinds=["document","studio","object"],metrics=["cpu_quota_millicores","memory_limit_bytes","memory_current_bytes","runtime_available_bytes"],fresh=["fresh","stale","not_collected","unavailable"];
+  if(!Array.isArray(data.worker_samples)||data.worker_samples.length!==3||!data.worker_samples.every((r,i)=>
+    base(r,["worker_kind","process_state","poll_started_at","poll_finished_at","active_started_at"],"workspace_operational_counts",fresh)&&r.worker_kind===kinds[i]
+    &&["alive","processing","poll_stale","stopped","unknown"].includes(r.process_state)&&[r.poll_started_at,r.poll_finished_at,r.active_started_at].every(nullable)
+    &&(!unknown(r)||(r.process_state==="unknown"&&[r.poll_started_at,r.poll_finished_at,r.active_started_at].every(v=>v===null)))
+    &&(r.process_state!=="processing"||r.active_started_at!==null)))return false;
+  if(!Array.isArray(data.resource_samples)||data.resource_samples.length!==(includeCapacity?16:12)||!data.resource_samples.slice(0,12).every((r,i)=>
+    base(r,["worker_kind","metric_id","value","unit"],"workspace_operational_counts",fresh)&&r.worker_kind===kinds[Math.floor(i/4)]
+    &&r.metric_id===metrics[i%4]&&r.unit===(i%4===0?"millicores":"bytes")&&(unknown(r)?r.value===null:number(r.value))))return false;
+  if(includeCapacity){
+    const host=[["cpu_logical_millicores","millicores"],["cpu_usage_basis_points","basis_points"],["memory_total_bytes","bytes"],["memory_available_bytes","bytes"]];
+    for(const [i,[metric,unit]] of host.entries()){
+      const r=data.resource_samples[12+i];
+      if(!base(r,["worker_kind","metric_id","value","unit"],"server_host_observation",fresh)
+        ||r.worker_kind!=="server_host"||r.metric_id!==metric||r.unit!==unit
+        ||(unknown(r)?r.value!==null:!number(r.value)))return false;
+      if(!unknown(r)&&((i===0&&(r.value<1000||r.value>32768000||r.value%1000!==0))
+        ||(i===1&&r.value>10000)||(i===2&&r.value===0)))return false;
+    }
+    const total=data.resource_samples[14].value,available=data.resource_samples[15].value;
+    if(total!==null&&available!==null&&available>total)return false;
+  }
+  if(!Array.isArray(data.event_counts)||data.event_counts.length!==eventMetrics.length||!data.event_counts.every((r,i)=>
+    base(r,["metric_id","value","unit","window_start","window_end"],"actor_accessible_records",["measured","partial","not_collected","unavailable"])
+    &&r.metric_id===eventMetrics[i]&&r.unit==="count"&&(unknown(r)?r.value===null&&r.window_start===null&&r.window_end===null:
+      number(r.value)&&((i<4||i>=9&&i<14)?r.window_start===null&&r.window_end===null:observationTime(r.window_start)&&r.window_end===r.observed_at&&Date.parse(r.window_end)-Date.parse(r.window_start)===86400000))))return false;
+  const c=data.cost_summary;
+  if(!base(c,["known_amounts","unknown_attempt_count","unconfirmed_run_count","coverage_start","coverage_end"],"actor_accessible_records",["measured","partial","not_collected","not_reported","unavailable"])
+    ||!Array.isArray(c.known_amounts)||!c.known_amounts.every(r=>exact(r,["currency","amount"])&&typeof r.currency==="string"&&/^[A-Z]{3}$/u.test(r.currency)
+      &&typeof r.amount==="string"&&/^(?:0|[1-9][0-9]{0,23})(?:\.[0-9]{1,9})?$/u.test(r.amount))
+    ||JSON.stringify(c.known_amounts.map(r=>r.currency))!==JSON.stringify([...new Set(c.known_amounts.map(r=>r.currency))].sort())
+    ||![c.coverage_start,c.coverage_end].every(nullable)
+    ||(unknown(c)?c.known_amounts.length!==0||[c.unknown_attempt_count,c.unconfirmed_run_count,c.coverage_start,c.coverage_end].some(v=>v!==null):
+      !number(c.unknown_attempt_count)||!number(c.unconfirmed_run_count)))return false;
+  const d=data.deployment_summary;
+  if(!base(d,["operation","code_revision","image_digest","previous_image_digest","result"],"actor_accessible_records",["measured","not_collected","unavailable"])
+    ||(unknown(d)?[d.operation,d.code_revision,d.image_digest,d.previous_image_digest,d.result].some(v=>v!==null):
+      !["deploy","rollback"].includes(d.operation)||!["succeeded","failed","uncertain"].includes(d.result)
+      ||!(d.code_revision===null||typeof d.code_revision==="string"&&/^[a-f0-9]{40}$/u.test(d.code_revision))
+      ||![d.image_digest,d.previous_image_digest].every(v=>v===null||typeof v==="string"&&/^sha256:[a-f0-9]{64}$/u.test(v))
+      ||d.result==="succeeded"&&(d.code_revision===null||d.image_digest===null||d.operation==="rollback"&&d.previous_image_digest===null)))return false;
+  const producers=["waiting_role_producer","readiness_event_producer","retry_suppression_receipt","node_capacity_producer","provider_capacity_reporter","deployment_receipt_writer","cost_receipt_writer"];
+  const impacts=["ROLE_READINESS_UNKNOWN","AUTOMATIC_REPROCESS_UNOBSERVED","DEDUP_NOT_OBSERVED","CAPACITY_UNKNOWN","CAPACITY_UNKNOWN","DEPLOYMENT_HISTORY_UNKNOWN","COST_UNKNOWN"];
+  let previous=-1;
+  if(!Array.isArray(data.unimplemented))return false;
+  for(const row of data.unimplemented){const i=producers.indexOf(row?.producer_id);
+    if(!exact(row,["producer_id","safe_code","impact_code"])||i<0||i<=previous||row.safe_code!=="PRODUCER_NOT_IMPLEMENTED"||row.impact_code!==impacts[i])return false;previous=i;}
+  return true;
+}
+
 export async function getWorkspaceOperationsStatus(
-  workspaceId, { fetchImpl = fetch, signal } = {},
+  workspaceId, { fetchImpl = fetch, signal, scope="self", includeReadiness=false,includeCapacity=false } = {},
 ) {
   const workspace = requiredWorkspace(workspaceId, "OPERATIONS_STATUS_INPUT_INVALID");
+  if(!["self","workspace_visible"].includes(scope)||typeof includeReadiness!=="boolean"||typeof includeCapacity!=="boolean")throw new Error("OPERATIONS_STATUS_INPUT_INVALID");
+  const query=new URLSearchParams();
+  if(scope!=="self")query.set("scope",scope);
+  if(includeReadiness)query.set("include_readiness","1");
+  if(includeCapacity)query.set('include_capacity','1');
   const response = await fetchImpl(
-    `/bff/api/workspaces/${encodeURIComponent(workspace)}/operations/status`,
+    `/bff/api/workspaces/${encodeURIComponent(workspace)}/operations/status${query.size?`?${query}`:""}`,
     { method: "GET", credentials: "same-origin", cache: "no-store", signal },
   );
   const payload = await json(response, "OPERATIONS_STATUS_RESPONSE_INVALID");
@@ -315,7 +583,7 @@ export async function getWorkspaceOperationsStatus(
   const data = payload?.data;
   const components = data?.components;
   const valid = exact(payload, ["data", "meta"])
-    && exact(data, ["workspace_id", "overall_status", "checked_at", "components"])
+    && exact(data, ["workspace_id", "overall_status", "checked_at", "components", "observations",...TELEMETRY_FIELDS])
     && data.workspace_id === workspace
     && new Set(["ready", "warning", "error"]).has(data.overall_status)
     && typeof data.checked_at === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/u.test(data.checked_at)
@@ -326,7 +594,7 @@ export async function getWorkspaceOperationsStatus(
       && typeof item.safe_code === "string" && /^[A-Z][A-Z0-9_]{2,63}$/u.test(item.safe_code)
       && Number.isSafeInteger(item.pending_count) && item.pending_count >= 0
       && new Set(["none", "open_llm_settings", "open_sync_settings", "refresh_status"]).has(item.recovery_action))
-    && validMeta(payload.meta, workspace);
+    && validObservations(data.observations) && validWorkspaceTelemetry(data,includeReadiness,includeCapacity) && validMeta(payload.meta, workspace);
   if (!valid) throw new Error("OPERATIONS_STATUS_RESPONSE_INVALID");
   return data;
 }
@@ -361,7 +629,7 @@ export async function getWorkspaceOutputVersionSettings(
 
 export async function saveWorkspaceOutputVersionSettings(
   workspaceId, settings,
-  { fetchImpl = fetch, idempotencyKey = crypto.randomUUID(), signal } = {},
+  { fetchImpl = fetch, idempotencyKey = secureUuid(), signal } = {},
 ) {
   const workspace = requiredWorkspace(workspaceId, "OUTPUT_VERSION_SETTINGS_INPUT_INVALID");
   if (!record(settings) || !exact(settings, ["default_formats", "version", "etag"])
@@ -395,7 +663,7 @@ function validCreateRequest(request) {
 }
 
 export async function createGroundedReport(
-  workspaceId, request, { notebookId, fetchImpl = fetch, idempotencyKey = crypto.randomUUID(), signal } = {},
+  workspaceId, request, { notebookId, fetchImpl = fetch, idempotencyKey = secureUuid(), signal } = {},
 ) {
   const workspace = requiredWorkspace(workspaceId, "STUDIO_INPUT_INVALID");
   if (!safeId(notebookId) || !validCreateRequest(request) || !safeIdempotencyKey(idempotencyKey)) throw new Error("STUDIO_INPUT_INVALID");
@@ -438,8 +706,8 @@ const STUDIO_OUTPUT_TYPES = new Set([
 ]);
 const STUDIO_ACTIONS = new Set(["reviews", "approval-requests", "approvals", "deliveries", "knowledge-registrations"]);
 
-export async function issueStudioStepUp(actionGroup, targetId, password, { fetchImpl = fetch, idempotencyKey = crypto.randomUUID(), signal } = {}) {
-  if (!new Set(["final_approval_or_knowledge_registration", "external_transfer", "data_area_move"]).has(actionGroup) || !safeId(targetId) || typeof password !== "string" || password.length < 12 || password.length > 1024) throw new Error("STUDIO_INPUT_INVALID");
+export async function issueStudioStepUp(actionGroup, targetId, password, { fetchImpl = fetch, idempotencyKey = secureUuid(), signal } = {}) {
+  if (!new Set(["final_approval_or_knowledge_registration", "external_transfer", "data_area_move", "organization_security_or_connector_policy_change"]).has(actionGroup) || !safeId(targetId) || typeof password !== "string" || password.length < 12 || password.length > 1024) throw new Error("STUDIO_INPUT_INVALID");
   const response = await fetchImpl("/bff/api/session/step-up", {
     method: "POST", credentials: "same-origin", cache: "no-store", signal,
     headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
@@ -449,6 +717,81 @@ export async function issueStudioStepUp(actionGroup, targetId, password, { fetch
   if (!response.ok) throw new Error(typeof payload?.error?.code === "string" ? payload.error.code : "STEP_UP_REQUIRED");
   if (typeof payload?.data?.step_up_authorization !== "string") throw new Error("STEP_UP_RESPONSE_INVALID");
   return payload.data.step_up_authorization;
+}
+
+function studioExportTarget(workspaceId, outputId, versionId, format, notebookId) {
+  const workspace = requiredWorkspace(workspaceId, "STUDIO_INPUT_INVALID");
+  const notebook = requiredWorkspace(notebookId, "STUDIO_INPUT_INVALID");
+  if (!safeId(outputId) || !safeId(versionId) || !["docx", "pdf", "xlsx", "csv", "json", "svg", "png"].includes(format)) throw new Error("STUDIO_INPUT_INVALID");
+  return "studio-export-" + lawSha256(new TextEncoder().encode(JSON.stringify([workspace, notebook, outputId, versionId, format])));
+}
+
+export async function issueStudioExportStepUp(workspaceId, outputId, versionId, format, password, { notebookId, ...options } = {}) {
+  const target = studioExportTarget(workspaceId, outputId, versionId, format, notebookId);
+  return issueStudioStepUp("final_approval_or_knowledge_registration", target, password, options);
+}
+
+const approvalTime = value => typeof value === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,6})?(?:Z|\+00:00)$/u.test(value) && Number.isFinite(Date.parse(value));
+const validApprovalPolicy = value => exact(value,["ttl_days","policy_version","can_manage","step_up_target_id"])
+  && Number.isSafeInteger(value.ttl_days) && value.ttl_days>=1 && value.ttl_days<=30
+  && Number.isSafeInteger(value.policy_version) && value.policy_version>=0 && typeof value.can_manage==="boolean"
+  && typeof value.step_up_target_id==="string" && /^studio-approval-policy-[0-9a-f]{64}$/u.test(value.step_up_target_id);
+async function studioLifecycleExchange(workspaceId,path,method,body,options,valid) {
+  const workspace=requiredWorkspace(workspaceId,"STUDIO_INPUT_INVALID");
+  const {fetchImpl=fetch,signal,idempotencyKey=secureUuid(),ifMatch}=options;
+  const headers={};
+  if(method!=="GET") {
+    if(!safeIdempotencyKey(idempotencyKey)) throw new Error("STUDIO_INPUT_INVALID");
+    headers["Content-Type"]="application/json"; headers["Idempotency-Key"]=idempotencyKey;
+    if(ifMatch) headers["If-Match"]=ifMatch;
+  }
+  if(signal?.aborted) throw new Error("STUDIO_REQUEST_ABORTED");
+  const response=await fetchImpl('/bff/api/'+path,{method,headers,signal,credentials:"same-origin",cache:"no-store",...(body?{body:JSON.stringify(body)}:{})});
+  const payload=await json(response,"STUDIO_RESPONSE_INVALID");
+  if(signal?.aborted) throw new Error("STUDIO_REQUEST_ABORTED");
+  if(!response.ok) throw new Error(/^[A-Z][A-Z0-9_]+$/u.test(payload?.error?.code)?payload.error.code:"STUDIO_ACTION_FAILED");
+  if(!exact(payload,["data","meta"]) || !validMeta(payload.meta,workspace,{replay:method!=="GET"}) || !valid(payload.data)) throw new Error("STUDIO_RESPONSE_INVALID");
+  return payload.data;
+}
+export async function getStudioApprovalPolicy(workspaceId,options={}) {
+  const workspace=requiredWorkspace(workspaceId,"STUDIO_INPUT_INVALID");
+  return studioLifecycleExchange(workspace,`workspaces/${encodeURIComponent(workspace)}/studio/approval-policy`,"GET",null,options,validApprovalPolicy);
+}
+export async function saveStudioApprovalPolicy(workspaceId,input,options={}) {
+  const workspace=requiredWorkspace(workspaceId,"STUDIO_INPUT_INVALID");
+  if(!exact(input,["ttl_days","expected_policy_version","step_up_authorization"]) || !Number.isSafeInteger(input.ttl_days) || input.ttl_days<1 || input.ttl_days>30
+    || !Number.isSafeInteger(input.expected_policy_version) || input.expected_policy_version<0
+    || typeof input.step_up_authorization!=="string" || !/^[\x21-\x7e]{1,4096}$/u.test(input.step_up_authorization)) throw new Error("STUDIO_INPUT_INVALID");
+  return studioLifecycleExchange(workspace,`workspaces/${encodeURIComponent(workspace)}/studio/approval-policy`,"PATCH",input,options,validApprovalPolicy);
+}
+export async function issueStudioApprovalPolicyStepUp(target,password,options={}) {
+  if(typeof target!=="string" || !/^studio-approval-policy-[0-9a-f]{64}$/u.test(target)) throw new Error("STUDIO_INPUT_INVALID");
+  return issueStudioStepUp("organization_security_or_connector_policy_change",target,password,options);
+}
+export async function withdrawStudioApprovalRequest(workspaceId,requestId,versionId,options={}) {
+  const workspace=requiredWorkspace(workspaceId,"STUDIO_INPUT_INVALID"),notebook=requiredWorkspace(options.notebookId,"STUDIO_INPUT_INVALID");
+  if(!safeId(requestId)||!safeId(versionId)) throw new Error("STUDIO_INPUT_INVALID");
+  return studioLifecycleExchange(workspace,`approval-requests/${encodeURIComponent(requestId)}/withdraw`,"POST",
+    {workspace_id:workspace,notebook_id:notebook,output_version_id:versionId},options,
+    value=>exact(value,["record_id","action","status","output_version_id"])&&value.record_id===requestId&&value.action==="withdraw"&&value.status==="withdrawn"&&value.output_version_id===versionId);
+}
+export async function listStudioApprovalNotices(workspaceId,options={}) {
+  const workspace=requiredWorkspace(workspaceId,"STUDIO_INPUT_INVALID"),notebook=requiredWorkspace(options.notebookId,"STUDIO_INPUT_INVALID");
+  return studioLifecycleExchange(workspace,`workspaces/${encodeURIComponent(workspace)}/studio/approval-notices?notebook_id=${encodeURIComponent(notebook)}`,"GET",null,options,value=>{
+    if(!exact(value,["items","unread_count"])||!Array.isArray(value.items)||value.items.length>100) return false;
+    const valid=value.items.every(item=>exact(item,["notification_id","approval_request_id","output_version_id","event_kind","scheduled_at","created_at","read_at","version"])
+      && [item.notification_id,item.approval_request_id,item.output_version_id].every(safeId)
+      && ["due_24h","expired","withdrawn"].includes(item.event_kind) && approvalTime(item.scheduled_at)&&approvalTime(item.created_at)
+      && (item.read_at===null||approvalTime(item.read_at)) && Number.isSafeInteger(item.version)&&item.version>=1);
+    return valid&&new Set(value.items.map(item=>item.notification_id)).size===value.items.length&&value.unread_count===value.items.filter(item=>item.read_at===null).length;
+  });
+}
+export async function markStudioApprovalNoticeRead(workspaceId,noticeId,version,options={}) {
+  const workspace=requiredWorkspace(workspaceId,"STUDIO_INPUT_INVALID"),notebook=requiredWorkspace(options.notebookId,"STUDIO_INPUT_INVALID");
+  if(!safeId(noticeId)||!Number.isSafeInteger(version)||version<1||version>=2147483647) throw new Error("STUDIO_INPUT_INVALID");
+  return studioLifecycleExchange(workspace,`workspaces/${encodeURIComponent(workspace)}/studio/approval-notices/${encodeURIComponent(noticeId)}`,"PATCH",
+    {notebook_id:notebook,state:"read"},{...options,ifMatch:`"studio-approval-notice:${noticeId}:${version}"`},
+    value=>exact(value,["notification_id","version","read_at"])&&value.notification_id===noticeId&&value.version===version+1&&approvalTime(value.read_at));
 }
 
 function validGeneration(request, workspaceId) {
@@ -464,7 +807,7 @@ function validGeneration(request, workspaceId) {
     && (request.workspace_id === undefined || request.workspace_id === null || request.workspace_id === workspaceId);
 }
 
-export async function createStudioGeneration(workspaceId, request, { notebookId, fetchImpl = fetch, idempotencyKey = crypto.randomUUID(), signal } = {}) {
+export async function createStudioGeneration(workspaceId, request, { notebookId, fetchImpl = fetch, idempotencyKey = secureUuid(), signal } = {}) {
   const workspace = requiredWorkspace(workspaceId, "STUDIO_INPUT_INVALID");
   const notebook = requiredWorkspace(notebookId, "STUDIO_INPUT_INVALID");
   if (!validGeneration(request, workspace) || !safeIdempotencyKey(idempotencyKey)) throw new Error("STUDIO_INPUT_INVALID");
@@ -502,7 +845,7 @@ export async function listProductStudioOutputs(workspaceId, { notebookId, fetchI
   return { outputs: payload.data.outputs, studioLocks: payload.data.studio_locks };
 }
 
-export async function createStudioVersion(workspaceId, outputId, request, { notebookId, fetchImpl = fetch, idempotencyKey = crypto.randomUUID(), signal } = {}) {
+export async function createStudioVersion(workspaceId, outputId, request, { notebookId, fetchImpl = fetch, idempotencyKey = secureUuid(), signal } = {}) {
   const workspace = requiredWorkspace(workspaceId, "STUDIO_INPUT_INVALID");
   const notebook = requiredWorkspace(notebookId, "STUDIO_INPUT_INVALID");
   if (!safeId(outputId) || !record(request) || !safeId(request.previous_version_id)
@@ -526,6 +869,7 @@ const STUDIO_VERSION_KEYS = Object.freeze([
   "output_version_id", "content_version", "previous_version_id", "status", "content",
   "revision_type", "change_reason", "settings_snapshot_id", "citations", "review_request_id",
   "approval_request_id", "approval_id", "delivery_id", "knowledge_registration_id", "output_format",
+  "approval_request_state", "approval_expires_at",
 ]);
 const STUDIO_CITATION_KEYS = Object.freeze([
   "citation_id", "source_version_id", "evidence_span_id", "origin", "locator",
@@ -536,8 +880,13 @@ function validStudioCitation(value) {
     && safeId(value.citation_id) && safeId(value.source_version_id) && safeId(value.evidence_span_id)
     && new Set(["raw_source", "daon_knowledge"]).has(value.origin)
     && record(value.locator) && exact(value.locator, ["kind", "value"])
-    && new Set(["page", "section"]).has(value.locator.kind)
-    && safeText(value.locator.value, 1, 500);
+    && new Set(["page", "section", "image_region", "sheet_cell", "docx_block", "pptx_block", "audio_segment"]).has(value.locator.kind)
+    && safeText(value.locator.value, 1, 500)
+    && (value.locator.kind !== "image_region" || parseImageRegion(value.locator.value) !== null)
+    && (value.locator.kind !== "sheet_cell" || parseSheetCell(value.locator.value) !== null)
+    && (value.locator.kind !== "docx_block" || parseDocxBlock(value.locator.value) !== null)
+    && (value.locator.kind !== "pptx_block" || parsePptxBlock(value.locator.value) !== null)
+    && (value.locator.kind !== "audio_segment" || parseAudioSegment(value.locator.value) !== null);
 }
 
 function validStudioVersion(value) {
@@ -547,6 +896,8 @@ function validStudioVersion(value) {
   return exact(value, STUDIO_VERSION_KEYS) && safeId(value.output_version_id)
     && Number.isSafeInteger(value.content_version) && value.content_version >= 1
     && nullableIds.every((field) => value[field] === null || safeId(value[field]))
+    && (value.approval_request_state===null || ["pending","approved","rejected","expired","withdrawn"].includes(value.approval_request_state))
+    && (value.approval_expires_at===null || approvalTime(value.approval_expires_at))
     && new Set(["draft", "review_requested", "in_review", "approved", "revision_requested", "delivered"]).has(value.status)
     && (typeof value.content === "string" || record(value.content))
     && safeText(serialized, 1, 8 * 1024 * 1024)
@@ -573,7 +924,7 @@ export async function listStudioVersions(workspaceId, outputId, { notebookId, fe
   return payload.data.versions;
 }
 
-export async function createStudioAction(workspaceId, action, request, { notebookId, fetchImpl = fetch, idempotencyKey = crypto.randomUUID(), signal } = {}) {
+export async function createStudioAction(workspaceId, action, request, { notebookId, fetchImpl = fetch, idempotencyKey = secureUuid(), signal } = {}) {
   const workspace = requiredWorkspace(workspaceId, "STUDIO_INPUT_INVALID");
   const notebook = requiredWorkspace(notebookId, "STUDIO_INPUT_INVALID");
   if (!STUDIO_ACTIONS.has(action) || !record(request) || !safeIdempotencyKey(idempotencyKey)) throw new Error("STUDIO_INPUT_INVALID");
@@ -587,13 +938,21 @@ export async function createStudioAction(workspaceId, action, request, { noteboo
   return payload.data;
 }
 
-export async function downloadStudioExport(workspaceId, outputId, versionId, format, { notebookId, fetchImpl = fetch, signal } = {}) {
+export async function downloadStudioExport(workspaceId, outputId, versionId, format, { notebookId, fetchImpl = fetch, signal, stepUpAuthorization, idempotencyKey = secureUuid() } = {}) {
   const workspace = requiredWorkspace(workspaceId, "STUDIO_INPUT_INVALID");
   const notebook = requiredWorkspace(notebookId, "STUDIO_INPUT_INVALID");
-  if (!safeId(outputId) || !safeId(versionId) || !new Set(["docx", "pdf", "xlsx", "csv", "json", "svg", "png"]).has(format)) throw new Error("STUDIO_INPUT_INVALID");
-  const response = await fetchImpl(`/bff/api/studio-outputs/${encodeURIComponent(outputId)}/versions/${encodeURIComponent(versionId)}/exports/${format}?workspace_id=${encodeURIComponent(workspace)}&notebook_id=${encodeURIComponent(notebook)}`, { method: "GET", credentials: "same-origin", cache: "no-store", signal });
-  if (!response.ok) throw new Error("STUDIO_EXPORT_FAILED");
+  studioExportTarget(workspace, outputId, versionId, format, notebook);
+  if (typeof stepUpAuthorization !== "string" || !stepUpAuthorization.trim() || stepUpAuthorization.length > 4096
+      || /[^\x21-\x7e]/u.test(stepUpAuthorization) || !safeIdempotencyKey(idempotencyKey)) throw new Error("STUDIO_INPUT_INVALID");
+  if (signal?.aborted) throw new Error("STUDIO_EXPORT_FAILED");
+  const response = await fetchImpl(`/bff/api/studio-outputs/${encodeURIComponent(outputId)}/versions/${encodeURIComponent(versionId)}/exports/${format}?workspace_id=${encodeURIComponent(workspace)}&notebook_id=${encodeURIComponent(notebook)}`, { method: "GET", credentials: "same-origin", cache: "no-store", signal,
+    headers: { "X-Daon-Step-Up-Authorization": stepUpAuthorization, "Idempotency-Key": idempotencyKey } });
+  if (!response.ok) {
+    const payload = await json(response, "STUDIO_EXPORT_FAILED");
+    throw new Error(payload?.error?.code === "STEP_UP_REQUIRED" ? "STEP_UP_REQUIRED" : "STUDIO_EXPORT_FAILED");
+  }
   const buffer = await response.arrayBuffer();
+  if (signal?.aborted) throw new Error("STUDIO_EXPORT_FAILED");
   if (buffer.byteLength < 4 || buffer.byteLength > 8 * 1024 * 1024) throw new Error("STUDIO_EXPORT_INVALID");
   return { bytes: [...new Uint8Array(buffer)], contentType: response.headers.get("content-type"), disposition: response.headers.get("content-disposition") };
 }

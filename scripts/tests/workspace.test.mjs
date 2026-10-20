@@ -252,10 +252,10 @@ test("Notebook Route는 Notebook ID를 실제 Product Workspace에 연결하고 
   assert.match(actualWorkspace, /getDocumentProcessingStatus/);
   assert.match(actualWorkspace, /askGroundedQuestion/);
   assert.match(actualWorkspace, /citationContentUrl/);
-  assert.match(authPane, /result\?\.data\?\.workspace_id/);
-  assert.match(authPane, /window\.location\.assign\("\/notebooks"\)/);
-  assert.match(authPane, /WORKSPACE_REQUIRED/);
-  assert.doesNotMatch(authPane, /error\.message|error\.stack|console\./);
+  assert.match(authPane, /getCurrentAuthSession\(\{ signal: controller.signal, expectedIdentity: result\?\.data \?\? \{\} \}\)/);
+  assert.match(authPane, /const destination = authEntryPath\(session\)/);
+  assert.match(authPane, /window\.location\.assign\(destination\)/);
+  assert.doesNotMatch(authPane, /window\.location\.assign\(result|error\.message|error\.stack|console\./);
   assert.match(uploadClient, /\/bff\/api\/workspaces\/\$\{encodeURIComponent\(workspaceId\)\}\/sources/);
   assert.match(uploadClient, /\/bff\/api\/workspaces\/\$\{encodeURIComponent\(workspaceId\)\}\/processing-runs\/\$\{encodeURIComponent\(processingRunId\)\}/);
   assert.doesNotMatch(`${legacyPage}\n${page}\n${actualWorkspace}\n${uploadClient}`, /https?:\/\/|localhost|127\.0\.0\.1|NEXT_PUBLIC_API_BASE_URL/i);
@@ -280,4 +280,14 @@ test("Breakpoint와 Control Target CSS는 M2-01 Token 정본에 고정된다", a
   assert.match(css, /@media \(max-width: 599px\)/);
   assert.deepEqual(tokens.breakpoints, {wide:{min:1440},desktop:{min:1024,max:1439},tablet:{min:600,max:1023},mobile:{max:599}});
   assert.deepEqual(tokens.target_size, {minimum:"24px",desktop_control:"32px",touch_control:"44px"});
+});
+
+test("Notebook Source pane은 전체 페이지 대신 세로 스크롤하며 가로 넘침과 scroll chaining을 막는다", async () => {
+  const css = await read("packages/ui/src/workspace.css");
+  const sourceRule = css.match(/\.adaptive-workspace\s+#product-pane-sources\s*\{([^}]*)\}/);
+  assert.ok(sourceRule, "Source pane 전용 overflow 규칙이 필요하다");
+  assert.match(sourceRule[1], /overflow-y:\s*auto\s*;/);
+  assert.match(sourceRule[1], /overflow-x:\s*hidden\s*;/);
+  assert.match(sourceRule[1], /overscroll-behavior-y:\s*contain\s*;/);
+  assert.match(css, /\.adaptive-workspace\s+\.workspace-pane\s*\{[^}]*overflow:\s*hidden\s*;/);
 });
