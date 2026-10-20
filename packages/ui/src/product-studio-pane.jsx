@@ -6,6 +6,7 @@ import { parseDocxBlock } from "./shared-docx-block.js";
 import { pptxBlockLabel } from "./shared-pptx-block.js";
 import { parseAudioSegment } from "./shared-audio-segment.js";
 import { secureUuid } from "./secure-uuid.js";
+import { StudioOutputIcon } from "./studio-output-icon.jsx";
 import {
   OUTPUT_TYPES, canConfirmGenerationSettings, canSubmitGeneration, confirmGenerationSettings, createStudioGenerationInput,
   mergeStudioVersion, selectOutputType, updateGenerationSettings,
@@ -648,11 +649,12 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered, initi
           {OUTPUT_TYPES.map((type) => <button className={`studio-type-tile tile-${TYPE_ICONS[type.id]}${type.generationUnavailable ? " studio-type-future" : ""}`} key={type.id} type="button"
             disabled={type.generationUnavailable === true || configurationBusy}
             onClick={() => { if (!type.generationUnavailable && !generationRequestRef.current && !revisionRequestRef.current && !actionRequestRef.current) setView((current) => current.pending ? current : selectOutputType(current, type.id)); }}>
-            {type.label}{type.generationUnavailable ? <small>현재 파일 생성 미지원</small> : null}
+            <StudioOutputIcon outputType={type.id} />
+            <span className="studio-type-label">{type.label}{type.generationUnavailable ? <small>현재 파일 생성 미지원</small> : null}</span>
           </button>)}
         </div>
         <section className="studio-library" aria-labelledby="stored-studio-outputs"><div className="studio-section-heading"><div><span className="section-kicker">LIBRARY</span><h3 id="stored-studio-outputs">저장된 산출물</h3></div><span className="library-count">{view.outputs.length}</span></div>
-          {view.outputs.length ? <ul>{view.outputs.map((output) => <li className="studio-library-row" key={output.studio_output_id}><span className={`library-type-icon tile-${TYPE_ICONS[output.output_type] ?? "document"}`} aria-hidden="true" /><span className="library-row-copy"><small className="library-output-type">{outputTypeLabel(output.output_type)}</small><button type="button" onClick={() => void openOutput(output)}>{output.title}</button><small>Source {output.source_count ?? output.source_version_ids?.length ?? 1} · Version {output.content_version ?? output.output_version_id ?? "-"}</small></span><span className={`output-status status-${output.status ?? "saved"}`}>{outputStatusLabel(output.status)}</span></li>)}</ul> : <div className="studio-empty"><span className="empty-icon" aria-hidden="true">◇</span><strong>아직 저장된 산출물이 없습니다.</strong><small>위 유형을 선택하면 근거가 결속된 산출물을 만들 수 있습니다.</small></div>}
+          {view.outputs.length ? <ul>{view.outputs.map((output) => <li className="studio-library-row" key={output.studio_output_id}><StudioOutputIcon outputType={output.output_type} className="library-type-icon" /><span className="library-row-copy"><small className="library-output-type">{outputTypeLabel(output.output_type)}</small><button type="button" onClick={() => void openOutput(output)}>{output.title}</button><small>Source {output.source_count ?? output.source_version_ids?.length ?? 1} · Version {output.content_version ?? output.output_version_id ?? "-"}</small></span><span className={`output-status status-${output.status ?? "saved"}`}>{outputStatusLabel(output.status)}</span></li>)}</ul> : <div className="studio-empty"><span className="empty-icon" aria-hidden="true">◇</span><strong>아직 저장된 산출물이 없습니다.</strong><small>위 유형을 선택하면 근거가 결속된 산출물을 만들 수 있습니다.</small></div>}
         </section>
       </div> : <section className="studio-config-view" data-studio-view="config" aria-labelledby="studio-config-title">
         <header className="studio-config-header"><button className="studio-back" type="button" disabled={configurationBusy} onClick={() => { if (!generationRequestRef.current && !revisionRequestRef.current && !actionRequestRef.current) setView((current) => current.pending ? current : ({ ...current, selectedOutputType: null, settingsConfirmed: false, settingsSnapshot: null })); }}>뒤로</button><div><span className="section-kicker">CREATE</span><h3 id="studio-config-title">{selected?.label} 설정</h3></div></header>
