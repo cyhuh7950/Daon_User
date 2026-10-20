@@ -34,3 +34,20 @@ def test_repository_uses_canonical_helper_and_never_serializes_secrets_or_raw_pa
     assert "Jsonb" in source
     assert "api_key" not in source.casefold()
     assert "credential" not in source.casefold()
+def test_optional_question_step_up_is_strict_in_http_and_persisted_payload():
+    import pytest
+    from pydantic import ValidationError
+    from daon_user_api.runtime import EgressPolicyVersionBody
+    from daon_user_api.egress_policy import EgressPolicyPayload, EgressPolicyError
+    from daon_user_api.egress_policy_postgres import PostgresEgressPolicyRepository
+    legacy = EgressPolicyPayload('allow_approved_external', ('external_api',), ('provider.example',),
+        'internal', 65536, True, True, 'organization_admin').as_dict()
+    assert PostgresEgressPolicyRepository._payload(legacy).question_step_up_required is True
+    for value in (False, True):
+        payload = {**legacy, 'question_step_up_required': value}
+        assert PostgresEgressPolicyRepository._payload(payload).question_step_up_required is value
+        assert EgressPolicyVersionBody(**payload, step_up_authorization_id='fixture').question_step_up_required is value
+    for value in (None, 'false', 0):
+        payload = {**legacy, 'question_step_up_required': value}
+        with pytest.raises(EgressPolicyError):PostgresEgressPolicyRepository._payload(payload)
+        with pytest.raises(ValidationError):EgressPolicyVersionBody(**payload, step_up_authorization_id='fixture')

@@ -304,6 +304,41 @@ def test_frozen_egress_and_run_snapshot_contain_only_safe_exact_model_metadata()
     selection.release()
 
 
+@pytest.mark.parametrize('required,changed', [(False,None), (True,None), (False,'policy_fingerprint'),
+    (False,'provider_payload_fingerprint'), (False,'deployment_id')])
+def test_policy_approved_authorization_requires_current_no_step_up_policy_and_exact_fingerprints(required, changed):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+    import hashlib
+    policy = replace(Policy().get_effective(None), question_step_up_required=required)
+    writes = []
+    class Connection:
+        def execute(self, sql, params=()):
+            writes.append((sql, params))
+            return _Result()
+    class Store:
+        @contextmanager
+        def _transaction(self, context):yield Connection()
+    selection = TextModelSelection('UPSTAGE','https://provider.example','profile','deployment','model',1)
+    approved = dict(authorization_mode='policy_approved', policy_fingerprint=policy.fingerprint,
+        provider_payload_fingerprint='sha256:'+hashlib.sha256(b'{}').hexdigest(),
+        provider_kind='external_api', deployment_id='deployment')
+    if changed:approved[changed] = 'changed'
+    authorizer = PostgresQuestionEgressAuthorizer(Store(), SimpleNamespace(get_effective=lambda ctx:policy))
+    args = dict(run_id='run-policy-mode',source_id=None,source_version_id=None,selection=selection,
+        provider_payload=b'{}',approved_authorization=approved,question='안녕',context_mode='general_ungrounded',
+        request_fingerprint='sha256:'+'b'*64)
+    if required or changed:
+        with pytest.raises(QuestionAnsweringError,match='EGRESS_POLICY_DENIED'):
+            authorizer.authorize(QuestionContext('tenant','workspace','actor','trace','policy'),**args)
+    else:
+        result = authorizer.authorize(QuestionContext('tenant','workspace','actor','trace','policy'),**args)
+        assert result['frozen_routing_context']['authorization_mode'] == 'policy_approved'
+        assert result['frozen_routing_context']['question_step_up_required'] is False
+        audit = [params[-1].obj for sql, params in writes if "INSERT INTO audit_events" in sql][-1]
+        assert audit['authorization_mode'] == 'policy_approved'
+
+
 def test_approval_fails_closed_when_credential_or_catalog_version_changes() -> None:
     selection = ResolvedModel(
         "eoul-primary", "EOUL_GATEWAY", "assistant-default", "text_generation",

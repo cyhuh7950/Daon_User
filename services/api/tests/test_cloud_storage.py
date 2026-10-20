@@ -30,6 +30,32 @@ DEFAULT_DENY_DIGEST = "caf695f3de7e3e05feb024b3ff4b8b14cbfad5318b885ac15d8e4da25
 
 
 class CloudStorageContractTests(unittest.TestCase):
+    def test_development_seed_uses_registered_payload_for_both_scopes_and_default_stays_deny(self):
+        import json
+        from types import SimpleNamespace
+        for enabled, valid in ((True, True), (False, True), (True, False)):
+            with self.subTest(enabled=enabled, valid=valid):
+                calls = []
+                def execute(query, params=()):
+                    calls.append((query, params))
+                    rows = [("OPENAI", "OPENAI", "https://api.openai.com/v1" if valid else "https://other.example/v1", True)]
+                    return SimpleNamespace(fetchall=lambda: rows)
+                store = object.__new__(PostgresCloudStore)
+                store._development_egress_defaults = enabled
+                @contextmanager
+                def transaction(ctx):yield SimpleNamespace(execute=execute)
+                store._transaction = transaction
+                store.seed_scope(CloudAccessContext("tenant", "workspace", "actor", "bootstrap"))
+                versions = [params for query, params in calls if "INSERT INTO egress_policy_versions" in query]
+                self.assertEqual(len(versions), 2)
+                for params in versions:
+                    values = [json.loads(value) for value in params if isinstance(value, str) and value.startswith('{"allowed_destinations"')]
+                    self.assertEqual(len(values), 2)
+                    self.assertEqual(values[0]["mode"], "allow_approved_external" if enabled and valid else "deny_external")
+                self.assertTrue(all("NOT EXISTS" in query and "ON CONFLICT DO NOTHING" in query
+                    for query, _ in calls if "INSERT INTO egress_policy_" in query))
+
+
     def test_readiness_0072_requires_exact_new_catalog_guard(self):
         self.assertTrue(callable(getattr(PostgresCloudStore,"_document_readiness_storage_is_protected",None)),
                         "0072는 새 원장/함수의 보호 검증 없이 정상 revision으로 수용하면 안 됨")

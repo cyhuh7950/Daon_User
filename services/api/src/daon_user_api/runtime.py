@@ -1011,6 +1011,7 @@ class EgressPolicyVersionBody(BaseModel):
     masking_required: bool
     redaction_required: bool
     required_approver: str
+    question_step_up_required: bool = Field(default=True, strict=True)
     step_up_authorization_id: str = Field(min_length=1, max_length=4096)
 
 
@@ -2278,6 +2279,10 @@ def _organization_provisioner(dependencies: RuntimeDependencies) -> Any:
             data_area="cloud_sync", cost_limit_cents=1000,
             now=datetime.now(timezone.utc),
         )
+        if dependencies.cloud_store is not None:
+            dependencies.cloud_store.seed_scope(CloudAccessContext(
+                tenant_id, f"workspace-{identifier}", str(request.applicant_user_id), "workspace.bootstrap",
+            ))
     return provision
 
 
@@ -4975,7 +4980,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                     prepared=prepared, policy_fingerprint=effective.fingerprint,
                     idempotency_key=idempotency_key,
                 )
-                if not (
+                if getattr(effective, "question_step_up_required", True) is not False and not (
                     dependencies.settings.dev_auth_bypass
                     and dependencies.settings.profile in {"test", "development"}
                 ):
@@ -5006,6 +5011,8 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                     and dependencies.settings.profile in {"test", "development"}
                 ):
                     approved_authorization["authorization_mode"] = "development_auth_bypass"
+                elif getattr(effective, "question_step_up_required", True) is False:
+                    approved_authorization["authorization_mode"] = "policy_approved"
         answer = await asyncio.to_thread(
             question_answering_service.ask,
             QuestionContext(
@@ -7408,6 +7415,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 masking_required=body.masking_required,
                 redaction_required=body.redaction_required,
                 required_approver=body.required_approver,
+                question_step_up_required=body.question_step_up_required,
             ),
             expected_etag=if_match,
             idempotency_key=idempotency_key,
@@ -7992,6 +8000,16 @@ def _build_recovery_service(settings: RuntimeSettings, object_storage):
         raise
 
 
+def _build_cloud_store(settings: RuntimeSettings) -> PostgresCloudStore | None:
+    from .development_egress_defaults import development_stage_enabled
+    if settings.cloud_database_dsn is None:
+        return None
+    return PostgresCloudStore(settings.cloud_database_dsn,
+        organization_admin_v2_enabled=settings.organization_admin_v2_enabled,
+        notification_inbox_enabled=settings.notification_inbox_enabled,
+        development_egress_defaults=development_stage_enabled(settings.profile, settings.development_stage))
+
+
 def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
     if settings.database_path is None:
         raise ValueError("DAON_API_DATABASE_PATH_REQUIRED")
@@ -8069,12 +8087,7 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         audit_store=audit_store,
         clock=lambda: datetime.now(timezone.utc),
     )
-    cloud_store = (
-        None
-        if settings.cloud_database_dsn is None
-        else PostgresCloudStore(settings.cloud_database_dsn, organization_admin_v2_enabled=settings.organization_admin_v2_enabled,
-            notification_inbox_enabled=settings.notification_inbox_enabled)
-    )
+    cloud_store = _build_cloud_store(settings)
     document_readiness_repository = _build_document_readiness_runtime(cloud_store, settings)
     provider_connection_service = None
     provider_health_settings_service = None

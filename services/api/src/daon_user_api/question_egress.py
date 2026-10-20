@@ -305,11 +305,15 @@ class PostgresQuestionEgressAuthorizer:
             approved_authorization is not None
             and approved_authorization.get("authorization_mode") == "development_auth_bypass"
         )
-        approval_exact = development_auth_bypass or self._approval_matches(
+        policy_approved = (
+            approved_authorization is not None
+            and approved_authorization.get("authorization_mode") == "policy_approved"
+        )
+        approval_exact = development_auth_bypass or (self._approval_matches(
             approved_authorization, selection,
             policy_fingerprint=effective.fingerprint,
             payload_fingerprint=payload_fingerprint,
-        )
+        ) and (not policy_approved or getattr(effective, "question_step_up_required", True) is False))
         approver_unavailable = external and not approval_exact and not self._development_auth_bypass
         external_scope_allowed = external_question_policy_matches(
             effective, provider_kind=provider_kind, destination=destination,
@@ -361,6 +365,7 @@ class PostgresQuestionEgressAuthorizer:
             "approved_request_fingerprint": None if approved_authorization is None
             else approved_authorization.get("request_fingerprint"),
             "authorization_mode": "development_auth_bypass" if development_auth_bypass
+            else "policy_approved" if policy_approved and approval_exact
             else "step_up_approved" if approval_exact else "none",
         }
         if (
@@ -495,6 +500,7 @@ class PostgresQuestionEgressAuthorizer:
                             "routing_decision_id": routing_decision_id,
                             "policy_fingerprint": effective.fingerprint,
                             "safe_reason": reason,
+                            **({"authorization_mode": "policy_approved"} if policy_approved and approval_exact else {}),
                             **self._safe_model_context(selection),
                             **observation,
                         }),

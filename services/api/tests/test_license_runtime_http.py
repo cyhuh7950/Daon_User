@@ -142,6 +142,34 @@ def test_development_scope_is_seeded_in_cloud_storage_when_configured():
     ]
 
 
+def test_cloud_store_development_defaults_use_stage_instead_of_auth_bypass(monkeypatch):
+    from types import SimpleNamespace
+    from daon_user_api import runtime
+    calls = []
+    monkeypatch.setattr(runtime, 'PostgresCloudStore', lambda dsn, **kwargs: calls.append((dsn, kwargs)) or kwargs)
+    for profile, stage, expected in (("production", True, True), ("development", False, False),
+            ("test", None, True), ("production", None, False)):
+        settings = SimpleNamespace(profile=profile, development_stage=stage, dev_auth_bypass=False,
+            cloud_database_dsn='fixture', organization_admin_v2_enabled=False, notification_inbox_enabled=False)
+        store = runtime._build_cloud_store(settings)
+        assert store['development_egress_defaults'] is expected
+    assert len(calls) == 4
+
+
+def test_normal_organization_provisioning_seeds_cloud_policies_after_auth_scope():
+    from types import SimpleNamespace
+    from daon_user_api.runtime import _organization_provisioner
+    events = []
+    dependencies = SimpleNamespace(
+        identity_repository=SimpleNamespace(add_tenant_membership=lambda **kwargs: events.append('identity')),
+        authorization_repository=SimpleNamespace(bootstrap_workspace=lambda **kwargs: events.append('authorization')),
+        cloud_store=SimpleNamespace(seed_scope=lambda context: events.append(context)))
+    _organization_provisioner(dependencies)(SimpleNamespace(requested_org_identifier='approved-org', applicant_user_id='owner'))
+    assert events[:2] == ['identity', 'authorization']
+    assert (events[2].tenant_id, events[2].workspace_id, events[2].actor_id, events[2].capability) == (
+        'tenant-approved-org', 'workspace-approved-org', 'owner', 'workspace.bootstrap')
+
+
 async def _exercise_license_http():
     with tempfile.TemporaryDirectory() as directory:
         db_path = Path(directory) / "runtime.sqlite3"
