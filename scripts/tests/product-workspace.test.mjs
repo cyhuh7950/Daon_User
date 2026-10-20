@@ -10,12 +10,25 @@ import {
   createProductWorkspaceState,
   canCreateGroundedReport,
   projectQuestionFailureState,
+  questionFailureMessage,
 } from "../../packages/ui/src/product-workspace-model.js";
 import { classifyConversationIntent, buildSourceScopeMismatch } from "../../packages/ui/src/conversation-intent.js";
 import { uploadSource } from "../../apps/web/lib/source-upload-api.js";
 import * as sourceRetryApi from "../../apps/web/lib/source-upload-api.js";
 import { citationContentUrl } from "../../apps/web/lib/question-answering-api.js";
 import { unbindWorkspaceSource } from "../../apps/web/lib/product-workspace-api.js";
+
+test("질문 정책 차단 안내는 입력 수정 대신 조직·Workspace 정책 원인을 표시한다", () => {
+  assert.equal(questionFailureMessage("EGRESS_POLICY_DENIED"),
+    "조직 또는 Workspace의 외부 전송 정책으로 차단되었습니다. 정책 설정을 확인해 주세요. (EGRESS_POLICY_DENIED)");
+  for (const code of ["EGRESS_POLICY_UNAVAILABLE", "EGRESS_POLICY_STALE"]) {
+    assert.equal(questionFailureMessage(code),
+      `조직 또는 Workspace의 외부 전송 정책을 확인할 수 없습니다. 관리자에게 정책 상태 확인을 요청해 주세요. (${code})`);
+    assert.doesNotMatch(questionFailureMessage(code), /입력|제출/u);
+  }
+  assert.equal(questionFailureMessage("QUESTION_FAILED"),
+    "질문 실행에 실패했습니다. (QUESTION_FAILED) 입력을 확인한 뒤 다시 제출해 주세요.");
+});
 
 test("actual Web adapter는 UI Source를 exact 두 ID로 투영해 Notebook 제거를 요청한다", async () => {
   const root = path.resolve(import.meta.dirname, "../..");

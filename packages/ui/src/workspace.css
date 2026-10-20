@@ -1,5 +1,8 @@
 @import "./egress-policy.css";
 
+.egress-policy-pane form > label.egress-policy-check { display: flex; align-items: center; gap: 8px; }
+.egress-policy-pane form > label.egress-policy-check input[type="checkbox"] { width: 16px; min-width: 16px; height: 16px; min-height: 16px; flex: 0 0 16px; margin: 0; padding: 0; }
+
 .source-legacy-input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 
 * { box-sizing: border-box; }

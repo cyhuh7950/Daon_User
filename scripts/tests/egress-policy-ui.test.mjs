@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import {
   createEgressPolicyDraft,
   egressPolicyReducer,
+  egressPolicyMode, egressPolicyModeLabel, selectEgressPolicyMode,
 } from "../../packages/ui/src/egress-policy-model.js";
 import {
   getEffectiveEgressPolicy,
@@ -12,6 +13,61 @@ import {
   saveOrganizationEgressPolicy,
   saveWorkspaceEgressPolicy,
 } from "../../apps/web/lib/egress-policy-api.js";
+
+test("외부 전송의 세 선택은 기존 mode와 선택 boolean으로 왕복하고 정책 저장 인증을 유지한다", async () => {
+  const without = selectEgressPolicyMode(createEgressPolicyDraft({ allowed_provider_kinds: ["external_api"],
+    allowed_destinations: ["provider.example"], max_bytes: 65536 }), "allow_external");
+  const stepped = selectEgressPolicyMode(without, "allow_approved_external");
+  assert.deepEqual(stepped.allowed_destinations, without.allowed_destinations);
+  assert.equal(stepped.max_bytes, without.max_bytes);
+  assert.equal(stepped.question_step_up_required, true);
+  const denied = selectEgressPolicyMode(without, "deny_external");
+  assert.equal(denied.question_step_up_required, true);
+  assert.deepEqual(denied.allowed_provider_kinds, []);
+  assert.deepEqual(denied.allowed_destinations, []);
+  assert.equal(denied.max_bytes, 0);
+  for (const mode of ["deny_external", "allow_approved_external", "allow_external"]) {
+    const draft = selectEgressPolicyMode(createEgressPolicyDraft(), mode);
+    assert.equal(egressPolicyMode(draft), mode);
+    assert.match(egressPolicyModeLabel(draft), /외부 전송/u);
+    const calls = [];
+    await saveWorkspaceEgressPolicy({ workspaceId: "workspace-1", etag: '"ws:1"',
+      idempotencyKey: "mode-save-0001", draft, sensitive: { currentPassword: "fixture" },
+      fetchImpl: async (url, init) => {
+        calls.push({ url, body: JSON.parse(init.body) });
+        return Response.json({ data: url.endsWith("step-up") ? { step_up_authorization: "fixture-token" } : {} });
+      } });
+    assert.equal(calls[0].url, "/bff/api/session/step-up");
+    assert.equal(calls[1].body.mode, mode === "allow_external" ? "allow_approved_external" : mode);
+    assert.equal(Object.hasOwn(calls[1].body, "question_step_up_required"), mode === "allow_external");
+    if (mode === "allow_external") assert.equal(calls[1].body.question_step_up_required, false);
+  }
+  assert.equal(egressPolicyMode(createEgressPolicyDraft({ mode: "allow_approved_external" })), "allow_approved_external");
+});
+
+test("정책 parser는 선택 인증 boolean만 허용하고 잘못된 type·unknown·deny false를 거부한다", async () => {
+  const allow = createEgressPolicyDraft({ mode: "allow_approved_external" });
+  const base = { ...allow, organization_policy_version_id: "op", organization_binding_id: "ob",
+    workspace_policy_version_id: "wp", workspace_binding_id: "wb", fingerprint: `sha256:${"a".repeat(64)}`,
+    organization_etag: '"org:1"', workspace_etag: '"ws:1"', parent_locked: false,
+    organization_policy: allow, workspace_policy: allow };
+  for (const required of [true, false]) {
+    const value = { ...base, question_step_up_required: required,
+      organization_policy: { ...allow, question_step_up_required: required },
+      workspace_policy: { ...allow, question_step_up_required: required } };
+    const read = await getEffectiveEgressPolicy({ workspaceId: "workspace-1", fetchImpl: async () => Response.json({ data: value }) });
+    assert.equal(read.data.question_step_up_required, required);
+    assert.equal(egressPolicyMode(read.data), required ? "allow_approved_external" : "allow_external");
+  }
+  for (const value of [null, "false", 0]) {
+    await assert.rejects(getEffectiveEgressPolicy({ workspaceId: "workspace-1", fetchImpl: async () =>
+      Response.json({ data: { ...base, question_step_up_required: value } }) }), /EGRESS_POLICY_RESPONSE_INVALID/u);
+  }
+  for (const extra of [{ unknown: false }, { mode: "deny_external", question_step_up_required: false }]) {
+    await assert.rejects(getEffectiveEgressPolicy({ workspaceId: "workspace-1", fetchImpl: async () =>
+      Response.json({ data: { ...base, ...extra } }) }), /EGRESS_POLICY_RESPONSE_INVALID/u);
+  }
+});
 
 test("조직 정책 화면은 Notebook으로 이동 링크를 제공한다", async () => {
   const source = await readFile(new URL("../../apps/web/app/settings/organization/page.jsx", import.meta.url), "utf8");

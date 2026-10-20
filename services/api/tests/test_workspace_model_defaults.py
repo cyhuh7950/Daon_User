@@ -104,6 +104,24 @@ def readiness_metadata(monkeypatch):
         grant=grant, auth_calls=auth_calls, read=read)
 
 
+def test_readiness_metadata_accepts_optional_strict_question_step_up_without_widening_other_fields(readiness_metadata):
+    from daon_user_api.workspace_model_defaults import WorkspaceModelDefaultsError
+    f = readiness_metadata
+    f.db.egress.update(mode='allow_approved_external', allowed_provider_kinds=['external_api'],
+        allowed_destinations=['provider.example'], max_bytes=65536)
+    legacy = f.read(f.db, f.context, f.wait)
+    f.db.egress['question_step_up_required'] = True
+    assert f.read(f.db, f.context, f.wait).frozen_context_json == legacy.frozen_context_json
+    f.db.egress['question_step_up_required'] = False
+    without = f.read(f.db, f.context, f.wait)
+    assert without.frozen_context_json != legacy.frozen_context_json
+    assert without.eligibility.egress_state == legacy.eligibility.egress_state
+    for key, value in [('question_step_up_required', None), ('question_step_up_required', 'false'),
+            ('question_step_up_required', 0), ('unexpected', True)]:
+        db = deepcopy(f.db);db.egress[key] = value
+        with pytest.raises(WorkspaceModelDefaultsError):f.read(db, f.context, f.wait)
+
+
 def test_readiness_metadata_refresh_counters_do_not_change_semantic_frozen_digest(readiness_metadata):
     f = readiness_metadata
     first = f.read(f.db, f.context, f.wait)

@@ -138,6 +138,43 @@ class S18QuestionAuthorizationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.json()["error"]["code"], "STEP_UP_REQUIRED")
         self.assertEqual((self.service.calls, self.consumption_count()), (0, 0))
 
+    async def test_policy_approved_question_has_no_step_up_and_keeps_exact_prepared_binding(self):
+        self.effective.question_step_up_required = False
+        observed = []
+        original = self.service.ask
+        def ask(context, **kwargs):
+            observed.append(kwargs['approved_authorization'])
+            return original(context, **kwargs)
+        self.service.ask = ask
+        response = await self.post()
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual((self.service.calls, self.consumption_count()), (1, 0))
+        self.assertEqual(observed[0]['authorization_mode'], 'policy_approved')
+        self.assertEqual(observed[0]['policy_fingerprint'], self.effective.fingerprint)
+        self.assertEqual(observed[0]['connection_id'], self.service.selection.connection_id)
+        self.effective.question_step_up_required = True
+        response = await self.post(key='question-s18-new-policy')
+        self.assertEqual(response.json()['error']['code'], 'STEP_UP_REQUIRED')
+        self.assertEqual(self.service.calls, 1)
+
+    async def test_policy_approved_question_still_denies_destination_and_missing_permission(self):
+        from unittest.mock import patch
+        self.effective.question_step_up_required = False
+        self.effective.allowed_destinations = ('other.example',)
+        denied = await self.post()
+        self.assertEqual(denied.json()['error']['code'], 'EGRESS_POLICY_DENIED')
+        self.assertEqual(self.service.calls, 0)
+        self.effective.allowed_destinations = ('provider.example.com',)
+        original = self.dependencies.authorization_service.authorize_action
+        def authorize(**kwargs):
+            if kwargs.get('requested_permissions'):
+                raise AuthorizationError('ACTION_DENIED', 403)
+            return original(**kwargs)
+        with patch.object(self.dependencies.authorization_service, 'authorize_action', side_effect=authorize):
+            denied = await self.post()
+        self.assertEqual(denied.status_code, 403)
+        self.assertEqual((self.service.calls, self.consumption_count()), (0, 0))
+
     async def test_s18_question_real_grant_consumed_once_success_replay_and_policy_recheck(self):
         grant = await self.grant()
         response = await self.post(body={**BODY, "step_up_authorization_id": grant["step_up_authorization_id"]})

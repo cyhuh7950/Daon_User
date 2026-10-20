@@ -312,7 +312,7 @@ class PostgresCloudStore:
     """A bounded pool and explicit repository port; callers supply verified scope."""
 
     def __init__(self, dsn: str, *, min_size: int = 1, max_size: int = 4, organization_admin_v2_enabled: bool = False,
-                 notification_inbox_enabled: bool = False) -> None:
+                 notification_inbox_enabled: bool = False, development_egress_defaults: bool = False) -> None:
         if not isinstance(dsn, str) or not dsn:
             raise ValueError("CLOUD_DATABASE_DSN_REQUIRED")
         self._dsn = dsn
@@ -323,6 +323,9 @@ class PostgresCloudStore:
             raise ValueError("NOTIFICATION_INBOX_FLAG_INVALID")
         # L1 내부 준비 상태 경계다. 공개 환경변수나 운영 발행 경로를 신설하지 않는다.
         self._notification_inbox_enabled = notification_inbox_enabled
+        if type(development_egress_defaults) is not bool:
+            raise ValueError("DEVELOPMENT_EGRESS_DEFAULTS_FLAG_INVALID")
+        self._development_egress_defaults = development_egress_defaults
         self._open_lock = threading.Lock()
         self._pool = ConnectionPool[tuple[Any, ...]](
             conninfo=dsn,
@@ -858,6 +861,12 @@ class PostgresCloudStore:
 
     def seed_scope(self, context: CloudAccessContext) -> None:
         with self._transaction(context) as connection:
+            canonical_text, digest = _DEFAULT_DENY_CANONICAL_TEXT, _DEFAULT_DENY_DIGEST
+            if getattr(self, "_development_egress_defaults", False) is True:
+                from .development_egress_defaults import registered_development_payload
+                payload = registered_development_payload(connection)
+                if payload is not None:
+                    canonical_text, digest = payload.canonical_text, payload.digest_sha256
             connection.execute(
                 "INSERT INTO tenants (tenant_id, display_name) VALUES (%s, %s) ON CONFLICT DO NOTHING",
                 (context.tenant_id, context.tenant_id),
@@ -889,9 +898,9 @@ class PostgresCloudStore:
                     context.tenant_id,
                     context.tenant_id,
                     context.tenant_id,
-                    _DEFAULT_DENY_CANONICAL_TEXT,
-                    _DEFAULT_DENY_CANONICAL_TEXT,
-                    _DEFAULT_DENY_DIGEST,
+                    canonical_text,
+                    canonical_text,
+                    digest,
                     context.tenant_id,
                     context.tenant_id,
                     context.tenant_id,
@@ -936,9 +945,9 @@ class PostgresCloudStore:
                     context.workspace_id,
                     context.tenant_id,
                     context.workspace_id,
-                    _DEFAULT_DENY_CANONICAL_TEXT,
-                    _DEFAULT_DENY_CANONICAL_TEXT,
-                    _DEFAULT_DENY_DIGEST,
+                    canonical_text,
+                    canonical_text,
+                    digest,
                     context.tenant_id,
                     context.workspace_id,
                     context.tenant_id,

@@ -49,6 +49,7 @@ class PostgresEgressPolicyRepository:
                 masking_required=cast(bool, value["masking_required"]),
                 redaction_required=cast(bool, value["redaction_required"]),
                 required_approver=str(value["required_approver"]),
+                question_step_up_required=value.get("question_step_up_required", True),
             )
         except (KeyError, TypeError, ValueError):
             raise EgressPolicyError("EGRESS_POLICY_STALE", 503) from None
