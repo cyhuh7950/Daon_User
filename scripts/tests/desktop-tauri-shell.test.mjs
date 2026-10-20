@@ -681,10 +681,21 @@ test("Web Product Workspace는 actual Adapter 호출을 보존하고 loading·un
     };
     await act(async () => { root.render(createElement(workspaceModule.ActualWorkspace, { workspaceId: "workspace-1", adapter: failingAdapter })); });
     assert.equal(findElements(container, (node) => node.getAttribute("data-product-workspace-state") === "empty").length, 1);
+    const addSource = findElements(container, node => node.tagName === "BUTTON" && node.getAttribute("class") === "source-add-button")[0];
+    assert.ok(addSource);
+    await act(async () => addSource.dispatchEvent(new MinimalEvent("click")));
     const fileInput = findElements(container, (node) => node.tagName === "INPUT" && (node.getAttribute("type") ?? node.type) === "file")[0];
     assert.ok(fileInput, "실제 PDF 선택 input이 필요하다");
     fileInput.files = [{ name: "failure.pdf", type: "application/pdf", size: 128 }];
     await act(async () => { fileInput.dispatchEvent(new MinimalEvent("change")); });
+    assert.equal(findElements(container, (node) => node.getAttribute("data-product-workspace-state") === "empty").length, 1);
+    assert.match(container.textContent, /Source를 등록하지 못했습니다.*PDF_UPLOAD_FAILED/u);
+    assert.doesNotMatch(container.textContent, /Source를 불러오지 못했습니다/u);
+    await act(async () => { root.unmount(); });
+    root = createRoot(container);
+    await act(async () => { root.render(createElement(workspaceModule.ActualWorkspace, {
+      workspaceId: "workspace-1", adapter: { ...failingAdapter, listSources: async () => { throw new Error("SOURCE_LIST_FAILED"); } },
+    })); });
     assert.equal(findElements(container, (node) => node.getAttribute("data-product-workspace-state") === "error").length, 1);
     assert.match(container.textContent, /Source를 불러오지 못했습니다/u);
   } finally {

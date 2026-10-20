@@ -31,7 +31,6 @@ const reviewedHistoricalDocuments = new Map([
   ["docs/04_test_reports/release_1/R1-ROUTE-DEFAULT-main-qa.md", "8c7714117ce3dbd9f75537e2bcbb350af759c5f05ae073ed13abcf27d90d67ac"],
   ["docs/04_test_reports/release_1/R1-ROUTE-MODELS_progress.md", "906873715820c1ea9c066abe0684490215f4106712c13990c6d0e1ff41cf9ab2"],
   ["docs/04_test_reports/release_1/R1-ROUTER-AUTO_progress.md", "4f73c0209249476da18e154bc5782e5ce15ca290417230a32ba0d48ee0e954db"],
-  ["docs/DEVELOPMENT_ENVIRONMENT.md", "95850762af2422d4031e4c39a4f99712cd8e3520a147410d816641dc0a68fee7"],
   ["docs/superpowers/plans/2026-09-19-provider-health-monitor.md", "0f677e99b83d3ff812be52660d00b946b7a859376a5d61e845aa8fd34225c778"],
   ["docs/superpowers/plans/2026-09-20-user-management-settings-ui.md", "4d333d67fc1a3e8a383d2c873c104dbadd48c9b10583494b54ab3350fa095f7b"],
   ["docs/superpowers/plans/2026-10-03-default-provider-templates.md", "ffa21958d89f88e79ca3b3a259b75e8227cc59cf06d5562152a0e2eafc397340"],
@@ -87,7 +86,23 @@ function isNonManualDocument(relativePath, contentBytes, stagedBytes) {
   return documentExtensions.has(path.posix.extname(relativePath).toLowerCase());
 }
 
-test("only the 19 reviewed document paths are grandfathered", () => {
+function forbiddenTrackedDocuments(tracked, classify = isNonManualDocument) {
+  return tracked.filter((relativePath) => classify(relativePath));
+}
+
+test("an untracked private environment file is ignored but tracked or staged copies are rejected", () => {
+  const privatePath = "docs/DEVELOPMENT_ENVIRONMENT.md";
+  const accessed = [];
+  const classify = (relativePath) => {
+    accessed.push(relativePath);
+    return isNonManualDocument(relativePath, Buffer.from("fixture"));
+  };
+  assert.deepEqual(forbiddenTrackedDocuments(["docs/manual/example.md"], classify), []);
+  assert.deepEqual(accessed, ["docs/manual/example.md"]);
+  assert.deepEqual(forbiddenTrackedDocuments(["docs/manual/example.md", privatePath], classify), [privatePath]);
+});
+
+test("only the 18 reviewed document paths are grandfathered", () => {
   const reviewed = [
     "design_change.md",
     "docs/04_test_reports/release_1/R1-DEFAULT-PROVIDERS_progress.md",
@@ -96,7 +111,6 @@ test("only the 19 reviewed document paths are grandfathered", () => {
     "docs/04_test_reports/release_1/R1-ROUTE-DEFAULT-main-qa.md",
     "docs/04_test_reports/release_1/R1-ROUTE-MODELS_progress.md",
     "docs/04_test_reports/release_1/R1-ROUTER-AUTO_progress.md",
-    "docs/DEVELOPMENT_ENVIRONMENT.md",
     "docs/superpowers/plans/2026-09-19-provider-health-monitor.md",
     "docs/superpowers/plans/2026-09-20-user-management-settings-ui.md",
     "docs/superpowers/plans/2026-10-03-default-provider-templates.md",
@@ -110,7 +124,7 @@ test("only the 19 reviewed document paths are grandfathered", () => {
     "docs/superpowers/specs/2026-10-04-router-auto-model-design.md",
   ];
 
-  assert.equal(reviewed.length, 19);
+  assert.equal(reviewed.length, 18);
   assert.deepEqual([...reviewedHistoricalDocuments.keys()], reviewed);
   for (const relativePath of reviewed) {
     assert.equal(
@@ -133,6 +147,15 @@ test("only the 19 reviewed document paths are grandfathered", () => {
   assert.equal(isNonManualDocument("apps/web/public/manual/example.pdf"), false);
 });
 
+test("development environment documents are forbidden regardless of working or staged contents", () => {
+  const relativePath = "docs/DEVELOPMENT_ENVIRONMENT.md";
+  assert.equal(reviewedHistoricalDocuments.has(relativePath), false);
+  const reviewedBytes = Buffer.from("historical environment configuration");
+  assert.equal(isNonManualDocument(relativePath, reviewedBytes, reviewedBytes), true);
+  assert.equal(isNonManualDocument(relativePath, Buffer.from("private local configuration"), reviewedBytes), true);
+  assert.equal(isNonManualDocument(relativePath, reviewedBytes, Buffer.from("new staged configuration")), true);
+});
+
 test("a content change to any grandfathered document requires review", () => {
   for (const relativePath of reviewedHistoricalDocuments.keys()) {
     const current = readReviewedWorkingOrIndexBytes(relativePath);
@@ -142,14 +165,14 @@ test("a content change to any grandfathered document requires review", () => {
 });
 
 test("a staged change cannot hide behind unchanged working content", () => {
-  const relativePath = "docs/DEVELOPMENT_ENVIRONMENT.md";
+  const relativePath = "docs/04_test_reports/release_1/R1-ROUTER-AUTO_progress.md";
   const current = readFileSync(path.join(root, relativePath));
   const staged = Buffer.concat([Buffer.from(current.toString("utf8").replace(/\r\n/g, "\n")), Buffer.from("\nreview-required\n")]);
   assert.equal(isNonManualDocument(relativePath, current, staged), true);
 });
 
 test("the same Git document bytes pass with LF checkout line endings", () => {
-  const relativePath = "docs/DEVELOPMENT_ENVIRONMENT.md";
+  const relativePath = "docs/04_test_reports/release_1/R1-ROUTER-AUTO_progress.md";
   const canonical = Buffer.from(readFileSync(path.join(root, relativePath)).toString("utf8").replace(/\r\n/g, "\n"));
   assert.equal(isNonManualDocument(relativePath, canonical, canonical), false);
 });
@@ -162,10 +185,7 @@ test("public Git tracks manuals but excludes every other document and keystore",
     .split("\0")
     .filter(Boolean);
 
-  const forbidden = tracked.filter(
-    (relativePath) =>
-      isNonManualDocument(relativePath),
-  );
+  const forbidden = forbiddenTrackedDocuments(tracked);
 
   const trackedSet = new Set(tracked);
   assert.deepEqual(
