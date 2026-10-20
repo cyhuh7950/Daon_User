@@ -164,8 +164,11 @@ class QuestionAdapterRegistry:
             )
         else:
             raise ValueError("TEXT_PROVIDER_UNAVAILABLE")
+        payload=adapter.general_provider_payload(request, selection)
+        if selection.provider_code == "OLLAMA":
+            payload=adapter.prepare_general_payload(request, selection, payload)
         return self.Prepared(
-            request, selection, adapter, adapter.general_provider_payload(request, selection),
+            request, selection, adapter, payload,
         )
 
     def generate_general(self, prepared: "QuestionAdapterRegistry.Prepared") -> GroundedTextResult:
