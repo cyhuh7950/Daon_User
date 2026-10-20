@@ -687,8 +687,11 @@ def read_document_readiness_policy(connection, context, wait, *, settings=None) 
         for scope, payload in policy_rows:
             if scope not in egress or egress[scope] is not None:
                 raise ValueError
-            _readiness_metadata_object(payload, ("mode", "allowed_provider_kinds", "allowed_destinations", "classification",
-                "max_bytes", "masking_required", "redaction_required", "required_approver"))
+            policy_keys = ("mode", "allowed_provider_kinds", "allowed_destinations", "classification",
+                "max_bytes", "masking_required", "redaction_required", "required_approver")
+            if isinstance(payload, dict) and "question_step_up_required" in payload:
+                policy_keys += ("question_step_up_required",)
+            _readiness_metadata_object(payload, policy_keys)
             if type(payload["allowed_provider_kinds"]) is not list or type(payload["allowed_destinations"]) is not list:
                 raise ValueError
             value = EgressPolicyPayload(**{**payload, "allowed_provider_kinds": tuple(sorted(payload["allowed_provider_kinds"])),
