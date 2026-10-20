@@ -1589,7 +1589,12 @@ test("BFF는 Workspace 운영상태 GET만 same-origin 안전 경로로 전달�
   const response = await proxy(new Request(
     "https://app.example.com/bff/api/workspaces/workspace-001/operations/status?secret=blocked",
   ), ["workspaces", "workspace-001", "operations", "status"]);
-  assert.equal(response.status, 200);
+  assert.equal(response.status, 400);
+  assert.deepEqual(captured, []);
+  const allowed = await proxy(new Request(
+    "https://app.example.com/bff/api/workspaces/workspace-001/operations/status",
+  ), ["workspaces", "workspace-001", "operations", "status"]);
+  assert.equal(allowed.status, 200);
   assert.deepEqual(captured, [{
     url: "https://api.example.com/api/v1/workspaces/workspace-001/operations/status",
     method: "GET",

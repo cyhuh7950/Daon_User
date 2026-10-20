@@ -8,7 +8,8 @@ const read = (path) => readFile(path, "utf8");
 
 test("login success enters Notebook Home without selecting a Notebook", async () => {
   const auth = await read("apps/web/lib/auth-pane.jsx");
-  assert.match(auth, /window\.location\.assign\("\/notebooks"\)/u);
+  assert.match(auth, /getCurrentAuthSession/u);
+  assert.match(auth, /window\.location\.assign\(destination\)/u);
   assert.doesNotMatch(auth, /window\.location\.assign\(`\/workspaces\//u);
 });
 
@@ -16,8 +17,8 @@ test("root landing sends an existing authenticated session to Notebook Home", as
   const page = await read("apps/web/app/page.jsx");
   const landing = await read("apps/web/components/auth-landing.jsx");
   assert.match(page, /AuthLanding/u);
-  assert.match(landing, /getCurrentNotebookSession/u);
-  assert.match(landing, /session\.password_change_required\s*\?\s*"\/password-change"\s*:\s*"\/notebooks"/u);
+  assert.match(landing, /getCurrentAuthSession/u);
+  assert.match(landing, /window\.location\.replace\(authEntryPath\(session\)\)/u);
   assert.match(landing, /AUTHENTICATION_REQUIRED/u);
   assert.doesNotMatch(landing, /localStorage|sessionStorage|document\.cookie|https?:\/\/|localhost|127\.0\.0\.1/iu);
 });

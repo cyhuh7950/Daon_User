@@ -6,8 +6,125 @@ import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { MinimalEvent, buttonByText, findElements, installMinimalDom } from "./product-studio-dom.mjs";
+import * as authEntry from "../../apps/web/lib/auth-api.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const entrySession = { user_id: "qa-admin", tenant_id: "tenant-qa", workspace_id: null,
+  session_id: "session-qa", device_id: "device-qa", client_kind: "web", delivery: "same_origin_secure_cookie",
+  expires_at: "2099-01-01T00:00:00Z", recovery_operations: [], password_change_required: false, is_system_admin: true };
+
+test("S44 인증 진입은 엄격한 현재 세션으로 비밀번호·시스템·Notebook 경로를 결정한다", async () => {
+  assert.equal(typeof authEntry.getCurrentAuthSession, "function");
+  for (const [session, target] of [[entrySession, "/operations"],
+    [{ ...entrySession, password_change_required: true }, "/password-change"],
+    [{ ...entrySession, workspace_id: "workspace-qa" }, "/notebooks"],
+    [{ ...entrySession, workspace_id: "workspace-qa", is_system_admin: false }, "/notebooks"]]) {
+    const calls = [];
+    const selected = await authEntry.getCurrentAuthSession({ fetchImpl: async (url, options) => {
+      calls.push([url, options.credentials, options.cache]);
+      return Response.json({ data: session, meta: { trace_id: "trace-qa" } });
+    } });
+    assert.equal(authEntry.authEntryPath(selected), target);
+    assert.deepEqual(calls, [["/bff/api/session", "same-origin", "no-store"], ["/bff/api/session", "same-origin", "no-store"]]);
+  }
+});
+
+test("S44 인증 진입은 비관리자 null·위조형태·철회·계정교체·로그인주체 불일치를 거부한다", async () => {
+  assert.equal(typeof authEntry.getCurrentAuthSession, "function");
+  for (const data of [{ ...entrySession, is_system_admin: false }, { ...entrySession, workspace_id: "" },
+    { ...entrySession, is_system_admin: "true" }, { ...entrySession, recovery_operations: ["cloud_backup_list"] },
+    { ...entrySession, secret: "private" }, { ...entrySession, session_id: "unsafe/id" }]) {
+    await assert.rejects(authEntry.getCurrentAuthSession({ fetchImpl: async () => Response.json({ data, meta: { trace_id: "trace-qa" } }) }), /SESSION_RESPONSE_INVALID/u);
+  }
+  let reads = 0;
+  await assert.rejects(authEntry.getCurrentAuthSession({ fetchImpl: async () => Response.json({
+    data: { ...entrySession, session_id: ++reads === 1 ? "session-qa" : "other-session" }, meta: { trace_id: "trace-qa" } }) }), /SESSION_CHANGED/u);
+  await assert.rejects(authEntry.getCurrentAuthSession({ expectedIdentity: { user_id: "other-user", tenant_id: "tenant-qa" },
+    fetchImpl: async () => Response.json({ data: entrySession, meta: { trace_id: "trace-qa" } }) }), /SESSION_CHANGED/u);
+  await assert.rejects(authEntry.getCurrentAuthSession({ fetchImpl: async () => Response.json({}, { status: 401 }) }), /AUTHENTICATION_REQUIRED/u);
+});
+
+async function renderEntry(entry, name, props, fetchImpl) {
+  const output = await mkdtemp(path.join(tmpdir(), "daon-s44-auth-"));
+  const dom = installMinimalDom(), priorFetch = globalThis.fetch, redirects = [];
+  window.location = { assign: (value) => redirects.push(value), replace: (value) => redirects.push(value) };
+  globalThis.fetch = fetchImpl;
+  const { build } = await import("vite"), { act, createElement } = await import("react"), { createRoot } = await import("react-dom/client");
+  let reactRoot;
+  try {
+    await build({ configFile: false, logLevel: "silent", root, build: { outDir: output, emptyOutDir: false,
+      lib: { entry: path.join(root, entry), formats: ["es"], fileName: "entry" },
+      rollupOptions: { external: ["react", "react-dom", "react-dom/client"], output: { paths: { react: import.meta.resolve("react") } } } } });
+    const built = (await readdir(output)).find((file) => /^entry.*\.m?js$/u.test(file));
+    const module = await import(`${pathToFileURL(path.join(output, built)).href}?v=${Date.now()}`);
+    const container = document.createElement("div"); document.body.appendChild(container); reactRoot = createRoot(container);
+    const cleanup = async () => { await act(async () => reactRoot.unmount()); globalThis.fetch = priorFetch; dom.restore(); await rm(output, { recursive: true, force: true }); };
+    await act(async () => { reactRoot.render(createElement(module[name], props)); await Promise.resolve(); });
+    return { container, redirects, act, cleanup, unmount: () => act(async () => reactRoot.unmount()) };
+  } catch (error) {
+    if (reactRoot) await act(async () => reactRoot.unmount());
+    globalThis.fetch = priorFetch; dom.restore(); await rm(output, { recursive: true, force: true }); throw error;
+  }
+}
+
+test("S44 세 인증 화면은 정상 세션으로 시스템 홈과 강제 비밀번호 변경을 선택한다", async () => {
+  for (const [entry, name, props, click] of [
+    ["apps/web/lib/auth-pane.jsx", "AuthPane", {}, true],
+    ["apps/web/components/auth-landing.jsx", "AuthLanding", { hasSessionCookie: true }, false],
+    ["apps/web/components/password-change-workspace.jsx", "PasswordChangeWorkspace", {}, false],
+  ]) {
+    for (const forced of [false, true]) {
+      const data = { ...entrySession, password_change_required: forced };
+      const view = await renderEntry(entry, name, props, async (url) => Response.json(url.endsWith("/login")
+        ? { data: { user_id: data.user_id, tenant_id: data.tenant_id, workspace_id: null } }
+        : { data, meta: { trace_id: "trace-qa" } }));
+      try {
+        if (click) await view.act(async () => { buttonByText(view.container, "로그인").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+        if (name === "PasswordChangeWorkspace" && forced) {
+          assert.deepEqual(view.redirects, []); assert.match(view.container.textContent, /새 비밀번호 설정/u);
+        } else assert.deepEqual(view.redirects, [forced ? "/password-change" : "/operations"], name);
+      } finally { await view.cleanup(); }
+    }
+  }
+});
+
+test("S44 인증 화면은 unmount 뒤 도착한 세션으로 이동하지 않는다", async () => {
+  let release;
+  const pending = new Promise((resolve) => { release = resolve; });
+  const view = await renderEntry("apps/web/components/auth-landing.jsx", "AuthLanding", { hasSessionCookie: true }, async () => {
+    await pending; return Response.json({ data: entrySession, meta: { trace_id: "trace-qa" } });
+  });
+  try {
+    await view.unmount();
+    await view.act(async () => { release(); await pending; await Promise.resolve(); });
+    assert.deepEqual(view.redirects, []);
+  } finally { await view.cleanup(); }
+});
+
+test("S44 pending 로그인의 pagehide는 늦은 결과를 버리고 BFCache 복귀에 현재 세션을 재검사한다", async () => {
+  let release, sessionReads = 0;
+  const pending = new Promise((resolve) => { release = resolve; });
+  const view = await renderEntry("apps/web/lib/auth-pane.jsx", "AuthPane", {}, async (url) => {
+    if (url.endsWith("/login")) {
+      await pending;
+      return Response.json({ data: { user_id: entrySession.user_id, tenant_id: entrySession.tenant_id, workspace_id: null } });
+    }
+    sessionReads += 1;
+    return Response.json({ data: entrySession, meta: { trace_id: "trace-qa" } });
+  });
+  try {
+    await view.act(async () => { buttonByText(view.container, "로그인").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+    assert.equal(buttonByText(view.container, "로그인").disabled, true);
+    await view.act(async () => { window.dispatchEvent?.(new MinimalEvent("pagehide")); document.dispatchEvent(new MinimalEvent("pagehide")); });
+    await view.act(async () => { release(); await pending; await Promise.resolve(); });
+    assert.deepEqual(view.redirects, []); assert.equal(sessionReads, 0);
+    assert.equal(buttonByText(view.container, "로그인").disabled, false);
+    const show = new MinimalEvent("pageshow"); show.persisted = true;
+    await view.act(async () => { document.dispatchEvent(show); await Promise.resolve(); });
+    assert.equal(sessionReads, 2);
+    assert.deepEqual(view.redirects, ["/operations"]);
+  } finally { await view.cleanup(); }
+});
 
 test("기존 계정은 로그인에서 이메일 인증 폼에 진입하고 토큰 확인·재전송·전환 정리를 수행한다", async () => {
   const output = await mkdtemp(path.join(tmpdir(), "daon-auth-pane-entry-"));

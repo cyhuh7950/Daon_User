@@ -2,15 +2,15 @@
 
 import { useEffect, useState } from "react";
 import { AuthPane } from "../lib/auth-pane.jsx";
-import { getCurrentNotebookSession } from "../lib/notebook-api.js";
+import { authEntryPath, getCurrentAuthSession } from "../lib/auth-api.js";
 
 export function AuthLanding({ hasSessionCookie }) {
   const [state, setState] = useState(hasSessionCookie ? "checking" : "login");
   useEffect(() => {
     if (!hasSessionCookie) return;
     const controller = new AbortController();
-    getCurrentNotebookSession({ signal: controller.signal }).then((session) => {
-      window.location.replace(session.password_change_required ? "/password-change" : "/notebooks");
+    getCurrentAuthSession({ signal: controller.signal }).then((session) => {
+      if (!controller.signal.aborted) window.location.replace(authEntryPath(session));
     }).catch((error) => {
       if (controller.signal.aborted) return;
       setState(error?.message === "AUTHENTICATION_REQUIRED" ? "login" : "unavailable");
