@@ -350,7 +350,7 @@ class CloudStorageContractTests(unittest.TestCase):
                 with self.subTest(revision=value):self.assertEqual(runtime._organization_management_ready(dependencies),value!="0072")
             revision[0]="0071";vector[0]=None
             self.assertFalse(runtime._organization_management_ready(dependencies))
-            self.assertEqual(checked,["0070","0071"])
+            self.assertEqual(checked,["0070","0071","0072"])
             studio._generation_queue._pool.close();store.close()
 
     def test_r4_readiness_0070_requires_all_protections_in_both_pool_states(self):
