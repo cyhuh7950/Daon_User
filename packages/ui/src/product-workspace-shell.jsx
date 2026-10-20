@@ -1,9 +1,10 @@
 "use client";
+import { egressPolicyModeLabel } from "./egress-policy-model.js";
 import { parsePptxBlock, isPptxBlockContent, pptxBlockLabel } from "./shared-pptx-block.js";
 
 import { useEffect, useRef, useState } from "react";
 import "@daon-user/design-tokens/tokens.css";
-import { canCreateGroundedReport, createProductWorkspaceState, normalizeProductWorkspaceState, projectQuestionFailureState, parseImageRegion, parseSheetCell, isSheetCellContent } from "./product-workspace-model.js";
+import { canCreateGroundedReport, createProductWorkspaceState, normalizeProductWorkspaceState, projectQuestionFailureState, questionFailureMessage, parseImageRegion, parseSheetCell, isSheetCellContent } from "./product-workspace-model.js";
 import { createProductStudioState } from "./product-studio-model.js";
 import { ProductStudioPane } from "./product-studio-pane.jsx";
 import { classifyConversationIntent } from "./conversation-intent.js";
@@ -305,7 +306,7 @@ const OUTPUT_SETTING_FORMATS = Object.freeze({
   knowledge_map: Object.freeze(["json", "svg", "png", "pdf"]),
   business_draft: Object.freeze(["docx", "pdf"]),
 });
-const EGRESS_MODE_LABELS = Object.freeze({ deny_external: "외부 전송 차단", allow_approved_external: "승인된 외부 전송" });
+
 const EGRESS_APPROVER_LABELS = Object.freeze({ workspace_manager: "Workspace 관리자", organization_admin: "조직 관리자" });
 const LICENSE_RESOURCE_LABELS = Object.freeze({
   users: "사용자", notebooks: "Notebook", storage_bytes: "저장공간",
@@ -2054,7 +2055,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
           {viewState.answerIntent === "work_support_source_backed"
             ? <div className="context-selection-status" role="status">작업 상담 · Source 사용</div> : null}
           {viewState.answer?.insufficient ? <div className="context-selection-status" role="status"><strong>근거 부족</strong>{viewState.answer.next_actions?.length ? <ul>{viewState.answer.next_actions.map((action, index) => <li key={index}>{action}</li>)}</ul> : null}</div> : null}
-          {viewState.conversationSafeError ? <div className="inline-alert compact" role="alert">질문 실행에 실패했습니다. ({viewState.conversationSafeError}) 입력을 확인한 뒤 다시 제출해 주세요.</div> : null}
+          {viewState.conversationSafeError ? <div className="inline-alert compact" role="alert">{questionFailureMessage(viewState.conversationSafeError)}</div> : null}
           <div className="citation-row">{viewState.answer?.citations?.map((citation) => (
             <a key={citation.citation_id} href={citation.content_url} onClick={(event) => {
               if(citation.origin==='raw_source' && citation.locator.kind==='section' && /^law-source-[0-9a-f]{32}$/u.test(citation.source_id)){
@@ -2262,7 +2263,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
             {!egressPolicyPending && egressPolicy ? <>
               <div className="policy-lock-banner"><span aria-hidden="true">⌾</span><div><strong>조직 강제 정책</strong><small>이 Workspace에서는 읽기 전용이며 조직 정책을 완화할 수 없습니다.</small></div></div>
               <dl className="organization-policy-grid">
-                <div><dt>정책 모드</dt><dd>{EGRESS_MODE_LABELS[egressPolicy.organization_policy.mode]}</dd></div>
+                <div><dt>정책 모드</dt><dd>{egressPolicyModeLabel(egressPolicy.organization_policy)}</dd></div>
                 <div><dt>허용 Provider 종류</dt><dd>{egressPolicy.organization_policy.allowed_provider_kinds.join(", ") || "허용 없음"}</dd></div>
                 <div><dt>허용 목적지</dt><dd>{egressPolicy.organization_policy.allowed_destinations.join(", ") || "허용 없음"}</dd></div>
                 <div><dt>분류</dt><dd>{egressPolicy.organization_policy.classification}</dd></div>
@@ -2271,7 +2272,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
                 <div><dt>삭제 처리</dt><dd>{egressPolicy.organization_policy.redaction_required ? "삭제 처리 필수" : "삭제 처리 선택"}</dd></div>
                 <div><dt>필수 승인자</dt><dd>{EGRESS_APPROVER_LABELS[egressPolicy.organization_policy.required_approver]}</dd></div>
               </dl>
-              <div className="workspace-policy-effective"><div><strong>Workspace 적용 결과</strong><small>{egressPolicy.parent_locked ? "조직 차단이 우선 적용됩니다." : "조직과 Workspace 정책의 교집합입니다."}</small></div><span>{EGRESS_MODE_LABELS[egressPolicy.mode]}</span></div>
+              <div className="workspace-policy-effective"><div><strong>Workspace 적용 결과</strong><small>{egressPolicy.parent_locked ? "조직 차단이 우선 적용됩니다." : "조직과 Workspace 정책의 교집합입니다."}</small></div><span>{egressPolicyModeLabel(egressPolicy)}</span></div>
             </> : null}
           </div> : modalView === "license" ? <div className="workspace-modal-content license-settings" aria-live="polite">
             {licensePending && !licenseView ? <div className="modal-unavailable" role="status">라이선스 정보를 확인하고 있습니다.</div> : null}

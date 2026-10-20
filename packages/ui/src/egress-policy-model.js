@@ -13,6 +13,24 @@ export function createEgressPolicyDraft(overrides = {}) {
   return { ...DENY, ...overrides };
 }
 
+export function egressPolicyMode(policy) {
+  return policy?.mode === "allow_approved_external" && policy.question_step_up_required === false
+    ? "allow_external" : policy?.mode;
+}
+
+export function egressPolicyModeLabel(policy) {
+  return ({ deny_external: "외부 전송 차단", allow_approved_external: "추가 인증 후 외부 전송 허용",
+    allow_external: "추가 인증 없이 외부 전송 허용" })[egressPolicyMode(policy)];
+}
+
+export function selectEgressPolicyMode(draft, mode) {
+  if (!["deny_external", "allow_approved_external", "allow_external"].includes(mode)) throw new Error("EGRESS_POLICY_MODE_INVALID");
+  if (mode === "deny_external") return createEgressPolicyDraft({ ...draft, mode,
+    allowed_provider_kinds: [], allowed_destinations: [], max_bytes: 0, question_step_up_required: true });
+  return createEgressPolicyDraft({ ...draft, mode: mode === "allow_external" ? "allow_approved_external" : mode,
+    question_step_up_required: mode !== "allow_external" });
+}
+
 const INITIAL = Object.freeze({
   status: "idle", effective: null, draft: createEgressPolicyDraft(),
   canSave: false, errorCode: null,

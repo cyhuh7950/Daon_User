@@ -42,6 +42,16 @@ export function normalizeProductWorkspaceState(state) {
   return state;
 }
 
+export function questionFailureMessage(code) {
+  if (code === "EGRESS_POLICY_DENIED") {
+    return `조직 또는 Workspace의 외부 전송 정책으로 차단되었습니다. 정책 설정을 확인해 주세요. (${code})`;
+  }
+  if (code === "EGRESS_POLICY_UNAVAILABLE" || code === "EGRESS_POLICY_STALE") {
+    return `조직 또는 Workspace의 외부 전송 정책을 확인할 수 없습니다. 관리자에게 정책 상태 확인을 요청해 주세요. (${code})`;
+  }
+  return `질문 실행에 실패했습니다. (${code}) 입력을 확인한 뒤 다시 제출해 주세요.`;
+}
+
 export function projectQuestionFailureState(current, error) {
   const code = typeof error?.message === "string" && /^[A-Z][A-Z0-9_]{2,63}$/u.test(error.message)
     ? error.message
