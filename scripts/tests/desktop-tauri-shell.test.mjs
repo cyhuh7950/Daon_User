@@ -8,6 +8,12 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+function mergeGateAuthSession() {
+  return { user_id: "user-login-1", tenant_id: "tenant-login-1", workspace_id: "workspace-login-1",
+    session_id: "session-login-1", device_id: "device-login-1", client_kind: "web", delivery: "same_origin_secure_cookie",
+    expires_at: "2099-01-01T00:00:00Z", recovery_operations: [], password_change_required: false, is_system_admin: false };
+}
+
 class MinimalEvent {
   constructor(type, options = {}) {
     this.type = type;
@@ -191,7 +197,7 @@ test("desktop shell은 Native Session과 Product Workspace를 결합하고 Proto
 
 test("실제 Offline Studio DOM action은 context부터 queue까지 exact 순서로 실행한다", async () => {
   const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
-  const bundleRoot = await mkdtemp(path.join(repositoryRoot, ".r1-offline-studio-react-"));
+  const bundleRoot = await mkdtemp(path.join(os.tmpdir(), ".r1-offline-studio-react-"));
   const dom = installMinimalDom();
   let root;
   try {
@@ -203,7 +209,7 @@ test("실제 Offline Studio DOM action은 context부터 queue까지 exact 순서
       build: {
         outDir: bundleRoot, emptyOutDir: false,
         lib: { entry: path.join(repositoryRoot, "apps/desktop/src/offline-studio-pane.jsx"), formats: ["es"], fileName: "offline-studio-pane" },
-        rollupOptions: { external: ["react", "react-dom", "react-dom/client"] }
+        rollupOptions: { external: ["react", "react-dom", "react-dom/client"], output: { paths: Object.fromEntries(["react", "react-dom", "react-dom/client"].map(name => [name, import.meta.resolve(name)])) } }
       }
     });
     const entry = (await readdir(bundleRoot)).find((name) => name.startsWith("offline-studio-pane") && /\.(?:m?js)$/u.test(name));
@@ -289,7 +295,7 @@ test("실제 Offline Studio DOM action은 context부터 queue까지 exact 순서
 
 test("실제 React Tree는 Login 실패·성공·권한 없음·Logout 경쟁을 fail-close한다", async () => {
   const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
-  const bundleRoot = await mkdtemp(path.join(repositoryRoot, ".c10-r02-react-"));
+  const bundleRoot = await mkdtemp(path.join(os.tmpdir(), ".c10-r02-react-"));
   const dom = installMinimalDom();
   let root;
   let reactAct;
@@ -307,7 +313,7 @@ test("실제 React Tree는 Login 실패·성공·권한 없음·Logout 경쟁을
         outDir: bundleRoot,
         emptyOutDir: false,
         lib: { entry: path.join(repositoryRoot, "apps/desktop/src/desktop-shell.jsx"), formats: ["es"], fileName: "desktop-shell" },
-        rollupOptions: { external: ["react", "react-dom", "react-dom/client"] }
+        rollupOptions: { external: ["react", "react-dom", "react-dom/client"], output: { paths: Object.fromEntries(["react", "react-dom", "react-dom/client"].map(name => [name, import.meta.resolve(name)])) } }
       }
     });
     const bundleEntry = (await readdir(bundleRoot)).find((name) => name.startsWith("desktop-shell") && /\.(?:m?js)$/u.test(name));
@@ -549,10 +555,11 @@ test("실제 React Tree는 Login 실패·성공·권한 없음·Logout 경쟁을
   }
 });
 
-test("Web Operations 직접 진입은 Safe unavailable만 렌더하고 Session·Recovery Network를 호출하지 않는다", async () => {
+test("Web Operations 직접 진입은 현재 Session 401에서 인증 필요를 표시하고 Recovery Network를 호출하지 않는다", async () => {
   const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
-  const bundleRoot = await mkdtemp(path.join(repositoryRoot, ".stage-a-operations-react-"));
+  const bundleRoot = await mkdtemp(path.join(os.tmpdir(), ".stage-a-operations-react-"));
   const dom = installMinimalDom();
+  dom.window.location.search = ""; dom.window.location.hash = "";
   const priorFetch = globalThis.fetch;
   const priorNodeEnv = process.env.NODE_ENV;
   let root;
@@ -573,7 +580,7 @@ test("Web Operations 직접 진입은 Safe unavailable만 렌더하고 Session·
         outDir: bundleRoot,
         emptyOutDir: false,
         lib: { entry: path.join(repositoryRoot, "apps/web/app/operations/recovery-workspace.jsx"), formats: ["es"], fileName: "operations-safe" },
-        rollupOptions: { external: ["react", "react-dom", "react-dom/client"] }
+        rollupOptions: { external: ["react", "react-dom", "react-dom/client"], output: { paths: Object.fromEntries(["react", "react-dom", "react-dom/client"].map(name => [name, import.meta.resolve(name)])) } }
       }
     });
     const bundleEntry = (await readdir(bundleRoot)).find((name) => name.startsWith("operations-safe") && /\.(?:m?js)$/u.test(name));
@@ -586,9 +593,8 @@ test("Web Operations 직접 진입은 Safe unavailable만 렌더하고 Session·
       root.render(createElement(RecoveryOperationsWorkspace, { routeId: "operations", screenId: "operations" }));
       await Promise.resolve();
     });
-    assert.match(container.textContent, /RESOURCE_UNAVAILABLE/);
-    assert.match(container.textContent, /후속 Stage C/);
-    assert.equal(networkCalls, 0, "Session·Backup·Restore Network는 0건이어야 한다");
+    assert.match(container.textContent, /로그인을 다시 확인/);
+    assert.equal(networkCalls, 1, "현재 세션 확인만 1건이며 Backup·Restore는 호출하지 않는다");
   } finally {
     if (root) await import("react").then(({ act }) => act(async () => { root.unmount(); }));
     globalThis.fetch = priorFetch;
@@ -600,7 +606,7 @@ test("Web Operations 직접 진입은 Safe unavailable만 렌더하고 Session·
 
 test("Web Product Workspace는 actual Adapter 호출을 보존하고 loading·unavailable·error를 실제 React로 표시한다", async () => {
   const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
-  const bundleRoot = await mkdtemp(path.join(repositoryRoot, ".stage-a-web-workspace-react-"));
+  const bundleRoot = await mkdtemp(path.join(os.tmpdir(), ".stage-a-web-workspace-react-"));
   const dom = installMinimalDom();
   const priorFetch = globalThis.fetch;
   const priorNodeEnv = process.env.NODE_ENV;
@@ -617,7 +623,7 @@ test("Web Product Workspace는 actual Adapter 호출을 보존하고 loading·un
         outDir: bundleRoot,
         emptyOutDir: false,
         lib: { entry: path.join(repositoryRoot, "apps/web/components/actual-workspace.jsx"), formats: ["es"], fileName: "actual-workspace" },
-        rollupOptions: { external: ["react", "react-dom", "react-dom/client"] }
+        rollupOptions: { external: ["react", "react-dom", "react-dom/client"], output: { paths: Object.fromEntries(["react", "react-dom", "react-dom/client"].map(name => [name, import.meta.resolve(name)])) } }
       }
     });
     const bundleEntry = (await readdir(bundleRoot)).find((name) => name.startsWith("actual-workspace") && /\.(?:m?js)$/u.test(name));
@@ -692,7 +698,7 @@ test("Web Product Workspace는 actual Adapter 호출을 보존하고 loading·un
 
 test("Web Processing은 queued→leased→processing→completed를 polling한 뒤에만 질문·Citation에 도달한다", async () => {
   const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
-  const bundleRoot = await mkdtemp(path.join(repositoryRoot, ".stage-a-processing-react-"));
+  const bundleRoot = await mkdtemp(path.join(os.tmpdir(), ".stage-a-processing-react-"));
   const dom = installMinimalDom();
   const priorNodeEnv = process.env.NODE_ENV;
   let root;
@@ -708,7 +714,7 @@ test("Web Processing은 queued→leased→processing→completed를 polling한 �
         outDir: bundleRoot,
         emptyOutDir: false,
         lib: { entry: path.join(repositoryRoot, "apps/web/components/actual-workspace.jsx"), formats: ["es"], fileName: "processing-workspace" },
-        rollupOptions: { external: ["react", "react-dom", "react-dom/client"] }
+        rollupOptions: { external: ["react", "react-dom", "react-dom/client"], output: { paths: Object.fromEntries(["react", "react-dom", "react-dom/client"].map(name => [name, import.meta.resolve(name)])) } }
       }
     });
     const bundleEntry = (await readdir(bundleRoot)).find((name) => name.startsWith("processing-workspace") && /\.(?:m?js)$/u.test(name));
@@ -781,7 +787,7 @@ test("Web Processing은 queued→leased→processing→completed를 polling한 �
 
 test("Web Processing bounded polling은 timeout·lineage mismatch·malformed를 Safe error로 만들고 unmount에서 중단한다", async () => {
   const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
-  const bundleRoot = await mkdtemp(path.join(repositoryRoot, ".stage-a-processing-safe-react-"));
+  const bundleRoot = await mkdtemp(path.join(os.tmpdir(), ".stage-a-processing-safe-react-"));
   const dom = installMinimalDom();
   const priorNodeEnv = process.env.NODE_ENV;
   let root;
@@ -797,7 +803,7 @@ test("Web Processing bounded polling은 timeout·lineage mismatch·malformed를 
         outDir: bundleRoot,
         emptyOutDir: false,
         lib: { entry: path.join(repositoryRoot, "apps/web/components/actual-workspace.jsx"), formats: ["es"], fileName: "processing-safe-workspace" },
-        rollupOptions: { external: ["react", "react-dom", "react-dom/client"] }
+        rollupOptions: { external: ["react", "react-dom", "react-dom/client"], output: { paths: Object.fromEntries(["react", "react-dom", "react-dom/client"].map(name => [name, import.meta.resolve(name)])) } }
       }
     });
     const bundleEntry = (await readdir(bundleRoot)).find((name) => name.startsWith("processing-safe-workspace") && /\.(?:m?js)$/u.test(name));
@@ -899,7 +905,7 @@ test("Web Processing bounded polling은 timeout·lineage mismatch·malformed를 
 
 test("Web Processing SLA는 12초 초과 완료를 허용하고 status hang을 150초 Deadline 안에서 Safe timeout한다", async () => {
   const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
-  const bundleRoot = await mkdtemp(path.join(repositoryRoot, ".stage-a-processing-sla-react-"));
+  const bundleRoot = await mkdtemp(path.join(os.tmpdir(), ".stage-a-processing-sla-react-"));
   const dom = installMinimalDom();
   const priorNodeEnv = process.env.NODE_ENV;
   let root;
@@ -915,7 +921,7 @@ test("Web Processing SLA는 12초 초과 완료를 허용하고 status hang을 1
         outDir: bundleRoot,
         emptyOutDir: false,
         lib: { entry: path.join(repositoryRoot, "apps/web/components/actual-workspace.jsx"), formats: ["es"], fileName: "processing-sla-workspace" },
-        rollupOptions: { external: ["react", "react-dom", "react-dom/client"] }
+        rollupOptions: { external: ["react", "react-dom", "react-dom/client"], output: { paths: Object.fromEntries(["react", "react-dom", "react-dom/client"].map(name => [name, import.meta.resolve(name)])) } }
       }
     });
     const bundleEntry = (await readdir(bundleRoot)).find((name) => name.startsWith("processing-sla-workspace") && /\.(?:m?js)$/u.test(name));
@@ -1018,7 +1024,7 @@ test("Web Processing SLA는 12초 초과 완료를 허용하고 status hang을 1
 
 test("Web Upload lifecycle은 새 Upload와 unmount에서 이전 operation을 abort하고 이전 결과를 반영하지 않는다", async () => {
   const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
-  const bundleRoot = await mkdtemp(path.join(repositoryRoot, ".stage-a-upload-lifecycle-react-"));
+  const bundleRoot = await mkdtemp(path.join(os.tmpdir(), ".stage-a-upload-lifecycle-react-"));
   const dom = installMinimalDom();
   const priorNodeEnv = process.env.NODE_ENV;
   let root;
@@ -1034,7 +1040,7 @@ test("Web Upload lifecycle은 새 Upload와 unmount에서 이전 operation을 ab
         outDir: bundleRoot,
         emptyOutDir: false,
         lib: { entry: path.join(repositoryRoot, "apps/web/components/actual-workspace.jsx"), formats: ["es"], fileName: "upload-lifecycle-workspace" },
-        rollupOptions: { external: ["react", "react-dom", "react-dom/client"] }
+        rollupOptions: { external: ["react", "react-dom", "react-dom/client"], output: { paths: Object.fromEntries(["react", "react-dom", "react-dom/client"].map(name => [name, import.meta.resolve(name)])) } }
       }
     });
     const bundleEntry = (await readdir(bundleRoot)).find((name) => name.startsWith("upload-lifecycle-workspace") && /\.(?:m?js)$/u.test(name));
@@ -1113,7 +1119,7 @@ test("Web Upload lifecycle은 새 Upload와 unmount에서 이전 operation을 ab
 
 test("Web Question React는 Safe DTO만 state에 반영하고 malformed Citation을 crash 없이 거부한다", async () => {
   const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
-  const bundleRoot = await mkdtemp(path.join(repositoryRoot, ".stage-a-question-react-"));
+  const bundleRoot = await mkdtemp(path.join(os.tmpdir(), ".stage-a-question-react-"));
   const dom = installMinimalDom();
   const priorNodeEnv = process.env.NODE_ENV;
   let root;
@@ -1129,7 +1135,7 @@ test("Web Question React는 Safe DTO만 state에 반영하고 malformed Citation
         outDir: bundleRoot,
         emptyOutDir: false,
         lib: { entry: path.join(repositoryRoot, "apps/web/components/actual-workspace.jsx"), formats: ["es"], fileName: "question-workspace" },
-        rollupOptions: { external: ["react", "react-dom", "react-dom/client"] }
+        rollupOptions: { external: ["react", "react-dom", "react-dom/client"], output: { paths: Object.fromEntries(["react", "react-dom", "react-dom/client"].map(name => [name, import.meta.resolve(name)])) } }
       }
     });
     const bundleEntry = (await readdir(bundleRoot)).find((name) => name.startsWith("question-workspace") && /\.(?:m?js)$/u.test(name));
@@ -1212,7 +1218,7 @@ test("Web Question React는 Safe DTO만 state에 반영하고 malformed Citation
 
 test("Web AuthPane actual React는 로그인·가입 인증·비밀번호 재설정을 단계별로 분리한다", async () => {
   const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
-  const bundleRoot = await mkdtemp(path.join(repositoryRoot, ".r1-auth-pane-react-"));
+  const bundleRoot = await mkdtemp(path.join(os.tmpdir(), ".r1-auth-pane-react-"));
   const dom = installMinimalDom();
   const priorFetch = globalThis.fetch;
   const priorNodeEnv = process.env.NODE_ENV;
@@ -1226,7 +1232,8 @@ test("Web AuthPane actual React는 로그인·가입 인증·비밀번호 재설
     let fetchResponse = async () => Response.json({ data: {} });
     dom.window.location.assign = (target) => { redirects.push(target); };
     globalThis.fetch = async (url, init) => {
-      calls.push({ url, init, body: JSON.parse(init.body) });
+      calls.push({ url, init, body: init.body ? JSON.parse(init.body) : null });
+      if(url === "/bff/api/session") return Response.json({data: mergeGateAuthSession(),meta:{trace_id:"trace-auth-fixture"}});
       return fetchResponse(url, init);
     };
     await build({
@@ -1237,7 +1244,7 @@ test("Web AuthPane actual React는 로그인·가입 인증·비밀번호 재설
         outDir: bundleRoot,
         emptyOutDir: false,
         lib: { entry: path.join(repositoryRoot, "apps/web/lib/auth-pane.jsx"), formats: ["es"], fileName: "auth-pane" },
-        rollupOptions: { external: ["react", "react-dom", "react-dom/client"] }
+        rollupOptions: { external: ["react", "react-dom", "react-dom/client"], output: { paths: Object.fromEntries(["react", "react-dom", "react-dom/client"].map(name => [name, import.meta.resolve(name)])) } }
       }
     });
     const bundleEntry = (await readdir(bundleRoot)).find((name) => name.startsWith("auth-pane") && /\.(?:m?js)$/u.test(name));
@@ -1355,12 +1362,13 @@ test("Web AuthPane actual React는 로그인·가입 인증·비밀번호 재설
     loginButton.dispatchEvent(new MinimalEvent("click"));
     assert.equal(calls.length - successCallStart, 1);
     await act(async () => {
-      resolveLogin(Response.json({ data: { workspace_id: "workspace-login-1" } }));
+      resolveLogin(Response.json({ data: { user_id:"user-login-1", tenant_id:"tenant-login-1", workspace_id: "workspace-login-1" } }));
       await Promise.resolve();
       await Promise.resolve();
     });
     assert.equal(inputNamed("password").value, "");
     assert.deepEqual(redirects, ["/notebooks"]);
+    assert.equal(calls.filter(call=>call.url==="/bff/api/session").length,2,"로그인 후 현재 세션을 두 번 검증한다");
   } finally {
     if (root) await import("react").then(({ act }) => act(async () => { root.unmount(); }));
     globalThis.fetch = priorFetch;
@@ -1372,7 +1380,7 @@ test("Web AuthPane actual React는 로그인·가입 인증·비밀번호 재설
 
 test("Web Login actual React는 same-origin 성공 응답의 Workspace로 이동한다", async () => {
   const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
-  const bundleRoot = await mkdtemp(path.join(repositoryRoot, ".stage-a-web-login-react-"));
+  const bundleRoot = await mkdtemp(path.join(os.tmpdir(), ".stage-a-web-login-react-"));
   const dom = installMinimalDom();
   const priorFetch = globalThis.fetch;
   const priorNodeEnv = process.env.NODE_ENV;
@@ -1386,7 +1394,7 @@ test("Web Login actual React는 same-origin 성공 응답의 Workspace로 이동
     dom.window.location.assign = (target) => { redirects.push(target); };
     globalThis.fetch = async (url, init) => {
       calls.push({ url, init });
-      return Response.json({ data: { workspace_id: "workspace-login-1" } });
+      return url === "/bff/api/session" ? Response.json({data:mergeGateAuthSession(),meta:{trace_id:"trace-auth-fixture"}}) : Response.json({ data: { user_id:"user-login-1",tenant_id:"tenant-login-1",workspace_id: "workspace-login-1" } });
     };
     await build({
       configFile: false,
@@ -1396,7 +1404,7 @@ test("Web Login actual React는 same-origin 성공 응답의 Workspace로 이동
         outDir: bundleRoot,
         emptyOutDir: false,
         lib: { entry: path.join(repositoryRoot, "apps/web/lib/auth-pane.jsx"), formats: ["es"], fileName: "auth-pane" },
-        rollupOptions: { external: ["react", "react-dom", "react-dom/client"] }
+        rollupOptions: { external: ["react", "react-dom", "react-dom/client"], output: { paths: Object.fromEntries(["react", "react-dom", "react-dom/client"].map(name => [name, import.meta.resolve(name)])) } }
       }
     });
     const bundleEntry = (await readdir(bundleRoot)).find((name) => name.startsWith("auth-pane") && /\.(?:m?js)$/u.test(name));
@@ -1419,6 +1427,7 @@ test("Web Login actual React는 same-origin 성공 응답의 Workspace로 이동
     });
     assert.equal(calls[0].url, "/bff/api/auth/login");
     assert.deepEqual(redirects, ["/notebooks"]);
+    assert.equal(calls.filter(call=>call.url==="/bff/api/session").length,2,"로그인 후 현재 세션을 두 번 검증한다");
   } finally {
     if (root) await import("react").then(({ act }) => act(async () => { root.unmount(); }));
     globalThis.fetch = priorFetch;
@@ -1587,7 +1596,7 @@ test("isolated cargo wrapper propagates failure and removes only its exact targe
   });
   assert.equal(result.exitCode, 23);
   await assert.rejects(access(observedTarget));
-  assert.ok(path.dirname(observedTarget).startsWith(os.tmpdir()));
+  assert.equal(path.resolve(path.dirname(observedTarget)), path.resolve(os.tmpdir()));
 });
 
 test("non-installer Cargo can override only the generated bundle input contract", async () => {
@@ -1858,7 +1867,7 @@ test("Native Source Question Studio는 canonical Notebook scope와 rich Citation
 
 test("Desktop Notebook async epoch는 Session·Workspace·Hash 전환 뒤 stale 응답 A-D를 렌더하지 않는다", async () => {
   const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
-  const bundleRoot = await mkdtemp(path.join(repositoryRoot, ".phase-e-stale-react-"));
+  const bundleRoot = await mkdtemp(path.join(os.tmpdir(), ".phase-e-stale-react-"));
   const dom = installMinimalDom();
   const priorNodeEnv = process.env.NODE_ENV;
   let root;
@@ -1890,7 +1899,7 @@ test("Desktop Notebook async epoch는 Session·Workspace·Hash 전환 뒤 stale 
       build: {
         outDir: bundleRoot, emptyOutDir: false,
         lib: { entry: path.join(repositoryRoot, "apps/desktop/src/desktop-shell.jsx"), formats: ["es"], fileName: "desktop-shell-stale" },
-        rollupOptions: { external: ["react", "react-dom", "react-dom/client"] },
+        rollupOptions: { external: ["react", "react-dom", "react-dom/client"], output: { paths: Object.fromEntries(["react", "react-dom", "react-dom/client"].map(name => [name, import.meta.resolve(name)])) } },
       },
     });
     const bundleEntry = (await readdir(bundleRoot)).find((name) => name.startsWith("desktop-shell-stale") && /\.(?:m?js)$/u.test(name));
@@ -2024,7 +2033,7 @@ test("Desktop Notebook async epoch는 Session·Workspace·Hash 전환 뒤 stale 
 
 test("Desktop session revalidate epoch는 reverse status/context 응답 A-F를 latest-only로 적용한다", async (t) => {
   const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
-  const bundleRoot = await mkdtemp(path.join(repositoryRoot, ".phase-e-revalidate-react-"));
+  const bundleRoot = await mkdtemp(path.join(os.tmpdir(), ".phase-e-revalidate-react-"));
   const dom = installMinimalDom();
   const priorNodeEnv = process.env.NODE_ENV;
   let root;
@@ -2068,7 +2077,7 @@ test("Desktop session revalidate epoch는 reverse status/context 응답 A-F를 l
       build: {
         outDir: bundleRoot, emptyOutDir: false,
         lib: { entry: path.join(repositoryRoot, "apps/desktop/src/desktop-shell.jsx"), formats: ["es"], fileName: "desktop-shell-revalidate" },
-        rollupOptions: { external: ["react", "react-dom", "react-dom/client"] },
+        rollupOptions: { external: ["react", "react-dom", "react-dom/client"], output: { paths: Object.fromEntries(["react", "react-dom", "react-dom/client"].map(name => [name, import.meta.resolve(name)])) } },
       },
     });
     const bundleEntry = (await readdir(bundleRoot)).find((name) => name.startsWith("desktop-shell-revalidate") && /\.(?:m?js)$/u.test(name));

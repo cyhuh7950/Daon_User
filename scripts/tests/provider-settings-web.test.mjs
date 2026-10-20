@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import path from "node:path";
+import os from "node:os";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 
@@ -20,7 +21,7 @@ async function bundleProvider(root, output, fileName) {
   await build({ configFile: false, logLevel: "silent", root, build: {
     outDir: output, emptyOutDir: false,
     lib: { entry: path.join(root, "apps/web/components/provider-settings-workspace.jsx"), formats: ["es"], fileName },
-    rollupOptions: { external: ["react", "react-dom", "react-dom/client"] },
+    rollupOptions: { external: ["react", "react-dom", "react-dom/client"], output: { paths: Object.fromEntries(["react", "react-dom", "react-dom/client"].map(name => [name, import.meta.resolve(name)])) } },
   } });
   const entry = (await readdir(output)).find((name) => name.startsWith(fileName) && /\.m?js$/u.test(name));
   return import(`${pathToFileURL(path.join(output, entry)).href}?v=${Date.now()}`);
@@ -114,7 +115,7 @@ function adminFixture({ previewModels = [], previewFails = false, saveFailures =
 
 async function mountAdminFixture(fixture, fileName) {
   const root = path.resolve(import.meta.dirname, "../..");
-  const output = await mkdtemp(path.join(root, "node_modules", `.provider-${fileName}-`));
+  const output = await mkdtemp(path.join(os.tmpdir(), `.provider-${fileName}-`));
   const dom = installMinimalDom();
   const originalFetch = globalThis.fetch;
   globalThis.fetch = fixture.fetch;
@@ -273,7 +274,7 @@ test('QA native ASR registration fixes endpoint model and keyless contract witho
     const mode=controlFor(view.container,'호환 방식');
     assert.ok(findElements(mode,node=>node.tagName==='OPTION'&&node.value==='asr_base_native').length);
     await fill(view.act,mode,'asr_base_native');
-    assert.equal(controlFor(view.container,'Endpoint').value,'http://asr-base:8080');
+    assert.equal(controlFor(view.container,'Endpoint').value,'서버 관리');
     assert.equal(reactProps(controlFor(view.container,'Endpoint')).readOnly,true);
     assert.equal(controlFor(view.container,'인증 유형').value,'Key 불필요');
     assert.equal(findElements(view.container,node=>node.tagName==='INPUT'&&node.getAttribute?.('type')==='password').length,0);
@@ -281,7 +282,7 @@ test('QA native ASR registration fixes endpoint model and keyless contract witho
     await click(view.act,buttonByText(view.container,'ASR 준비 확인 및 저장'));
     const saved=fixture.requests.find(item=>item.path==='/bff/api/admin/provider-connections'&&item.method==='POST');
     assert.ok(saved);assert.equal(saved.body.adapter_type,'asr_base_native');
-    assert.equal(saved.body.base_url,'http://asr-base:8080');assert.equal(saved.body.credential_requirement,'none');
+    assert.equal(saved.body.base_url,'server-managed-asr');assert.equal(saved.body.credential_requirement,'none');
     assert.equal(saved.body.access_mode,'public');assert.equal(saved.body.auto_model_id,null);
     assert.deepEqual(saved.body.allowed_model_ids,['faster-whisper-base']);assert.deepEqual(saved.body.logical_model_ids,[]);
     assert.equal(Object.hasOwn(saved.body,'credential'),false);

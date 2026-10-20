@@ -1,6 +1,6 @@
 "use client";
 
-import { secureUuid } from "../../../packages/ui/src/secure-uuid.js";
+import { secureUuid } from "@daon-user/ui/secure-uuid";
 
 const API_ROOT = "/bff/api/organization";
 

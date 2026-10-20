@@ -1336,7 +1336,24 @@ export function createBffProxy({
           }
           headers.set("content-type", "application/json");
           init.body = JSON.stringify({ transaction_id: entries[0][1] });
-        } else init.body = body;
+        } else {
+          init.body = body;
+          const providerRegistration = request.method === "POST" && route.path === "/api/v1/admin/provider-connections"
+            || request.method === "PUT" && /^\/api\/v1\/admin\/provider-connections\/[^/]+$/u.test(route.path);
+          if (providerRegistration) {
+            let value;
+            try { value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body)); } catch { /* 기존 API 본문 오류 처리를 유지한다. */ }
+            if (value && !Array.isArray(value) && value.base_url === "server-managed-asr") {
+              if (value.adapter_type !== "asr_base_native" || (value.provider_code !== undefined && value.provider_code !== "CUSTOM")
+                || (request.method === "POST" && value.provider_code !== "CUSTOM")
+                || value.credential_requirement !== "none" || value.access_mode !== "public"
+                || Object.hasOwn(value, "credential") || Object.hasOwn(value, "test_credential")) {
+                return createBffSafeError(400, "INVALID_REQUEST_BODY", trace);
+              }
+              init.body = JSON.stringify({ ...value, base_url: "http://asr-base:8080" });
+            }
+          }
+        }
       }
 
       try {

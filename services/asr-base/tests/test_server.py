@@ -8,6 +8,9 @@ import urllib.request
 import urllib.error
 import json
 import sys
+import ast
+import os
+import tempfile
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -23,6 +26,41 @@ def wav(seconds=1,rate=16000):
     return output.getvalue()
 
 class AudioBoundaryTests(unittest.TestCase):
+    def test_packaged_relative_model_path_and_manifest_hash_are_preserved_without_model_calls(self):
+        source=pathlib.Path(__file__).parents[1]
+        self.assertIn('ENV ASR_MODEL_PATH=asr-model',(source/'Dockerfile').read_text())
+        download=ast.parse((source/'download_model.py').read_text(encoding='utf-8'))
+        target_nodes=[node for node in download.body if isinstance(node,(ast.Assign,ast.Expr))
+                      and (isinstance(node,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='target' for t in node.targets)
+                           or isinstance(node,ast.Expr) and isinstance(node.value,ast.Call) and isinstance(node.value.func,ast.Attribute)
+                           and isinstance(node.value.func.value,ast.Name) and node.value.func.value.id=='target')]
+        main=[node for node in ast.parse((source/'server.py').read_text(encoding='utf-8')).body if isinstance(node,ast.If) and '__name__' in ast.unparse(node.test)]
+        self.assertEqual(len(main),1);self.assertEqual(len(target_nodes),2)
+        prior=os.getcwd();calls=[]
+        class Worker:
+            def __init__(self,path):calls.append(('worker',path))
+            def close(self):calls.append(('close',))
+        class Http:
+            def serve_forever(self):calls.append(('serve',))
+        with tempfile.TemporaryDirectory(prefix='asr-packaging-') as temporary:
+            try:
+                os.chdir(temporary)
+                with patch.dict(os.environ,{'ASR_MODEL_PATH':'asr-model'}):
+                    namespace={'Path':pathlib.Path,'os':os}
+                    exec(compile(ast.Module(body=target_nodes,type_ignores=[]),'<download-target>','exec'),namespace)
+                    directory=pathlib.Path('asr-model');self.assertTrue(directory.is_dir())
+                    (directory/'model.bin').write_bytes(b'fixture-model-not-an-engine')
+                    digest=server.hashlib.sha256((directory/'model.bin').read_bytes()).hexdigest()
+                    (directory/'manifest.json').write_text(json.dumps({'revision':server.REVISION,'files':{'model.bin':digest}}))
+                    namespace={**vars(server),'__name__':'__main__','ModelWorker':Worker,'create_server':lambda *args:Http()}
+                    block=compile(ast.Module(body=main,type_ignores=[]),'<server-main>','exec')
+                    exec(block,namespace)
+                    self.assertEqual(calls,[('worker','asr-model'),('serve',),('close',)])
+                    calls.clear();(directory/'model.bin').write_bytes(b'corrupted')
+                    with self.assertRaises(AssertionError):exec(block,namespace)
+                    self.assertEqual(calls,[])
+            finally:os.chdir(prior)
+
     def test_pcm_duration_and_invalid_headers(self):
         self.assertEqual(server.validate_wav(wav()),1000)
         for value in (b'not-wav',wav()[:-1],wav(rate=8000),wav(seconds=121)):

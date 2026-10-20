@@ -3,6 +3,7 @@ WORKDIR /app
 COPY services/asr-base/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 COPY services/asr-base/download_model.py ./download_model.py
+ENV ASR_MODEL_PATH=asr-model
 RUN python download_model.py
 COPY services/asr-base/server.py ./server.py
 ENV HF_HUB_OFFLINE=1 HF_HUB_DISABLE_TELEMETRY=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1

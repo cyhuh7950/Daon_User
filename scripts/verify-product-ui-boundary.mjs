@@ -2,6 +2,8 @@ import { lstat, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { createRequire, isBuiltin } from "node:module";
+import { parse } from "@babel/parser";
 
 export const FORBIDDEN_PRODUCT_UI_TOKENS = Object.freeze([
   "ProductionBoundEvidenceHub",
@@ -123,6 +125,48 @@ async function resolveModuleFile(candidate, boundaryErrors) {
   return null;
 }
 
+export function inspectModuleImports(content, filename) {
+  const ast = parse(content, { sourceType: "unambiguous", createImportExpressions: true,
+    plugins: /\.tsx?$/u.test(filename) ? ["jsx", "typescript"] : ["jsx"] });
+  const specifiers = new Set();
+  let unresolved = false;
+  const literal = node => {
+    if (node?.type !== "StringLiteral") { unresolved = true; return; }
+    specifiers.add(node.value);
+  };
+  const visit = (node, parent = null) => {
+    if (!node || typeof node !== "object") return;
+    if (node.type === "ImportDeclaration" || node.type === "ExportAllDeclaration" || node.type === "ExportNamedDeclaration" && node.source) literal(node.source);
+    if (node.type === "ImportExpression") literal(node.source);
+    if (node.type === "TSExternalModuleReference") literal(node.expression);
+    if (node.type === "Identifier" && node.name === "module"
+      && !(["MemberExpression", "OptionalMemberExpression"].includes(parent?.type) && parent.object === node)
+      && !(parent?.type === "VariableDeclarator" && parent.id === node)) unresolved = true;
+    if (["MemberExpression", "OptionalMemberExpression"].includes(node.type) && node.object?.name === "module") {
+      const name = node.computed ? node.property?.type === "StringLiteral" ? node.property.value : null : node.property?.name;
+      if (name === null) unresolved = true;
+      if (name === "require") {
+        if (parent?.type === "CallExpression" && parent.callee === node && parent.arguments.length === 1) literal(parent.arguments[0]);
+        else unresolved = true;
+      }
+    }
+    if (node.type === "Identifier" && node.name === "require"
+      && !(parent?.type === "CallExpression" && parent.callee === node)
+      && !(parent?.type === "MemberExpression" && parent.property === node && parent.object?.name === "module")) unresolved = true;
+    if (node.type === "CallExpression" && (node.callee?.type === "Import" || node.callee?.type === "Identifier" && node.callee.name === "require"
+      || node.callee?.type === "MemberExpression" && node.callee.object?.name === "module" && node.callee.property?.name === "require")) {
+      if (node.arguments.length !== 1) unresolved = true; else literal(node.arguments[0]);
+    }
+    if (node.type === "CallExpression" && node.callee?.object?.type === "MetaProperty") unresolved = true;
+    for (const [key, value] of Object.entries(node)) {
+      if (["loc", "start", "end", "comments", "tokens"].includes(key)) continue;
+      if (Array.isArray(value)) value.forEach(item => visit(item, node)); else if (value && typeof value === "object") visit(value, node);
+    }
+  };
+  visit(ast.program);
+  return { specifiers: [...specifiers], unresolved, useClient: ast.program.directives.some(item => item.value.value === "use client") };
+}
+
 function collectImportSpecifiers(content) {
   const specifiers = new Set();
   const patterns = [
@@ -175,8 +219,27 @@ function splitWorkspaceSpecifier(specifier) {
   return { packageName: parts.slice(0, 2).join("/"), exportKey: parts.length === 2 ? "." : `./${parts.slice(2).join("/")}` };
 }
 
-async function collectImportGraph({ entryFiles, packagesRoot, boundaryErrors }) {
+export async function collectImportGraph({ entryFiles, packagesRoot, boundaryErrors, strict = false }) {
   const workspacePackages = await loadWorkspacePackages(packagesRoot, boundaryErrors);
+  const projectRoot = packagesRoot ? path.resolve(packagesRoot, "..") : null;
+  let lockedPackages = {};
+  if (strict && projectRoot) {
+    try { lockedPackages = JSON.parse(await readFile(path.join(projectRoot, "package-lock.json"), "utf8")).packages ?? {}; } catch { /* 외부 의존성은 아래에서 미확인으로 거부한다. */ }
+  }
+  const trustedRegistryLeaf = async resolved => {
+    if (!projectRoot) return false;
+    let directory = path.dirname(resolved);
+    while (directory !== projectRoot && path.relative(projectRoot, directory) !== ".." && !path.relative(projectRoot, directory).startsWith(`..${path.sep}`)) {
+      if (await pathType(path.join(directory, "package.json")) === "file") {
+        const locked = lockedPackages[path.relative(projectRoot, directory).split(path.sep).join("/")];
+        const installed = JSON.parse(await readFile(path.join(directory, "package.json"), "utf8"));
+        return !!locked && locked.link !== true && typeof locked.resolved === "string" && locked.resolved.startsWith("https://registry.npmjs.org/")
+          && /^sha512-[A-Za-z0-9+/]+={0,2}$/u.test(locked.integrity ?? "") && typeof installed.version === "string" && installed.version === locked.version;
+      }
+      directory = path.dirname(directory);
+    }
+    return false;
+  };
   const queue = [...entryFiles.map((file) => path.resolve(file))];
   const visited = new Set();
   while (queue.length) {
@@ -190,15 +253,35 @@ async function collectImportGraph({ entryFiles, packagesRoot, boundaryErrors }) 
     visited.add(current);
     if (!textExtensions.has(path.extname(current).toLowerCase())) continue;
     const content = await readFile(current, "utf8");
-    for (const specifier of collectImportSpecifiers(content)) {
+    let specifiers;
+    try {
+      const parsed = strict && /\.[cm]?[jt]sx?$/u.test(current) ? inspectModuleImports(content, current) : null;
+      if (parsed?.unresolved) boundaryErrors.push({ path: current, code: "DYNAMIC_IMPORT_UNRESOLVED" });
+      specifiers = parsed?.specifiers ?? collectImportSpecifiers(content);
+    } catch {
+      boundaryErrors.push({ path: current, code: "MODULE_PARSE_FAILED" }); continue;
+    }
+    for (const specifier of specifiers) {
       let target = null;
       if (specifier.startsWith(".")) {
         target = await resolveModuleFile(path.resolve(path.dirname(current), specifier), boundaryErrors);
       } else {
         const workspaceSpecifier = splitWorkspaceSpecifier(specifier);
-        if (!workspaceSpecifier) continue;
+        if (!workspaceSpecifier) {
+          if (strict && !isBuiltin(specifier)) {
+            try {
+              const resolved = createRequire(current).resolve(specifier);
+              if (!resolved.split(path.sep).includes("node_modules")) queue.push(resolved);
+              else if (!await trustedRegistryLeaf(resolved)) boundaryErrors.push({ path: current, code: "REGISTRY_LEAF_UNVERIFIED" });
+            } catch { boundaryErrors.push({ path: current, code: "EXTERNAL_IMPORT_UNRESOLVED" }); }
+          }
+          continue;
+        }
         const workspacePackage = workspacePackages.get(workspaceSpecifier.packageName);
         const exportValue = workspacePackage?.exports?.[workspaceSpecifier.exportKey];
+        if (strict && exportValue && typeof exportValue !== "string") {
+          boundaryErrors.push({ path: current, code: "CONDITIONAL_EXPORT_UNRESOLVED" }); continue;
+        }
         const exportTarget = packageExportTarget(exportValue);
         if (workspacePackage && exportTarget) {
           target = await resolveModuleFile(path.resolve(workspacePackage.root, exportTarget), boundaryErrors);

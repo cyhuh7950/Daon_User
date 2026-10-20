@@ -629,7 +629,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
                     if(protocol==='asr_base_native'){
                       setDraft(current=>({...current,provider_code:'CUSTOM',adapter_type:protocol,
                         display_name:'QA CPU base ASR',provider_name:'CPU base ASR',short_code:'AS',
-                        base_url:'http://asr-base:8080',logical_model_ids:'faster-whisper-base',auto_model_id:'',
+                        base_url:'server-managed-asr',logical_model_ids:'faster-whisper-base',auto_model_id:'',
                         credential_requirement:'none',access_mode:'public'}));return;
                     }
                     setDraft((current) => ({ ...current, provider_code: "CUSTOM",
@@ -645,7 +645,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
                 <label>Provider 표시 이름<input value={draft.provider_name} maxLength={256} autoComplete="off" onChange={(event) => setDraft((current) => ({ ...current, provider_name: event.target.value }))} /></label>
                 <label>연결 이름<input value={draft.display_name} autoComplete="off" onChange={(event) => setDraft((current) => ({ ...current, display_name: event.target.value }))} /></label>
                 <label>두 글자 약어<input aria-label="두 글자 약어" value={draft.short_code} maxLength={2} pattern="[A-Z]{2}" autoComplete="off" onChange={(event) => setDraft((current) => ({ ...current, short_code: event.target.value.toUpperCase() }))} /></label>
-                <label>Endpoint<input readOnly={nativeAsr} value={draft.base_url} autoComplete="off" placeholder={draft.version ? "보안을 위해 저장된 주소는 표시하지 않습니다" : "서버에서 검증할 Endpoint"} onChange={(event) => { discardPreview(); setDraft((current) => ({ ...current, base_url: event.target.value })); }} /></label>
+                <label>Endpoint<input readOnly={nativeAsr} value={nativeAsr ? "서버 관리" : draft.base_url} autoComplete="off" placeholder={draft.version ? "보안을 위해 저장된 주소는 표시하지 않습니다" : "서버에서 검증할 Endpoint"} onChange={(event) => { discardPreview(); setDraft((current) => ({ ...current, base_url: event.target.value })); }} /></label>
                 <div className="provider-field-wide provider-configuration-columns">
                   <div className="provider-configuration-settings">
                     <label>인증 유형{nativeAsr || draft.version > 0 && compatible ? <input readOnly value={draft.credential_requirement === "none" ? "Key 불필요" : "Key 필요"} /> : <select value={draft.credential_requirement} onChange={(event) => { discardPreview(); if (event.target.value === "none") setCredential(""); setDraft((current) => ({ ...current, credential_requirement: event.target.value, access_mode: event.target.value === "none" ? "public" : current.access_mode })); }}><option value="required">Key 필요</option><option value="none">Key 불필요</option></select>}</label>

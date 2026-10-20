@@ -13,6 +13,38 @@ import {
   parsePublicGatewayOrigin,
 } from "../../apps/web/lib/bff-api-proxy.js";
 
+test('native ASR registration resolves only the exact server-managed endpoint in existing admin writes',async()=>{
+  const calls=[];const proxy=createBffProxy({baseUrl:new URL('https://api.example.com'),fetchImpl:async(url,init)=>{
+    calls.push({url:String(url),body:JSON.parse(Buffer.from(init.body).toString()),headers:init.headers});return Response.json({error:{code:'ACCESS_DENIED'}},{status:403});
+  }});
+  const body={provider_code:'CUSTOM',adapter_type:'asr_base_native',base_url:'server-managed-asr',credential_requirement:'none',access_mode:'public'};
+  for(const method of ['POST','PUT']){
+    const parts=['admin','provider-connections',...(method==='PUT'?['asr-native']:[])];
+    const response=await proxy(new Request('https://app.example.com/bff/api/'+parts.join('/'),{method,headers:{origin:'https://app.example.com','content-type':'application/json',cookie:'daon_session=opaque-session','idempotency-key':'asr-write-key'},body:JSON.stringify(body)}),parts);
+    assert.equal(response.status,403,'normal server permission refusal is preserved');
+    assert.deepEqual(calls.at(-1).body,{...body,base_url:'http://asr-base:8080'});
+    assert.equal(calls.at(-1).headers.get('idempotency-key'),'asr-write-key');
+  }
+  for(const patch of [{base_url:'server-managed-asr-other'},{adapter_type:'openai_compatible',base_url:'https://api.example.net'}]){
+    const input={...body,...patch};
+    await proxy(new Request('https://app.example.com/bff/api/admin/provider-connections',{method:'POST',headers:{origin:'https://app.example.com','content-type':'application/json'},body:JSON.stringify(input)}),['admin','provider-connections']);
+    assert.deepEqual(calls.at(-1).body,input);
+  }
+  const before=calls.length;
+  for(const patch of [{provider_code:'OPENAI'},{adapter_type:'openai_compatible'},{credential_requirement:'required'},{access_mode:'personal'},{credential:'fixture-only'}]) {
+    const wrong={...body,...patch};
+    assert.equal((await proxy(new Request('https://app.example.com/bff/api/admin/provider-connections',{method:'POST',headers:{origin:'https://app.example.com','content-type':'application/json'},body:JSON.stringify(wrong)}),['admin','provider-connections'])).status,400);
+  }
+  assert.equal(calls.length,before);
+  const previewParts=['admin','provider-connections','model-preview'];
+  await proxy(new Request('https://app.example.com/bff/api/'+previewParts.join('/'),{method:'POST',headers:{origin:'https://app.example.com','content-type':'application/json'},body:JSON.stringify(body)}),previewParts);
+  assert.deepEqual(calls.at(-1).body,body,'different existing routes never expand the sentinel');
+  const after=calls.length;
+  assert.equal((await proxy(new Request('https://app.example.com/bff/api/admin/provider-connections/asr-native',{method:'PATCH',headers:{origin:'https://app.example.com','content-type':'application/json'},body:JSON.stringify(body)}),['admin','provider-connections','asr-native'])).status,405);
+  assert.equal((await proxy(new Request('https://app.example.com/bff/api/admin/provider-connections',{method:'POST',headers:{origin:'https://foreign.example','content-type':'application/json'},body:JSON.stringify(body)}),['admin','provider-connections'])).status,403);
+  assert.equal(calls.length,after,'unsupported methods and foreign origins never reach the server');
+});
+
 test('S44 capacity BFF forwards only literal1 on workspace and system paths',async()=>{
   const calls=[];
   const proxy=createBffProxy({baseUrl:new URL('https://api.example.com'),fetchImpl:async url=>{

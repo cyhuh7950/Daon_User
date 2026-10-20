@@ -1,11 +1,11 @@
 """고정 revision 공식 모델 네 파일만 설치하고 LFS 해시를 확인한다."""
-import hashlib,json
+import hashlib,json,os
 from pathlib import Path
 import urllib.request
 
 REVISION='ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66'
 FILES=('config.json','model.bin','tokenizer.json','vocabulary.txt')
-target=Path('/opt/asr-model');target.mkdir(parents=True,exist_ok=False)
+target=Path(os.environ['ASR_MODEL_PATH']);target.mkdir(parents=True,exist_ok=False)
 with urllib.request.urlopen('https://huggingface.co/api/models/Systran/faster-whisper-base/revision/'+REVISION+'?blobs=true',timeout=30) as response:metadata=json.load(response)
 assert metadata['sha']==REVISION
 entries={v['rfilename']:v for v in metadata['siblings']};hashes={};total=0

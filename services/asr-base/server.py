@@ -123,7 +123,7 @@ def create_server(model,digest,address=('0.0.0.0',8080)):
     return ThreadingHTTPServer(address,Handler)
 
 if __name__=='__main__':
-    path=Path('/opt/asr-model');manifest=json.loads((path/'manifest.json').read_text())
+    path=Path(os.environ['ASR_MODEL_PATH']);manifest=json.loads((path/'manifest.json').read_text())
     assert manifest['revision']==REVISION
     for name,digest in manifest['files'].items():assert hashlib.sha256((path/name).read_bytes()).hexdigest()==digest
     worker=ModelWorker(str(path))

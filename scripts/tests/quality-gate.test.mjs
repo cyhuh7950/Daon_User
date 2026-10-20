@@ -391,6 +391,54 @@ test("Secret 의심값은 실패하되 Artifact에 원문 값을 남기지 않�
   assert.doesNotMatch(serialized, /super-secret-value/);
 });
 
+test("BFF 내부 주소의 서버 판정은 실제 import graph 증명에만 의존하고 Secret 검사를 유지한다", async t => {
+  for (const scenario of ['server','direct','indirect','dynamic','require','require-alias','module-require','computed-require','module-alias','variable-require','evidence-direct','evidence-indirect','local-package','parse','missing','through-route','self-client','variable','alias','secret','other-browser','unknown-server']) {
+    await t.test(scenario,async t=>{
+      const root=await makeFixture();t.after(()=>rm(root,{recursive:true,force:true}));
+      const put=async(file,text)=>{await mkdir(path.dirname(path.join(root,file)),{recursive:true});await writeFile(path.join(root,file),text);};
+      const bff='apps/web/lib/bff-api-proxy.js',route='apps/web/app/bff/api/[...path]/route.js';
+      await put(bff,`${scenario==='self-client'?'"use client";':''}export const endpoint="http://asr-base:8080";${scenario==='secret'?'const apiKey="secret-canary-value";':''}`);
+      await put(route,'export {endpoint} from "../../../../lib/bff-api-proxy.js";');
+      let client='"use client";export const ready=true;';
+      if(scenario==='direct')client+='import "../lib/bff-api-proxy.js";';
+      if(scenario==='indirect'){client+='import "../lib/middle.js";';await put('apps/web/lib/middle.js','export * from "./bff-api-proxy.js";');}
+      if(scenario==='dynamic')client+='void import("../lib/bff-api-proxy.js");';
+      if(scenario==='require')client+='require("../lib/bff-api-proxy.js");';
+      if(scenario==='require-alias')client+='const loader=require;loader("../lib/bff-api-proxy.js");';
+      if(scenario==='module-require')client+='module.require("../lib/bff-api-proxy.js");';
+      if(scenario==='computed-require')client+='module["require"]("../lib/bff-api-proxy.js");';
+      if(scenario==='module-alias')client+='const loader=module.require;loader("../lib/bff-api-proxy.js");';
+      if(scenario==='variable-require')client+='const key="require";module[key]("../lib/bff-api-proxy.js");';
+      if(scenario==='evidence-direct')await put('apps/evidence-hub/src/main.jsx','import "../../web/lib/bff-api-proxy.js";');
+      if(scenario==='evidence-indirect'){
+        await put('apps/evidence-hub/src/main.jsx','import "./middle.js";');
+        await put('apps/evidence-hub/src/middle.js','export * from "../../web/lib/bff-api-proxy.js";');
+      }
+      if(scenario==='local-package') {
+        client+='import "local-bridge";';
+        await put('node_modules/local-bridge/package.json',JSON.stringify({name:'local-bridge',version:'1.0.0',main:'index.js'}));
+        await put('node_modules/local-bridge/index.js','export * from "../../apps/web/lib/bff-api-proxy.js";');
+      }
+      if(scenario==='parse')client+='const = invalid;';
+      if(scenario==='missing')client+='import "./missing-module.js";';
+      if(scenario==='through-route')client+='import "../app/bff/api/[...path]/route.js";';
+      if(scenario==='variable')client+='const name="../lib/bff-api-proxy.js";void import(name);';
+      if(scenario==='alias')client+='import "@/unresolved-bff";';
+      if(scenario==='other-browser')client+='const other="http://browser-internal:8080";';
+      if(scenario==='unknown-server')await put('apps/web/lib/unknown-server.js','export const endpoint="http://other-internal:8080";');
+      await put('apps/web/components/client.jsx',client);
+      const command=id=>({id,command:['stub',id],failure_kind:'quality'});
+      const policy=fixturePolicy({commands:{lint:command('lint'),unit:command('unit'),build:command('build')}});
+      policy.security.forbidden_runtime_patterns=[{id:'BROWSER_INTERNAL_ADDRESS',pattern:'https?://[a-z-]+:\\d+'}];
+      const {report}=await runFixture(root,policy);
+      const failures=report.failures.filter(item=>item.check_id==='security-static-scan');
+      if(scenario==='server')assert.equal(failures.length,0);
+      else assert.ok(failures.length>0,scenario);
+      if(scenario==='secret'){assert.ok(failures.some(x=>x.code==='SECRET_ASSIGNMENT'));assert.doesNotMatch(JSON.stringify(report),/secret-canary-value/);}
+    });
+  }
+});
+
 test("GitHub Workflow는 JSON으로도 유효한 YAML 1.2이며 공통 Runner 계약을 사용한다", async () => {
   const workflowPath = path.resolve(".github/workflows/release-1-quality-gate.yml");
   const workflow = JSON.parse(await readFile(workflowPath, "utf8"));

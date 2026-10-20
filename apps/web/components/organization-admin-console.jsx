@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as organizationApi from "../lib/organization-admin-api.js";
-import { secureUuid } from "../../../packages/ui/src/secure-uuid.js";
+import { secureUuid } from "@daon-user/ui/secure-uuid";
 import { concealProtectedRoute, revealProtectedRoute } from "../lib/protected-route-guard.js";
 import {
   changeMemberRole, changeMemberState, createInvitation, decideCreationRequest, decideJoinRequest,

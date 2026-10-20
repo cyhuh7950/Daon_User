@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import * as organizationApi from "../lib/organization-admin-api.js";
-import { secureUuid } from "../../../packages/ui/src/secure-uuid.js";
+import { secureUuid } from "@daon-user/ui/secure-uuid";
 import { concealProtectedRoute, revealProtectedRoute } from "../lib/protected-route-guard.js";
 
 const sameSession = (a, b) => Boolean(a && b && ["user_id", "session_id", "tenant_id", "workspace_id", "device_id"].every(key => a[key] === b[key]));

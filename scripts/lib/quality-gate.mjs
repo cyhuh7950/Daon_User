@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { verifiedServerBff } from "./bff-server-boundary.mjs";
 
 const REQUIRED_CATEGORIES = ["lint", "type", "unit", "contract", "build", "security", "independence"];
 const SOURCE_CATEGORIES = ["lint", "type", "unit", "contract", "build"];
@@ -190,6 +191,9 @@ async function scanSecurity(root, security) {
     .map((rule) => ({ ...rule, regex: new RegExp(rule.pattern, "gim") }));
   const violations = [];
   const scanned = [];
+  const productionFiles = (await Promise.all(security.scan_roots.map(scanRoot => listFiles(path.resolve(root, scanRoot))))).flat()
+    .filter(candidate => !path.relative(root, candidate).split(path.sep).some(segment => SECURITY_IGNORED_DIRECTORIES.has(segment)));
+  const serverBff = await verifiedServerBff(root, productionFiles);
   for (const scanRoot of security.scan_roots) {
     for (const absolute of (await listFiles(path.resolve(root, scanRoot))).filter((candidate) => {
       const segments = path.relative(root, candidate).split(path.sep);
@@ -201,6 +205,7 @@ async function scanSecurity(root, security) {
       const content = await readFile(absolute, "utf8");
       for (const rule of rules) {
         if (rule.id === "BROWSER_INTERNAL_ADDRESS" && relative.startsWith("services/")) continue;
+        if (rule.id === "BROWSER_INTERNAL_ADDRESS" && relative === "apps/web/lib/bff-api-proxy.js" && serverBff) continue;
         rule.regex.lastIndex = 0;
         if (rule.regex.test(content)) violations.push({ rule_id: rule.id, path: relative });
       }

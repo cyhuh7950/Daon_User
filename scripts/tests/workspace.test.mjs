@@ -252,10 +252,10 @@ test("Notebook Route는 Notebook ID를 실제 Product Workspace에 연결하고 
   assert.match(actualWorkspace, /getDocumentProcessingStatus/);
   assert.match(actualWorkspace, /askGroundedQuestion/);
   assert.match(actualWorkspace, /citationContentUrl/);
-  assert.match(authPane, /result\?\.data\?\.workspace_id/);
-  assert.match(authPane, /window\.location\.assign\("\/notebooks"\)/);
-  assert.match(authPane, /WORKSPACE_REQUIRED/);
-  assert.doesNotMatch(authPane, /error\.message|error\.stack|console\./);
+  assert.match(authPane, /getCurrentAuthSession\(\{ signal: controller.signal, expectedIdentity: result\?\.data \?\? \{\} \}\)/);
+  assert.match(authPane, /const destination = authEntryPath\(session\)/);
+  assert.match(authPane, /window\.location\.assign\(destination\)/);
+  assert.doesNotMatch(authPane, /window\.location\.assign\(result|error\.message|error\.stack|console\./);
   assert.match(uploadClient, /\/bff\/api\/workspaces\/\$\{encodeURIComponent\(workspaceId\)\}\/sources/);
   assert.match(uploadClient, /\/bff\/api\/workspaces\/\$\{encodeURIComponent\(workspaceId\)\}\/processing-runs\/\$\{encodeURIComponent\(processingRunId\)\}/);
   assert.doesNotMatch(`${legacyPage}\n${page}\n${actualWorkspace}\n${uploadClient}`, /https?:\/\/|localhost|127\.0\.0\.1|NEXT_PUBLIC_API_BASE_URL/i);
