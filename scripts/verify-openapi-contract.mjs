@@ -54,6 +54,7 @@ export const REQUIRED_PATHS = Object.freeze([
   "/api/v1/workspaces/{id}/weight-profile",
   "/api/v1/workspaces/{id}/model-policy",
   "/api/v1/workspaces/{id}/model-defaults",
+  "/api/v1/workspaces/{id}/routing-policy",
   "/api/v1/workspaces/{id}/egress-policy",
   "/api/v1/workspaces/{id}/questions/authorization",
   "/api/v1/organizations/{id}/egress-policy-versions",

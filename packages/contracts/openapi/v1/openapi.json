@@ -60,6 +60,159 @@
     }
   ],
   "paths": {
+  "/api/v1/workspaces/{id}/routing-policy": {
+    "get": {
+      "tags": [
+        "Model"
+      ],
+      "x-implementation-owner": "R3-B1",
+      "responses": {
+        "400": {
+          "$ref": "#/components/responses/BadRequest"
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "409": {
+          "$ref": "#/components/responses/Conflict"
+        },
+        "422": {
+          "$ref": "#/components/responses/BadRequest"
+        },
+        "412": {"$ref":"#/components/responses/PreconditionFailed"},
+          "500": {"$ref":"#/components/responses/SafeFailure"},
+          "503": {
+          "$ref": "#/components/responses/SafeFailure"
+        },
+        "200": {
+          "description": "B1 후보 정책 안전 조회/저장. 자동 호출은 비활성.",
+          "headers": {
+            "X-Trace-Id": {"$ref":"#/components/headers/XTraceId"},
+            "ETag": {
+              "$ref": "#/components/headers/ETag"
+            }
+          },
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RoutingPolicyEnvelope"
+              }
+            }
+          }
+        }
+      },
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/ResourceId"
+        }
+      ],
+      "operationId": "getWorkspaceRoutingPolicy",
+      "summary": "후보 정책 조회 (VIEW)"
+    },
+    "put": {
+      "tags": [
+        "Model"
+      ],
+      "x-implementation-owner": "R3-B1",
+      "responses": {
+        "400": {
+          "$ref": "#/components/responses/BadRequest"
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "409": {
+          "$ref": "#/components/responses/Conflict"
+        },
+        "422": {
+          "$ref": "#/components/responses/BadRequest"
+        },
+        "412": {"$ref":"#/components/responses/PreconditionFailed"},
+          "500": {"$ref":"#/components/responses/SafeFailure"},
+          "503": {
+          "$ref": "#/components/responses/SafeFailure"
+        },
+        "200": {
+          "description": "B1 후보 정책 안전 조회/저장. 자동 호출은 비활성.",
+          "headers": {
+            "X-Trace-Id": {"$ref":"#/components/headers/XTraceId"},
+            "ETag": {
+              "$ref": "#/components/headers/ETag"
+            }
+          },
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RoutingPolicyEnvelope"
+              }
+            }
+          }
+        },
+        "428": {
+          "description": "필수 조건 헤더 없음",
+          "headers": {"X-Trace-Id":{"$ref":"#/components/headers/XTraceId"}},
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SafeErrorEnvelope"
+              }
+            }
+          }
+        }
+      },
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/ResourceId"
+        },
+        {
+          "$ref": "#/components/parameters/IdempotencyKey"
+        },
+        {
+          "name": "If-Match",
+          "in": "header",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "If-None-Match",
+          "in": "header",
+          "required": false,
+          "schema": {
+            "type": "string",
+            "const": "*"
+          }
+        }
+      ],
+      "operationId": "putWorkspaceRoutingPolicy",
+      "summary": "후보 정책 불변 버전 저장 (POLICY_MANAGE)",
+      "description": "생성 expected_version=0 + If-None-Match:*; 갱신 현재 expected_version + If-Match. 조건 누락428, 두 헤더 동시422, 경합409. 모델 호출0.",
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/RoutingPolicyRequest"
+            }
+          }
+        }
+      }
+    }
+  }
+,
     "/api/v1/organization/admin/tenants": {"get":{"operationId":"listManagedOrganizations","tags":["Workspace"],"summary":"시스템 관리자 전용 실제 조직 목록","x-implementation-owner":"S39-L3","parameters":[],"responses":{"200":{"description":"시스템 관리자 전용 실제 조직 목록","headers":{"X-Trace-Id":{"$ref":"#/components/headers/XTraceId"},"ETag":{"$ref":"#/components/headers/ETag"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/OrganizationTenantsEnvelope"}}}},"400":{"$ref":"#/components/responses/BadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/NotFound"},"409":{"$ref":"#/components/responses/Conflict"},"412":{"$ref":"#/components/responses/PreconditionFailed"},"422":{"$ref":"#/components/responses/BadRequest"},"500":{"$ref":"#/components/responses/SafeFailure"},"503":{"$ref":"#/components/responses/SafeFailure"}}}},
     "/api/v1/organization/tenants/{tenant_id}/workspaces": {"get":{"operationId":"listManagedOrganizationWorkspaces","tags":["Workspace"],"summary":"선택 조직의 실제 organization Workspace 목록","x-implementation-owner":"S39-L3","parameters":[{"name":"tenant_id","in":"path","required":true,"schema":{"$ref":"#/components/schemas/OpaqueId"}}],"responses":{"200":{"description":"선택 조직의 실제 organization Workspace 목록","headers":{"X-Trace-Id":{"$ref":"#/components/headers/XTraceId"},"ETag":{"$ref":"#/components/headers/ETag"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/OrganizationWorkspacesEnvelope"}}}},"400":{"$ref":"#/components/responses/BadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/NotFound"},"409":{"$ref":"#/components/responses/Conflict"},"412":{"$ref":"#/components/responses/PreconditionFailed"},"422":{"$ref":"#/components/responses/BadRequest"},"500":{"$ref":"#/components/responses/SafeFailure"},"503":{"$ref":"#/components/responses/SafeFailure"}}}},
     "/api/v1/organization/tenants/{tenant_id}/invitations": {"get":{"operationId":"listOrganizationInvitations","tags":["Workspace"],"summary":"선택 조직의 안전 초대 목록","x-implementation-owner":"S39-L3","parameters":[{"name":"tenant_id","in":"path","required":true,"schema":{"$ref":"#/components/schemas/OpaqueId"}}],"responses":{"200":{"description":"선택 조직의 안전 초대 목록","headers":{"X-Trace-Id":{"$ref":"#/components/headers/XTraceId"},"ETag":{"$ref":"#/components/headers/ETag"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/OrganizationInvitationsEnvelope"}}}},"400":{"$ref":"#/components/responses/BadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/NotFound"},"409":{"$ref":"#/components/responses/Conflict"},"412":{"$ref":"#/components/responses/PreconditionFailed"},"422":{"$ref":"#/components/responses/BadRequest"},"500":{"$ref":"#/components/responses/SafeFailure"},"503":{"$ref":"#/components/responses/SafeFailure"}}},"post":{"operationId":"createOrganizationInvitation","tags":["Workspace"],"summary":"선택 Workspace에 고정한 초대 생성","x-implementation-owner":"S39-L3","parameters":[{"name":"tenant_id","in":"path","required":true,"schema":{"$ref":"#/components/schemas/OpaqueId"}},{"$ref":"#/components/parameters/IdempotencyKey"},{"$ref":"#/components/parameters/OrganizationExpectedSessionId"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/OrganizationInvitationCreate"}}}},"responses":{"201":{"description":"선택 Workspace에 고정한 초대 생성","headers":{"X-Trace-Id":{"$ref":"#/components/headers/XTraceId"},"ETag":{"$ref":"#/components/headers/ETag"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/OrganizationInvitationEnvelope"}}}},"400":{"$ref":"#/components/responses/BadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/NotFound"},"409":{"$ref":"#/components/responses/Conflict"},"412":{"$ref":"#/components/responses/PreconditionFailed"},"422":{"$ref":"#/components/responses/BadRequest"},"500":{"$ref":"#/components/responses/SafeFailure"},"503":{"$ref":"#/components/responses/SafeFailure"}}}},
@@ -73,7 +226,9 @@
         "operationId": "getOwnAccountProfile", "tags": ["Session"], "summary": "본인 표시 이름과 저장 version 조회", "x-implementation-owner": "S36-C3",
         "responses": {
           "200": {"description": "본인 프로필", "headers": {"X-Trace-Id": {"$ref": "#/components/headers/XTraceId"}, "ETag": {"$ref": "#/components/headers/ETag"}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AccountProfileEnvelope"}}}},
-          "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "412": {"$ref": "#/components/responses/PreconditionFailed"}, "422": {"$ref": "#/components/responses/BadRequest"}, "500": {"$ref": "#/components/responses/SafeFailure"}, "503": {"$ref": "#/components/responses/SafeFailure"}
+          "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "412": {"$ref": "#/components/responses/PreconditionFailed"}, "422": {"$ref": "#/components/responses/BadRequest"}, "500": {"$ref": "#/components/responses/SafeFailure"}, "412": {"$ref":"#/components/responses/PreconditionFailed"},
+          "500": {"$ref":"#/components/responses/SafeFailure"},
+          "503": {"$ref": "#/components/responses/SafeFailure"}
         }
       },
       "patch": {
@@ -83,7 +238,9 @@
         "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AccountProfilePatch"}}}},
         "responses": {
           "200": {"description": "표시 이름 저장 영수증", "headers": {"X-Trace-Id": {"$ref": "#/components/headers/XTraceId"}, "ETag": {"$ref": "#/components/headers/ETag"}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AccountProfileMutationEnvelope"}}}},
-          "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "412": {"$ref": "#/components/responses/PreconditionFailed"}, "422": {"$ref": "#/components/responses/BadRequest"}, "500": {"$ref": "#/components/responses/SafeFailure"}, "503": {"$ref": "#/components/responses/SafeFailure"}
+          "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "412": {"$ref": "#/components/responses/PreconditionFailed"}, "422": {"$ref": "#/components/responses/BadRequest"}, "500": {"$ref": "#/components/responses/SafeFailure"}, "412": {"$ref":"#/components/responses/PreconditionFailed"},
+          "500": {"$ref":"#/components/responses/SafeFailure"},
+          "503": {"$ref": "#/components/responses/SafeFailure"}
         }
       }
     },
@@ -93,7 +250,9 @@
         "parameters": [{"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}}, {"name": "cursor", "in": "query", "schema": {"type": "string", "minLength": 1, "maxLength": 2048}}],
         "responses": {
           "200": {"description": "본인 장치 페이지", "headers": {"X-Trace-Id": {"$ref": "#/components/headers/XTraceId"}, "ETag": {"$ref": "#/components/headers/ETag"}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AccountDevicesEnvelope"}}}},
-          "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "412": {"$ref": "#/components/responses/PreconditionFailed"}, "422": {"$ref": "#/components/responses/BadRequest"}, "500": {"$ref": "#/components/responses/SafeFailure"}, "503": {"$ref": "#/components/responses/SafeFailure"}
+          "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "412": {"$ref": "#/components/responses/PreconditionFailed"}, "422": {"$ref": "#/components/responses/BadRequest"}, "500": {"$ref": "#/components/responses/SafeFailure"}, "412": {"$ref":"#/components/responses/PreconditionFailed"},
+          "500": {"$ref":"#/components/responses/SafeFailure"},
+          "503": {"$ref": "#/components/responses/SafeFailure"}
         }
       }
     },
@@ -103,7 +262,9 @@
         "parameters": [{"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}}, {"name": "cursor", "in": "query", "schema": {"type": "string", "minLength": 1, "maxLength": 2048}}],
         "responses": {
           "200": {"description": "본인 세션 페이지", "headers": {"X-Trace-Id": {"$ref": "#/components/headers/XTraceId"}, "ETag": {"$ref": "#/components/headers/ETag"}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AccountSessionsEnvelope"}}}},
-          "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "412": {"$ref": "#/components/responses/PreconditionFailed"}, "422": {"$ref": "#/components/responses/BadRequest"}, "500": {"$ref": "#/components/responses/SafeFailure"}, "503": {"$ref": "#/components/responses/SafeFailure"}
+          "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "412": {"$ref": "#/components/responses/PreconditionFailed"}, "422": {"$ref": "#/components/responses/BadRequest"}, "500": {"$ref": "#/components/responses/SafeFailure"}, "412": {"$ref":"#/components/responses/PreconditionFailed"},
+          "500": {"$ref":"#/components/responses/SafeFailure"},
+          "503": {"$ref": "#/components/responses/SafeFailure"}
         }
       }
     },
@@ -160,6 +321,8 @@
           "500": {
             "$ref": "#/components/responses/SafeFailure"
           },
+          "412": {"$ref":"#/components/responses/PreconditionFailed"},
+          "500": {"$ref":"#/components/responses/SafeFailure"},
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -230,6 +393,8 @@
           "500": {
             "$ref": "#/components/responses/SafeFailure"
           },
+          "412": {"$ref":"#/components/responses/PreconditionFailed"},
+          "500": {"$ref":"#/components/responses/SafeFailure"},
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -302,6 +467,8 @@
           "500": {
             "$ref": "#/components/responses/SafeFailure"
           },
+          "412": {"$ref":"#/components/responses/PreconditionFailed"},
+          "500": {"$ref":"#/components/responses/SafeFailure"},
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -369,6 +536,8 @@
           "500": {
             "$ref": "#/components/responses/SafeFailure"
           },
+          "412": {"$ref":"#/components/responses/PreconditionFailed"},
+          "500": {"$ref":"#/components/responses/SafeFailure"},
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -452,6 +621,8 @@
           "500": {
             "$ref": "#/components/responses/SafeFailure"
           },
+          "412": {"$ref":"#/components/responses/PreconditionFailed"},
+          "500": {"$ref":"#/components/responses/SafeFailure"},
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -491,6 +662,8 @@
           "431": {
             "$ref": "#/components/responses/RequestHeaderFieldsTooLarge"
           },
+          "412": {"$ref":"#/components/responses/PreconditionFailed"},
+          "500": {"$ref":"#/components/responses/SafeFailure"},
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           },
@@ -542,6 +715,8 @@
           "412": {"$ref": "#/components/responses/PreconditionFailed"},
           "431": {"$ref": "#/components/responses/RequestHeaderFieldsTooLarge"},
           "500": {"$ref": "#/components/responses/SafeFailure"},
+          "412": {"$ref":"#/components/responses/PreconditionFailed"},
+          "500": {"$ref":"#/components/responses/SafeFailure"},
           "503": {"$ref": "#/components/responses/ServiceUnavailable"}
         }
       }
@@ -562,6 +737,8 @@
           "412": {"$ref": "#/components/responses/PreconditionFailed"},
           "431": {"$ref": "#/components/responses/RequestHeaderFieldsTooLarge"},
           "500": {"$ref": "#/components/responses/SafeFailure"},
+          "412": {"$ref":"#/components/responses/PreconditionFailed"},
+          "500": {"$ref":"#/components/responses/SafeFailure"},
           "503": {"$ref": "#/components/responses/ServiceUnavailable"},
           "504": {"$ref": "#/components/responses/RequestTimeout"}
         }
@@ -583,6 +760,8 @@
           "409": { "$ref": "#/components/responses/Conflict" },
           "412": { "$ref": "#/components/responses/PreconditionFailed" },
           "500": { "$ref": "#/components/responses/SafeFailure" },
+          "412": {"$ref":"#/components/responses/PreconditionFailed"},
+          "500": {"$ref":"#/components/responses/SafeFailure"},
           "503": { "$ref": "#/components/responses/ServiceUnavailable" }
         }
       }
@@ -597,7 +776,9 @@
           "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" },
           "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" },
           "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" },
-          "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+          "500": { "$ref": "#/components/responses/SafeFailure" }, "412": {"$ref":"#/components/responses/PreconditionFailed"},
+          "500": {"$ref":"#/components/responses/SafeFailure"},
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
         }
       },
       "post": {
@@ -611,7 +792,9 @@
           "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" },
           "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" },
           "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" },
-          "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+          "500": { "$ref": "#/components/responses/SafeFailure" }, "412": {"$ref":"#/components/responses/PreconditionFailed"},
+          "500": {"$ref":"#/components/responses/SafeFailure"},
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
         }
       }
     },
@@ -625,7 +808,9 @@
           "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" },
           "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" },
           "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" },
-          "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+          "500": { "$ref": "#/components/responses/SafeFailure" }, "412": {"$ref":"#/components/responses/PreconditionFailed"},
+          "500": {"$ref":"#/components/responses/SafeFailure"},
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
         }
       },
       "patch": {
@@ -638,7 +823,9 @@
           "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" },
           "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" },
           "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" },
-          "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+          "500": { "$ref": "#/components/responses/SafeFailure" }, "412": {"$ref":"#/components/responses/PreconditionFailed"},
+          "500": {"$ref":"#/components/responses/SafeFailure"},
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
         }
       }
     },
@@ -655,7 +842,9 @@
           "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" },
           "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" },
           "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" },
-          "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+          "500": { "$ref": "#/components/responses/SafeFailure" }, "412": {"$ref":"#/components/responses/PreconditionFailed"},
+          "500": {"$ref":"#/components/responses/SafeFailure"},
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
         }
       }
     },
@@ -670,7 +859,9 @@
           "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" },
           "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" },
           "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" },
-          "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+          "500": { "$ref": "#/components/responses/SafeFailure" }, "412": {"$ref":"#/components/responses/PreconditionFailed"},
+          "500": {"$ref":"#/components/responses/SafeFailure"},
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
         }
       }
     },
@@ -698,6 +889,8 @@
           "409": { "$ref": "#/components/responses/Conflict" },
           "412": { "$ref": "#/components/responses/PreconditionFailed" },
           "500": { "$ref": "#/components/responses/SafeFailure" },
+          "412": {"$ref":"#/components/responses/PreconditionFailed"},
+          "500": {"$ref":"#/components/responses/SafeFailure"},
           "503": { "$ref": "#/components/responses/ServiceUnavailable" }
         }
       }
@@ -997,6 +1190,8 @@
           "403": { "$ref": "#/components/responses/Forbidden" }, "409": { "$ref": "#/components/responses/Conflict" },
           "404": { "$ref": "#/components/responses/NotFound" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" },
           "413": { "$ref": "#/components/responses/SafeFailure" }, "415": { "$ref": "#/components/responses/SafeFailure" }, "422": { "$ref": "#/components/responses/SafeFailure" }, "502": { "$ref": "#/components/responses/SafeFailure" },
+          "412": {"$ref":"#/components/responses/PreconditionFailed"},
+          "500": {"$ref":"#/components/responses/SafeFailure"},
           "503": { "$ref": "#/components/responses/SafeFailure" }, "504": { "$ref": "#/components/responses/SafeFailure" }
         }
       }
@@ -1011,7 +1206,9 @@
         "responses": {
           "200": { "description": "본문 없는 불변 snapshot", "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WebsiteSnapshotEnvelope" } } } },
           "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" }, "503": { "$ref": "#/components/responses/SafeFailure" }
+          "403": { "$ref": "#/components/responses/Forbidden" }, "412": {"$ref":"#/components/responses/PreconditionFailed"},
+          "500": {"$ref":"#/components/responses/SafeFailure"},
+          "503": { "$ref": "#/components/responses/SafeFailure" }
           ,"404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" }
         }
       }
@@ -1107,6 +1304,8 @@
           "415": {
             "$ref": "#/components/responses/UnsupportedMediaType"
           },
+          "412": {"$ref":"#/components/responses/PreconditionFailed"},
+          "500": {"$ref":"#/components/responses/SafeFailure"},
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           },
@@ -1208,6 +1407,8 @@
           "404": { "$ref": "#/components/responses/NotFound" },
           "409": { "$ref": "#/components/responses/Conflict" },
           "412": { "$ref": "#/components/responses/PreconditionFailed" },
+          "412": {"$ref":"#/components/responses/PreconditionFailed"},
+          "500": {"$ref":"#/components/responses/SafeFailure"},
           "503": { "$ref": "#/components/responses/ServiceUnavailable" },
           "500": { "$ref": "#/components/responses/SafeFailure" }
         }
@@ -1219,7 +1420,9 @@
         "summary": "호환용 외부 Question Run 결속 추가 인증", "description": "관리자 설정 Step-up과 분리된 호환 API입니다. Product 질문 UI는 이 경로를 호출하지 않으며 유효 Session, EXTERNAL_LLM 권한과 effective Egress Policy를 질문 실행 시 검증합니다.", "x-implementation-owner": "R1-M8-09-EGRESS-POLICY-C01",
         "parameters": [{ "$ref": "#/components/parameters/ResourceId" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GroundedQuestionAuthorizationRequest" } } } },
-        "responses": { "201": { "description": "Run/effective policy 결속 opaque authorization", "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GroundedQuestionAuthorizationEnvelope" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" } }
+        "responses": { "201": { "description": "Run/effective policy 결속 opaque authorization", "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GroundedQuestionAuthorizationEnvelope" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" }, "412": {"$ref":"#/components/responses/PreconditionFailed"},
+          "500": {"$ref":"#/components/responses/SafeFailure"},
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" } }
       }
     },
     "/api/v1/workspaces/{id}/questions": {
@@ -1259,6 +1462,8 @@
           "404": { "$ref": "#/components/responses/NotFound" },
           "409": { "$ref": "#/components/responses/Conflict" },
           "412": { "$ref": "#/components/responses/PreconditionFailed" },
+          "412": {"$ref":"#/components/responses/PreconditionFailed"},
+          "500": {"$ref":"#/components/responses/SafeFailure"},
           "503": { "$ref": "#/components/responses/ServiceUnavailable" },
           "500": { "$ref": "#/components/responses/SafeFailure" }
         }
@@ -1287,6 +1492,8 @@
           "404": { "$ref": "#/components/responses/NotFound" },
           "409": { "$ref": "#/components/responses/Conflict" },
           "412": { "$ref": "#/components/responses/PreconditionFailed" },
+          "412": {"$ref":"#/components/responses/PreconditionFailed"},
+          "500": {"$ref":"#/components/responses/SafeFailure"},
           "503": { "$ref": "#/components/responses/ServiceUnavailable" },
           "504": { "$ref": "#/components/responses/SafeFailure" },
           "500": { "$ref": "#/components/responses/SafeFailure" }
@@ -1311,6 +1518,8 @@
           "404": { "$ref": "#/components/responses/NotFound" },
           "409": { "$ref": "#/components/responses/Conflict" },
           "412": { "$ref": "#/components/responses/PreconditionFailed" },
+          "412": {"$ref":"#/components/responses/PreconditionFailed"},
+          "500": {"$ref":"#/components/responses/SafeFailure"},
           "503": { "$ref": "#/components/responses/ServiceUnavailable" },
           "504": { "$ref": "#/components/responses/SafeFailure" },
           "500": { "$ref": "#/components/responses/SafeFailure" }
@@ -1363,6 +1572,8 @@
           "404": { "$ref": "#/components/responses/NotFound" },
           "409": { "$ref": "#/components/responses/Conflict" },
           "412": { "$ref": "#/components/responses/PreconditionFailed" },
+          "412": {"$ref":"#/components/responses/PreconditionFailed"},
+          "500": {"$ref":"#/components/responses/SafeFailure"},
           "503": { "$ref": "#/components/responses/ServiceUnavailable" },
           "500": { "$ref": "#/components/responses/SafeFailure" }
         }
@@ -3407,6 +3618,8 @@
           "409": { "$ref": "#/components/responses/Conflict" },
           "412": { "$ref": "#/components/responses/PreconditionFailed" },
           "500": { "$ref": "#/components/responses/SafeFailure" },
+          "412": {"$ref":"#/components/responses/PreconditionFailed"},
+          "500": {"$ref":"#/components/responses/SafeFailure"},
           "503": { "$ref": "#/components/responses/ServiceUnavailable" }
         }
       }
@@ -5621,6 +5834,305 @@
       }
     },
     "schemas": {
+  "FallbackPolicyBody": {
+    "additionalProperties": false,
+    "properties": {
+      "mode": {
+        "const": "transient_only",
+        "title": "Mode",
+        "type": "string"
+      }
+    },
+    "required": [
+      "mode"
+    ],
+    "title": "FallbackPolicyBody",
+    "type": "object"
+  },
+  "RankingProfileBody": {
+    "additionalProperties": false,
+    "properties": {
+      "version": {
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "title": "Version",
+        "type": "string"
+      },
+      "evaluation_set": {
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "title": "Evaluation Set",
+        "type": "string"
+      },
+      "minimum_quality": {
+        "maximum": 10000,
+        "minimum": 0,
+        "title": "Minimum Quality",
+        "type": "integer"
+      },
+      "observation_window": {
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "title": "Observation Window",
+        "type": "string"
+      },
+      "input_class": {
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "title": "Input Class",
+        "type": "string"
+      },
+      "minimum_samples": {
+        "maximum": 10000000,
+        "minimum": 1,
+        "title": "Minimum Samples",
+        "type": "integer"
+      },
+      "max_age_seconds": {
+        "maximum": 3600,
+        "minimum": 1,
+        "title": "Max Age Seconds",
+        "type": "integer"
+      },
+      "tier_mapping_version": {
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "title": "Tier Mapping Version",
+        "type": "string"
+      },
+      "locality_mapping_version": {
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "title": "Locality Mapping Version",
+        "type": "string"
+      }
+    },
+    "required": [
+      "version",
+      "evaluation_set",
+      "minimum_quality",
+      "observation_window",
+      "input_class",
+      "minimum_samples",
+      "max_age_seconds",
+      "tier_mapping_version",
+      "locality_mapping_version"
+    ],
+    "title": "RankingProfileBody",
+    "type": "object"
+  },
+  "RoutingBudgetBody": {
+    "additionalProperties": false,
+    "properties": {
+      "currency": {
+        "pattern": "^[A-Z]{3}$",
+        "title": "Currency",
+        "type": "string"
+      },
+      "run_limit": {
+        "pattern": "^(0|[1-9][0-9]{0,11})(\\.[0-9]{1,6})?$",
+        "title": "Run Limit",
+        "type": "string"
+      },
+      "max_attempts": {
+        "maximum": 8,
+        "minimum": 1,
+        "title": "Max Attempts",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "currency",
+      "run_limit",
+      "max_attempts"
+    ],
+    "title": "RoutingBudgetBody",
+    "type": "object"
+  },
+  "RoutingCandidateBody": {
+    "additionalProperties": false,
+    "properties": {
+      "connection_id": {
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "title": "Connection Id",
+        "type": "string"
+      },
+      "model_id": {
+        "maxLength": 255,
+        "minLength": 1,
+        "pattern": "^[^\\x00-\\x20\\x7f]+$",
+        "title": "Model Id",
+        "type": "string"
+      },
+      "credential_source": {
+        "enum": [
+          "workspace",
+          "personal"
+        ],
+        "title": "Credential Source",
+        "type": "string"
+      },
+      "connection_version": {
+        "minimum": 1,
+        "title": "Connection Version",
+        "type": "integer"
+      },
+      "catalog_version": {
+        "minimum": 1,
+        "title": "Catalog Version",
+        "type": "integer"
+      },
+      "credential_version": {
+        "minimum": 0,
+        "title": "Credential Version",
+        "type": "integer"
+      },
+      "endpoint_version": {
+        "minimum": 1,
+        "title": "Endpoint Version",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "connection_id",
+      "model_id",
+      "credential_source",
+      "connection_version",
+      "catalog_version",
+      "credential_version",
+      "endpoint_version"
+    ],
+    "title": "RoutingCandidateBody",
+    "type": "object"
+  },
+  "RoutingPolicyRequest": {
+    "additionalProperties": false,
+    "properties": {
+      "schema_version": {
+        "const": 1,
+        "title": "Schema Version",
+        "type": "integer"
+      },
+      "expected_version": {
+        "minimum": 0,
+        "title": "Expected Version",
+        "type": "integer"
+      },
+      "enabled": {
+        "title": "Enabled",
+        "type": "boolean"
+      },
+      "capability": {
+        "const": "text_generation",
+        "title": "Capability",
+        "type": "string"
+      },
+      "candidates": {
+        "items": {
+          "$ref": "#/components/schemas/RoutingCandidateBody"
+        },
+        "maxItems": 8,
+        "minItems": 1,
+        "title": "Candidates",
+        "type": "array"
+      },
+      "ranking_profile": {
+        "$ref": "#/components/schemas/RankingProfileBody"
+      },
+      "fallback_policy": {
+        "$ref": "#/components/schemas/FallbackPolicyBody"
+      },
+      "budget": {
+        "$ref": "#/components/schemas/RoutingBudgetBody"
+      }
+    },
+    "required": [
+      "schema_version",
+      "expected_version",
+      "enabled",
+      "capability",
+      "candidates",
+      "ranking_profile",
+      "fallback_policy",
+      "budget"
+    ],
+    "title": "RoutingPolicyBody",
+    "type": "object"
+  },
+  "RoutingPolicyEnvelope": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "data": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "version",
+          "policy_version_id",
+          "digest_sha256",
+          "body",
+          "execution_enabled",
+          "readiness"
+        ],
+        "properties": {
+          "version": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "policy_version_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "digest_sha256": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "body": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RoutingPolicyRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "execution_enabled": {
+            "const": false
+          },
+          "readiness": {
+            "enum": [
+              "policy_absent",
+              "disabled",
+              "observations_unavailable"
+            ]
+          }
+        }
+      },
+      "meta": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "trace_id",
+          "workspace_id"
+        ],
+        "properties": {
+          "trace_id": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          },
+          "replayed": {
+            "type": "boolean"
+          }
+        }
+      }
+    }
+  }
+,
       "OrganizationMeta": {"type":"object","additionalProperties":false,"required":["trace_id"],"properties":{"trace_id":{"$ref":"#/components/schemas/OpaqueId"}}},
       "OrganizationManagedTenant": {"type":"object","additionalProperties":false,"required":["tenant_id","display_name"],"properties":{"tenant_id":{"$ref":"#/components/schemas/OpaqueId"},"display_name":{"type":"string","minLength":1,"maxLength":160}}},
       "OrganizationManagedWorkspace": {"type":"object","additionalProperties":false,"required":["workspace_id","display_name"],"properties":{"workspace_id":{"$ref":"#/components/schemas/OpaqueId"},"display_name":{"type":"string","minLength":1,"maxLength":160}}},
@@ -7513,7 +8025,8 @@
           "OPEN_LAW_CONTENT_TOO_LARGE", "OPEN_LAW_TEXT_UNAVAILABLE", "OPEN_LAW_PROTOCOL_INVALID", "OPEN_LAW_UPSTREAM_FAILED",
           "OPEN_LAW_CREDENTIAL_REQUIRED", "OPEN_LAW_UNAVAILABLE", "OPEN_LAW_BUSY", "OPEN_LAW_STORAGE_UNAVAILABLE", "OPEN_LAW_TIMEOUT",
           "APPROVAL_REQUEST_EXPIRED", "APPROVAL_REQUEST_PENDING", "APPROVAL_REQUEST_REQUIRED", "PRECONDITION_FAILED"
-        ]
+        ,
+"IDEMPOTENCY_KEY_REUSED","PRECONDITION_REQUIRED","ROUTING_BUDGET_UNVERIFIED","ROUTING_CANDIDATE_CHANGED","ROUTING_CANDIDATE_UNAVAILABLE","ROUTING_CREDENTIAL_DENIED","ROUTING_METADATA_UNAVAILABLE","ROUTING_PINNED_UNCHANGED","ROUTING_PLAN_INVALID","ROUTING_POLICY_ABSENT","ROUTING_POLICY_ACCESS_DENIED","ROUTING_POLICY_DISABLED","ROUTING_POLICY_UNAVAILABLE","ROUTING_UPPER_POLICY_DENIED","RULESET_SNAPSHOT_REQUIRED","VERSION_CONFLICT"]
       },
       "CostLimitExceededDetails": {
         "type": "object",

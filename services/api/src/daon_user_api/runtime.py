@@ -196,6 +196,8 @@ from .user_provider_credentials import (
     PostgresUserProviderCredentialService,
     UserProviderCredentialError,
 )
+from .routing_policy import RoutingPolicyBody, RoutingPolicyError
+from .routing_policy_postgres import postgres_routing_policy_service
 from .workspace_model_defaults import (
     PostgresWorkspaceModelDefaultsService, PostgresWorkspaceModelResolver,
     WorkspaceModelDefaultsContext, WorkspaceModelDefaultsError,
@@ -955,6 +957,7 @@ class RuntimeDependencies:
     provider_connection_service: Any | None = None
     provider_health_settings_service: PostgresProviderHealthCheckSettingsService | None = None
     workspace_model_defaults_service: Any | None = None
+    routing_policy_service: Any | None = None
     operations_status_service: OperationsStatusService | None = None
     output_version_settings_service: OutputVersionSettingsService | None = None
     screen_preference_service: ScreenPreferenceService | None = None
@@ -2521,6 +2524,9 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         user_provider_credential_service = PostgresUserProviderCredentialService(
             dependencies.cloud_store, provider_cipher,
         )
+    routing_policy_service = dependencies.routing_policy_service
+    if routing_policy_service is None and dependencies.cloud_store is not None:
+        routing_policy_service = postgres_routing_policy_service(dependencies.cloud_store)
     workspace_model_defaults_service = dependencies.workspace_model_defaults_service
     if workspace_model_defaults_service is None and dependencies.cloud_store is not None:
         workspace_model_defaults_service = PostgresWorkspaceModelDefaultsService(dependencies.cloud_store)
@@ -2925,6 +2931,9 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, _error: RequestValidationError) -> JSONResponse:
+        if (request.method == "PUT" and getattr(request.scope.get("route"), "path", "")
+                == "/api/v1/workspaces/{id}/routing-policy"):
+            return _error_response(422, "INVALID_REQUEST", request.state.trace_id)
         if request.url.path in {"/api/v1/account/profile", "/api/v1/account/devices", "/api/v1/account/sessions"}:
             return _error_response(422, "ACCOUNT_INPUT_INVALID", request.state.trace_id)
         organization_operation = (request.method, getattr(request.scope.get("route"), "path", ""))
@@ -3311,6 +3320,10 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             error.status, error.code if error.code in safe_codes else "INVALID_REQUEST",
             request.state.trace_id,
         )
+
+    @app.exception_handler(RoutingPolicyError)
+    async def routing_policy_error(request: Request, error: RoutingPolicyError) -> JSONResponse:
+        return _error_response(error.status, error.code, request.state.trace_id, retryable=error.retryable)
 
     @app.exception_handler(WorkspaceModelDefaultsError)
     async def workspace_model_defaults_error(
@@ -7270,6 +7283,45 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             "meta": {"trace_id": request.state.trace_id, "workspace_id": id},
         })
         response.headers["ETag"] = view.etag
+        return response
+
+    @app.get("/api/v1/workspaces/{id}/routing-policy")
+    async def get_routing_policy(id: str, request: Request) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=id, action=Action.VIEW,
+            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version)
+        if routing_policy_service is None:
+            raise RoutingPolicyError("ROUTING_POLICY_UNAVAILABLE", 503)
+        context = WorkspaceModelDefaultsContext(principal.tenant_id, id, principal.user_id,
+            request.state.trace_id, dependencies.settings.policy_version)
+        result = await asyncio.to_thread(routing_policy_service.get, context)
+        response = JSONResponse({"data": {k: v for k, v in result.items() if k != "etag"},
+            "meta": {"trace_id": request.state.trace_id, "workspace_id": id}})
+        response.headers["ETag"] = result["etag"]
+        return response
+
+    @app.put("/api/v1/workspaces/{id}/routing-policy")
+    async def put_routing_policy(id: str, body: RoutingPolicyBody, request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+        if_match: str | None = Header(default=None, alias="If-Match"),
+        if_none_match: str | None = Header(default=None, alias="If-None-Match")) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _idempotency_key(idempotency_key)
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=id, action=Action.POLICY_MANAGE,
+            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version)
+        if routing_policy_service is None:
+            raise RoutingPolicyError("ROUTING_POLICY_UNAVAILABLE", 503)
+        context = WorkspaceModelDefaultsContext(principal.tenant_id, id, principal.user_id,
+            request.state.trace_id, dependencies.settings.policy_version)
+        result, replayed = await asyncio.to_thread(routing_policy_service.put, context, body,
+            if_match=if_match, if_none_match=if_none_match, idempotency_key=idempotency_key)
+        response = JSONResponse({"data": {k: v for k, v in result.items() if k != "etag"},
+            "meta": {"trace_id": request.state.trace_id, "workspace_id": id, "replayed": replayed}})
+        response.headers["ETag"] = result["etag"]
         return response
 
     @app.get("/api/v1/workspaces/{id}/model-defaults")
