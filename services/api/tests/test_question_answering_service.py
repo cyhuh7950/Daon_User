@@ -54,6 +54,136 @@ class GeneralThinkingPreparationTests(unittest.TestCase):
         self.assertEqual(answer.answer,'안녕하세요.')
 
 
+class OmniRouteResponsesCompatibilityTests(unittest.TestCase):
+    @staticmethod
+    def standard(value):
+        return {"status": "completed", "output": [{
+            "type": "message", "role": "assistant", "status": "completed",
+            "content": [{"type": "output_text", "text": json.dumps(value)}],
+        }]}
+
+    @staticmethod
+    def adapter():
+        from daon_user_api.question_answering_service import _OmniRouteTextGenerationAdapter
+        return _OmniRouteTextGenerationAdapter
+
+    def test_legacy_string_and_dict_remain_valid_without_status(self):
+        value = {"answer": "omni answer"}
+        for raw in (value, json.dumps(value)):
+            with self.subTest(raw_type=type(raw).__name__):
+                self.assertEqual(self.adapter()._parsed({"output_text": raw}), value)
+
+    def test_standard_completed_text_and_reasoning_are_separate(self):
+        value = {"answer": "omni answer"}
+        response = self.standard(value)
+        response["output"].insert(0, {"type": "reasoning", "summary": [], "content": [{"text": "not an answer"}]})
+        text = response["output"][1]["content"][0]["text"]
+        response["output"][1]["content"] = [
+            {"type": "output_text", "text": text[:8]},
+            {"type": "output_text", "text": text[8:]},
+        ]
+        original = canonical_json_bytes(response)
+        self.assertEqual(self.adapter()._parsed(response), value)
+        self.assertEqual(canonical_json_bytes(response), original)
+
+    def test_mixed_formats_are_independently_validated_and_equal(self):
+        value = {"answer": "omni answer"}
+        for raw in (value, json.dumps(value)):
+            response = self.standard(value)
+            response["output_text"] = raw
+            self.assertEqual(self.adapter()._parsed(response), value)
+        for raw in ({"answer": "different"}, "not JSON", None, [], {"answer": True}):
+            with self.subTest(raw_type=type(raw).__name__):
+                response = self.standard(value)
+                response["output_text"] = raw
+                with self.assertRaisesRegex(ValueError, "^TEXT_GENERATION_RESPONSE_INVALID$"):
+                    self.adapter()._parsed(response)
+        response = self.standard({"answer": 1})
+        response["output_text"] = {"answer": True}
+        with self.assertRaisesRegex(ValueError, "^TEXT_GENERATION_RESPONSE_INVALID$"):
+            self.adapter()._parsed(response)
+
+    def test_standard_invalid_shapes_never_fall_back_to_legacy(self):
+        from copy import deepcopy
+        valid = self.standard({"answer": "omni answer"})
+        cases = []
+        for status in (None, "failed", "incomplete", "in_progress"):
+            response = deepcopy(valid); response["status"] = status; cases.append(response)
+        for output in (None, {}, [], [None], [{"type": "reasoning", "summary": []}],
+                       [{"type": "function_call"}], valid["output"] * 2):
+            response = deepcopy(valid); response["output"] = output; cases.append(response)
+        for field, value in (("role", "user"), ("status", "incomplete"), ("type", "function_call"),
+                             ("content", None), ("content", []), ("content", [None]),
+                             ("content", [{"type": "refusal", "refusal": "no"}]),
+                             ("content", [{"type": "reasoning_text", "text": "{}"}]),
+                             ("content", [{"type": "output_text", "text": {}}]),
+                             ("content", [{"type": "output_text", "text": ""}]),
+                             ("content", [{"type": "output_text", "text": "not JSON"}]),
+                             ("content", [{"type": "output_text", "text": "[]"}])):
+            response = deepcopy(valid); response["output"][0][field] = value; cases.append(response)
+        for index, response in enumerate(cases):
+            for mixed in (False, True):
+                with self.subTest(case=index, mixed=mixed):
+                    candidate = deepcopy(response)
+                    if mixed:
+                        candidate["output_text"] = {"answer": "omni answer"}
+                    with self.assertRaisesRegex(ValueError, "^TEXT_GENERATION_RESPONSE_INVALID$"):
+                        self.adapter()._parsed(candidate)
+
+    def test_invalid_standard_response_is_not_persisted_or_retried(self):
+        response = self.standard({"answer": "omni answer"})
+        response["status"] = "incomplete"
+        response["output_text"] = {"answer": "omni answer"}
+        class Transport:
+            def __init__(self): self.calls = []
+            def post_json(self, **kwargs):
+                self.calls.append(kwargs)
+                return response
+        transport = Transport()
+        repository = FakeRepository()
+        service = QuestionAnsweringService(
+            StaticWorkspaceModelResolver(provider_code="OMNIROUTE"), repository,
+            FakeIndex(()), FakeCredential(), transport, FakeEgress(),
+        )
+        with self.assertRaises(QuestionAnsweringError) as error:
+            service.ask(QuestionContext("tenant-cp3", "workspace-cp3", "actor-cp3", "trace-cp3", "policy-v1"),
+                source_id=None, source_version_id=None, question="안녕", run_id="run-omni-incomplete")
+        self.assertEqual(error.exception.code, "TEXT_GENERATION_RESPONSE_INVALID")
+        self.assertIsNone(repository.persisted)
+        self.assertEqual(len(transport.calls), 1)
+
+    def test_general_and_grounded_wire_schema_and_single_transport(self):
+        from daon_user_api.question_answering import OpenAICompatibleTextGenerationAdapter
+        selection = ResolvedModel("omni", "OMNIROUTE", "auto", "text_generation",
+            "https://gateway.example.com", 1, 1, 1, "external_api", "gateway", False, None)
+        evidence = (IndexedEvidenceChunk("chunk-1", "source-1", "version-1", 1, "answer", "span-1"),)
+        requests = (GeneralConversationRequest("안녕", "trace-omni"),
+                    GroundedQuestionRequest("질문", evidence, "trace-omni"))
+        for request in requests:
+            general = isinstance(request, GeneralConversationRequest)
+            value = {"answer": "answer"} if general else {
+                "answer": "answer", "cited_chunk_ids": ["chunk-1"], "insufficient": False}
+            class Transport:
+                def __init__(self): self.calls = []
+                def post_json(self, **kwargs):
+                    self.calls.append(kwargs)
+                    return OmniRouteResponsesCompatibilityTests.standard(value)
+            transport = Transport()
+            adapter = self.adapter()(transport=transport, api_key=None, timeout_seconds=7)
+            method = "general_provider_payload" if general else "provider_payload"
+            chat = getattr(OpenAICompatibleTextGenerationAdapter, method)(request, selection)
+            payload = getattr(adapter, method)(request, selection)
+            self.assertEqual(payload, {"model": "auto", "input": chat["messages"],
+                "text": {"format": {**chat["response_format"]["json_schema"], "type": "json_schema"}}})
+            result = (adapter.generate_general if general else adapter.generate)(
+                request, selection, provider_payload=payload)
+            self.assertEqual(result.answer, "answer")
+            self.assertEqual(len(transport.calls), 1)
+            self.assertEqual(transport.calls[0]["payload"], payload)
+            self.assertEqual(transport.calls[0]["url"], "https://gateway.example.com/v1/responses")
+            self.assertEqual(transport.calls[0]["timeout_seconds"], 7)
+
+
 class S18MediaCapDiagnosticTests(unittest.TestCase):
     def test_s18_media_result_insufficient_notice_enum_is_checked_without_repair(self):
         for answer in ("다른 부족 안내입니다.", " 선택한 원문 근거에 질문에 답할 정보가 없습니다. "):

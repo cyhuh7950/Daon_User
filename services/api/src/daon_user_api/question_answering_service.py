@@ -189,7 +189,10 @@ class _OmniRouteTextGenerationAdapter(OpenAICompatibleTextGenerationAdapter):
         chat = super().provider_payload(request, selection)
         return {
             "model": selection.model_id, "input": chat["messages"],
-            "text": {"format": cast(dict[str, object], chat["response_format"])["json_schema"]},
+            "text": {"format": {
+                **cast(dict[str, object], cast(dict[str, object], chat["response_format"])["json_schema"]),
+                "type": "json_schema",
+            }},
         }
 
     @classmethod
@@ -197,7 +200,10 @@ class _OmniRouteTextGenerationAdapter(OpenAICompatibleTextGenerationAdapter):
         chat = super().general_provider_payload(request, selection)
         return {
             "model": selection.model_id, "input": chat["messages"],
-            "text": {"format": cast(dict[str, object], chat["response_format"])["json_schema"]},
+            "text": {"format": {
+                **cast(dict[str, object], cast(dict[str, object], chat["response_format"])["json_schema"]),
+                "type": "json_schema",
+            }},
         }
 
     def _call(self, selection: ResolvedModel, payload: dict[str, object]) -> dict[str, object]:
@@ -208,14 +214,58 @@ class _OmniRouteTextGenerationAdapter(OpenAICompatibleTextGenerationAdapter):
 
     @staticmethod
     def _parsed(response: Mapping[str, object]) -> dict[str, object]:
-        raw = response.get("output_text")
-        try:
-            value = json.loads(raw) if isinstance(raw, str) else raw
-        except json.JSONDecodeError:
-            raise ValueError("TEXT_GENERATION_RESPONSE_INVALID") from None
-        if not isinstance(value, dict):
+        def parsed_object(raw: object) -> dict[str, object]:
+            try:
+                value = json.loads(raw) if isinstance(raw, str) else raw
+            except json.JSONDecodeError:
+                raise ValueError("TEXT_GENERATION_RESPONSE_INVALID") from None
+            if not isinstance(value, dict):
+                raise ValueError("TEXT_GENERATION_RESPONSE_INVALID")
+            return cast(dict[str, object], value)
+
+        legacy = parsed_object(response["output_text"]) if "output_text" in response else None
+        if "output" not in response:
+            if legacy is not None:
+                return legacy
             raise ValueError("TEXT_GENERATION_RESPONSE_INVALID")
-        return cast(dict[str, object], value)
+        output = response["output"]
+        if response.get("status") != "completed" or not isinstance(output, list):
+            raise ValueError("TEXT_GENERATION_RESPONSE_INVALID")
+        messages = []
+        for item in output:
+            if not isinstance(item, dict):
+                raise ValueError("TEXT_GENERATION_RESPONSE_INVALID")
+            if item.get("type") == "reasoning":
+                continue  # Reasoning is never answer content.
+            if item.get("type") != "message":
+                raise ValueError("TEXT_GENERATION_RESPONSE_INVALID")
+            messages.append(item)
+        if len(messages) != 1:
+            raise ValueError("TEXT_GENERATION_RESPONSE_INVALID")
+        message = messages[0]
+        content = message.get("content")
+        if (
+            message.get("role") != "assistant" or message.get("status") != "completed"
+            or not isinstance(content, list) or not content
+        ):
+            raise ValueError("TEXT_GENERATION_RESPONSE_INVALID")
+        texts = []
+        for part in content:
+            if (
+                not isinstance(part, dict) or part.get("type") != "output_text"
+                or not isinstance(part.get("text"), str)
+            ):
+                raise ValueError("TEXT_GENERATION_RESPONSE_INVALID")
+            texts.append(part["text"])
+        standard = parsed_object("".join(texts))
+        if legacy is not None:
+            try:
+                same = canonical_json_bytes(legacy) == canonical_json_bytes(standard)
+            except (TypeError, ValueError):
+                raise ValueError("TEXT_GENERATION_RESPONSE_INVALID") from None
+            if not same:
+                raise ValueError("TEXT_GENERATION_RESPONSE_INVALID")
+        return standard
 
     def generate_general(self, request, selection, *, provider_payload=None):  # type: ignore[no-untyped-def]
         parsed = self._parsed(self._call(
