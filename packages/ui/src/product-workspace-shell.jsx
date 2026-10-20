@@ -1228,10 +1228,9 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
         return;
       }
       setSourceAddError(errorCode);
-      setViewState(createProductWorkspaceState({
-        status: "error",
-        safeError: errorCode
-      }));
+      // 등록 실패와 기존 자료의 조회 권한은 별개다. 정상 목록을 재조회한다.
+      setViewState(createProductWorkspaceState({ status: "loading" }));
+      setLoadRevision((current) => current + 1);
     } finally {
       clearTimeout(deadlineTimer);
       if (pollControllerRef.current === controller) pollControllerRef.current = null;

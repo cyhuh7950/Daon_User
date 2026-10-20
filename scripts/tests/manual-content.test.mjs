@@ -124,13 +124,23 @@ test("기존 사용자 매뉴얼은 보호된 초기 관리자와 사용자 관�
       /Workspace.*Notebook.*Source.*Studio/su,
     ]) assert.match(markdown, required);
     assert.doesNotMatch(markdown, /보호(?:된)? admin.*(?:모든 )?상태 변경 요청.*HTTP 409/su);
-    assert.doesNotMatch(markdown, /##+ .*조직\s*(?:가입|관리|관리자)|설정.{0,30}조직\s*가입|\/organization(?:-admin|\/join)|(?:조직|organization).{0,50}(?:초대\s*코드|가입\s*신청|가입하기|관리\s*(?:화면|콘솔))/isu);
     assert.doesNotMatch(markdown, /(?:[A-Za-z]:\\|\/srv\/|\/opt\/|\/var\/www\/|DAON_CLOUD_DATABASE_DSN\s*=|postgres(?:ql)?:\/\/|argon2(?:id)?\$|Bearer\s+[A-Za-z0-9._~-]+)/u);
   }
   assert.match(userManual, /Workspace 관리자.*Workspace 내부.*(?:정책|멤버 권한)/su);
   assert.match(userManual, /Workspace 관리자 역할만으로는.*`\/admin`.*(?:사용할 수 없|접근할 수 없)/su);
   assert.match(userManual, /시스템 관리자.*전체 계정.*검색.*중지.*재활성화/su);
-  assert.match(userManual, /공동 작업자를 초대하거나.*Workspace 권한.*(?:변경|편집).*사용자 화면.*(?:없|제공하지 않)/su);
+  assert.match(userManual, /조직 관리자.*가입 신청.*초대코드/su);
+  assert.match(userManual, /가입 신청만으로.*접근 권한.*생기지 않/su);
+});
+
+test("현재 매뉴얼은 조직 가입·알림 전달함·복구의 권한과 실행 경계를 설명한다", async () => {
+  for (const [id] of docs) {
+    const markdown = await readFile(new URL(`docs/manual/${id}/index.md`, root), "utf8");
+    for (const text of ["조직 가입", "/organization/join", "가입 신청만으로", "알림", "/notifications", "전달함", "/inbox", "실제 외부 송신 없음", "/operations", "Preview", "복구 실행 준비", "독립 전체 DB 복원은 지원하지 않습니다"]) assert.ok(markdown.includes(text), `${id}: ${text}`);
+    assert.doesNotMatch(markdown, /organization은 미래 확장|현재 가입·관리 절차가 아닙니다|공동 작업자를 초대하거나 Workspace 권한을 변경하는 사용자 화면이 없습니다/u);
+    assert.match(markdown, /Preview.*(?:실행이 아닙|복원하지 않)/su);
+    assert.match(markdown, /추가 인증/su);
+  }
 });
 
 test("정본·dist·Web public copies는 3문서×3형식에서 byte-identical하다", async () => {

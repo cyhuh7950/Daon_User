@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import path from "node:path";
+import { tmpdir } from "node:os";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import { MinimalEvent, findElements, installMinimalDom } from "./product-studio-dom.mjs";
@@ -41,7 +42,7 @@ test("actual Web adapter는 UI Source를 exact 두 ID로 투영해 Notebook 제�
     await build({ configFile: false, logLevel: "silent", root, build: {
       outDir: output, emptyOutDir: false,
       lib: { entry: path.join(root, "apps/web/components/actual-workspace.jsx"), formats: ["es"], fileName: "source-unbind-adapter" },
-      rollupOptions: { external: ["react", "react-dom", "react-dom/client"] },
+      rollupOptions: { external: ["react", "react-dom", "react-dom/client"], output: { paths: Object.fromEntries(["react", "react-dom", "react-dom/client"].map(name => [name, import.meta.resolve(name)])) } },
     } });
     const entry = (await readdir(output)).find((name) => name.startsWith("source-unbind-adapter") && /\.m?js$/u.test(name));
     assert.ok(entry);
@@ -139,6 +140,10 @@ test("실패 Source 실제 React 재처리 클릭은 새 Run POST 후 상태를 
       const retry = findElements(workspace.container, (node) => node.tagName === "BUTTON" && node.textContent === "재처리")[0];
       assert.ok(retry, "failed Source must expose manual reprocessing");
       await workspace.act(async () => { retry.dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); await Promise.resolve(); });
+      assert.equal(calls.length, 0, "설정 확인 전에는 재처리하지 않는다");
+      const confirm = findElements(workspace.container, node => node.tagName === "BUTTON" && node.textContent === "설정 확인·재처리")[0];
+      assert.ok(confirm);
+      await workspace.act(async () => confirm.dispatchEvent(new MinimalEvent("click")));
       assert.equal(calls[0].url, "/bff/api/sources/source-1/processing-runs");
       assert.match(calls[0].init.headers["Idempotency-Key"], /^source-retry-/u);
       assert.equal(calls[1].runId, "run-retry-1");
@@ -169,6 +174,9 @@ test("DOCX 검토 필요 completed 자료만 실제 재처리 클릭으로 새 R
       const retry=findElements(workspace.container,node=>node.tagName==='BUTTON'&&node.textContent==='재처리')[0];
       if(scenario==='docx'||scenario==='pptx'){
         assert.ok(retry);await workspace.act(async()=>retry.dispatchEvent(new MinimalEvent('click')));
+        assert.equal(calls.length,0,'확인 전 POST 금지');
+        const confirm=findElements(workspace.container,node=>node.tagName==='BUTTON'&&node.textContent==='설정 확인·재처리')[0];
+        assert.ok(confirm);await workspace.act(async()=>confirm.dispatchEvent(new MinimalEvent('click')));
         assert.equal(calls[0].url,'/bff/api/sources/source-review/processing-runs');
         assert.equal(calls[0].body.attributes.source_version_id,'version-review');
         assert.equal(calls[1].runId,'run-review-new');assert.match(workspace.container.textContent,/사용 가능/);
@@ -189,6 +197,9 @@ test("재처리 응답 유실 뒤 다시 클릭하면 같은 멱등 키를 보�
     for (let index = 0; index < 2; index += 1) {
       const retry = findElements(workspace.container, (node) => node.tagName === "BUTTON" && node.textContent === "재처리")[0];
       await workspace.act(async () => { retry.dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); await Promise.resolve(); });
+      assert.equal(keys.length, index, "확인 전에는 새 요청을 보내지 않는다");
+      const confirm = findElements(workspace.container, node => node.tagName === "BUTTON" && node.textContent === "설정 확인·재처리")[0];
+      assert.ok(confirm); await workspace.act(async () => confirm.dispatchEvent(new MinimalEvent("click")));
       assert.match(workspace.container.textContent, /재처리를 요청하지 못했습니다/u);
     }
     assert.equal(keys.length, 2);
@@ -276,7 +287,7 @@ async function mountS17ReconnectWorkspace(initialAdapter) {
     await build({ configFile: false, logLevel: "silent", root, build: {
       outDir: output, emptyOutDir: false,
       lib: { entry: path.join(root, "packages/ui/src/product-workspace-shell.jsx"), formats: ["es"], fileName: "s17-reconnect" },
-      rollupOptions: { external: ["react", "react-dom", "react-dom/client"] },
+      rollupOptions: { external: ["react", "react-dom", "react-dom/client"], output: { paths: Object.fromEntries(["react", "react-dom", "react-dom/client"].map(name => [name, import.meta.resolve(name)])) } },
     } });
     const entry = (await readdir(output)).find(name => name.startsWith("s17-reconnect") && /\.m?js$/u.test(name));
     const { ProductWorkspaceShell } = await import(pathToFileURL(path.join(output, entry)).href);
@@ -668,7 +679,7 @@ test("Source 범위 불일치는 단독 refusal이 아니라 구조화된 다음
 
 async function mountSourceRetryWorkspace(effectAdapter, suffix) {
   const root = path.resolve(import.meta.dirname, "../..");
-  const output = await mkdtemp(path.join(root, `.workspace-source-retry-${suffix}-`));
+  const output = await mkdtemp(path.join(tmpdir(), `daon-workspace-source-retry-${suffix}-`));
   const dom = installMinimalDom();
   const { build } = await import("vite");
   const { createElement, act } = await import("react");
@@ -676,7 +687,7 @@ async function mountSourceRetryWorkspace(effectAdapter, suffix) {
   await build({ configFile: false, logLevel: "silent", root, build: {
     outDir: output, emptyOutDir: false,
     lib: { entry: path.join(root, "packages/ui/src/product-workspace-shell.jsx"), formats: ["es"], fileName: "source-retry" },
-    rollupOptions: { external: ["react", "react-dom", "react-dom/client"] },
+    rollupOptions: { external: ["react", "react-dom", "react-dom/client"], output: { paths: Object.fromEntries(["react", "react-dom", "react-dom/client"].map(name => [name, import.meta.resolve(name)])) } },
   } });
   const entry = (await readdir(output)).find((name) => name.startsWith("source-retry") && /\.m?js$/u.test(name));
   const { ProductWorkspaceShell } = await import(`${pathToFileURL(path.join(output, entry)).href}?sourceRetry=${Date.now()}`);
@@ -1063,6 +1074,50 @@ test("Image Citation 닫기는 원문 표시만 제거한다", async () => {
   } finally { await workspace.cleanup(); }
 });
 
+test("질문 실제 React 이벤트는 정책 차단 원인·수동 재질문·저장 답변 재조회를 보존한다", async () => {
+  let writes = 0, reads = 0, stored = null, workspace;
+  const effectAdapter = { ...adapter,
+    async listSources() { return [sourceRetryPayload]; },
+    async listStudioOutputs() { return []; },
+    async loadNotebookConversation() { reads++; return stored; },
+    async askQuestion(input, options) {
+      writes++;
+      assert.equal(input.question, "자료를 요약해 주세요");
+      assert.ok(options.signal instanceof AbortSignal);
+      assert.ok(options.idempotencyKey);
+      if (writes === 1) throw new Error("EGRESS_POLICY_DENIED");
+      stored = { run_id: "run-policy-retry", run_result_id: "result-policy-retry", answer: "확인된 자료의 답변", insufficient: false, citations: [] };
+      return stored;
+    },
+  };
+  try {
+    workspace = await mountSourceRetryWorkspace(effectAdapter, "policy-question");
+    const textarea = findElements(workspace.container, node => node.tagName === "TEXTAREA")[0];
+    const props = node => node[Object.keys(node).find(key => key.startsWith("__reactProps$"))];
+    await workspace.act(async () => props(textarea).onChange({ currentTarget: { value: "자료를 요약해 주세요" }, target: { value: "자료를 요약해 주세요" } }));
+    const submit = async () => {
+      const form = findElements(workspace.container, node => node.tagName === "FORM" && node.getAttribute("class") === "conversation-composer")[0];
+      await workspace.act(async () => props(form).onSubmit({ preventDefault() {} }));
+    };
+    await submit();
+    assert.equal(writes, 1, "정책 차단은 자동 재전송하지 않는다");
+    const alert = findElements(workspace.container, node => node.getAttribute?.("role") === "alert").find(node => node.textContent.includes("EGRESS_POLICY_DENIED"));
+    assert.equal(alert?.textContent, "조직 또는 Workspace의 외부 전송 정책으로 차단되었습니다. 정책 설정을 확인해 주세요. (EGRESS_POLICY_DENIED)");
+    assert.doesNotMatch(alert.textContent, /입력.*다시 제출/u);
+    assert.match(workspace.container.textContent, /ready.pdf/u);
+    await submit();
+    assert.equal(writes, 2);
+    assert.match(workspace.container.textContent, /확인된 자료의 답변/u);
+    assert.doesNotMatch(workspace.container.textContent, /EGRESS_POLICY_DENIED/u);
+    await workspace.cleanup(); workspace = null;
+    const before = reads;
+    workspace = await mountSourceRetryWorkspace(effectAdapter, "policy-question-reentry");
+    assert.ok(reads > before);
+    assert.equal(writes, 2, "재진입은 저장 답변만 조회한다");
+    assert.match(workspace.container.textContent, /확인된 자료의 답변/u);
+  } finally { if (workspace) await workspace.cleanup(); }
+});
+
 test("HTTP QA React 질문은 randomUUID 없이 실제 adapter와 secure idempotency key를 사용한다", async () => {
   const originalCrypto = Object.getOwnPropertyDescriptor(globalThis, "crypto");
   const calls = [];
@@ -1156,6 +1211,32 @@ test("HTTP QA React TXT 선택은 randomUUID 없이 실제 Source POST를 전송
     if (originalCrypto) Object.defineProperty(globalThis, "crypto", originalCrypto);
     else delete globalThis.crypto;
   }
+});
+
+test("Source 업로드 실제 React 실패는 안전 오류를 표시하고 기존 목록만 유지한다", async () => {
+  const calls = [];
+  const workspace = await mountSourceRetryWorkspace({ ...adapter,
+    async listSources() { return [sourceRetryPayload]; },
+    async listStudioOutputs() { return []; },
+    async uploadPdf(file) {
+      return uploadSource("workspace-1", file, { notebookId: "notebook-1", fetchImpl: async (url, init) => {
+        calls.push({ url, init });
+        return Response.json({ error: { code: "ACCESS_DENIED", message: "PRIVATE_SERVER_DETAIL" } }, { status: 403 });
+      } });
+    },
+  }, "upload-denied");
+  try {
+    const add = findElements(workspace.container, node => node.tagName === "BUTTON" && node.getAttribute?.("class") === "source-add-button")[0];
+    await workspace.act(async () => add.dispatchEvent(new MinimalEvent("click")));
+    const input = findElements(workspace.container, node => node.tagName === "INPUT" && node.getAttribute?.("accept")?.includes(".txt"))[0];
+    Object.defineProperty(input, "files", { configurable: true, value: [new File(["fixture"], "rejected.txt", { type: "text/plain" })] });
+    await workspace.act(async () => { input.dispatchEvent(new MinimalEvent("change")); await Promise.resolve(); await Promise.resolve(); });
+    assert.equal(calls.length, 1, "권한 실패는 자동 재업로드하지 않는다");
+    assert.equal(calls[0].url, "/bff/api/workspaces/workspace-1/sources");
+    assert.match(workspace.container.textContent, /ACCESS_DENIED/u);
+    assert.match(workspace.container.textContent, /ready.pdf/u);
+    assert.doesNotMatch(workspace.container.textContent, /PRIVATE_SERVER_DETAIL|rejected.txt/u);
+  } finally { await workspace.cleanup(); }
 });
 
 test("같은 PDF를 다시 선택해도 Source 업로드 change가 재실행된다", async () => {
@@ -1390,13 +1471,13 @@ test("재진입은 명시 선택이 없을 때만 최근 Citation의 정확한 r
 
 test("생산 지식 등록 성공은 실제 Notebook Source 재조회 후 새 자료를 선택 가능하게 한다", async () => {
   const root = path.resolve(import.meta.dirname, "../..");
-  const output = await mkdtemp(path.join(root, ".workspace-knowledge-link-react-"));
+  const output = await mkdtemp(path.join(tmpdir(), "daon-workspace-knowledge-link-react-"));
   const dom = installMinimalDom(); let reactRoot;
   try {
     const { build } = await import("vite"); const { createElement, act } = await import("react"); const { createRoot } = await import("react-dom/client");
     await build({ configFile: false, logLevel: "silent", root, build: { outDir: output, emptyOutDir: false,
       lib: { entry: path.join(root, "packages/ui/src/product-workspace-shell.jsx"), formats: ["es"], fileName: "knowledge-link" },
-      rollupOptions: { external: ["react", "react-dom", "react-dom/client"] } } });
+      rollupOptions: { external: ["react", "react-dom", "react-dom/client"], output: { paths: Object.fromEntries(["react", "react-dom", "react-dom/client"].map(name => [name, import.meta.resolve(name)])) } } } });
     const entry = (await readdir(output)).find((name) => /\.m?js$/u.test(name));
     const { ProductWorkspaceShell } = await import(pathToFileURL(path.join(output, entry)).href);
     let registered = false; let listCalls = 0; const writes = [];
@@ -1409,7 +1490,7 @@ test("생산 지식 등록 성공은 실제 Notebook Source 재조회 후 새 �
       async listStudioVersions() { return [{ output_version_id: "output-version-1", status: "approved", content: { summary: "승인 본문" } }]; },
       async issueStudioStepUp(group, target) { assert.equal(group, "final_approval_or_knowledge_registration"); assert.equal(target, "output-version-1"); return "fixture-grant"; },
       async createStudioAction(action, payload) { writes.push([action, payload]); registered = true;
-        return { record_id: "registration-1", status: "registered", registered_source_version_id: "version-k", searchable: true }; },
+        return { record_id: "registration-1", action: "knowledge_registration", output_version_id: payload.output_version_id, status: "registered", registered_source_version_id: "version-k", searchable: true }; },
     };
     const container = dom.document.createElement("div"); dom.document.body.appendChild(container); reactRoot = createRoot(container);
     await act(async () => { reactRoot.render(createElement(ProductWorkspaceShell, { workspaceId: "workspace-1", adapter: effectAdapter })); await Promise.resolve(); await Promise.resolve(); });
@@ -1455,7 +1536,7 @@ test("Source 작업은 Notebook 연결 해제와 즉시 삭제를 분리한다",
     await build({ configFile: false, logLevel: "silent", root, build: {
       outDir: output, emptyOutDir: false,
       lib: { entry: path.join(root, "packages/ui/src/product-workspace-shell.jsx"), formats: ["es"], fileName: "source-actions" },
-      rollupOptions: { external: ["react", "react-dom", "react-dom/client"] },
+      rollupOptions: { external: ["react", "react-dom", "react-dom/client"], output: { paths: Object.fromEntries(["react", "react-dom", "react-dom/client"].map(name => [name, import.meta.resolve(name)])) } },
     } });
     const entry = (await readdir(output)).find((name) => name.startsWith("source-actions") && /\.m?js$/u.test(name));
     const { ProductWorkspaceShell } = await import(`${pathToFileURL(path.join(output, entry)).href}?sourceActions=${Date.now()}`);
@@ -1571,7 +1652,7 @@ test("Studio 목록 실패는 ready Source 질문을 보존하고 별도 안전 
     await build({ configFile: false, logLevel: "silent", root, build: {
       outDir: output, emptyOutDir: false,
       lib: { entry: path.join(root, "packages/ui/src/product-workspace-shell.jsx"), formats: ["es"], fileName: "studio-unavailable" },
-      rollupOptions: { external: ["react", "react-dom", "react-dom/client"] },
+      rollupOptions: { external: ["react", "react-dom", "react-dom/client"], output: { paths: Object.fromEntries(["react", "react-dom", "react-dom/client"].map(name => [name, import.meta.resolve(name)])) } },
     } });
     const entry = (await readdir(output)).find((name) => name.startsWith("studio-unavailable") && /\.m?js$/u.test(name));
     const { ProductWorkspaceShell } = await import(`${pathToFileURL(path.join(output, entry)).href}?studioUnavailable=${Date.now()}`);
@@ -1719,7 +1800,7 @@ test("Source 로드는 다른 pane projection 오류와 stale 결과에서 독�
     await build({ configFile: false, logLevel: "silent", root, build: {
       outDir: output, emptyOutDir: false,
       lib: { entry: path.join(root, "packages/ui/src/product-workspace-shell.jsx"), formats: ["es"], fileName: "source-ownership" },
-      rollupOptions: { external: ["react", "react-dom", "react-dom/client"] },
+      rollupOptions: { external: ["react", "react-dom", "react-dom/client"], output: { paths: Object.fromEntries(["react", "react-dom", "react-dom/client"].map(name => [name, import.meta.resolve(name)])) } },
     } });
     const entry = (await readdir(output)).find((name) => name.startsWith("source-ownership") && /\.m?js$/u.test(name));
     const { ProductWorkspaceShell } = await import(`${pathToFileURL(path.join(output, entry)).href}?sourceOwnership=${Date.now()}`);
@@ -1767,7 +1848,7 @@ test("Source 재로드 오류는 기존 populated 목록을 빈 목록으로 덮
     await build({ configFile: false, logLevel: "silent", root, build: {
       outDir: output, emptyOutDir: false,
       lib: { entry: path.join(root, "packages/ui/src/product-workspace-shell.jsx"), formats: ["es"], fileName: "source-preserve" },
-      rollupOptions: { external: ["react", "react-dom", "react-dom/client"] },
+      rollupOptions: { external: ["react", "react-dom", "react-dom/client"], output: { paths: Object.fromEntries(["react", "react-dom", "react-dom/client"].map(name => [name, import.meta.resolve(name)])) } },
     } });
     const entry = (await readdir(output)).find((name) => name.startsWith("source-preserve") && /\.m?js$/u.test(name));
     const { ProductWorkspaceShell } = await import(`${pathToFileURL(path.join(output, entry)).href}?sourcePreserve=${Date.now()}`);
@@ -1801,7 +1882,7 @@ test("빈 Notebook은 작업 상담을 실행하고 근거 미사용을 표시�
     await build({ configFile: false, logLevel: "silent", root, build: {
       outDir: output, emptyOutDir: false,
       lib: { entry: path.join(root, "packages/ui/src/product-workspace-shell.jsx"), formats: ["es"], fileName: "general-conversation" },
-      rollupOptions: { external: ["react", "react-dom", "react-dom/client"] },
+      rollupOptions: { external: ["react", "react-dom", "react-dom/client"], output: { paths: Object.fromEntries(["react", "react-dom", "react-dom/client"].map(name => [name, import.meta.resolve(name)])) } },
     } });
     const entry = (await readdir(output)).find((name) => name.startsWith("general-conversation") && /\.m?js$/u.test(name));
     const { ProductWorkspaceShell } = await import(`${pathToFileURL(path.join(output, entry)).href}?general=${Date.now()}`);
@@ -1906,7 +1987,7 @@ test("Source·지식 Pane은 검증된 Knowledge와 Raw Source 상태·Version·
     await build({ configFile: false, logLevel: "silent", root, build: {
       outDir: output, emptyOutDir: false,
       lib: { entry: path.join(root, "packages/ui/src/product-workspace-shell.jsx"), formats: ["es"], fileName: "source-knowledge" },
-      rollupOptions: { external: ["react", "react-dom", "react-dom/client"] },
+      rollupOptions: { external: ["react", "react-dom", "react-dom/client"], output: { paths: Object.fromEntries(["react", "react-dom", "react-dom/client"].map(name => [name, import.meta.resolve(name)])) } },
     } });
     const entry = (await readdir(output)).find((name) => name.startsWith("source-knowledge") && /\.m?js$/u.test(name));
     const { ProductWorkspaceShell, buildQuestionKnowledgeContext } = await import(`${pathToFileURL(path.join(output, entry)).href}?sourceKnowledge=${Date.now()}`);
