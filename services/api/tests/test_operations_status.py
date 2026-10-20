@@ -32,6 +32,9 @@ def test_readiness_event_counts_are_opt_in_exact15_with_missing_producer_null_no
     assert len(old.event_counts) == 9 and len(new.event_counts) == 15
     assert tuple(row["metric_id"] for row in new.event_counts[9:]) == READINESS_IDS
     assert all(row["value"] is None and row["state"] == "not_collected" for row in new.event_counts[9:])
+    assert [row["producer_id"] for row in new.unimplemented] == [
+        "waiting_role_producer", "readiness_event_producer", "retry_suppression_receipt",
+        "node_capacity_producer", "provider_capacity_reporter", "deployment_receipt_writer", "cost_receipt_writer"]
     for value in (None, 1, "1", [], {}):
         with pytest.raises(ValueError):
             OperationsStatusContext("tenant-1", "workspace-1", "actor-1", include_readiness=value)
@@ -192,6 +195,80 @@ def test_readiness_metrics_current_revoke_is_not_hidden_as_empty_count(readiness
         if reads == 2: raise AuthorizationError("CURRENT_ACCESS_DENIED", 403)
     monkeypatch.setattr(f.repository, "_authorize_telemetry", authorize)
     with pytest.raises(AuthorizationError): f.repository.read_readiness_metrics(f.context)
+
+
+@pytest.fixture
+def workspace_readiness_port(readiness_metric_port, monkeypatch):
+    from daon_user_api.operations_status import unknown_telemetry
+    f = readiness_metric_port
+    unknown = unknown_telemetry()
+    for name, value in (
+        ("read_system_observations", ((), f.now)), ("read_deployment_receipt", None),
+        ("read_pending_events", unknown["event_counts"][:4]),
+        ("read_decision_events", unknown["event_counts"][4:9]),
+        ("read_cost_summary", unknown["cost_summary"]),
+    ):
+        monkeypatch.setattr(f.repository, name, lambda *args, value=value: value)
+    return f
+
+
+@pytest.mark.parametrize("has_records", [True, False])
+def test_workspace_readiness_connected_producers_are_not_unimplemented_even_without_records(workspace_readiness_port, has_records):
+    f = workspace_readiness_port
+    if not has_records:
+        f.rows[:] = [(key, None, False, True, f.now, None, None) for key in READINESS_IDS]
+    data = f.repository.read_workspace_telemetry(f.context)
+    assert [row["producer_id"] for row in data["unimplemented"]] == [
+        "node_capacity_producer", "provider_capacity_reporter"]
+    assert len(data["event_counts"]) == 15
+    assert [row["value"] for row in data["event_counts"][9:]] == ([2, 0, 0, 0, 1, 0] if has_records else [None] * 6)
+    assert all(row["state"] == ("partial" if has_records else "not_collected") for row in data["event_counts"][9:])
+    if not has_records:
+        assert all(row["observed_at"] is None and row["received_at"] is None for row in data["event_counts"][9:])
+
+
+@pytest.mark.parametrize("failure", ["missing_row", "query_error"])
+def test_workspace_readiness_failed_collection_keeps_producer_labels_and_unavailable(workspace_readiness_port, monkeypatch, failure):
+    f = workspace_readiness_port
+    if failure == "missing_row":
+        f.rows.pop()
+    else:
+        execute = f.store.execute
+        def fail_query(sql, params=()):
+            if "FROM public.read_document_readiness_metrics(" in sql:
+                raise psycopg.errors.QueryCanceled("synthetic aggregate failure")
+            return execute(sql, params)
+        monkeypatch.setattr(f.store, "execute", fail_query)
+    data = f.repository.read_workspace_telemetry(f.context)
+    assert [row["producer_id"] for row in data["unimplemented"]] == [
+        "waiting_role_producer", "readiness_event_producer", "retry_suppression_receipt",
+        "node_capacity_producer", "provider_capacity_reporter"]
+    assert all(row["state"] == "unavailable" and row["value"] is None for row in data["event_counts"][9:])
+
+
+def test_workspace_readiness_default_query_preserves_producer_labels_without_aggregate_read(workspace_readiness_port):
+    from dataclasses import replace
+    f = workspace_readiness_port
+    data = f.repository.read_workspace_telemetry(replace(f.context, include_readiness=False))
+    assert len(data["event_counts"]) == 9 and f.calls == []
+    assert [row["producer_id"] for row in data["unimplemented"]] == [
+        "waiting_role_producer", "readiness_event_producer", "retry_suppression_receipt",
+        "node_capacity_producer", "provider_capacity_reporter"]
+
+
+@pytest.mark.parametrize("revoked_at", [3, 4])
+def test_workspace_readiness_current_revoke_propagates_after_aggregate(workspace_readiness_port, monkeypatch, revoked_at):
+    from daon_user_api.authorization import AuthorizationError
+    f = workspace_readiness_port
+    reads = 0
+    def authorize(*args):
+        nonlocal reads
+        reads += 1
+        if reads == revoked_at:
+            raise AuthorizationError("CURRENT_ACCESS_DENIED", 403)
+    monkeypatch.setattr(f.repository, "_authorize_telemetry", authorize)
+    with pytest.raises(AuthorizationError):
+        f.repository.read_workspace_telemetry(f.context)
 
 
 def test_m2_workspace_missing_telemetry_is_exact_unknown_not_zero():

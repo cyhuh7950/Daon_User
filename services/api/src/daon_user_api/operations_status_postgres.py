@@ -198,7 +198,10 @@ class PostgresOperationsStatusRepository:
             if error.code!="DATABASE_UNAVAILABLE" or error.http_status!=503:raise
             result["cost_summary"]=unknown_telemetry("unavailable")["cost_summary"]
         if context.include_readiness:
-            try:result["event_counts"][9:]=self.read_readiness_metrics(context)
+            try:
+                result["event_counts"][9:]=self.read_readiness_metrics(context)
+                result["unimplemented"]=[r for r in result["unimplemented"] if r["producer_id"] not in {
+                    "waiting_role_producer","readiness_event_producer","retry_suppression_receipt"}]
             except (CloudDatabaseError,Error,ValueError,OverflowError):
                 result["event_counts"][9:]=unknown_telemetry("unavailable",include_readiness=True)["event_counts"][9:]
         with self._transaction(context) as connection:self._authorize_telemetry(connection,context)
