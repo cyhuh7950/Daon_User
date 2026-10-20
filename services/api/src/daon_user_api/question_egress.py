@@ -228,8 +228,19 @@ class PostgresQuestionEgressAuthorizer:
             payload = json.loads(provider_payload)
             if not isinstance(payload, dict):
                 raise ValueError
-            messages = payload.get("messages")
-            if not isinstance(messages, list):
+            # Chat Completions and OmniRoute Responses use distinct envelopes.
+            # Accept only the text-message shape produced by our adapters;
+            # never choose one protocol silently when both fields are present.
+            fields = [field for field in ("messages", "input") if field in payload]
+            if len(fields) != 1:
+                raise ValueError
+            messages = payload[fields[0]]
+            if not isinstance(messages, list) or any(
+                not isinstance(item, dict)
+                or item.get("role") not in {"system", "developer", "user", "assistant"}
+                or not isinstance(item.get("content"), str)
+                for item in messages
+            ):
                 raise ValueError
             user_messages = [
                 item for item in messages

@@ -1204,7 +1204,8 @@ class PostgresQuestionAnsweringRepository:
             raise QuestionRepositoryError('QUESTION_DATABASE_UNAVAILABLE',status=503)
         revision=rows[0][0]
         if revision in {'0062','0063','0064','0066','0067','0068','0069','0070'}:return
-        if revision!='0071':raise QuestionRepositoryError('QUESTION_DATABASE_UNAVAILABLE',status=503)
+        if revision not in {'0071','0072'}:
+            raise QuestionRepositoryError('QUESTION_DATABASE_UNAVAILABLE',status=503)
         try:
             receipt=make_cost_receipt(result.reported_cost if result is not None else None,
                 result.usage if result is not None else {},provider_connection_id=selection.connection_id,
