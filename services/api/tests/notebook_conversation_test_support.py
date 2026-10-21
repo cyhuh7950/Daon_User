@@ -17,6 +17,21 @@ class ConversationTestLedger:
             raise NotebookError('NOTEBOOK_TURN_CONFLICT',409)
         self.turns.setdefault(turn_id,(payload,datetime.now(timezone.utc)))
         return turn_id
+    def claim_question_grounding(self,context,notebook_id,*,run_id,request_fingerprint,disposition):
+        key=(context.tenant_id,context.workspace_id,context.actor_id,notebook_id,run_id,request_fingerprint)
+        if not hasattr(self,'dispositions'):self.dispositions={}
+        prior=self.dispositions.get(key)
+        if prior=='execution_prepared' and disposition!='execution_prepared':
+            raise NotebookError('NOTEBOOK_TURN_CONFLICT',409)
+        if prior is not None:return prior
+        self.dispositions[key]=disposition
+        if disposition!='execution_prepared':self.append_question_turn_event(context,notebook_id,run_id=run_id,request_fingerprint=request_fingerprint,event_kind=disposition)
+        return disposition
+    def load_question_turn_notice(self,context,notebook_id,*,run_id,request_fingerprint):
+        for scope,notebook,values in self.events:
+            if (scope.tenant_id,scope.workspace_id,scope.actor_id,notebook,values['run_id'],values['request_fingerprint']) == (context.tenant_id,context.workspace_id,context.actor_id,notebook_id,run_id,request_fingerprint) and values['event_kind'] in {'no_knowledge','no_relevant_evidence'}:
+                return values['event_kind']
+        return None
     def append_question_turn_event(self,context,notebook_id,**values):
         entry=(context,notebook_id,values)
         if entry not in self.events: self.events.append(entry)

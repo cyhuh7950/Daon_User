@@ -396,6 +396,14 @@ class NotebookService:
         notebook = _binding(notebook_id, field="NOTEBOOK_ID")
         return self._conversation_method("admit_question_turn")(context, notebook, now=self._clock(), **values)
 
+    def claim_question_grounding(self,context,notebook_id,**values):
+        notebook = _binding(notebook_id,field="NOTEBOOK_ID")
+        return self._conversation_method("claim_question_grounding")(context,notebook,now=self._clock(),**values)
+
+    def load_question_turn_notice(self, context, notebook_id, **values):
+        notebook = _binding(notebook_id,field="NOTEBOOK_ID")
+        return self._conversation_method("load_question_turn_notice")(context,notebook,**values)
+
     def append_question_turn_event(self, context, notebook_id, **values):
         notebook = _binding(notebook_id, field="NOTEBOOK_ID")
         return self._conversation_method("append_question_turn_event")(context, notebook, now=self._clock(), **values)

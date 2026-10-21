@@ -104,6 +104,8 @@ class StoredQuestionAnswer:
     citations: tuple[StoredCitation, ...]
     provider_kind: str | None = None
     egress_scope: Mapping[str, object] | None = None
+    grounding_status: str | None = None
+    next_actions: tuple[str, ...] = ()
 
 
 class PostgresQuestionAnsweringRepository:
@@ -543,11 +545,18 @@ class PostgresQuestionAnsweringRepository:
                 )
                 for row in rows if row[2] is not None and row[3] is not None
             )
+            if "grounding_status" in result_payload or "next_actions" in result_payload:
+                if (not isinstance(result_payload.get("answer"),str) or not 1<=len(result_payload["answer"])<=8000
+                    or type(result_payload.get("insufficient")) is not bool):
+                    raise ValueError("QUESTION_RESULT_INVALID")
+            from .question_answering import stored_grounding_metadata
+            grounding_status, next_actions = stored_grounding_metadata(result_payload, citation_count=len(citations))
             return StoredQuestionAnswer(
                 run_id, str(rows[0][0]), str(result_payload["answer"]),
                 bool(result_payload["insufficient"]), citations,
                 str(rows[0][4]) if rows[0][4] is not None else None,
                 cast(Mapping[str, object], rows[0][5]) if rows[0][5] is not None else None,
+                grounding_status, next_actions,
             )
         except (KeyError, TypeError, ValueError):
             raise QuestionRepositoryError("QUESTION_RESULT_INVALID", status=500) from None
@@ -1486,6 +1495,16 @@ class PostgresQuestionAnsweringRepository:
             and not re.fullmatch(r"sha256:[0-9a-f]{64}", request_fingerprint)
         ):
             raise QuestionRepositoryError("QUESTION_RESULT_INVALID")
+        if not isinstance(result.next_actions,tuple):
+            raise QuestionRepositoryError("QUESTION_RESULT_INVALID")
+        result_metadata = {}
+        if result.grounding_status is not None or result.next_actions:
+            from .question_answering import stored_grounding_metadata
+            result_metadata={"grounding_status":result.grounding_status,"next_actions":list(result.next_actions)}
+            try:
+                stored_grounding_metadata({**result_metadata,"insufficient":result.insufficient},citation_count=len(result.cited_chunk_ids))
+            except ValueError:
+                raise QuestionRepositoryError("QUESTION_RESULT_INVALID") from None
         evidence_by_id = {item.chunk_id: item for item in evidence}
         if any(chunk_id not in evidence_by_id for chunk_id in result.cited_chunk_ids):
             raise QuestionRepositoryError("QUESTION_RESULT_INVALID")
@@ -1708,6 +1727,7 @@ class PostgresQuestionAnsweringRepository:
                 self._insert_canon(connection, context, "run_results", run_result_id, {
                     "run_id": run_id, "answer": result.answer,
                     "insufficient": result.insufficient,
+                    **result_metadata,
                     "citation_ids": [item.citation_id for item in citations],
                 }, extra_columns=("run_id", "routing_decision_id", "selected_model_attempt_id"),
                     extra_values=(
@@ -1779,5 +1799,5 @@ class PostgresQuestionAnsweringRepository:
             ) from None
         return StoredQuestionAnswer(
             run_id, run_result_id, result.answer, result.insufficient, citations,
-            selection.provider_kind, replay_egress_scope,
+            selection.provider_kind, replay_egress_scope, result.grounding_status, result.next_actions,
         )

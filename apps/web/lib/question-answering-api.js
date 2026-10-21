@@ -1,5 +1,5 @@
 import { secureUuid } from "@daon-user/ui/secure-uuid";
-import { parseImageRegion } from "@daon-user/ui/product-workspace-model";
+import { parseImageRegion, isQuestionSystemNotice, isQuestionGroundingMetadata } from "@daon-user/ui/product-workspace-model";
 import { parseSheetCell } from "./sheet-cell-locator.js";
 import { parseDocxBlock } from "./docx-block-locator.js";
 import { parsePptxBlock } from "./pptx-block-locator.js";
@@ -81,7 +81,7 @@ function isQuestionResponseMetadata(value) {
     && value.next_actions.length <= 4
     && value.next_actions.every((item) => typeof item === "string" && item.length >= 1 && item.length <= 120);
   return modeOk && groundingOk && summaryOk && mismatchOk && actionsOk
-    && (value.grounding !== "source_evidence_unavailable" || value.mismatch !== null && value.next_actions.length > 0);
+    && (value.grounding !== "source_evidence_unavailable" || (value.mismatch !== null || value.grounding_status === "no_relevant_evidence") && value.next_actions.length > 0);
 }
 
 function knowledgeContextBody(value) {
@@ -119,9 +119,8 @@ function questionSourceBody({ sourceId, sourceVersionId, knowledgeContext }) {
   if (sourceId || sourceVersionId) {
     return { source_id: requiredId(sourceId), source_version_id: requiredId(sourceVersionId) };
   }
-  // Source 미선택 질문은 일반 업무 상담/LLM 경로로 전달한다. 질문의
-  // 의미를 클라이언트 allowlist로 판정하지 않고, 서버가 일반 상담과
-  // 선택된 Source grounding을 최종 분기한다.
+  // Server current authorization and grounding preflight decide daily dialogue
+  // versus a source-required system notice; no browser factual fallback.
   return {};
 }
 
@@ -130,8 +129,10 @@ function isGroundedAnswer(value) {
   const metadataKeys = ["mode", "grounding", "source_scope_summary", "mismatch", "next_actions"];
   const legacyShape = hasExactKeys(value, baseKeys);
   const enrichedShape = hasExactKeys(value, [...baseKeys, ...metadataKeys]);
-  return (legacyShape || enrichedShape)
-    && (!enrichedShape || isQuestionResponseMetadata(value))
+  const freshShape=hasExactKeys(value,[...baseKeys,...metadataKeys,"grounding_status"]);
+  return (legacyShape || enrichedShape || freshShape)
+    && (!(enrichedShape||freshShape) || isQuestionResponseMetadata(value))
+    && (!freshShape || isQuestionGroundingMetadata(value))
     && isSafeId(value.run_id)
     && isSafeId(value.run_result_id)
     && typeof value.answer === "string"
@@ -143,7 +144,7 @@ function isGroundedAnswer(value) {
     && value.citations.every(isGroundedCitation);
 }
 
-async function responseData(response, signal) {
+async function responseData(response, signal, workspaceId) {
   signal?.throwIfAborted();
   const contentType = response.headers?.get?.("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
   if (contentType !== "application/json") {
@@ -165,10 +166,10 @@ async function responseData(response, signal) {
   }
   if (
     !hasExactKeys(payload, ["data", "meta"])
-    || !isGroundedAnswer(payload.data)
+    || !(isGroundedAnswer(payload.data)||isQuestionSystemNotice(payload.data))
     || !isRecord(payload.meta)
     || !isSafeId(payload.meta.trace_id)
-    || !isSafeId(payload.meta.workspace_id)
+    || !isSafeId(payload.meta.workspace_id) || payload.meta.workspace_id!==workspaceId
   ) {
     throw new Error("QUESTION_RESPONSE_INVALID");
   }
@@ -206,7 +207,7 @@ export async function askGroundedQuestion(
       }),
     },
   );
-  return responseData(response, signal);
+  return responseData(response, signal, workspace);
 }
 
 export async function authorizeGroundedQuestion(
@@ -236,6 +237,13 @@ export async function authorizeGroundedQuestion(
   catch { signal?.throwIfAborted(); throw new Error("QUESTION_AUTHORIZATION_RESPONSE_INVALID"); }
   signal?.throwIfAborted();
   if (!response.ok) throw new Error(payload?.error?.code || "QUESTION_AUTHORIZATION_FAILED");
+  if (payload?.data?.kind === "system_notice") {
+    if(!hasExactKeys(payload,["data","meta"])||!isQuestionSystemNotice(payload.data)
+      ||!isRecord(payload.meta)||!isSafeId(payload.meta.trace_id)||payload.meta.workspace_id!==workspace) {
+      throw new Error("QUESTION_AUTHORIZATION_RESPONSE_INVALID");
+    }
+    return payload.data;
+  }
   if (!isStepUpToken(payload?.data?.step_up_authorization_id)) throw new Error("QUESTION_AUTHORIZATION_RESPONSE_INVALID");
   return payload.data;
 }

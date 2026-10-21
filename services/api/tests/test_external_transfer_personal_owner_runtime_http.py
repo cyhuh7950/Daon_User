@@ -49,6 +49,10 @@ class QuestionBoundary:
     def replay(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
         return self.replay_answer
 
+    def preflight_grounding(self,context,**values):
+        # Retrieval semantics are covered by the actual service tests, not this auth boundary.
+        return None
+
     def prepare_authorization(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
         self.prepare_calls += 1
         return SimpleNamespace(

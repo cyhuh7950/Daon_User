@@ -4,7 +4,7 @@ import { parsePptxBlock, isPptxBlockContent, pptxBlockLabel } from "./shared-ppt
 
 import { useEffect, useRef, useState } from "react";
 import "@daon-user/design-tokens/tokens.css";
-import { canCreateGroundedReport, createProductWorkspaceState, normalizeProductWorkspaceState, mergeNotebookConversationTurns, projectQuestionFailureState, questionFailureMessage, parseImageRegion, parseSheetCell, isSheetCellContent } from "./product-workspace-model.js";
+import { isQuestionSystemNotice, isQuestionGroundingMetadata, canCreateGroundedReport, createProductWorkspaceState, normalizeProductWorkspaceState, mergeNotebookConversationTurns, projectQuestionFailureState, questionFailureMessage, parseImageRegion, parseSheetCell, isSheetCellContent } from "./product-workspace-model.js";
 import { createProductStudioState } from "./product-studio-model.js";
 import { ProductStudioPane } from "./product-studio-pane.jsx";
 import { StudioApprovalPolicySettings } from "./studio-approval-policy-settings.jsx";
@@ -518,7 +518,8 @@ export function projectSafeQuestionAnswer(answer, workspaceId, citationUrl, sele
   const metadataKeys = ["mode", "grounding", "source_scope_summary", "mismatch", "next_actions"];
   const legacyShape = hasExactKeys(answer, baseKeys);
   const enrichedShape = hasExactKeys(answer, [...baseKeys, ...metadataKeys]);
-  const validMetadata = !enrichedShape || (
+  const freshShape=hasExactKeys(answer,[...baseKeys,...metadataKeys,"grounding_status"]);
+  const validMetadata = !(enrichedShape||freshShape) || (
     ["work_support", "explicit_source_lookup", "source_backed_action", "approved_web_research"].includes(answer.mode)
     && ["source_backed", "ungrounded", "source_evidence_unavailable", "web_backed"].includes(answer.grounding)
     && (answer.source_scope_summary === null || (
@@ -537,10 +538,11 @@ export function projectSafeQuestionAnswer(answer, workspaceId, citationUrl, sele
     && answer.next_actions.length <= 4
     && answer.next_actions.every((item) => typeof item === "string" && item.length >= 1 && item.length <= 120)
     && (answer.grounding !== "source_evidence_unavailable" || (
-      answer.mismatch !== null && answer.next_actions.length > 0
+      (answer.mismatch !== null || freshShape&&answer.grounding_status==="no_relevant_evidence") && answer.next_actions.length > 0
     ))
   );
-  const validAnswer = (legacyShape || enrichedShape) && validMetadata
+  const validAnswer = (legacyShape || enrichedShape || freshShape) && validMetadata
+    && (!freshShape || isQuestionGroundingMetadata(answer))
     && isSafeDtoId(answer.run_id)
     && isSafeDtoId(answer.run_result_id)
     && typeof answer.answer === "string"
@@ -808,7 +810,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
     if(!token.clientRequestId)return;
     commitConversationTurns(previous=>previous.map(turn=>{
       if(turn.client_request_id!==token.clientRequestId)return turn;
-      if(!turn.turn_id.startsWith("pending-")&&["completed","failed","unavailable"].includes(turn.state))return turn;
+      if(!turn.turn_id.startsWith("pending-")&&["completed","failed","unavailable","no_knowledge","no_relevant_evidence"].includes(turn.state))return turn;
       return {...turn,...values,model:values.state==="completed"?turn.model:null};
     }));
   };
@@ -1535,9 +1537,17 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
         });
         token.resolveAuthorization = null;
         if (!current() || !authorization) return;
-        answer = await adapter.askQuestion(input, { ...token.options, stepUpAuthorizationId: authorization });
+        answer = isQuestionSystemNotice(authorization) ? authorization
+          : await adapter.askQuestion(input, { ...token.options, stepUpAuthorizationId: authorization });
       }
       if (!current()) return;
+      if (isQuestionSystemNotice(answer)) {
+        updateConversationRequest(token,{turn_id:answer.turn_id,state:answer.grounding_status,
+          response:{kind:"system",text:answer.answer,insufficient:true,citations:[],next_actions:answer.next_actions}});
+        // A notice never becomes a fabricated completed Run or the Studio source.
+        setViewState(current=>({...current,conversationSafeError:null}));
+        return;
+      }
       const safeAnswer = projectSafeQuestionAnswer(
         answer, workspaceId, adapter.citationUrl, viewState.selectedSource, selectedKnowledgeId,
       );
@@ -1579,6 +1589,11 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
     try {
       const grant = await adapter.authorizeQuestion({ ...token.input, password }, token.options);
       if (!token.isCurrent()) return;
+      if (isQuestionSystemNotice(grant)) {
+        setModalView(current=>current==="question-step-up"?null:current);
+        token.resolveAuthorization(grant);
+        return;
+      }
       if (typeof grant?.step_up_authorization_id !== "string" || !grant.step_up_authorization_id) {
         throw new Error("QUESTION_AUTHORIZATION_RESPONSE_INVALID");
       }
@@ -2152,6 +2167,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
             ? <div className="context-selection-status" role="status">작업 상담 · 근거 미사용</div> : null}
           {viewState.answerIntent === "work_support_source_backed"
             ? <div className="context-selection-status" role="status">작업 상담 · Source 사용</div> : null}
+          {viewState.answer?.grounding_status==="partial"?<div className="context-selection-status" role="status"><strong>부분 근거</strong><ul>{viewState.answer.next_actions.map((action,index)=><li key={index}>{action}</li>)}</ul></div>:null}
           {viewState.answer?.insufficient ? <div className="context-selection-status" role="status"><strong>근거 부족</strong>{viewState.answer.next_actions?.length ? <ul>{viewState.answer.next_actions.map((action, index) => <li key={index}>{action}</li>)}</ul> : null}</div> : null}
           {viewState.conversationSafeError ? <div className="inline-alert compact" role="alert">{questionFailureMessage(viewState.conversationSafeError)}</div> : null}
           <div className="citation-row">{viewState.answer?.citations?.map((citation) => (

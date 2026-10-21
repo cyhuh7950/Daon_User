@@ -18,6 +18,30 @@ async function loadContract() {
   return JSON.parse(await readFile(contractPath, "utf8"));
 }
 
+test('C 근거 응답은 기존5·10 신규11·Run 없는 notice를 닫힌 분기로 선언하고 변조를 거부한다',async()=>{
+  const document=await loadContract(),schemas=document.components.schemas;
+  assert.deepEqual(schemas.GroundedAnswerEnvelope.properties.data.oneOf.map(item=>item.$ref),[
+    '#/components/schemas/GroundedAnswer','#/components/schemas/GroundedAnswerWithMetadata',
+    '#/components/schemas/GroundedAnswerWithGrounding','#/components/schemas/QuestionSystemNotice']);
+  assert.deepEqual(document.paths['/api/v1/workspaces/{id}/questions/authorization'].post.responses['200'].content['application/json'].schema,
+    {$ref:'#/components/schemas/QuestionSystemNoticeEnvelope'});
+  assert.doesNotThrow(()=>validateOpenApiDocument(document));
+  for(const mutate of [
+    d=>{d.components.schemas.QuestionSystemNotice.additionalProperties=true;},
+    d=>{d.components.schemas.QuestionSystemNotice.properties.run_id={type:'string'};},
+    d=>{d.components.schemas.QuestionSystemNotice.properties.citations.maxItems=1;},
+    d=>{d.components.schemas.QuestionSystemNotice.properties.insufficient.const=false;},
+    d=>{d.components.schemas.QuestionSystemNotice.properties.grounding_status.enum.push('sufficient');},
+    d=>{d.components.schemas.QuestionSystemNotice.properties.next_actions.minItems=0;},
+    d=>{d.components.schemas.GroundedAnswerWithGrounding.allOf=[];},
+    d=>{d.components.schemas.GroundedAnswerWithGrounding.required.pop();},
+    d=>{d.components.schemas.GroundedAnswerWithMetadata.additionalProperties=true;},
+    d=>{d.components.schemas.GroundedAnswerEnvelope.properties.data.oneOf.pop();},
+    d=>{delete d.paths['/api/v1/workspaces/{id}/questions/authorization'].post.responses['200'];},
+    d=>{delete d.paths['/api/v1/workspaces/{id}/questions/authorization'].post.responses['200'].headers.ETag;},
+  ]) {const bad=structuredClone(document);mutate(bad);assert.throws(()=>validateOpenApiDocument(bad),/Question grounding/u);}
+});
+
 test('S44 capacity contracts keep default twelve and require exact independent opt-in branches',async()=>{
   const doc=await loadContract(),s=doc.components.schemas;
   const workspace=doc.paths['/api/v1/workspaces/{id}/operations/status'].get;

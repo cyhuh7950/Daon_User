@@ -125,6 +125,31 @@ class FakeObjectStorage:
 
 
 class PostgresQuestionAnsweringRepositoryTests(unittest.TestCase):
+    def test_c_new_metadata_read_rejects_invalid_answer_types_length_and_bool(self):
+        for answer,insufficient in (("x"*8001,False),(True,False),(1,False),("정상",0),("",False)):
+            with self.subTest(kind=type(answer).__name__,length=len(answer) if isinstance(answer,str) else None):
+                self.cloud.connection.completed_rows=[("result-c",{"answer":answer,"insufficient":insufficient,
+                    "grounding_status":"conversational","next_actions":[]},None,None,"local_runtime",None)]
+                with self.assertRaisesRegex(QuestionRepositoryError,"^QUESTION_RESULT_INVALID$"):
+                    self.repository.load_completed(self.context,"run-c")
+
+    def test_c_partial_metadata_is_rejected_before_any_storage(self):
+        result=GroundedTextResult("안녕하세요.",(),False,{},next_actions=("Source 추가",))
+        with self.assertRaisesRegex(QuestionRepositoryError,"^QUESTION_RESULT_INVALID$"):
+            self.repository.persist_completed(self.context,run_id="run-c-partial",source_id=None,source_version_id=None,
+                question="안녕",selection=TextModelSelection("UPSTAGE","https://api.upstage.ai/v1","profile-upstage","deployment-text","solar-pro4",5),
+                evidence=(),result=result,context_mode="general_ungrounded",context_sources=())
+        self.assertFalse(any(query.startswith("INSERT") for query in self.cloud.connection.queries))
+
+    def test_c_grounding_metadata_survives_current_completed_read(self):
+        payload = {"answer":"확인된 원문", "insufficient":False,
+            "grounding_status":"partial", "next_actions":["질문의 조건을 확인할 자료를 추가해 주세요."]}
+        self.cloud.connection.completed_rows = [("result-c",payload,"citation-c",{
+            "source_id":"source-cp3","source_version_id":"source-version-cp3","evidence_span_id":"span-page-2","page":2},"local_runtime",None)]
+        stored = self.repository.load_completed(self.context,"run-c")
+        self.assertEqual(getattr(stored,"grounding_status",None),"partial")
+        self.assertEqual(stored.next_actions,tuple(payload["next_actions"]))
+
     def test_cost_failed_run_records_uncertain_without_fabricated_attempt_and_rolls_back_on_error(self):
         from test_recovery_lineage import Ledger
         from daon_user_api.question_answering_service import question_request_fingerprint

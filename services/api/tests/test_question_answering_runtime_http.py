@@ -50,6 +50,10 @@ class FakeQuestionService:
         self.replay_answer = None
         self.insufficient_source = False
 
+    def preflight_grounding(self,context,**values):
+        # This boundary fixture covers runtime delegation, not retrieval semantics.
+        return None
+
     def replay(self, context, *, run_id, request_fingerprint):  # type: ignore[no-untyped-def]
         self.replay_calls.append((context, run_id, request_fingerprint))
         return self.replay_answer
@@ -136,6 +140,55 @@ class FakeCitationContent:
 
 
 class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
+    async def test_c_terminal_notice_replays_before_newly_available_evidence_can_run(self):
+        from types import SimpleNamespace
+        from test_question_answering_service import (FakeRepository,FakeIndex,FakeCredential,
+            GeneralAnswerTransport,StaticWorkspaceModelResolver,FakeEgress)
+        from daon_user_api.document_index_postgres import IndexedEvidenceChunk
+        from daon_user_api.question_answering_service import QuestionAnsweringService
+        resolver,transport,index=StaticWorkspaceModelResolver(),GeneralAnswerTransport(),FakeIndex(())
+        service=QuestionAnsweringService(resolver,FakeRepository(),index,FakeCredential(),transport,FakeEgress())
+        dependencies=replace(self.dependencies,question_answering_service=service,
+            egress_policy_service=SimpleNamespace(get_effective=lambda _:self.fail("no egress")))
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(dependencies)),base_url="http://127.0.0.1") as client:
+            with self._authenticated():
+                args=dict(cookies={WEB_SESSION_COOKIE:"opaque-session"},headers={"Idempotency-Key":"c-notice-replay-request"},
+                    json={"notebook_id":"notebook-cp3","source_id":"source-cp3","source_version_id":"source-version-cp3","question":"계약 기간은 언제인가요?"})
+                first=await client.post("/api/v1/workspaces/workspace-001/questions",**args)
+                self.assertEqual(first.status_code,200,first.text)
+                index.evidence=(IndexedEvidenceChunk("chunk-c","source-cp3","source-version-cp3",1,"계약 기간 원문","span-c"),)
+                second=await client.post("/api/v1/workspaces/workspace-001/questions",**args)
+                self.assertEqual(second.json()["data"],first.json()["data"])
+                self.assertRegex(first.headers.get("ETag", ""), r'"projection-[0-9a-f]{24}"')
+                self.assertEqual(second.headers.get("ETag"),first.headers["ETag"])
+                self.assertEqual(second.headers["Cache-Control"],"no-store")
+        self.assertEqual((resolver.calls,transport.calls),([],0))
+
+    async def test_c_no_source_fact_is_saved_notice_before_model_or_step_up(self):
+        from types import SimpleNamespace
+        from test_question_answering_service import (FakeRepository, FakeIndex, FakeCredential,
+            GeneralAnswerTransport, StaticWorkspaceModelResolver, FakeEgress)
+        from daon_user_api.question_answering_service import QuestionAnsweringService
+        resolver, transport, repository = StaticWorkspaceModelResolver(), GeneralAnswerTransport(), FakeRepository()
+        service = QuestionAnsweringService(resolver, repository, FakeIndex(()), FakeCredential(), transport, FakeEgress())
+        dependencies = replace(self.dependencies, question_answering_service=service,
+            egress_policy_service=SimpleNamespace(get_effective=lambda _: self.fail("egress must not be read")))
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(dependencies)), base_url="http://127.0.0.1") as client:
+            with self._authenticated(), patch.object(self.identity, "issue_step_up_after_reauthentication", side_effect=AssertionError("step-up issue forbidden")), patch.object(self.identity, "consume_step_up", side_effect=AssertionError("step-up consume forbidden")):
+                for suffix in ("", "/authorization"):
+                    response = await client.post("/api/v1/workspaces/workspace-001/questions"+suffix,
+                        cookies={WEB_SESSION_COOKIE:"opaque-session"}, headers={"Idempotency-Key":"c-notice-request-"+str(len(suffix))},
+                        json={"notebook_id":"notebook-cp3", "question":"안녕, 계약기간은 언제까지인가요?"})
+                    self.assertEqual(response.status_code, 200, response.text)
+                    data=response.json()["data"]
+                    self.assertEqual(set(data), {"kind","turn_id","answer","grounding_status","insufficient","citations","next_actions"})
+                    self.assertEqual((data["kind"],data["grounding_status"],data["insufficient"]), ("system_notice","no_knowledge",True))
+                    self.assertIn(data["turn_id"], self.notebooks.turns)
+                    self.assertRegex(response.headers.get("ETag", ""), r'"projection-[0-9a-f]{24}"')
+                    self.assertEqual(response.headers["Cache-Control"], "no-store")
+        self.assertEqual((resolver.calls,transport.calls,repository.persisted), ([],0,None))
+        self.assertEqual([item[2]["event_kind"] for item in self.notebooks.events], ["no_knowledge","no_knowledge"])
+
     async def test_question_admitted_before_model_failure_and_history_is_authenticated(self):
         from daon_user_api.question_answering_service import QuestionAnsweringError
         with self._authenticated(), patch.object(self.service,"ask",side_effect=QuestionAnsweringError("QUESTION_PROVIDER_UNAVAILABLE",status=503,retryable=True)):

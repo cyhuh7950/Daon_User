@@ -277,6 +277,12 @@ class PostgresNotebookRepository:
     def admit_question_turn(self, context, notebook_id, **values):
         return self._conversation_repository().admit_question_turn(context, notebook_id, **values)
 
+    def claim_question_grounding(self,context,notebook_id,**values):
+        return self._conversation_repository().claim_question_grounding(context,notebook_id,**values)
+
+    def load_question_turn_notice(self, context, notebook_id, **values):
+        return self._conversation_repository().load_question_turn_notice(context,notebook_id,**values)
+
     def append_question_turn_event(self, context, notebook_id, **values):
         return self._conversation_repository().append_question_turn_event(context, notebook_id, **values)
 

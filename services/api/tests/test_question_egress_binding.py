@@ -143,11 +143,10 @@ def test_no_evidence_freezes_policy_decision_without_provider_transport() -> Non
     events = []
     service, repository = build(events)
     service._document_index.empty = True
-    service.ask(
-        QuestionContext("tenant", "workspace", "actor", "trace", "policy-v1"),
-        source_id="source", source_version_id="source-version",
-        question="질문", run_id="run-empty",
-    )
-    assert events == ["decision_commit", "result_commit"]
-    assert repository.persisted["provider_called"] is False
-    assert repository.persisted["egress_authorization"]["egress_decision_id"] == "egress-1"
+    with pytest.raises(QuestionAnsweringError) as caught:
+        service.ask(QuestionContext("tenant","workspace","actor","trace","policy-v1"),
+            source_id="source",source_version_id="source-version",question="질문",run_id="run-1")
+    assert caught.value.code=="QUESTION_GROUNDING_REQUIRED"
+    assert caught.value.grounding_status=="no_relevant_evidence"
+    assert events==[]
+    assert repository.persisted is None

@@ -36,7 +36,7 @@ test('B 전체 대화 조회 OpenAPI는 페이지·현재 scope·닫힌 turn만 
   assert.equal(route.get.parameters.find(p=>p.name==='limit').schema.maximum,100);
   assert.equal(route.get.parameters.find(p=>p.name==='before').schema.maxLength,2048);
   assert.equal(c.components.schemas.NotebookConversationTurn.additionalProperties,false);
-  assert.deepEqual(c.components.schemas.NotebookConversationTurn.properties.state.enum,['pending','awaiting_authorization','completed','failed','uncertain','unavailable']);
+  assert.deepEqual(c.components.schemas.NotebookConversationTurn.properties.state.enum,['pending','awaiting_authorization','completed','failed','uncertain','unavailable','no_knowledge','no_relevant_evidence']);
   assert.equal(c.components.schemas.NotebookConversationPage.properties.items.maxItems,100);
   assert.equal(route.get.responses['200'].headers['Cache-Control'].schema.enum[0],'no-store');
 });

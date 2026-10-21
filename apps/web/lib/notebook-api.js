@@ -239,7 +239,7 @@ export async function getNotebookDeletion(workspaceId, notebookId, requestId, { 
 
 function validConversationTurn(value) {
   const response = value?.response;
-  const states = ['pending','awaiting_authorization','completed','failed','uncertain','unavailable'];
+  const states = ['pending','awaiting_authorization','completed','failed','uncertain','unavailable','no_knowledge','no_relevant_evidence'];
   const safeModel = value?.model === null || (exact(value?.model,['provider_code','model_id'])
     && ['provider_code','model_id'].every(key => typeof value.model[key] === 'string'
       && value.model[key].length >= 1 && value.model[key].length <= 255 && !/[\x00-\x20\x7f]/u.test(value.model[key])));
@@ -254,6 +254,9 @@ function validConversationTurn(value) {
     && safeId(value.turn_id) && typeof value.question === 'string' && value.question.length >= 1 && value.question.length <= 32768
     && states.includes(value.state) && timestamp(value.submitted_at) && safeModel && safeResponse
     && (value.state === 'completed' ? response?.kind === 'answer' : value.model === null)
+    && (!['no_knowledge','no_relevant_evidence'].includes(value.state)
+      || response?.next_actions.length>=1&&response.next_actions.length<=4
+        &&response.next_actions.every(item=>item.trim().length>=1&&item.length<=120))
     && (value.state === 'pending' ? response === null
       : value.state === 'completed' ? response?.kind === 'answer'
       : response?.kind === 'system' && response.insufficient === true && response.citations.length === 0);

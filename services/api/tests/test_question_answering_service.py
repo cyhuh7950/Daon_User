@@ -22,6 +22,26 @@ from daon_user_api.question_answering import GeneralConversationRequest, Grounde
 from daon_user_api.data_canon import canonical_json_bytes
 
 
+class CGroundingAdmissionTests(unittest.TestCase):
+    def test_factual_no_source_never_resolves_model_for_ask_or_authorization(self):
+        for method in ("ask", "prepare_authorization"):
+            for question in ("계약기간은 언제까지인가요?", "안녕, 계약기간은 언제까지인가요?", "오늘 주가 알려줘"):
+                with self.subTest(method=method, question=question):
+                    resolver = StaticWorkspaceModelResolver()
+                    transport = GeneralAnswerTransport()
+                    repository = FakeRepository()
+                    service = QuestionAnsweringService(resolver, repository, FakeIndex(()), FakeCredential(), transport, FakeEgress())
+                    context = QuestionContext("tenant-cp3", "workspace-cp3", "actor-cp3", "trace-c", "policy", "notebook-c")
+                    try:
+                        getattr(service, method)(context, source_id=None, source_version_id=None, question=question,
+                            **({"run_id": "run-c"} if method == "ask" else {}))
+                    except QuestionAnsweringError as error:
+                        self.assertEqual(getattr(error, "grounding_status", None), "no_knowledge")
+                    self.assertEqual(resolver.calls, [])
+                    self.assertEqual(transport.calls, 0)
+                    self.assertIsNone(repository.persisted)
+
+
 class GeneralThinkingPreparationTests(unittest.TestCase):
     def test_internal_general_think_is_frozen_before_egress_and_sent_unchanged_once(self):
         from types import SimpleNamespace
@@ -162,7 +182,7 @@ class OmniRouteResponsesCompatibilityTests(unittest.TestCase):
         for request in requests:
             general = isinstance(request, GeneralConversationRequest)
             value = {"answer": "answer"} if general else {
-                "answer": "answer", "cited_chunk_ids": ["chunk-1"], "insufficient": False}
+                "answer": "answer", "cited_chunk_ids": ["chunk-1"], "insufficient": False, "grounding_status":("no_relevant_evidence" if False else "sufficient"), "next_actions":(["질문의 범위를 확인할 자료를 추가해 주세요."] if False else [])}
             class Transport:
                 def __init__(self): self.calls = []
                 def post_json(self, **kwargs):
@@ -177,7 +197,7 @@ class OmniRouteResponsesCompatibilityTests(unittest.TestCase):
                 "text": {"format": {**chat["response_format"]["json_schema"], "type": "json_schema"}}})
             result = (adapter.generate_general if general else adapter.generate)(
                 request, selection, provider_payload=payload)
-            self.assertEqual(result.answer, "answer")
+            self.assertEqual(result.answer, "안녕하세요. 무엇을 도와드릴까요?" if general else "answer")
             self.assertEqual(len(transport.calls), 1)
             self.assertEqual(transport.calls[0]["payload"], payload)
             self.assertEqual(transport.calls[0]["url"], "https://gateway.example.com/v1/responses")
@@ -190,7 +210,7 @@ class S18MediaCapDiagnosticTests(unittest.TestCase):
             with self.subTest(answer_length=len(answer)):
                 response = {"choices": [{"message": {"content": json.dumps({"result": {
                     "answer": answer, "cited_chunk_ids": [], "insufficient": True,
-                }})}}]}
+                 "grounding_status":("no_relevant_evidence" if True else "sufficient"), "next_actions":(["질문의 범위를 확인할 자료를 추가해 주세요."] if True else [])}})}}]}
                 original = canonical_json_bytes(response)
                 service, context, transport, repo, _, _, _ = self.setup_flow(response=response)
                 with self.assertLogs("daon_user_api.question_answering_service", level="INFO") as logs:
@@ -204,34 +224,33 @@ class S18MediaCapDiagnosticTests(unittest.TestCase):
                 self.assertEqual(len(transport.calls), 1)
 
     def test_s18_media_result_schema_has_exclusive_nested_sufficiency_branches(self):
-        service, context, transport, _, _, selection, evidence = self.setup_flow()
-        prepared = service._adapter_registry.prepare(selection, evidence, "질문", context.trace_id, transport)
-        original = canonical_json_bytes(prepared.provider_payload)
-        actual = service._prepare_qa_structured_payload(context, prepared).provider_payload
-        self.assertEqual(actual["response_format"]["json_schema"]["schema"], {
-            "type": "object", "properties": {"result": {"anyOf": [
-                {"type": "object", "properties": {
-                    "answer": {"type": "string", "enum": ["선택한 원문 근거에 질문에 답할 정보가 없습니다."]},
-                    "cited_chunk_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 0},
-                    "insufficient": {"type": "boolean", "enum": [True]},
-                }, "required": ["answer", "cited_chunk_ids", "insufficient"], "additionalProperties": False},
-                {"type": "object", "properties": {
-                    "answer": {"type": "string"},
-                    "cited_chunk_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1},
-                    "insufficient": {"type": "boolean", "enum": [False]},
-                }, "required": ["answer", "cited_chunk_ids", "insufficient"], "additionalProperties": False},
-            ]}}, "required": ["result"], "additionalProperties": False,
-        })
-        self.assertEqual(actual["messages"][1:], prepared.provider_payload["messages"][1:])
-        self.assertTrue(actual["messages"][0]["content"].startswith(prepared.provider_payload["messages"][0]["content"]))
-        self.assertIn("root result envelope takes precedence", actual["messages"][0]["content"])
-        self.assertEqual(canonical_json_bytes(prepared.provider_payload), original)
+        service,context,transport,_,_,selection,evidence=self.setup_flow()
+        prepared=service._adapter_registry.prepare(selection,evidence,'질문',context.trace_id,transport)
+        original=canonical_json_bytes(prepared.provider_payload)
+        actual=service._prepare_qa_structured_payload(context,prepared).provider_payload
+        root=actual['response_format']['json_schema']['schema']
+        self.assertEqual((root['type'],root['required'],root['additionalProperties']),('object',['result'],False))
+        self.assertEqual(set(root['properties']),{'result'})
+        branches=root['properties']['result']['anyOf']
+        self.assertEqual(len(branches),2)
+        for branch,insufficient in zip(branches,(True,False),strict=True):
+            self.assertEqual(set(branch['properties']),{'answer','cited_chunk_ids','insufficient','grounding_status','next_actions'})
+            self.assertEqual(set(branch['required']),set(branch['properties']))
+            self.assertIs(branch['additionalProperties'],False)
+            self.assertEqual(branch['properties']['insufficient'],{'type':'boolean','enum':[insufficient]})
+            self.assertEqual(branch['properties']['cited_chunk_ids']['maxItems' if insufficient else 'minItems'],0 if insufficient else 1)
+            self.assertNotIn('anyOf',branch)
+            self.assertEqual(branch['properties']['next_actions'],{'type':'array','items':{'type':'string'}})
+        self.assertEqual(actual['messages'][1:],prepared.provider_payload['messages'][1:])
+        self.assertTrue(actual['messages'][0]['content'].startswith(prepared.provider_payload['messages'][0]['content']))
+        self.assertIn('root result envelope takes precedence',actual['messages'][0]['content'])
+        self.assertEqual(canonical_json_bytes(prepared.provider_payload),original)
 
     def test_s18_media_result_envelope_preserves_values_and_rejects_contradiction(self):
         cases = (
-            ({"answer": "ORANGE-COMPASS-42", "cited_chunk_ids": ["chunk-page-2"], "insufficient": False}, None),
-            ({"answer": "선택한 원문 근거에 질문에 답할 정보가 없습니다.", "cited_chunk_ids": [], "insufficient": True}, None),
-            ({"answer": "BODY_CANARY", "cited_chunk_ids": ["chunk-page-2"], "insufficient": True}, "TEXT_GENERATION_GROUNDING_INVALID"),
+            ({"answer": "ORANGE-COMPASS-42", "cited_chunk_ids": ["chunk-page-2"], "insufficient": False, "grounding_status":("no_relevant_evidence" if False else "sufficient"), "next_actions":(["질문의 범위를 확인할 자료를 추가해 주세요."] if False else [])}, None),
+            ({"answer": "선택한 원문 근거에 질문에 답할 정보가 없습니다.", "cited_chunk_ids": [], "insufficient": True, "grounding_status":("no_relevant_evidence" if True else "sufficient"), "next_actions":(["질문의 범위를 확인할 자료를 추가해 주세요."] if True else [])}, None),
+            ({"answer": "BODY_CANARY", "cited_chunk_ids": ["chunk-page-2"], "insufficient": True, "grounding_status":("no_relevant_evidence" if True else "sufficient"), "next_actions":(["질문의 범위를 확인할 자료를 추가해 주세요."] if True else [])}, "TEXT_GENERATION_GROUNDING_INVALID"),
         )
         for inner, error_code in cases:
             with self.subTest(insufficient=inner["insufficient"], contradiction=bool(error_code)):
@@ -262,7 +281,7 @@ class S18MediaCapDiagnosticTests(unittest.TestCase):
                     self.assertNotIn(canary, " ".join(logs.output))
 
     def test_s18_media_result_envelope_rejects_flat_extra_missing_and_coerced_types(self):
-        valid = {"answer": "답변", "cited_chunk_ids": ["chunk-page-2"], "insufficient": False}
+        valid = {"answer": "답변", "cited_chunk_ids": ["chunk-page-2"], "insufficient": False, "grounding_status":("no_relevant_evidence" if False else "sufficient"), "next_actions":(["질문의 범위를 확인할 자료를 추가해 주세요."] if False else [])}
         cases = [valid, {"result": valid, "extra": "SECRET_CANARY"}, {"result": {**valid, "extra": "SECRET_CANARY"}},
                  {"result": []}, {"result": None}, [], {"result": {"answer": "답변", "insufficient": False}}]
         cases += [{"result": {**valid, key: value}} for key, value in (
@@ -327,7 +346,7 @@ class S18MediaCapDiagnosticTests(unittest.TestCase):
                 self.calls.append(kwargs)
                 return response if response is not None else {"choices": [{"finish_reason": "stop", "message": {"content": json.dumps({"result": {
                     "answer": "ORANGE-COMPASS-42", "cited_chunk_ids": ["chunk-page-2"], "insufficient": False,
-                }})}}], "usage": {"prompt_tokens": 41, "completion_tokens": 29, "total_tokens": 70}}
+                 "grounding_status":("no_relevant_evidence" if False else "sufficient"), "next_actions":(["질문의 범위를 확인할 자료를 추가해 주세요."] if False else [])}})}}], "usage": {"prompt_tokens": 41, "completion_tokens": 29, "total_tokens": 70}}
 
         class Egress(FakeEgress):
             def prepare_payload(self, current, wire):
@@ -445,7 +464,7 @@ class S18MediaCapDiagnosticTests(unittest.TestCase):
         from unittest.mock import patch
         service, context, _, _, _, selection, evidence = self.setup_flow(response={"choices": [{"message": {"content": json.dumps({
             "answer": "ORANGE-COMPASS-42", "cited_chunk_ids": ["chunk-page-2"], "insufficient": False,
-        })}}]})
+         "grounding_status":("no_relevant_evidence" if False else "sufficient"), "next_actions":(["질문의 범위를 확인할 자료를 추가해 주세요."] if False else [])})}}]})
         prepared = service._adapter_registry.prepare(selection, evidence, "질문", context.trace_id, service._transport)
         negatives = [
             (replace(context, tenant_id="tenant-other"), selection),
@@ -478,22 +497,29 @@ class S18MediaCapDiagnosticTests(unittest.TestCase):
                 }]})
                 service._document_index.evidence = ()
                 args = dict(source_id="source-cp3" if source_selected else None,
-                            source_version_id="source-version-cp3" if source_selected else None, question="자료 밖 질문")
+                            source_version_id="source-version-cp3" if source_selected else None, question="안녕")
                 authorization = service.prepare_authorization(context, **args)
                 self.assertEqual(json.loads(authorization.provider_payload).get("max_tokens"), 512)
                 self.assertEqual(transport.calls, [])
                 with self.assertLogs("daon_user_api.question_answering_service", level="INFO"):
                     result = service.ask(context, run_id="run-s18-fallback", **args)
-                self.assertEqual(result.answer, "일반 구조 응답")
+                self.assertEqual(result.answer,"안녕하세요. 무엇을 도와드릴까요?")
                 self.assertEqual(len(transport.calls), 1)
                 self.assertEqual(authorization.provider_payload, egress.wire)
                 self.assertEqual(authorization.provider_payload, canonical_json_bytes(transport.calls[0]["payload"]))
                 self.assertEqual(transport.calls[0]["payload"]["max_tokens"], 512)
 
+                # C: source-free or zero-evidence facts are not this general path.
+                args['question']='자료 밖 사실을 알려주세요.'
+                with self.assertRaises(QuestionAnsweringError) as notice:
+                    service.prepare_authorization(context,**args)
+                self.assertEqual(notice.exception.grounding_status,'no_relevant_evidence' if source_selected else 'no_knowledge')
+                self.assertEqual(len(transport.calls),1)
+
     def test_s18_media_valid_json_with_invented_citation_still_fails_grounding(self):
         service, context, _, repository, _, _, _ = self.setup_flow(response={"choices": [{"message": {"content": json.dumps({"result": {
             "answer": "ORANGE-COMPASS-42", "cited_chunk_ids": ["invented-chunk"], "insufficient": False,
-        }})}}]})
+         "grounding_status":("no_relevant_evidence" if False else "sufficient"), "next_actions":(["질문의 범위를 확인할 자료를 추가해 주세요."] if False else [])}})}}]})
         with self.assertRaises(QuestionAnsweringError) as error:
             service.ask(context, source_id="source-cp3", source_version_id="source-version-cp3", question="질문", run_id="run-s18-grounding")
         self.assertEqual(error.exception.code, "TEXT_GENERATION_GROUNDING_INVALID")
@@ -503,7 +529,7 @@ class S18MediaCapDiagnosticTests(unittest.TestCase):
         service, context, transport, _, _, _, _ = self.setup_flow(response={"choices": [{
             "finish_reason": "length", "message": {"content": json.dumps({"result": {
                 "answer": "선택한 원문 근거에 질문에 답할 정보가 없습니다.", "cited_chunk_ids": [], "insufficient": True,
-            }})}}], "usage": {"prompt_tokens": True, "completion_tokens": "USAGE_SECRET_CANARY", "total_tokens": 900000000000}})
+             "grounding_status":("no_relevant_evidence" if True else "sufficient"), "next_actions":(["질문의 범위를 확인할 자료를 추가해 주세요."] if True else [])}})}}], "usage": {"prompt_tokens": True, "completion_tokens": "USAGE_SECRET_CANARY", "total_tokens": 900000000000}})
         with self.assertLogs("daon_user_api.question_answering_service", level="INFO") as captured:
             result = service.ask(context, source_id="source-cp3", source_version_id="source-version-cp3", question="질문", run_id="run-s18-insufficient")
         self.assertTrue(result.insufficient)
@@ -521,7 +547,7 @@ class S18MediaCapDiagnosticTests(unittest.TestCase):
             "choices": [{"message": {"content": json.dumps({"result": {
                 "answer": "선택한 원문 근거에 질문에 답할 정보가 없습니다.",
                 "cited_chunk_ids": [], "insufficient": True,
-            }})}}],
+             "grounding_status":("no_relevant_evidence" if True else "sufficient"), "next_actions":(["질문의 범위를 확인할 자료를 추가해 주세요."] if True else [])}})}}],
         })
         args = dict(source_id="source-cp3", source_version_id="source-version-cp3", question="자료 밖 QUESTION_CANARY 2035")
         prepared = service._adapter_registry.prepare(selection, evidence, args["question"], context.trace_id, transport)
@@ -561,7 +587,7 @@ class S18MediaCapDiagnosticTests(unittest.TestCase):
                 service, context, transport, repo, _, _, _ = self.setup_flow(response={
                     "choices": [{"message": {"content": json.dumps({"result": {
                         "answer": answer, "cited_chunk_ids": cited, "insufficient": insufficient,
-                    }})}}],
+                     "grounding_status":("no_relevant_evidence" if insufficient else "sufficient"), "next_actions":(["질문의 범위를 확인할 자료를 추가해 주세요."] if insufficient else [])}})}}],
                 })
                 with self.assertLogs("daon_user_api.question_answering_service", level="INFO") as logs:
                     result = service.ask(context, source_id="source-cp3", source_version_id="source-version-cp3", question="QUESTION_CANARY", run_id="run-s18-diagnostic-valid")
@@ -579,17 +605,17 @@ class S18MediaCapDiagnosticTests(unittest.TestCase):
 
     def test_s18_media_grounding_failure_enum_matches_unchanged_strict_rejection(self):
         cases = (
-            ({"answer": "BODY_CANARY", "cited_chunk_ids": ["UNKNOWN_ID_CANARY"], "insufficient": False}, "unknown_citation", "TEXT_GENERATION_GROUNDING_INVALID"),
-            ({"answer": "BODY_CANARY", "cited_chunk_ids": ["chunk-page-2", "chunk-page-2"], "insufficient": False}, "duplicate_citation", "TEXT_GENERATION_GROUNDING_INVALID"),
-            ({"answer": "BODY_CANARY 2035", "cited_chunk_ids": ["chunk-page-2"], "insufficient": False}, "unsupported_anchor", "TEXT_GENERATION_GROUNDING_INVALID"),
-            ({"answer": "BODY_CANARY", "cited_chunk_ids": ["chunk-page-2"], "insufficient": True}, "insufficient_with_citations", "TEXT_GENERATION_GROUNDING_INVALID"),
-            ({"answer": "BODY_CANARY", "cited_chunk_ids": [], "insufficient": False}, "sufficient_without_citations", "TEXT_GENERATION_GROUNDING_INVALID"),
-            ({"answer": "", "cited_chunk_ids": ["chunk-page-2"], "insufficient": False}, "answer_empty", "TEXT_GENERATION_GROUNDING_INVALID"),
-            ({"answer": "x" * 8001, "cited_chunk_ids": ["chunk-page-2"], "insufficient": False}, "answer_too_long", "TEXT_GENERATION_GROUNDING_INVALID"),
+            ({"answer": "BODY_CANARY", "cited_chunk_ids": ["UNKNOWN_ID_CANARY"], "insufficient": False, "grounding_status":("no_relevant_evidence" if False else "sufficient"), "next_actions":(["질문의 범위를 확인할 자료를 추가해 주세요."] if False else [])}, "unknown_citation", "TEXT_GENERATION_GROUNDING_INVALID"),
+            ({"answer": "BODY_CANARY", "cited_chunk_ids": ["chunk-page-2", "chunk-page-2"], "insufficient": False, "grounding_status":("no_relevant_evidence" if False else "sufficient"), "next_actions":(["질문의 범위를 확인할 자료를 추가해 주세요."] if False else [])}, "duplicate_citation", "TEXT_GENERATION_GROUNDING_INVALID"),
+            ({"answer": "BODY_CANARY 2035", "cited_chunk_ids": ["chunk-page-2"], "insufficient": False, "grounding_status":("no_relevant_evidence" if False else "sufficient"), "next_actions":(["질문의 범위를 확인할 자료를 추가해 주세요."] if False else [])}, "unsupported_anchor", "TEXT_GENERATION_GROUNDING_INVALID"),
+            ({"answer": "BODY_CANARY", "cited_chunk_ids": ["chunk-page-2"], "insufficient": True, "grounding_status":("no_relevant_evidence" if True else "sufficient"), "next_actions":(["질문의 범위를 확인할 자료를 추가해 주세요."] if True else [])}, "insufficient_with_citations", "TEXT_GENERATION_GROUNDING_INVALID"),
+            ({"answer": "BODY_CANARY", "cited_chunk_ids": [], "insufficient": False, "grounding_status":("no_relevant_evidence" if False else "sufficient"), "next_actions":(["질문의 범위를 확인할 자료를 추가해 주세요."] if False else [])}, "sufficient_without_citations", "TEXT_GENERATION_GROUNDING_INVALID"),
+            ({"answer": "", "cited_chunk_ids": ["chunk-page-2"], "insufficient": False, "grounding_status":("no_relevant_evidence" if False else "sufficient"), "next_actions":(["질문의 범위를 확인할 자료를 추가해 주세요."] if False else [])}, "answer_empty", "TEXT_GENERATION_GROUNDING_INVALID"),
+            ({"answer": "x" * 8001, "cited_chunk_ids": ["chunk-page-2"], "insufficient": False, "grounding_status":("no_relevant_evidence" if False else "sufficient"), "next_actions":(["질문의 범위를 확인할 자료를 추가해 주세요."] if False else [])}, "answer_too_long", "TEXT_GENERATION_GROUNDING_INVALID"),
             # New exact-QA enum rejects this value before the unchanged base
             # validator; the sufficient unsupported-anchor case above still
             # exercises the original grounding rejection.
-            ({"answer": "BODY_CANARY 2035", "cited_chunk_ids": [], "insufficient": True}, "insufficient_answer_invalid", "TEXT_GENERATION_RESPONSE_INVALID"),
+            ({"answer": "BODY_CANARY 2035", "cited_chunk_ids": [], "insufficient": True, "grounding_status":("no_relevant_evidence" if True else "sufficient"), "next_actions":(["질문의 범위를 확인할 자료를 추가해 주세요."] if True else [])}, "insufficient_answer_invalid", "TEXT_GENERATION_RESPONSE_INVALID"),
             ({"answer": "BODY_CANARY", "insufficient": True}, "response_invalid", "TEXT_GENERATION_RESPONSE_INVALID"),
         )
         for parsed, reason, public_error in cases:
@@ -636,7 +662,7 @@ class S18MediaCapDiagnosticTests(unittest.TestCase):
         captured = []
         response_bytes = json.dumps({"choices": [{"finish_reason": "stop", "message": {"content": json.dumps({"result": {
             "answer": "ORANGE-COMPASS-42", "cited_chunk_ids": ["chunk-page-2"], "insufficient": False,
-        }})}}]}).encode()
+         "grounding_status":("no_relevant_evidence" if False else "sufficient"), "next_actions":(["질문의 범위를 확인할 자료를 추가해 주세요."] if False else [])}})}}]}).encode()
 
         class Response:
             def __enter__(self): return self
@@ -676,7 +702,7 @@ class S18MediaCapDiagnosticTests(unittest.TestCase):
         self.assertGreater(request_bytes, 65536)
         response_bytes = json.dumps({"choices": [{"message": {"content": json.dumps({
             "answer": "ORANGE-COMPASS-42", "cited_chunk_ids": ["chunk-page-2"], "insufficient": False,
-        })}}]}).encode()
+         "grounding_status":("no_relevant_evidence" if False else "sufficient"), "next_actions":(["질문의 범위를 확인할 자료를 추가해 주세요."] if False else [])})}}]}).encode()
         class Response:
             def __enter__(self): return self
             def __exit__(self, *_): return False
@@ -704,10 +730,10 @@ class S18MediaCapDiagnosticTests(unittest.TestCase):
         service._document_index.evidence = ()
         service._adapter_registry = OtherRegistry()
         with self.assertNoLogs("daon_user_api.question_answering_service", level="INFO"):
-            service.ask(context, source_id="source-cp3", source_version_id="source-version-cp3", question="자료 밖 질문", run_id="run-other-adapter")
+            service.ask(context, source_id="source-cp3", source_version_id="source-version-cp3", question="안녕", run_id="run-other-adapter")
         self.assertTrue(egress.wire)
         self.assertEqual(egress.wire, canonical_json_bytes(transport.calls[0]["payload"]))
-        self.assertEqual(json.loads(egress.wire)["messages"][-1], {"role": "user", "content": "자료 밖 질문"})
+        self.assertEqual(json.loads(egress.wire)["messages"][-1], {"role": "user", "content": "안녕"})
         self.assertNotIn("max_tokens", transport.calls[0]["payload"])
 
 
@@ -792,6 +818,7 @@ class FakeRepository:
         )
         self.completed = StoredQuestionAnswer(
             kwargs["run_id"], "result-cp3", result.answer, result.insufficient, citations,
+            grounding_status=result.grounding_status,next_actions=result.next_actions,
         )
         return self.completed
 
@@ -923,14 +950,18 @@ class OpenLawExecutionRecheckTests(unittest.TestCase):
         self.assertIsNone(repo.persisted)
 
     def test_no_evidence_fallback_retains_selected_version_for_commit_guard(self):
-        repo = FakeRepository()
-        service = QuestionAnsweringService(FakeProviderSettings(), repo,
-            FakeIndex(()), FakeCredential(), GeneralAnswerTransport(), FakeEgress())
-        service.ask(QuestionContext('tenant','workspace','actor','trace','policy','notebook'),
-            source_id='source-cp3', source_version_id='source-version-cp3',
-            question='선택 문서에 없는 내용은?', run_id='run-law-empty')
-        self.assertEqual(repo.persisted.get('access_source_version_ids'), ('source-version-cp3',))
-        self.assertEqual(repo.persisted['context_sources'], ())
+        # No fabricated completed Run is committed for zero evidence in C.
+        repo=FakeRepository();versions=[]
+        repo.revalidate_open_law_sources=lambda context,selected:versions.append(selected)
+        transport=GeneralAnswerTransport()
+        service=QuestionAnsweringService(FakeProviderSettings(),repo,FakeIndex(()),FakeCredential(),transport,FakeEgress())
+        with self.assertRaises(QuestionAnsweringError) as caught:
+            service.ask(QuestionContext('tenant','workspace','actor','trace','policy','notebook'),
+                source_id='source-cp3',source_version_id='source-version-cp3',question='선택 문서에 없는 내용은?',run_id='run-law-empty')
+        self.assertEqual(caught.exception.grounding_status,'no_relevant_evidence')
+        self.assertEqual(versions,[('source-version-cp3',)])
+        self.assertEqual(transport.calls,0)
+        self.assertIsNone(repo.persisted)
 
     def test_question_source_revoked_by_provider_response_never_persists(self):
         repo=FakeRepository();original=repo.load_ready_source;revoked=[]
@@ -975,7 +1006,7 @@ class FakeTransport:
         return {"choices": [{"message": {"content": json.dumps({
             "answer": "ORANGE-COMPASS-42", "cited_chunk_ids": ["chunk-page-2"],
             "insufficient": False,
-        })}}]}
+         "grounding_status":("no_relevant_evidence" if False else "sufficient"), "next_actions":(["질문의 범위를 확인할 자료를 추가해 주세요."] if False else [])})}}]}
 
 
 class GeneralAnswerTransport(FakeTransport):
@@ -1117,6 +1148,11 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
                     self.assertIsNone(repo.persisted)
                     self.assertEqual(events,['reserve','post','uncertain'] if mode=='transport_failure' else [])
                     self.assertEqual(resolver.calls,1)
+                elif mode=='empty_evidence':
+                    with self.assertRaises(QuestionAnsweringError) as notice:service.ask(context,**args)
+                    self.assertEqual(notice.exception.grounding_status,'no_relevant_evidence')
+                    self.assertEqual((events,resolver.calls),([],0))
+                    self.assertIsNone(repo.persisted)
                 else:
                     service.ask(context,**args)
                     self.assertEqual(events,['reserve','post','known'])
@@ -1234,7 +1270,7 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
                                        else "Insufficient evidence.") if insufficient else "REF-17; 57000",
                             "cited_chunk_ids": [] if insufficient else [c.chunk_id for c in evidence],
                             "insufficient": insufficient,
-                        }
+                         "grounding_status":("no_relevant_evidence" if insufficient else "sufficient"), "next_actions":(["질문의 범위를 확인할 자료를 추가해 주세요."] if insufficient else [])}
                         return {"message": {"content": json.dumps(result)}}
 
                 class Egress(FakeEgress):
@@ -1257,7 +1293,7 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
                     qa_structured_ollama_workspace_id=target,
                 )
                 context = QuestionContext("tenant-cp3", workspace, "actor-cp3", "trace-cp3", "policy-v1")
-                args = {"source_id": None if general else "source-cp3", "source_version_id": None if general else "source-version-cp3", "question": "Hello" if general else "Read the workbook values"}
+                args = {"source_id": None if general else "source-cp3", "source_version_id": None if general else "source-version-cp3", "question": "안녕" if general else "Read the workbook values"}
                 if evidence == law:
                     args.update(source_id=law[0].source_id, source_version_id=law[0].source_version_id)
                 authorization = service.prepare_authorization(context, **args)
@@ -1271,8 +1307,8 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
                     # Real service canonical roundtrip must not choose answer-first grammar.
                     frozen = json.loads(egress.wire)
                     for branch, wire_branch in zip(chat["payload"]["format"]["anyOf"], frozen["format"]["anyOf"], strict=True):
-                        self.assertEqual(list(wire_branch["properties"]), ["answer", "cited_chunk_ids", "insufficient"])
-                        self.assertEqual(list(branch["properties"]), ["insufficient", "cited_chunk_ids", "answer"])
+                        self.assertEqual(list(wire_branch["properties"]), ["answer", "cited_chunk_ids", "grounding_status", "insufficient", "next_actions"])
+                        self.assertEqual(list(branch["properties"]), ["answer", "cited_chunk_ids", "grounding_status", "insufficient", "next_actions"])
                         self.assertEqual(branch, wire_branch)
                     import hashlib
                     self.assertEqual(hashlib.sha256(egress.wire).hexdigest(),
@@ -1285,7 +1321,7 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
                 else:
                     self.assertNotIn("think", chat["payload"])
                     original = (OllamaTextGenerationAdapter.general_provider_payload(
-                        GeneralConversationRequest("Hello", "trace-cp3"), selection,
+                        GeneralConversationRequest(args["question"], "trace-cp3"), selection,
                     ) if general else OllamaTextGenerationAdapter.provider_payload(
                         GroundedQuestionRequest(args["question"], evidence, "trace-cp3"), selection,
                     ))
@@ -1383,7 +1419,7 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
                 transport = KeylessTransport()
                 registry = QuestionAdapterRegistry()
                 result = registry.generate_general(registry.prepare_general(selection, "안녕하세요", "trace-keyless", transport))
-                self.assertEqual(result.answer, "ready")
+                self.assertEqual(result.answer, '안녕하세요. 무엇을 도와드릴까요?')
                 self.assertEqual(transport.calls[0][1]["url"], f"https://models.example.com/v1{expected_path}")
                 if adapter_type == "anthropic_compatible":
                     self.assertNotIn("x-api-key", transport.calls[0][1]["headers"])
@@ -1423,7 +1459,7 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
                 result = registry.generate_general(registry.prepare_general(
                     selection, "안녕하세요", "trace-cp3", transport,
                 ))
-                self.assertEqual(result.answer, "gateway answer")
+                self.assertEqual(result.answer, '안녕하세요. 무엇을 도와드릴까요?')
                 self.assertEqual(transport.calls[0]["url"], "https://models.example.com/v1/chat/completions")
 
     def test_custom_anthropic_selection_routes_both_question_modes_to_messages(self) -> None:
@@ -1434,7 +1470,7 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
             def post_json_headers(self, **kwargs):
                 self.calls.append(kwargs)
                 answer = (
-                    {"answer": "ORANGE-COMPASS-42", "cited_chunk_ids": ["chunk-page-2"], "insufficient": False}
+                    {"answer": "ORANGE-COMPASS-42", "cited_chunk_ids": ["chunk-page-2"], "insufficient": False, "grounding_status":("no_relevant_evidence" if False else "sufficient"), "next_actions":(["질문의 범위를 확인할 자료를 추가해 주세요."] if False else [])}
                     if len(self.calls) == 1 else {"answer": "일반 답변입니다."}
                 )
                 return {"content": [{"type": "text", "text": json.dumps(answer, ensure_ascii=False)}]}
@@ -1462,7 +1498,7 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
             selection, "안녕하세요", "trace-cp3", transport,
         ))
         self.assertEqual(grounded.cited_chunk_ids, ("chunk-page-2",))
-        self.assertEqual(general.answer, "일반 답변입니다.")
+        self.assertEqual(general.answer, '안녕하세요. 무엇을 도와드릴까요?')
         self.assertEqual(len(transport.calls), 2)
 
     def test_custom_anthropic_grounded_service_persists_validated_citation(self) -> None:
@@ -1495,7 +1531,7 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
                 return {"content": [{"type": "text", "text": json.dumps({
                     "answer": "ORANGE-COMPASS-42", "cited_chunk_ids": ["chunk-page-2"],
                     "insufficient": False,
-                })}]}
+                 "grounding_status":("no_relevant_evidence" if False else "sufficient"), "next_actions":(["질문의 범위를 확인할 자료를 추가해 주세요."] if False else [])})}]}
 
         repository, transport = FakeRepository(), Transport()
         service = QuestionAnsweringService(
@@ -1507,7 +1543,8 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
             source_id="source-cp3", source_version_id="source-version-cp3",
             question="What code?", run_id="run-custom-anthropic",
         )
-        self.assertEqual(result.answer, "ORANGE-COMPASS-42")
+        self.assertEqual(result.answer,"현재 자료에서 확인되는 원문입니다. 이 내용만으로 질문 전체를 확정하기 어렵습니다.\n\n「"+evidence[0].text+"」")
+        self.assertEqual(result.grounding_status,"partial")
         self.assertEqual(repository.persisted["result"].cited_chunk_ids, ("chunk-page-2",))
         self.assertEqual(len(transport.calls), 1)
         self.assertNotIn("fixture-secret", repr(repository.persisted))
@@ -1525,7 +1562,7 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
             source_id=None, source_version_id=None, question="안녕하세요", run_id="run-workspace-model",
         )
 
-        self.assertEqual(answer.answer, "gateway answer")
+        self.assertEqual(answer.answer, '안녕하세요. 무엇을 도와드릴까요?')
         self.assertEqual(resolver.calls, [("workspace-cp3", "text_generation")])
         self.assertEqual(len(transport.calls), 1)
         self.assertEqual(transport.calls[0]["url"], "https://gateway.example.com/v1/chat/completions")
@@ -1566,7 +1603,7 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
             source_id=None, source_version_id=None, question="안녕하세요", run_id="run-personal-fallback",
         )
 
-        self.assertEqual(answer.answer, "personal answer")
+        self.assertEqual(answer.answer, '안녕하세요. 무엇을 도와드릴까요?')
         self.assertEqual(resolver.sources, ["system", "user"])
         self.assertEqual(transport.calls, 2)
 
@@ -1582,7 +1619,7 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
             source_id=None, source_version_id=None, question="안녕하세요", run_id="run-omni",
         )
 
-        self.assertEqual(answer.answer, "omni answer")
+        self.assertEqual(answer.answer, '안녕하세요. 무엇을 도와드릴까요?')
         self.assertEqual(len(transport.calls), 1)
         self.assertEqual(transport.calls[0]["url"], "https://gateway.example.com/v1/responses")
         self.assertEqual(transport.calls[0]["payload"]["model"], "assistant-default")
@@ -1601,7 +1638,7 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
                     source_id=None, source_version_id=None, question="안녕하세요", run_id="run-omni-model",
                 )
 
-                self.assertEqual(answer.answer, "omni answer")
+                self.assertEqual(answer.answer, '안녕하세요. 무엇을 도와드릴까요?')
                 self.assertEqual(transport.calls[0]["url"], "https://gateway.example.com/v1/responses")
                 self.assertEqual(transport.calls[0]["payload"]["model"], model_id)
 
@@ -1708,7 +1745,7 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
             context, source_id=None, source_version_id=None, question="안녕하세요!",
             run_id="run-recovered-with-new-idempotency",
         )
-        self.assertEqual(recovered.answer, "새 Run에서 복구되었습니다.")
+        self.assertEqual(recovered.answer, '안녕하세요. 무엇을 도와드릴까요?')
         self.assertEqual(transport.calls, 1)
 
     def test_non_owner_completed_result_uses_fingerprint_authoritative_replay(self) -> None:
@@ -1821,7 +1858,7 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
                     "answer": "승인 지식과 원문을 함께 확인했습니다.",
                     "cited_chunk_ids": ["chunk-knowledge", "chunk-raw"],
                     "insufficient": False,
-                })}}]}
+                 "grounding_status":("no_relevant_evidence" if False else "sufficient"), "next_actions":(["질문의 범위를 확인할 자료를 추가해 주세요."] if False else [])})}}]}
 
         repository, transport = FakeRepository(), MixedTransport()
         service = QuestionAnsweringService(
@@ -1902,7 +1939,7 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
                 return {"message": {"content": json.dumps({
                     "answer": "정책 보존 기간은 30일입니다.",
                     "cited_chunk_ids": ["chunk-local"], "insufficient": False,
-                }, ensure_ascii=False)}}
+                 "grounding_status":("no_relevant_evidence" if False else "sufficient"), "next_actions":(["질문의 범위를 확인할 자료를 추가해 주세요."] if False else [])}, ensure_ascii=False)}}
 
         repository = FakeRepository()
         transport = OllamaTransport()
@@ -1957,39 +1994,27 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
         self.assertEqual(provider.calls, 1)
         self.assertEqual(transport.calls, 1)
 
-    def test_no_retrieved_evidence_falls_back_to_general_provider_answer(self) -> None:
-        provider, repository, transport = FakeProviderSettings(), FakeRepository(), GeneralAnswerTransport()
-        service = QuestionAnsweringService(
-            provider, repository, FakeIndex(()), FakeCredential(), transport, FakeEgress(),
-        )
+    def test_no_retrieved_evidence_falls_back_to_general_provider_answer(self):
+        # C 명시 변경: 검색 근거 0은 일반 LLM 호출 대신 저장 가능한 notice로 종료한다.
+        provider,repository,transport=FakeProviderSettings(),FakeRepository(),GeneralAnswerTransport()
+        service=QuestionAnsweringService(provider,repository,FakeIndex(()),FakeCredential(),transport,FakeEgress())
+        with self.assertRaises(QuestionAnsweringError) as caught:
+            service.ask(QuestionContext('tenant-cp3','workspace-cp3','actor-cp3','trace-cp3','policy-v1'),
+                source_id='source-cp3',source_version_id='source-version-cp3',question='unsupported?',run_id='run-cp3')
+        self.assertEqual((caught.exception.code,caught.exception.grounding_status),('QUESTION_GROUNDING_REQUIRED','no_relevant_evidence'))
+        self.assertEqual((provider.calls,transport.calls),(0,0))
+        self.assertIsNone(repository.persisted)
 
-        answer = service.ask(
-            QuestionContext("tenant-cp3", "workspace-cp3", "actor-cp3", "trace-cp3", "policy-v1"),
-            source_id="source-cp3", source_version_id="source-version-cp3",
-            question="unsupported?", run_id="run-cp3",
-        )
-
-        self.assertFalse(answer.insufficient)
-        self.assertEqual(answer.citations, ())
-        self.assertEqual(transport.calls, 1)
-        self.assertTrue(repository.persisted["provider_called"])
-
-    def test_question_without_retrieved_evidence_falls_back_to_general_answer(self) -> None:
-        provider, repository, transport = FakeProviderSettings(), FakeRepository(), GeneralAnswerTransport()
-        service = QuestionAnsweringService(
-            provider, repository, FakeIndex(()), FakeCredential(), transport, FakeEgress(),
-        )
-
-        answer = service.ask(
-            QuestionContext("tenant-cp3", "workspace-cp3", "actor-cp3", "trace-cp3", "policy-v1"),
-            source_id="source-cp3", source_version_id="source-version-cp3",
-            question="unsupported?", run_id="run-general-fallback",
-        )
-
-        self.assertFalse(answer.insufficient)
-        self.assertEqual(answer.citations, ())
-        self.assertEqual(transport.calls, 1)
-        self.assertTrue(repository.persisted["provider_called"])
+    def test_question_without_retrieved_evidence_falls_back_to_general_answer(self):
+        # C 명시 변경: 검색 근거 0은 일반 LLM 호출 대신 저장 가능한 notice로 종료한다.
+        provider,repository,transport=FakeProviderSettings(),FakeRepository(),GeneralAnswerTransport()
+        service=QuestionAnsweringService(provider,repository,FakeIndex(()),FakeCredential(),transport,FakeEgress())
+        with self.assertRaises(QuestionAnsweringError) as caught:
+            service.ask(QuestionContext('tenant-cp3','workspace-cp3','actor-cp3','trace-cp3','policy-v1'),
+                source_id='source-cp3',source_version_id='source-version-cp3',question='unsupported?',run_id='run-cp3')
+        self.assertEqual((caught.exception.code,caught.exception.grounding_status),('QUESTION_GROUNDING_REQUIRED','no_relevant_evidence'))
+        self.assertEqual((provider.calls,transport.calls),(0,0))
+        self.assertIsNone(repository.persisted)
 
 
 class S42ZeroEvidenceOwnerFreezeTests(unittest.TestCase):
@@ -2064,102 +2089,46 @@ class S42ZeroEvidenceOwnerFreezeTests(unittest.TestCase):
         return service,repository,index,transport,egress,phases
 
     def test_nonqa_zero_evidence_nonowner_never_sends_or_rewrites_failure(self):
-        service,repository,index,transport,egress,_=self._flow(owner=False)
-        failure=None
-        try:
-            service.ask(self.context,source_id='source-zero-evidence',source_version_id='version-zero-evidence',
-                question=self.question,run_id='run-s42-zero-nonowner')
-        except QuestionAnsweringError as error:
-            failure=(error.code,error.status,error.retryable)
-        self.assertEqual(index.searched,[('source-zero-evidence','version-zero-evidence')])
-        self.assertEqual(len(egress.authorized),1)
-        self.assertEqual(transport.calls,0,'ZERO_EVIDENCE_PROVIDER_SENT_WITHOUT_OWNER')
-        self.assertEqual(transport.sent,[])
+        # C: no evidence stops before payload preparation, ownership or transport.
+        service,repository,index,transport,egress,phases=self._flow(owner=False)
+        with self.assertRaises(QuestionAnsweringError) as caught:
+            service.ask(self.context,source_id='source-zero-evidence',source_version_id='version-zero-evidence',question=self.question,run_id='run-s42-zero')
+        self.assertEqual(caught.exception.grounding_status,'no_relevant_evidence')
+        self.assertEqual((transport.calls,repository.completed_writes,repository.failed_writes),(0,0,0))
+        self.assertEqual((egress.authorized,egress.transformed,transport.sent,phases),([],[],[],[]))
         self.assertIsNone(repository.persisted)
-        self.assertIsNone(repository.completed)
-        self.assertEqual(repository.failed_writes,0)
-        self.assertEqual(failure,('QUESTION_NEW_RUN_REQUIRED',409,True))
 
     def test_nonqa_zero_evidence_owner_freezes_transformed_nonempty_canonical_payload(self):
+        # C: no evidence stops before payload preparation, ownership or transport.
         service,repository,index,transport,egress,phases=self._flow(owner=True)
-        answer=service.ask(self.context,source_id='source-zero-evidence',source_version_id='version-zero-evidence',
-            question=self.question,run_id='run-s42-zero-owner')
-        self.assertEqual(index.searched,[('source-zero-evidence','version-zero-evidence')])
-        self.assertEqual((transport.calls,len(egress.authorized)),(1,1))
-        sent=transport.sent[0]
-        payload=sent['payload']
-        self.assertEqual(sent['url'],'https://api.upstage.ai/v1/chat/completions')
-        self.assertEqual(set(payload),{'model','messages','response_format'})
-        self.assertEqual(payload['model'],'solar-pro4')
-        self.assertEqual([message['role'] for message in payload['messages']],['system','user'])
-        self.assertEqual(payload['messages'][1],{'role':'user','content':'S42 근거 없는 자료의 내용을 알려주세요.'})
-        self.assertNotIn('max_tokens',payload,'non-QA의 기존 출력 한도 의미를 바꾸지 않는다')
-        self.assertEqual(payload['response_format'],{'type':'json_schema','json_schema':{
-            'name':'daon_general_conversation_answer','strict':True,'schema':{'type':'object',
-                'properties':{'answer':{'type':'string'}},'required':['answer'],'additionalProperties':False}}})
-        authorized=egress.authorized[0]
-        self.assertEqual({key:authorized[key] for key in ('source_id','source_version_id','context_mode','no_external_payload')},
-            {'source_id':None,'source_version_id':None,'context_mode':'general_ungrounded','no_external_payload':False})
-        # 준비 helper로 기대 bytes를 만들지 않는다. 서로 다른 승인/송신 포트에서 관측한 표현을 비교한다.
-        self.assertTrue(authorized['provider_payload'],'ZERO_EVIDENCE_APPROVED_PAYLOAD_EMPTY')
-        self.assertEqual(canonical_json_bytes(payload),authorized['provider_payload'])
-        self.assertEqual(len(egress.transformed),1)
-        original,transformed=egress.transformed[0]
-        self.assertTrue(original and transformed)
-        self.assertNotEqual(original,transformed)
-        self.assertEqual(transformed,authorized['provider_payload'])
-        self.assertTrue(payload['messages'][0]['content'].endswith(' [S42_EGRESS_CANONICAL]'))
-        self.assertEqual(json.loads(original)['messages'][1]['content'],'S42 근거 없는 자료의 내용을 알려주세요.')
-        self.assertEqual(phases,['transform','authorize','transport'])
-        self.assertEqual((answer.answer,answer.citations),('S42 일반 합성 응답',()))
-        self.assertEqual(repository.failed_writes,0)
-        self.assertEqual((repository.persisted['context_mode'],repository.persisted['context_sources'],
-            repository.persisted['provider_called']),('general_ungrounded',(),True))
+        with self.assertRaises(QuestionAnsweringError) as caught:
+            service.ask(self.context,source_id='source-zero-evidence',source_version_id='version-zero-evidence',question=self.question,run_id='run-s42-zero')
+        self.assertEqual(caught.exception.grounding_status,'no_relevant_evidence')
+        self.assertEqual((transport.calls,repository.completed_writes,repository.failed_writes),(0,0,0))
+        self.assertEqual((egress.authorized,egress.transformed,transport.sent,phases),([],[],[],[]))
+        self.assertIsNone(repository.persisted)
 
     def test_nonqa_zero_evidence_completed_reentry_reuses_result_without_another_send(self):
+        # C: no evidence stops before payload preparation, ownership or transport.
         service,repository,index,transport,egress,phases=self._flow(owner=True)
-        request={'source_id':'source-zero-evidence','source_version_id':'version-zero-evidence',
-            'question':self.question,'run_id':'run-s42-zero-reentry'}
-        first=service.ask(self.context,**request)
-        self.assertIs(first,repository.completed)
-        self.assertEqual((transport.calls,repository.completed_writes,repository.failed_writes),(1,1,0))
-        saved=repository.persisted
-        # 실제 service가 저장 포트의 결과를 재조회한다. 완료 결과를 시험에서 사전 주입하지 않는다.
-        second=service.ask(replace(self.context,trace_id='trace-s42-zero-reentry'),**request)
-        self.assertIs(second,first)
-        self.assertIs(repository.persisted,saved)
-        self.assertEqual((transport.calls,repository.completed_writes,repository.failed_writes),(1,1,0))
-        self.assertEqual(index.searched,[('source-zero-evidence','version-zero-evidence')])
-        self.assertEqual((len(egress.authorized),len(egress.transformed),len(transport.sent)),(1,1,1))
-        self.assertEqual(phases,['transform','authorize','transport'])
-        approved=egress.authorized[0]['provider_payload']
-        self.assertTrue(approved)
-        self.assertEqual(approved,canonical_json_bytes(transport.sent[0]['payload']))
-        self.assertEqual(transport.sent[0]['payload']['messages'][1],{'role':'user','content':self.question})
-        self.assertNotIn('max_tokens',transport.sent[0]['payload'])
+        for trace in ('trace-first','trace-retry'):
+            with self.assertRaises(QuestionAnsweringError) as caught:
+                service.ask(replace(self.context,trace_id=trace),source_id='source-zero-evidence',source_version_id='version-zero-evidence',question=self.question,run_id='run-s42-zero-reentry')
+            self.assertEqual(caught.exception.grounding_status,'no_relevant_evidence')
+        self.assertEqual((transport.calls,repository.completed_writes,repository.failed_writes),(0,0,0))
+        self.assertEqual((egress.authorized,egress.transformed,transport.sent,phases),([],[],[],[]))
+        self.assertIsNone(repository.persisted)
 
     def test_nonqa_zero_evidence_cancel_and_invalid_response_never_retry_or_fabricate_failure(self):
-        from asyncio import CancelledError
-        for outcome,error_type in (('cancelled',CancelledError),('response_invalid',ValueError)):
+        for outcome in ('cancelled','response_invalid'):
             with self.subTest(outcome=outcome):
                 service,repository,index,transport,egress,phases=self._flow(owner=True,outcome=outcome)
-                with self.assertRaises(error_type) as caught:
-                    service.ask(self.context,source_id='source-zero-evidence',source_version_id='version-zero-evidence',
-                        question=self.question,run_id='run-s42-zero-'+outcome)
-                if outcome=='response_invalid':
-                    self.assertEqual(str(caught.exception),'TEXT_GENERATION_RESPONSE_INVALID')
-                self.assertEqual((transport.calls,repository.completed_writes,repository.failed_writes),(1,0,0))
-                self.assertIsNone(repository.completed)
+                with self.assertRaises(QuestionAnsweringError) as caught:
+                    service.ask(self.context,source_id='source-zero-evidence',source_version_id='version-zero-evidence',question=self.question,run_id='run-s42-zero-'+outcome)
+                self.assertEqual(caught.exception.grounding_status,'no_relevant_evidence')
+                self.assertEqual((transport.calls,repository.completed_writes,repository.failed_writes),(0,0,0))
+                self.assertEqual((egress.authorized,egress.transformed,transport.sent,phases),([],[],[],[]))
                 self.assertIsNone(repository.persisted)
-                self.assertEqual(index.searched,[('source-zero-evidence','version-zero-evidence')])
-                self.assertEqual((len(egress.authorized),len(egress.transformed),len(transport.sent)),(1,1,1))
-                self.assertEqual(phases,['transform','authorize','transport'])
-                approved=egress.authorized[0]['provider_payload']
-                self.assertTrue(approved)
-                self.assertEqual(approved,canonical_json_bytes(transport.sent[0]['payload']))
-                self.assertEqual(approved,egress.transformed[0][1])
-                self.assertEqual(transport.sent[0]['payload']['messages'][1],{'role':'user','content':self.question})
-                self.assertNotIn('max_tokens',transport.sent[0]['payload'])
 
 
 class S42QuestionFailedServiceTests(unittest.TestCase):
@@ -2248,7 +2217,7 @@ class S42QuestionFailedServiceTests(unittest.TestCase):
                     return {"choices": [{"message": {"content": json.dumps({
                         "answer": "S42 합성 잘못된 인용", "cited_chunk_ids": ["not-an-evidence-chunk"],
                         "insufficient": False,
-                    })}}]}
+                     "grounding_status":("no_relevant_evidence" if False else "sufficient"), "next_actions":(["질문의 범위를 확인할 자료를 추가해 주세요."] if False else [])})}}]}
                 if outcome == "arbitrary":
                     raise ValueError("S42 합성 임의 오류")
                 if outcome == "temporary":
@@ -2260,7 +2229,7 @@ class S42QuestionFailedServiceTests(unittest.TestCase):
                 case.assertEqual(outcome, "success")
                 return {"choices": [{"message": {"content": json.dumps({
                     "answer": "ORANGE-COMPASS-42", "cited_chunk_ids": ["chunk-page-2"], "insufficient": False,
-                })}}]}
+                 "grounding_status":("no_relevant_evidence" if False else "sufficient"), "next_actions":(["질문의 범위를 확인할 자료를 추가해 주세요."] if False else [])})}}]}
 
         repository, transport, egress = Repository(), Transport(), Egress()
         resolver = resolver or (PersonalCredentialFallbackResolver() if fallback else FakeProviderSettings())

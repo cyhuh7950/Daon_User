@@ -21,8 +21,36 @@ _EVENTS = {
     'awaiting_authorization': '추가 인증을 기다리고 있습니다.',
     'failed': '질문을 완료하지 못했습니다.',
     'uncertain': '처리 결과를 확인해 주세요.',
+    'no_knowledge': '질문을 확인할 자료가 선택되지 않았습니다. 자료를 선택한 뒤 다시 질문해 주세요.',
+    'no_relevant_evidence': '현재 선택한 자료에서 질문을 확인할 근거를 찾지 못했습니다. 자료의 처리 상태와 질문 범위를 확인해 주세요.',
 }
 _FP = re.compile(r'sha256:[0-9a-f]{64}')
+
+
+def grounding_notice_content(status):
+    if status not in {"no_knowledge", "no_relevant_evidence"}:
+        raise NotebookError("NOTEBOOK_TURN_INVALID")
+    return _EVENTS[status], ("질문의 대상·기간·조건을 확인할 수 있는 자료를 선택해 주세요.",)
+
+
+_DISPOSITIONS = frozenset({"execution_prepared","no_knowledge","no_relevant_evidence"})
+
+
+def question_grounding_disposition(connection,context,notebook_id,*,run_id,request_fingerprint):
+    """Exact read; caller must own the shared request lock before using as a claim."""
+    turn_id=_turn_id(context,notebook_id,run_id)
+    row=connection.execute('SELECT m.canonical_json,m.canonical_text,m.digest_sha256,m.created_by,m.conversation_id FROM messages m WHERE m.tenant_id=%s AND m.workspace_id=%s AND m.record_id=%s',
+        (context.tenant_id,context.workspace_id,turn_id+'-grounding')).fetchone()
+    if row is None:
+        return None
+    payload,text,digest,actor,parent=row
+    disposition=payload.get('disposition')
+    expected={'kind':'notebook_grounding_disposition','turn_id':turn_id,'run_id':run_id,
+        'request_fingerprint':request_fingerprint,'disposition':disposition}
+    if (actor!=context.actor_id or parent!=turn_id or disposition not in _DISPOSITIONS or payload!=expected
+        or text!=_canonical(payload) or digest!=hashlib.sha256(text.encode('utf-8')).hexdigest()):
+        raise NotebookError('NOTEBOOK_TURN_CONFLICT',409)
+    return disposition
 
 
 def _canonical(value):
@@ -174,6 +202,57 @@ class PostgresNotebookConversationRepository:
         except CloudDatabaseError:
             raise NotebookError('NOTEBOOK_UNAVAILABLE', 503) from None
 
+    def load_question_turn_notice(self, context, notebook_id, *, run_id, request_fingerprint):
+        turn_id = _turn_id(context,notebook_id,run_id)
+        try:
+            with self.store._transaction(self.owner._context(context)) as connection:
+                self._guard(connection,context,notebook_id)
+                parent = connection.execute('SELECT canonical_json,created_by FROM conversations WHERE tenant_id=%s AND workspace_id=%s AND record_id=%s',
+                    (context.tenant_id,context.workspace_id,turn_id)).fetchone()
+                if parent is None or parent[1]!=context.actor_id or parent[0].get('notebook_id')!=notebook_id or parent[0].get('run_id')!=run_id or parent[0].get('request_fingerprint')!=request_fingerprint:
+                    raise NotebookError('NOTEBOOK_TURN_CONFLICT',409)
+                status=question_grounding_disposition(connection,context,notebook_id,run_id=run_id,request_fingerprint=request_fingerprint)
+                return status if status in {'no_knowledge','no_relevant_evidence'} else None
+        except CloudDatabaseError:
+            raise NotebookError('NOTEBOOK_UNAVAILABLE',503) from None
+
+    def claim_question_grounding(self,context,notebook_id,*,run_id,request_fingerprint,disposition,now):
+        if disposition not in _DISPOSITIONS:
+            raise NotebookError('NOTEBOOK_TURN_INVALID')
+        turn_id=_turn_id(context,notebook_id,run_id)
+        try:
+            with self.store._transaction(self.owner._context(context)) as connection:
+                # Same order as Run admission: request lock before Notebook/source locks.
+                connection.execute('SELECT pg_advisory_xact_lock(hashtextextended(%s,0))',
+                    ('question-egress|'+context.tenant_id+'|'+context.workspace_id+'|'+run_id,))
+                self._guard(connection,context,notebook_id)
+                parent=connection.execute('SELECT canonical_json,created_by FROM conversations WHERE tenant_id=%s AND workspace_id=%s AND record_id=%s',
+                    (context.tenant_id,context.workspace_id,turn_id)).fetchone()
+                if parent is None or parent[1]!=context.actor_id or parent[0].get('notebook_id')!=notebook_id or parent[0].get('run_id')!=run_id or parent[0].get('request_fingerprint')!=request_fingerprint:
+                    raise NotebookError('NOTEBOOK_TURN_CONFLICT',409)
+                prior=question_grounding_disposition(connection,context,notebook_id,run_id=run_id,request_fingerprint=request_fingerprint)
+                if prior is not None:
+                    if prior=='execution_prepared' and disposition!='execution_prepared':
+                        raise NotebookError('NOTEBOOK_TURN_CONFLICT',409)
+                    return prior
+                # A legacy/current real Run must never be overlaid with a notice.
+                actual=connection.execute('SELECT canonical_json FROM runs WHERE tenant_id=%s AND workspace_id=%s AND record_id=%s',
+                    (context.tenant_id,context.workspace_id,run_id)).fetchone()
+                if actual is not None and disposition!='execution_prepared':
+                    raise NotebookError('NOTEBOOK_TURN_CONFLICT',409)
+                payload={'kind':'notebook_grounding_disposition','turn_id':turn_id,'run_id':run_id,
+                    'request_fingerprint':request_fingerprint,'disposition':disposition}
+                self._insert_exact(connection,context,'messages',turn_id+'-grounding',payload,now=now,conversation_id=turn_id)
+                if disposition!='execution_prepared':
+                    event={'kind':'notebook_question_event','turn_id':turn_id,'run_id':run_id,
+                        'request_fingerprint':request_fingerprint,'event_kind':disposition,
+                        'text':_EVENTS[disposition],'safe_error_code':None}
+                    event_id=turn_id+'-'+hashlib.sha256(_canonical(event).encode()).hexdigest()[:16]
+                    self._insert_exact(connection,context,'messages',event_id,event,now=now,conversation_id=turn_id)
+                return disposition
+        except CloudDatabaseError:
+            raise NotebookError('NOTEBOOK_UNAVAILABLE',503) from None
+
     def append_question_turn_event(self, context, notebook_id, *, run_id, request_fingerprint, event_kind, text=None, safe_error_code=None, now):
         if event_kind not in _EVENTS or (text is not None and text != _EVENTS[event_kind]):
             raise NotebookError('NOTEBOOK_TURN_INVALID')
@@ -232,7 +311,12 @@ class PostgresNotebookConversationRepository:
         if (not isinstance(payload.get('answer'),str) or not 1<=len(payload['answer'])<=8000
                 or type(payload.get('insufficient')) is not bool or len(citations)>10):
             raise NotebookError('NOTEBOOK_UNAVAILABLE',503)
-        return {'kind':'answer','text':payload['answer'],'insufficient':payload['insufficient'],'next_actions':[],'citations':citations}
+        from .question_answering import stored_grounding_metadata
+        try:
+            _, actions = stored_grounding_metadata(payload,citation_count=len(citations))
+        except ValueError:
+            raise NotebookError('NOTEBOOK_UNAVAILABLE',503) from None
+        return {'kind':'answer','text':payload['answer'],'insufficient':payload['insufficient'],'next_actions':list(actions),'citations':citations}
 
     def list_conversation_turns(self, context, notebook_id, *, limit=50, before=None):
         if type(limit) is not int or not 1 <= limit <= 100:
@@ -291,7 +375,7 @@ class PostgresNotebookConversationRepository:
                         question = admission['question']
                         event = connection.execute('SELECT canonical_json FROM messages WHERE tenant_id=%s AND workspace_id=%s '
                             "AND conversation_id=%s AND created_by=%s AND canonical_json->>'kind'='notebook_question_event' "
-                            "ORDER BY created_at DESC,CASE canonical_json->>'event_kind' WHEN 'uncertain' THEN 3 WHEN 'failed' THEN 2 ELSE 1 END DESC,record_id DESC LIMIT 1",
+                            "ORDER BY created_at DESC,CASE canonical_json->>'event_kind' WHEN 'no_knowledge' THEN 4 WHEN 'no_relevant_evidence' THEN 4 WHEN 'uncertain' THEN 3 WHEN 'failed' THEN 2 ELSE 1 END DESC,record_id DESC LIMIT 1",
                             (context.tenant_id,context.workspace_id,turn_id,context.actor_id)).fetchone()
                         state = 'pending'
                         if event is not None:
@@ -335,7 +419,7 @@ class PostgresNotebookConversationRepository:
                             state = 'unavailable'
                     if response is None and state != 'pending':
                         text = '답변에 현재 접근할 수 없습니다.' if state=='unavailable' else _EVENTS[state]
-                        response = {'kind':'system','text':text,'insufficient':True,'next_actions':[],'citations':[]}
+                        response = {'kind':'system','text':text,'insufficient':True,'next_actions':list(grounding_notice_content(state)[1]) if state in {'no_knowledge','no_relevant_evidence'} else [],'citations':[]}
                     items.append({'turn_id':turn_id,'question':question,'response':response,'state':state,
                                   'submitted_at':_time(submitted_at).isoformat().replace('+00:00','Z'),'model':model,
                                   'client_request_id':admission.get('client_request_id') if admission is not None else None})

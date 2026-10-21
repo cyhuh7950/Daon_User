@@ -49,6 +49,12 @@ class Ledger:
         self.rows={}; self.bindings={}; self.calls=[]; self.fail_binding=False
     def execute(self, sql, params=()):
         self.calls.append((sql,params))
+        if sql.startswith('SELECT pg_advisory_xact_lock'):
+            return Rows()
+        if sql.startswith('SELECT canonical_json FROM runs'):
+            return Rows()
+        if sql.startswith('SELECT m.canonical_json,m.canonical_text,m.digest_sha256,m.created_by,m.conversation_id FROM messages'):
+            row=self.rows.get(('messages',*params)); return Rows([(row[0],row[1],row[2],row[3],row[7])]) if row else Rows()
         if sql.startswith('INSERT INTO conversations') or sql.startswith('INSERT INTO messages'):
             table=sql.split()[2]; key=(table,*params[:3])
             self.rows.setdefault(key, (params[6].obj,params[7],params[8],params[9],params[3],params[4],params[5],*params[12:]))
@@ -126,6 +132,48 @@ def test_canon_corruption_and_event_parent_scope_rejected(ledger_repo):
     row=list(ledger.rows[key]); row[2]='f'*64; ledger.rows[key]=tuple(row)
     with pytest.raises(NotebookError,match='NOTEBOOK_TURN_CONFLICT'):
         admit(repo)
+
+
+def test_c_grounding_disposition_exact_terminal_and_prepared_are_exclusive(ledger_repo):
+    ledger,repo,guards=ledger_repo
+    turn=admit(repo)
+    assert repo.claim_question_grounding(CTX,'notebook-b',run_id='run-b',request_fingerprint=FP,disposition='no_knowledge',now=NOW)=='no_knowledge'
+    before=deepcopy(ledger.rows)
+    assert repo.claim_question_grounding(CTX,'notebook-b',run_id='run-b',request_fingerprint=FP,disposition='execution_prepared',now=NOW)=='no_knowledge'
+    assert ledger.rows==before
+    assert any(value[0].get('event_kind')=='no_knowledge' for value in ledger.rows.values())
+    admit(repo,run_id='run-prepared')
+    assert repo.claim_question_grounding(CTX,'notebook-b',run_id='run-prepared',request_fingerprint=FP,disposition='execution_prepared',now=NOW)=='execution_prepared'
+    with pytest.raises(NotebookError,match='NOTEBOOK_TURN_CONFLICT'):
+        repo.claim_question_grounding(CTX,'notebook-b',run_id='run-prepared',request_fingerprint=FP,disposition='no_relevant_evidence',now=NOW)
+    with pytest.raises(NotebookError,match='NOTEBOOK_TURN_CONFLICT'):
+        repo.claim_question_grounding(CTX,'notebook-b',run_id='run-b',request_fingerprint='sha256:'+'b'*64,disposition='no_knowledge',now=NOW)
+
+
+def test_c_notice_marker_event_rollback_current_guard_and_corruption(ledger_repo):
+    ledger,repo,_=ledger_repo
+    turn=admit(repo)
+    original=ledger.execute
+    def fail_event(sql,params=()):
+        if sql.startswith('INSERT INTO messages') and params[6].obj.get('kind')=='notebook_question_event':
+            raise NotebookError('NOTEBOOK_UNAVAILABLE',503)
+        return original(sql,params)
+    ledger.execute=fail_event
+    before=deepcopy(ledger.rows)
+    with pytest.raises(NotebookError,match='NOTEBOOK_UNAVAILABLE'):
+        repo.claim_question_grounding(CTX,'notebook-b',run_id='run-b',request_fingerprint=FP,disposition='no_knowledge',now=NOW)
+    assert ledger.rows==before
+    ledger.execute=original
+    ledger.denied=True
+    with pytest.raises(NotebookError,match='NOTEBOOK_NOT_FOUND'):
+        repo.claim_question_grounding(CTX,'notebook-b',run_id='run-b',request_fingerprint=FP,disposition='no_knowledge',now=NOW)
+    assert ledger.rows==before
+    ledger.denied=False
+    repo.claim_question_grounding(CTX,'notebook-b',run_id='run-b',request_fingerprint=FP,disposition='no_knowledge',now=NOW)
+    key=('messages',CTX.tenant_id,CTX.workspace_id,turn+'-grounding')
+    row=list(ledger.rows[key]);row[2]='f'*64;ledger.rows[key]=tuple(row)
+    with pytest.raises(NotebookError,match='NOTEBOOK_TURN_CONFLICT'):
+        repo.load_question_turn_notice(CTX,'notebook-b',run_id='run-b',request_fingerprint=FP)
 
 
 def test_paging_validates_limit_before_sql(ledger_repo):

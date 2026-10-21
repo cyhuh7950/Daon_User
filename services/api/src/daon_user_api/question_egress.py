@@ -390,6 +390,16 @@ class PostgresQuestionEgressAuthorizer:
                     "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",
                     ("question-egress|" + context.tenant_id + "|" + context.workspace_id + "|" + run_id,),
                 )
+                if context.notebook_id is not None:
+                    from .notebook_conversation_postgres import question_grounding_disposition
+                    from .notebook import NotebookError
+                    try:
+                        disposition=question_grounding_disposition(connection,context,context.notebook_id,
+                            run_id=run_id,request_fingerprint=request_fingerprint)
+                    except NotebookError:
+                        raise QuestionAnsweringError("QUESTION_PREPARATION_REQUIRED",status=409) from None
+                    if disposition!="execution_prepared":
+                        raise QuestionAnsweringError("QUESTION_PREPARATION_REQUIRED",status=409)
                 existing = connection.execute(
                     "SELECT canonical_json FROM runs WHERE record_id=%s",
                     (run_id,),

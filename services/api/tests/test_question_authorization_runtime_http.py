@@ -42,6 +42,10 @@ class QuestionBoundary:
             raise QuestionAnsweringError("QUESTION_NEW_RUN_REQUIRED", status=409)
         return saved[1] if saved else None
 
+    def preflight_grounding(self,context,**values):
+        # Retrieval semantics are covered by the actual service tests, not this auth boundary.
+        return None
+
     def prepare_authorization(self, context, **kwargs):
         return SimpleNamespace(selection=self.selection, provider_payload=json.dumps({
             "question": kwargs["question"], "notebook": context.notebook_id,

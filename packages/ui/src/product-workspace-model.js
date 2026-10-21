@@ -79,6 +79,28 @@ export function assertProductWorkspaceAdapter(adapter) {
   return adapter;
 }
 
+export function isQuestionSystemNotice(value) {
+  const keys=["kind","turn_id","answer","grounding_status","insufficient","citations","next_actions"];
+  return value!==null&&typeof value==="object"&&!Array.isArray(value)
+    && Object.keys(value).length===keys.length&&keys.every(key=>Object.hasOwn(value,key))
+    && value.kind==="system_notice"&&typeof value.turn_id==="string"&&/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value.turn_id)
+    && typeof value.answer==="string"&&value.answer.trim().length>=1&&value.answer.length<=8000
+    && ["no_knowledge","no_relevant_evidence"].includes(value.grounding_status)&&value.insufficient===true
+    && Array.isArray(value.citations)&&value.citations.length===0
+    && Array.isArray(value.next_actions)&&value.next_actions.length>=1&&value.next_actions.length<=4
+    && value.next_actions.every(item=>typeof item==="string"&&item.trim().length>=1&&item.length<=120);
+}
+
+export function isQuestionGroundingMetadata(value) {
+  if (!Array.isArray(value?.citations)||!Array.isArray(value?.next_actions)) return false;
+  const count=value.citations.length, actions=value.next_actions;
+  if(actions.length>4||!actions.every(item=>typeof item==="string"&&item.trim().length>=1&&item.length<=120))return false;
+  return value.grounding_status==="sufficient"&&value.insufficient===false&&count>=1&&actions.length===0&&value.grounding==="source_backed"
+    ||value.grounding_status==="partial"&&value.insufficient===false&&count>=1&&actions.length>=1&&value.grounding==="source_backed"
+    ||value.grounding_status==="no_relevant_evidence"&&value.insufficient===true&&count===0&&actions.length>=1&&value.grounding==="source_evidence_unavailable"
+    ||value.grounding_status==="conversational"&&value.insufficient===false&&count===0&&actions.length===0&&value.grounding==="ungrounded";
+}
+
 export function canCreateGroundedReport(state) {
   return state?.status === "ready"
     && state.answer?.insufficient === false
@@ -175,7 +197,7 @@ export function mergeNotebookConversationTurns(current, incoming) {
   const exact=(value,names)=>value&&typeof value==='object'&&!Array.isArray(value)
     && Object.keys(value).length===names.length&&names.every(key=>Object.hasOwn(value,key));
   const valid=turn=>exact(turn,keys)&&safeId(turn.turn_id)&&typeof turn.question==='string'&&turn.question.length>=1&&turn.question.length<=32768
-    && ['pending','awaiting_authorization','completed','failed','uncertain','unavailable'].includes(turn.state)
+    && ['pending','awaiting_authorization','completed','failed','uncertain','unavailable','no_knowledge','no_relevant_evidence'].includes(turn.state)
     && typeof turn.submitted_at==='string'&&/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/u.test(turn.submitted_at)&&!Number.isNaN(Date.parse(turn.submitted_at))
     && (turn.client_request_id===null||(safeId(turn.client_request_id)&&turn.client_request_id.length>=8))
     && (turn.model===null||(exact(turn.model,['provider_code','model_id'])&&Object.values(turn.model).every(v=>typeof v==='string'&&v.length>=1&&v.length<=255&&!/[\x00-\x20\x7f]/u.test(v))))
@@ -194,6 +216,9 @@ export function mergeNotebookConversationTurns(current, incoming) {
         && (c.locator.kind!=='docx_block'||validateConversationDocx(c.locator.value)!==null)
         && (c.locator.kind!=='pptx_block'||validateConversationPptx(c.locator.value)!==null)
         && (c.locator.kind!=='audio_segment'||validateConversationAudio(c.locator.value)!==null)))
+    && (!['no_knowledge','no_relevant_evidence'].includes(turn.state)
+      || turn.response?.next_actions.length>=1&&turn.response.next_actions.length<=4
+        &&turn.response.next_actions.every(item=>item.trim().length>=1&&item.length<=120))
     && (turn.state==='completed'?turn.response?.kind==='answer'
       :turn.state==='pending'?turn.response===null
       :turn.response?.kind==='system'&&turn.response.insufficient===true&&turn.response.citations.length===0)

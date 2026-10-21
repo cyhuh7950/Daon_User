@@ -222,6 +222,48 @@ function validateResponse(document, response, operationId, status) {
   }
 }
 
+function validateQuestionGroundingContract(document) {
+  const same=(a,b)=>JSON.stringify(canonicalizeDocument(a))===JSON.stringify(canonicalizeDocument(b));
+  const check=ok=>{if(!ok)fail("Question grounding contract mismatch");};
+  const ref=name=>({$ref:`#/components/schemas/${name}`});
+  const object=properties=>({type:"object",additionalProperties:false,required:Object.keys(properties),properties});
+  const nullable=value=>({oneOf:[{type:"null"},value]});
+  const base={run_id:ref("OpaqueId"),run_result_id:ref("OpaqueId"),answer:{type:"string",minLength:1,maxLength:8000},
+    insufficient:{type:"boolean"},citations:{type:"array",maxItems:10,items:ref("GroundedCitation")}};
+  const actions={type:"array",maxItems:4,items:{type:"string",minLength:1,maxLength:120}};
+  const metadata={mode:{type:"string",enum:["work_support","explicit_source_lookup","source_backed_action","approved_web_research"]},
+    grounding:{type:"string",enum:["source_backed","ungrounded","source_evidence_unavailable","web_backed"]},
+    source_scope_summary:nullable({type:"string",maxLength:1000,pattern:"^[^\\u0000-\\u001f\\u007f]*$"}),
+    mismatch:nullable(object({code:{type:"string",const:"SOURCE_SCOPE_MISMATCH"},detail:{type:"string",minLength:1,maxLength:1000}})),next_actions:actions};
+  const enriched=object({...base,...metadata});
+  enriched.allOf=[{if:{properties:{grounding:{const:"source_evidence_unavailable"}}},then:{properties:{mismatch:{type:"object"},next_actions:{minItems:1}}}}];
+  const fresh=object({...base,...metadata,grounding_status:{type:"string",enum:["conversational","sufficient","partial","no_relevant_evidence"]}});
+  fresh.allOf=[
+    ["conversational",false,{maxItems:0},{maxItems:0},"ungrounded"],
+    ["sufficient",false,{minItems:1},{maxItems:0},"source_backed"],
+    ["partial",false,{minItems:1},{minItems:1},"source_backed"],
+    ["no_relevant_evidence",true,{maxItems:0},{minItems:1},"source_evidence_unavailable"],
+  ].map(([status,insufficient,citations,next_actions,grounding])=>({if:{properties:{grounding_status:{const:status}}},
+    then:{properties:{insufficient:{const:insufficient},citations,next_actions,grounding:{const:grounding}}}}));
+  const notice=object({kind:{type:"string",const:"system_notice"},
+    turn_id:{type:"string",minLength:1,maxLength:128,pattern:"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+    answer:{type:"string",minLength:1,maxLength:8000},grounding_status:{type:"string",enum:["no_knowledge","no_relevant_evidence"]},
+    insufficient:{type:"boolean",const:true},citations:{type:"array",maxItems:0,items:ref("GroundedCitation")},next_actions:{...actions,minItems:1}});
+  const envelope=object({data:ref("QuestionSystemNotice"),meta:object({trace_id:ref("OpaqueId"),workspace_id:ref("OpaqueId")})});
+  const expected={GroundedAnswer:object(base),GroundedAnswerWithMetadata:enriched,GroundedAnswerWithGrounding:fresh,
+    QuestionSystemNotice:notice,QuestionSystemNoticeEnvelope:envelope};
+  for(const [name,schema]of Object.entries(expected))check(same(document.components?.schemas?.[name],schema));
+  check(same(document.components?.schemas?.GroundedAnswerEnvelope?.properties?.data,
+    {oneOf:["GroundedAnswer","GroundedAnswerWithMetadata","GroundedAnswerWithGrounding","QuestionSystemNotice"].map(ref)}));
+  const answer=document.paths?.["/api/v1/workspaces/{id}/questions"]?.post;
+  check(same(answer?.responses?.["200"]?.content?.["application/json"]?.schema,ref("GroundedAnswerEnvelope")));
+  const operation=document.paths?.["/api/v1/workspaces/{id}/questions/authorization"]?.post;
+  check(same(operation?.responses?.["200"]?.content?.["application/json"]?.schema,ref("QuestionSystemNoticeEnvelope")));
+  check(same(operation.responses["200"].headers?.ETag,{$ref:"#/components/headers/ETag"}));
+  check(same(operation.responses["200"].headers?.["Cache-Control"],{schema:{type:"string",enum:["no-store"]}}));
+  check(same(operation.responses?.["201"]?.content?.["application/json"]?.schema,ref("GroundedQuestionAuthorizationEnvelope")));
+}
+
 function validateNotebookConversationContract(document) {
   const same=(a,b)=>JSON.stringify(canonicalizeDocument(a))===JSON.stringify(canonicalizeDocument(b));
   const check=(ok)=>{if(!ok)fail("Notebook conversation contract mismatch");};
@@ -235,14 +277,15 @@ function validateNotebookConversationContract(document) {
     insufficient:{type:"boolean"},next_actions:{type:"array",maxItems:8,items:{type:"string",maxLength:255}},
     citations:{type:"array",maxItems:10,items:ref("GroundedCitation")}});
   const turn=object({turn_id:id,question:{type:"string",minLength:1,maxLength:32768},response:nullable(ref("NotebookConversationResponse")),
-    state:{type:"string",enum:["pending","awaiting_authorization","completed","failed","uncertain","unavailable"]},
+    state:{type:"string",enum:["pending","awaiting_authorization","completed","failed","uncertain","unavailable","no_knowledge","no_relevant_evidence"]},
     submitted_at:{type:"string",format:"date-time"},model:nullable(object({provider_code:modelValue,model_id:modelValue})),
     client_request_id:nullable({type:"string",minLength:8,maxLength:128,pattern:"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$"})});
   turn.allOf=[
     {if:{properties:{state:{const:"completed"}}},then:{properties:{response:{allOf:[ref("NotebookConversationResponse"),{properties:{kind:{const:"answer"}}}]}}}},
     {if:{properties:{state:{const:"pending"}}},then:{properties:{response:{type:"null"},model:{type:"null"}}}},
-    {if:{properties:{state:{enum:["awaiting_authorization","failed","uncertain","unavailable"]}}},then:{properties:{model:{type:"null"},response:{allOf:[ref("NotebookConversationResponse"),{properties:{kind:{const:"system"},insufficient:{const:true},citations:{maxItems:0}}}]}}}}
+    {if:{properties:{state:{enum:["awaiting_authorization","failed","uncertain","unavailable","no_knowledge","no_relevant_evidence"]}}},then:{properties:{model:{type:"null"},response:{allOf:[ref("NotebookConversationResponse"),{properties:{kind:{const:"system"},insufficient:{const:true},citations:{maxItems:0}}}]}}}}
   ];
+  turn.allOf.push({if:{properties:{state:{enum:["no_knowledge","no_relevant_evidence"]}}},then:{properties:{response:{allOf:[ref("NotebookConversationResponse"),{properties:{next_actions:{type:"array",minItems:1,maxItems:4,items:{type:"string",minLength:1,maxLength:120}}}}]}}}});
   const expected={NotebookConversationResponse:response,NotebookConversationTurn:turn,
     NotebookConversationPage:object({items:{type:"array",maxItems:100,items:ref("NotebookConversationTurn")},next_cursor:nullable(cursor)}),
     NotebookConversationEnvelope:object({data:ref("NotebookConversationPage"),meta:object({trace_id:id,workspace_id:id,notebook_id:id})})};
@@ -1160,6 +1203,7 @@ export function validateOpenApiDocument(document) {
     if (JSON.stringify(actualMethods) !== JSON.stringify(expectedMethods)) fail(`Notebook method mismatch ${apiPath}`);
   }
   validateNotebookConversationContract(document);
+  validateQuestionGroundingContract(document);
   const syncItem = document.components?.schemas?.SyncItemInput;
   if (
     JSON.stringify(syncItem?.properties?.item_kind?.enum) !== JSON.stringify(["source_version", "output_version"])

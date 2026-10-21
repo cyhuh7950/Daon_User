@@ -115,7 +115,7 @@ from .question_answering_postgres import (
     PostgresQuestionAnsweringRepository, QuestionContext, QuestionRepositoryError,
 )
 from .question_answering_service import (
-    QuestionAdapterRegistry, QuestionAnsweringError, QuestionAnsweringService,
+    QuestionAdapterRegistry, QuestionAnsweringError, QuestionAnsweringService, QuestionGroundingNotice,
     QuestionInputSource, question_request_fingerprint,
 )
 from .question_answering import classify_question_intent
@@ -4763,6 +4763,18 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             mode = "explicit_source_lookup"
         citations = tuple(getattr(stored, "citations", ()))
         insufficient = bool(getattr(stored, "insufficient", False))
+        status = getattr(stored,"grounding_status",None)
+        if status is not None:
+            from .question_answering import stored_grounding_metadata
+            try:
+                _, actions = stored_grounding_metadata({"grounding_status":status,
+                    "next_actions":getattr(stored,"next_actions",()),"insufficient":getattr(stored,"insufficient",None)},
+                    citation_count=len(citations))
+            except ValueError:
+                raise QuestionAnsweringError("QUESTION_RESPONSE_INVALID",status=500) from None
+            return {"mode":mode,"grounding":"source_backed" if citations else "source_evidence_unavailable" if insufficient else "ungrounded",
+                "source_scope_summary":"선택한 Source 범위" if has_source_context else None,"mismatch":None,
+                "next_actions":list(actions),"grounding_status":status}
         if insufficient and has_source_context:
             return {
                 "mode": mode,
@@ -4810,9 +4822,37 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         if not callable(method):
             raise NotebookError("NOTEBOOK_CONVERSATION_UNAVAILABLE",503)
         # Admission itself rechecks the actual Notebook/current actor in its Tx.
-        await asyncio.to_thread(method, notebook_context(principal,workspace_id,request),body.notebook_id,
+        turn_id = await asyncio.to_thread(method, notebook_context(principal,workspace_id,request),body.notebook_id,
             run_id=run_id,question=body.question,request_fingerprint=fingerprint,context_identifiers={},client_request_id=idempotency_key)
-        return run_id, fingerprint
+        if not isinstance(turn_id,str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}",turn_id) is None:
+            raise NotebookError("NOTEBOOK_TURN_INVALID",503)
+        return run_id, fingerprint, turn_id
+
+    async def _question_grounding_notice(principal, workspace_id, body, request, run_id, fingerprint, turn_id, notice):
+        from .notebook_conversation_postgres import grounding_notice_content
+        text, actions = grounding_notice_content(notice.grounding_status)
+        # This is the actual immutable admission, not a Run/result/Attempt.
+        claimed = await asyncio.to_thread(notebook_service.claim_question_grounding,
+            notebook_context(principal,workspace_id,request),body.notebook_id,
+            run_id=run_id,request_fingerprint=fingerprint,disposition=notice.grounding_status)
+        text, actions = grounding_notice_content(claimed)
+        notice = QuestionGroundingNotice(claimed)
+        content = {"data":{"kind":"system_notice","turn_id":turn_id,"answer":text,
+            "grounding_status":notice.grounding_status,"insufficient":True,"citations":[],"next_actions":list(actions)},
+            "meta":{"trace_id":request.state.trace_id,"workspace_id":workspace_id}}
+        response = _json_with_etag(content, json.dumps(content["data"], sort_keys=True))
+        response.headers["Cache-Control"]="no-store"
+        return response
+
+    async def _prepare_notebook_grounding(principal,workspace_id,body,request,context,source_id,source_version_id,context_mode,context_sources,run_id,fingerprint):
+        await asyncio.to_thread(question_answering_service.preflight_grounding,context,
+            source_id=source_id,source_version_id=source_version_id,question=body.question,
+            context_mode=context_mode,context_sources=context_sources)
+        disposition = await asyncio.to_thread(notebook_service.claim_question_grounding,
+            notebook_context(principal,workspace_id,request),body.notebook_id,
+            run_id=run_id,request_fingerprint=fingerprint,disposition="execution_prepared")
+        if disposition != "execution_prepared":
+            raise QuestionGroundingNotice(disposition)
 
     async def _record_notebook_question_failure(principal, workspace_id, body, request, run_id, fingerprint, error):
         code = getattr(error,"code",None)
@@ -4842,13 +4882,12 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         principal = _principal(request, dependencies)
         grant = dependencies.authorization_service.authorize_action(
             principal=principal, workspace_id=id, action=Action.QUERY,
-            requested_permissions=(Permission.EXTERNAL_LLM,),
             trace_id=request.state.trace_id,
             policy_version=dependencies.settings.policy_version,
         )
-        admission_run_id, admission_fingerprint = await _admit_notebook_question(principal,id,body,request,idempotency_key)
+        admission_run_id, admission_fingerprint, admission_turn_id = await _admit_notebook_question(principal,id,body,request,idempotency_key)
         try:
-            if question_answering_service is None or egress_policy_service is None:
+            if question_answering_service is None:
                 raise QuestionAnsweringError("QUESTION_SERVICE_UNAVAILABLE", status=503, retryable=True)
             context = QuestionContext(
                 principal.tenant_id, id, principal.user_id,
@@ -4867,6 +4906,20 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                     else ("source", item.source_id, item.source_version_id)
                     for item in context_sources
                 ),
+            )
+            prior_notice = await asyncio.to_thread(notebook_service.load_question_turn_notice,
+                notebook_context(principal,id,request),body.notebook_id,
+                run_id=admission_run_id,request_fingerprint=admission_fingerprint)
+            if prior_notice is not None:
+                raise QuestionGroundingNotice(prior_notice)
+            await _prepare_notebook_grounding(principal,id,body,request,context,source_id,source_version_id,
+                context_mode,context_sources,admission_run_id,admission_fingerprint)
+            if egress_policy_service is None:
+                raise EgressPolicyError("EGRESS_POLICY_UNAVAILABLE",503)
+            grant = dependencies.authorization_service.authorize_action(
+                principal=principal, workspace_id=id, action=Action.QUERY,
+                requested_permissions=(Permission.EXTERNAL_LLM,), trace_id=request.state.trace_id,
+                policy_version=dependencies.settings.policy_version,
             )
             prepared = await asyncio.to_thread(
                 question_answering_service.prepare_authorization, context,
@@ -4914,6 +4967,9 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             response.headers["ETag"] = f'"question-authorization:{request_fingerprint}"'
             return response
 
+        except QuestionGroundingNotice as notice:
+            return await _question_grounding_notice(principal,id,body,request,admission_run_id,
+                admission_fingerprint,admission_turn_id,notice)
         except (QuestionAnsweringError, QuestionRepositoryError, EgressPolicyError, IdentityError, AuthorizationError, NotebookError, asyncio.CancelledError) as error:
             await _record_notebook_question_failure(principal,id,body,request,admission_run_id,admission_fingerprint,error)
             raise
@@ -4931,7 +4987,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             trace_id=request.state.trace_id,
             policy_version=dependencies.settings.policy_version,
         )
-        admission_run_id, admission_fingerprint = await _admit_notebook_question(principal,id,body,request,idempotency_key)
+        admission_run_id, admission_fingerprint, admission_turn_id = await _admit_notebook_question(principal,id,body,request,idempotency_key)
         try:
             if question_answering_service is None:
                 raise QuestionAnsweringError(
@@ -4962,6 +5018,11 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                     for item in context_sources
                 ),
             )
+            prior_notice = await asyncio.to_thread(notebook_service.load_question_turn_notice,
+                notebook_context(principal,id,request),body.notebook_id,
+                run_id=admission_run_id,request_fingerprint=admission_fingerprint)
+            if prior_notice is not None:
+                raise QuestionGroundingNotice(prior_notice)
             replay = await asyncio.to_thread(
                 question_answering_service.replay, question_context,
                 run_id=run_id, request_fingerprint=replay_fingerprint,
@@ -4996,6 +5057,8 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 return _question_result_response(
                     replay, request, id, question=body.question, context_mode=context_mode,
                 )
+            await _prepare_notebook_grounding(principal,id,body,request,question_context,source_id,source_version_id,
+                context_mode,context_sources,admission_run_id,admission_fingerprint)
             approved_authorization = None
             if egress_policy_service is not None:
                 context = question_context
@@ -5073,6 +5136,9 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 answer, request, id, question=body.question, context_mode=context_mode,
             )
 
+        except QuestionGroundingNotice as notice:
+            return await _question_grounding_notice(principal,id,body,request,admission_run_id,
+                admission_fingerprint,admission_turn_id,notice)
         except (QuestionAnsweringError, QuestionRepositoryError, EgressPolicyError, IdentityError, AuthorizationError, NotebookError, asyncio.CancelledError) as error:
             await _record_notebook_question_failure(principal,id,body,request,admission_run_id,admission_fingerprint,error)
             raise

@@ -305,9 +305,9 @@ function s17Adapter(overrides = {}) {
     listSources: async () => [], listKnowledgePackages: async () => [], listStudioOutputs: async () => [],
     listConnectors: async () => [{ ...s17Connector }], ...overrides };
 }
-async function mountS17ReconnectWorkspace(initialAdapter) {
+async function mountS17ReconnectWorkspace(initialAdapter, options = {}) {
   const root = path.resolve(import.meta.dirname, "../..");
-  const output = await mkdtemp(path.join(root, ".workspace-s17-reconnect-"));
+  const output = await mkdtemp(path.join(options.outputRoot ?? root, ".workspace-s17-reconnect-"));
   const dom = installMinimalDom();
   let reactRoot;
   try {
@@ -2291,6 +2291,48 @@ test("저장된 공통 Studio DTO 1건으로 재진입해도 신규 Pane과 기�
 });
 
 const bTurn = (id,question,text,client=null,state='completed') => ({turn_id:id,question,response:text?{kind:state==='completed'?'answer':'system',text,insufficient:state!=='completed',next_actions:[],citations:[]}:null,state,submitted_at:'2026-10-21T00:00:00.123456Z',model:null,client_request_id:client});
+
+test('C 순수 이력 병합은 Run 없는 두 근거 안내 상태와 엄격 system 조합만 보존한다',async()=>{
+  const {mergeNotebookConversationTurns}=await import('../../packages/ui/src/product-workspace-model.js');
+  for(const state of ['no_knowledge','no_relevant_evidence']) {
+    const turn=bTurn('turn-c','계약기간은?','질문을 확인할 자료를 선택해 주세요.','request-c',state);
+    turn.response.next_actions=['질문의 기간을 확인할 자료를 선택해 주세요.'];
+    assert.deepEqual(mergeNotebookConversationTurns([], [turn]),[turn]);
+    for(const value of [{...turn,model:{provider_code:'forged',model_id:'unexecuted'}},
+        {...turn,response:{...turn.response,kind:'answer'}},{...turn,response:null},
+        {...turn,response:{...turn.response,next_actions:[]}}]) {
+      assert.throws(()=>mergeNotebookConversationTurns([],[value]),/NOTEBOOK_CONVERSATION_INVALID/);
+    }
+  }
+});
+
+test('C 실제 DOM 근거 안내는 실패 배너·가짜 Run 없이 누적하고 재진입 GET만 복원하며 Studio를 실행하지 않는다',async()=>{
+  let posts=0,studio=0,reads=0;
+  let page=[bTurn('turn-old-c','이전 완료 질문','이전 완료 답변','request-old-c')];
+  const notice={kind:'system_notice',turn_id:'turn-c',answer:'질문을 확인할 자료가 선택되지 않았습니다.',
+    grounding_status:'no_knowledge',insufficient:true,citations:[],next_actions:['질문의 기간을 확인할 자료를 선택해 주세요.']};
+  const list=async()=>{reads++;return {items:page,next_cursor:null};};
+  const nextAdapter=()=>s18Adapter({loadNotebookConversation:async()=>s18Answer('이전 완료 답변'),listConversationTurns:list,
+    askQuestion:async(input,options)=>{
+      posts++;
+      page=[{...bTurn('turn-c',input.question,notice.answer,options.idempotencyKey,'no_knowledge'),
+        response:{kind:'system',text:notice.answer,insufficient:true,citations:[],next_actions:notice.next_actions}},...page];
+      return notice;
+    },createGeneration:async()=>{studio++;},createReport:async()=>{studio++;}});
+  const workspace=await mountS17ReconnectWorkspace(nextAdapter(),{outputRoot:tmpdir()});
+  try {
+    await s18Type(workspace,'안녕, 계약기간은 언제까지인가요?');
+    await workspace.act(async()=>{await s18Submit(workspace);await Promise.resolve();});
+    assert.match(workspace.container.textContent,/질문을 확인할 자료가 선택되지 않았습니다/u);
+    assert.match(workspace.container.textContent,/이전 완료 답변/u);
+    assert.doesNotMatch(workspace.container.textContent,/QUESTION_RESPONSE_INVALID|질문 실행에 실패/u);
+    assert.equal(findElements(workspace.container,node=>node.getAttribute?.('data-conversation-turn')!==null).length,2);
+    assert.equal(posts,1);assert.equal(studio,0);assert(reads>=2);
+    await workspace.render(nextAdapter());
+    assert.match(workspace.container.textContent,/질문을 확인할 자료가 선택되지 않았습니다/u);
+    assert.equal(posts,1);assert.equal(studio,0);
+  }finally{await workspace.cleanup();}
+});
 
 test('B 두 질문 누적·즉시 user 표시·응답 유실 뒤 GET exact key 병합은 재실행하지 않는다',async()=>{
   const pending=deferred();let submission,key,posts=0,reads=0;

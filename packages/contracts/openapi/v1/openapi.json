@@ -1313,52 +1313,174 @@
     },
     "/api/v1/workspaces/{id}/questions/authorization": {
       "post": {
-        "operationId": "authorizeGroundedWorkspaceQuestion", "tags": ["Run", "Policy"],
-        "summary": "호환용 외부 Question Run 결속 추가 인증", "description": "관리자 설정 Step-up과 분리된 호환 API입니다. Product 질문 UI는 이 경로를 호출하지 않으며 유효 Session, EXTERNAL_LLM 권한과 effective Egress Policy를 질문 실행 시 검증합니다.", "x-implementation-owner": "R1-M8-09-EGRESS-POLICY-C01",
-        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GroundedQuestionAuthorizationRequest" } } } },
-        "responses": { "201": { "description": "Run/effective policy 결속 opaque authorization", "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GroundedQuestionAuthorizationEnvelope" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" } }
-      }
-    },
-    "/api/v1/workspaces/{id}/questions": {
-      "post": {
-        "operationId": "askGroundedWorkspaceQuestion",
-        "tags": ["Run", "Citation"],
-        "summary": "현재 단일 PDF 근거 제한 질문 실행",
-        "x-implementation-owner": "CP3-QUESTION-CITATION-004",
+        "operationId": "authorizeGroundedWorkspaceQuestion",
+        "tags": [
+          "Run",
+          "Policy"
+        ],
+        "summary": "호환용 외부 Question Run 결속 추가 인증",
+        "description": "관리자 설정 Step-up과 분리된 호환 API입니다. Product 질문 UI는 이 경로를 호출하지 않으며 유효 Session, EXTERNAL_LLM 권한과 effective Egress Policy를 질문 실행 시 검증합니다.",
+        "x-implementation-owner": "R1-M8-09-EGRESS-POLICY-C01",
         "parameters": [
-          { "$ref": "#/components/parameters/ResourceId" },
-          { "$ref": "#/components/parameters/IdempotencyKey" }
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
         ],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/GroundedQuestionRequest" }
+              "schema": {
+                "$ref": "#/components/schemas/GroundedQuestionAuthorizationRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Run/effective policy 결속 opaque authorization",
+            "headers": {
+              "X-Trace-Id": {
+                "$ref": "#/components/headers/XTraceId"
+              },
+              "ETag": {
+                "$ref": "#/components/headers/ETag"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroundedQuestionAuthorizationEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          },
+          "200": {
+            "description": "모델 전송·추가 인증 없이 현재 Notebook turn에 저장한 근거 안내",
+            "headers": {
+              "X-Trace-Id": {
+                "$ref": "#/components/headers/XTraceId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                }
+              },
+              "ETag": {
+                "$ref": "#/components/headers/ETag"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuestionSystemNoticeEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/workspaces/{id}/questions": {
+      "post": {
+        "operationId": "askGroundedWorkspaceQuestion",
+        "tags": [
+          "Run",
+          "Citation"
+        ],
+        "summary": "현재 단일 PDF 근거 제한 질문 실행",
+        "x-implementation-owner": "CP3-QUESTION-CITATION-004",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GroundedQuestionRequest"
+              }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Frozen text deployment으로 생성한 근거 제한 답변",
+            "description": "기존 완료 답변 또는 전송 전 근거 안내. 안내의 ETag는 불변 안내 표현을 식별하며 실행이나 인증 완료를 뜻하지 않는다.",
             "headers": {
-              "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" },
-              "ETag": { "$ref": "#/components/headers/ETag" }
+              "X-Trace-Id": {
+                "$ref": "#/components/headers/XTraceId"
+              },
+              "ETag": {
+                "$ref": "#/components/headers/ETag"
+              }
             },
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/GroundedAnswerEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/GroundedAnswerEnvelope"
+                }
               }
             }
           },
-          "400": { "$ref": "#/components/responses/BadRequest" },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "404": { "$ref": "#/components/responses/NotFound" },
-          "409": { "$ref": "#/components/responses/Conflict" },
-          "412": { "$ref": "#/components/responses/PreconditionFailed" },
-          "503": { "$ref": "#/components/responses/ServiceUnavailable" },
-          "500": { "$ref": "#/components/responses/SafeFailure" }
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
         }
       }
     },
@@ -7413,21 +7535,47 @@
         }
       },
       "GroundedAnswerEnvelope": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["data", "meta"],
-        "properties": {
-          "data": { "$ref": "#/components/schemas/GroundedAnswer" },
-          "meta": {
-            "type": "object", "additionalProperties": true,
-            "required": ["trace_id", "workspace_id"],
-            "properties": {
-              "trace_id": { "$ref": "#/components/schemas/OpaqueId" },
-              "workspace_id": { "$ref": "#/components/schemas/OpaqueId" }
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "data",
+        "meta"
+      ],
+      "properties": {
+        "data": {
+          "oneOf": [
+            {
+              "$ref": "#/components/schemas/GroundedAnswer"
+            },
+            {
+              "$ref": "#/components/schemas/GroundedAnswerWithMetadata"
+            },
+            {
+              "$ref": "#/components/schemas/GroundedAnswerWithGrounding"
+            },
+            {
+              "$ref": "#/components/schemas/QuestionSystemNotice"
+            }
+          ]
+        },
+        "meta": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "trace_id",
+            "workspace_id"
+          ],
+          "properties": {
+            "trace_id": {
+              "$ref": "#/components/schemas/OpaqueId"
+            },
+            "workspace_id": {
+              "$ref": "#/components/schemas/OpaqueId"
             }
           }
         }
-      },
+      }
+    },
       "SuccessEnvelope": {
         "type": "object",
         "additionalProperties": false,
@@ -9406,187 +9554,228 @@
         }
       },
       "NotebookConversationTurn": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "turn_id",
-          "question",
-          "response",
-          "state",
-          "submitted_at",
-          "model",
-          "client_request_id"
-        ],
-        "properties": {
-          "turn_id": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 128,
-            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
-          },
-          "question": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 32768
-          },
-          "response": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/NotebookConversationResponse"
-              }
-            ]
-          },
-          "state": {
-            "type": "string",
-            "enum": [
-              "pending",
-              "awaiting_authorization",
-              "completed",
-              "failed",
-              "uncertain",
-              "unavailable"
-            ]
-          },
-          "submitted_at": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "model": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "object",
-                "additionalProperties": false,
-                "required": [
-                  "provider_code",
-                  "model_id"
-                ],
-                "properties": {
-                  "provider_code": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 255,
-                    "pattern": "^[^\\x00-\\x20\\x7f]+$"
-                  },
-                  "model_id": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 255,
-                    "pattern": "^[^\\x00-\\x20\\x7f]+$"
-                  }
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "turn_id",
+        "question",
+        "response",
+        "state",
+        "submitted_at",
+        "model",
+        "client_request_id"
+      ],
+      "properties": {
+        "turn_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "question": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32768
+        },
+        "response": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/components/schemas/NotebookConversationResponse"
+            }
+          ]
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "awaiting_authorization",
+            "completed",
+            "failed",
+            "uncertain",
+            "unavailable",
+            "no_knowledge",
+            "no_relevant_evidence"
+          ]
+        },
+        "submitted_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "model": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "provider_code",
+                "model_id"
+              ],
+              "properties": {
+                "provider_code": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 255,
+                  "pattern": "^[^\\x00-\\x20\\x7f]+$"
+                },
+                "model_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 255,
+                  "pattern": "^[^\\x00-\\x20\\x7f]+$"
                 }
               }
-            ]
-          },
-          "client_request_id": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string",
-                "minLength": 8,
-                "maxLength": 128,
-                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$"
+            }
+          ]
+        },
+        "client_request_id": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "completed"
               }
-            ]
+            }
+          },
+          "then": {
+            "properties": {
+              "response": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/NotebookConversationResponse"
+                  },
+                  {
+                    "properties": {
+                      "kind": {
+                        "const": "answer"
+                      }
+                    }
+                  }
+                ]
+              }
+            }
           }
         },
-        "allOf": [
-          {
-            "if": {
-              "properties": {
-                "state": {
-                  "const": "completed"
-                }
-              }
-            },
-            "then": {
-              "properties": {
-                "response": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/NotebookConversationResponse"
-                    },
-                    {
-                      "properties": {
-                        "kind": {
-                          "const": "answer"
-                        }
-                      }
-                    }
-                  ]
-                }
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "pending"
               }
             }
           },
-          {
-            "if": {
-              "properties": {
-                "state": {
-                  "const": "pending"
-                }
-              }
-            },
-            "then": {
-              "properties": {
-                "response": {
-                  "type": "null"
-                },
-                "model": {
-                  "type": "null"
-                }
-              }
-            }
-          },
-          {
-            "if": {
-              "properties": {
-                "state": {
-                  "enum": [
-                    "awaiting_authorization",
-                    "failed",
-                    "uncertain",
-                    "unavailable"
-                  ]
-                }
-              }
-            },
-            "then": {
-              "properties": {
-                "model": {
-                  "type": "null"
-                },
-                "response": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/NotebookConversationResponse"
-                    },
-                    {
-                      "properties": {
-                        "kind": {
-                          "const": "system"
-                        },
-                        "insufficient": {
-                          "const": true
-                        },
-                        "citations": {
-                          "maxItems": 0
-                        }
-                      }
-                    }
-                  ]
-                }
+          "then": {
+            "properties": {
+              "response": {
+                "type": "null"
+              },
+              "model": {
+                "type": "null"
               }
             }
           }
-        ]
-      },
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "awaiting_authorization",
+                  "failed",
+                  "uncertain",
+                  "unavailable",
+                  "no_knowledge",
+                  "no_relevant_evidence"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "model": {
+                "type": "null"
+              },
+              "response": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/NotebookConversationResponse"
+                  },
+                  {
+                    "properties": {
+                      "kind": {
+                        "const": "system"
+                      },
+                      "insufficient": {
+                        "const": true
+                      },
+                      "citations": {
+                        "maxItems": 0
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "no_knowledge",
+                  "no_relevant_evidence"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "response": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/NotebookConversationResponse"
+                  },
+                  {
+                    "properties": {
+                      "next_actions": {
+                        "type": "array",
+                        "maxItems": 4,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 120
+                        },
+                        "minItems": 1
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
       "NotebookConversationPage": {
         "type": "object",
         "additionalProperties": false,
@@ -9666,6 +9855,435 @@
       "RecoveryEnvelope": {
         "type": "object", "additionalProperties": false, "required": ["data", "meta"],
         "properties": { "data": {}, "meta": { "type": "object", "additionalProperties": true } }
+      }
+    ,
+      "GroundedAnswerWithMetadata": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "run_id",
+          "run_result_id",
+          "answer",
+          "insufficient",
+          "citations",
+          "mode",
+          "grounding",
+          "source_scope_summary",
+          "mismatch",
+          "next_actions"
+        ],
+        "properties": {
+          "run_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "run_result_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "answer": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8000
+          },
+          "insufficient": {
+            "type": "boolean"
+          },
+          "citations": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "$ref": "#/components/schemas/GroundedCitation"
+            }
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "work_support",
+              "explicit_source_lookup",
+              "source_backed_action",
+              "approved_web_research"
+            ]
+          },
+          "grounding": {
+            "type": "string",
+            "enum": [
+              "source_backed",
+              "ungrounded",
+              "source_evidence_unavailable",
+              "web_backed"
+            ]
+          },
+          "source_scope_summary": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "maxLength": 1000,
+                "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+              }
+            ]
+          },
+          "mismatch": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "code",
+                  "detail"
+                ],
+                "properties": {
+                  "code": {
+                    "type": "string",
+                    "const": "SOURCE_SCOPE_MISMATCH"
+                  },
+                  "detail": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1000
+                  }
+                }
+              }
+            ]
+          },
+          "next_actions": {
+            "type": "array",
+            "maxItems": 4,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            }
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "grounding": {
+                  "const": "source_evidence_unavailable"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "mismatch": {
+                  "type": "object"
+                },
+                "next_actions": {
+                  "minItems": 1
+                }
+              }
+            }
+          }
+        ]
+      },
+      "GroundedAnswerWithGrounding": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "run_id",
+          "run_result_id",
+          "answer",
+          "insufficient",
+          "citations",
+          "mode",
+          "grounding",
+          "source_scope_summary",
+          "mismatch",
+          "next_actions",
+          "grounding_status"
+        ],
+        "properties": {
+          "run_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "run_result_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "answer": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8000
+          },
+          "insufficient": {
+            "type": "boolean"
+          },
+          "citations": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "$ref": "#/components/schemas/GroundedCitation"
+            }
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "work_support",
+              "explicit_source_lookup",
+              "source_backed_action",
+              "approved_web_research"
+            ]
+          },
+          "grounding": {
+            "type": "string",
+            "enum": [
+              "source_backed",
+              "ungrounded",
+              "source_evidence_unavailable",
+              "web_backed"
+            ]
+          },
+          "source_scope_summary": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "maxLength": 1000,
+                "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+              }
+            ]
+          },
+          "mismatch": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "code",
+                  "detail"
+                ],
+                "properties": {
+                  "code": {
+                    "type": "string",
+                    "const": "SOURCE_SCOPE_MISMATCH"
+                  },
+                  "detail": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1000
+                  }
+                }
+              }
+            ]
+          },
+          "next_actions": {
+            "type": "array",
+            "maxItems": 4,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            }
+          },
+          "grounding_status": {
+            "type": "string",
+            "enum": [
+              "conversational",
+              "sufficient",
+              "partial",
+              "no_relevant_evidence"
+            ]
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "grounding_status": {
+                  "const": "conversational"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "insufficient": {
+                  "const": false
+                },
+                "citations": {
+                  "maxItems": 0
+                },
+                "next_actions": {
+                  "maxItems": 0
+                },
+                "grounding": {
+                  "const": "ungrounded"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "grounding_status": {
+                  "const": "sufficient"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "insufficient": {
+                  "const": false
+                },
+                "citations": {
+                  "minItems": 1
+                },
+                "next_actions": {
+                  "maxItems": 0
+                },
+                "grounding": {
+                  "const": "source_backed"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "grounding_status": {
+                  "const": "partial"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "insufficient": {
+                  "const": false
+                },
+                "citations": {
+                  "minItems": 1
+                },
+                "next_actions": {
+                  "minItems": 1
+                },
+                "grounding": {
+                  "const": "source_backed"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "grounding_status": {
+                  "const": "no_relevant_evidence"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "insufficient": {
+                  "const": true
+                },
+                "citations": {
+                  "maxItems": 0
+                },
+                "next_actions": {
+                  "minItems": 1
+                },
+                "grounding": {
+                  "const": "source_evidence_unavailable"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "QuestionSystemNotice": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "turn_id",
+          "answer",
+          "grounding_status",
+          "insufficient",
+          "citations",
+          "next_actions"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "system_notice"
+          },
+          "turn_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+          },
+          "answer": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8000
+          },
+          "grounding_status": {
+            "type": "string",
+            "enum": [
+              "no_knowledge",
+              "no_relevant_evidence"
+            ]
+          },
+          "insufficient": {
+            "type": "boolean",
+            "const": true
+          },
+          "citations": {
+            "type": "array",
+            "maxItems": 0,
+            "items": {
+              "$ref": "#/components/schemas/GroundedCitation"
+            }
+          },
+          "next_actions": {
+            "type": "array",
+            "maxItems": 4,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            },
+            "minItems": 1
+          }
+        }
+      },
+      "QuestionSystemNoticeEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data",
+          "meta"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/QuestionSystemNotice"
+          },
+          "meta": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "trace_id",
+              "workspace_id"
+            ],
+            "properties": {
+              "trace_id": {
+                "$ref": "#/components/schemas/OpaqueId"
+              },
+              "workspace_id": {
+                "$ref": "#/components/schemas/OpaqueId"
+              }
+            }
+          }
+        }
       }
     }
   }
