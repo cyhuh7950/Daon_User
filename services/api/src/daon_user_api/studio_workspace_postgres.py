@@ -272,7 +272,8 @@ class PostgresStudioWorkspaceRepository:
     @staticmethod
     def _insert(connection, context: StudioContext, table: str, record_id: str,
                 payload: Mapping[str, object], *, state: str | None = None,
-                extra_columns: tuple[str, ...] = (), extra_values: tuple[object, ...] = ()) -> None:
+                extra_columns: tuple[str, ...] = (), extra_values: tuple[object, ...] = (),
+                aggregate_id: str | None = None) -> None:
         text = canonical_json_bytes(payload).decode()
         columns = (
             "tenant_id", "workspace_id", "record_id", "aggregate_id", "version", "schema_version",
@@ -280,7 +281,7 @@ class PostgresStudioWorkspaceRepository:
             "created_by", "trace_id", *extra_columns,
         )
         values = (
-            context.tenant_id, context.workspace_id, record_id, record_id, 1, 1, Jsonb(dict(payload)), text,
+            context.tenant_id, context.workspace_id, record_id, aggregate_id or record_id, 1, 1, Jsonb(dict(payload)), text,
             hashlib.sha256(text.encode()).hexdigest(), *((state,) if state else ()), context.actor_id,
             context.trace_id, *extra_values,
         )
@@ -330,6 +331,97 @@ class PostgresStudioWorkspaceRepository:
             from .notification_events import enqueue_studio_event
             enqueue_studio_event(connection,context,operation=operation,target_type=target_type,
                 target_id=target_id,origin_event_id=audit_event_id)
+
+    def persist_typed_generation(self,connection,context,request,idempotency_key,typed,evidence,*,execution_ids,metadata):
+        """단회 실행 terminal의 savepoint 안에서만 사용하는 실제 typed 저장 경계.
+
+        과거 템플릿/수동 편집 경로와 별개이며 원Run 답변을 새 사실 근거로 읽지 않는다.
+        호출자는 현재 선택·정책·Source/index 지문을 먼저 검증해야 한다.
+        """
+        from dataclasses import asdict
+        from .studio_typed_generation import TypedStudioResult,GENERATOR_VERSION
+        from .studio_execution import safe_id
+        if (type(typed) is not TypedStudioResult or typed.insufficient is not False or typed.content is None
+            or typed.generator_version!=GENERATOR_VERSION or not typed.cited_chunk_ids):
+            raise StudioError("STUDIO_OUTPUT_UNAVAILABLE",409)
+        for value in (idempotency_key,execution_ids["run"],execution_ids["attempt"]):safe_id(value)
+        self._require_generation_scope(connection,context,request.source_version_ids)
+        projection=self._policy_projection(connection,context,run_id=None if request.source_only else request.run_id)
+        if projection["review_condition"]!=request.review_condition or projection["ruleset_version_id"]!=request.ruleset_version_id:
+            raise StudioError("POLICY_PROJECTION_MISMATCH",409)
+        # Only actual validated selected evidence identifiers are persisted as citations.
+        by_id={item["chunk_id"]:item for item in evidence}
+        if len(by_id)!=len(evidence) or any(value not in by_id for value in typed.cited_chunk_ids):
+            raise StudioError("EVIDENCE_REQUIRED",409)
+        citations=[]
+        for chunk_id in typed.cited_chunk_ids:
+            item=by_id[chunk_id]
+            for name in ("chunk_id","source_version_id","evidence_span_id"):safe_id(item[name])
+            if item["source_version_id"] not in request.source_version_ids:raise StudioError("EVIDENCE_REQUIRED",409)
+            citations.append({"citation_id":chunk_id,"source_version_id":item["source_version_id"],"evidence_span_id":item["evidence_span_id"],"page":item["page"]})
+        if not request.source_only:
+            origin=connection.execute("SELECT /* studio-typed:origin */ 1 FROM runs r JOIN run_results rr "
+                "ON (rr.tenant_id,rr.workspace_id,rr.run_id)=(r.tenant_id,r.workspace_id,r.record_id) "
+                "JOIN notebook_bindings b ON (b.tenant_id,b.workspace_id,b.record_id)=(r.tenant_id,r.workspace_id,r.conversation_id) "
+                "AND b.binding_kind='conversation_thread' WHERE r.tenant_id=%s AND r.workspace_id=%s AND r.record_id=%s "
+                "AND rr.record_id=%s AND r.created_by=%s AND b.notebook_id=%s",
+                (context.tenant_id,context.workspace_id,request.run_id,request.run_result_id,context.actor_id,context.notebook_id)).fetchone()
+            if origin is None:raise StudioError("RESOURCE_UNAVAILABLE",404)
+        operation="studio.typed.generate" if metadata["operation"]=="generate" else "studio.typed.regenerate"
+        scope=(context.tenant_id,context.workspace_id,context.actor_id,operation,idempotency_key)
+        settings_id=self._opaque("settings",*scope);generation_id=self._opaque("generation",*scope)
+        version_id=self._opaque("output-version",*scope)
+        previous_id=metadata["previous_version_id"];previous=None
+        if metadata["operation"]=="regenerate":
+            self._require_output_sources(connection,context,previous_id,action=Action.EDIT)
+            output_id=metadata["output_id"]
+            connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",("studio-output|"+context.tenant_id+"|"+context.workspace_id+"|"+output_id,))
+            previous=connection.execute("SELECT /* studio-typed:previous */ output_versions.aggregate_id,content_version,output_versions.record_id,"
+                "output_versions.canonical_json->>'output_type',o.canonical_json->>'output_type' FROM output_versions "
+                "JOIN studio_outputs o ON (o.tenant_id,o.workspace_id,o.record_id)=(output_versions.tenant_id,output_versions.workspace_id,output_versions.studio_output_id) "
+                "WHERE output_versions.tenant_id=%s AND output_versions.workspace_id=%s AND studio_output_id=%s AND EXISTS(SELECT 1 FROM notebook_bindings b "
+                "WHERE b.tenant_id=output_versions.tenant_id AND b.workspace_id=output_versions.workspace_id AND b.notebook_id=%s "
+                "AND b.binding_kind='output_version' AND b.record_id=output_versions.record_id) ORDER BY content_version DESC,output_versions.record_id DESC LIMIT 1",
+                (context.tenant_id,context.workspace_id,output_id,context.notebook_id)).fetchone()
+            if previous is None or previous[2]!=previous_id:raise StudioError("STUDIO_VERSION_CHANGED",409)
+            if previous[3]!=request.output_type or previous[4]!=request.output_type:raise StudioError("STUDIO_VERSION_CHANGED",409)
+        else:
+            output_id=self._opaque("output",*scope)
+        if self._creation_enforcer is not None:
+            self._creation_enforcer(connection,context.tenant_id,"studio.generate",{"generation_runs":1,"studio_outputs":1 if previous is None else 0})
+        request_payload=asdict(request);request_payload["source_version_ids"]=list(request.source_version_ids)
+        fingerprint=hashlib.sha256(canonical_json_bytes({**request_payload,"execution_run_id":execution_ids["run"],"previous_version_id":previous_id})).hexdigest()
+        settings={**request_payload,"server_policy_projection":projection,"actual_model_selection":metadata["selection"],
+                  "generator_version":GENERATOR_VERSION,"execution_lineage":{"run_id":execution_ids["run"],"model_attempt_id":execution_ids["attempt"]}}
+        self._insert(connection,context,"generation_settings_snapshots",settings_id,settings)
+        self._insert(connection,context,"generation_requests",generation_id,settings,state="configuring",
+                     extra_columns=("generation_settings_snapshot_id",),extra_values=(settings_id,))
+        generation_version=self._transition(connection,context,"GenerationRequest",generation_id,1,"confirmed",self._opaque("transition",*scope,"confirmed"))
+        self._transition(connection,context,"GenerationRequest",generation_id,generation_version,"submitted",self._opaque("transition",*scope,"submitted"))
+        if previous is None:
+            self._insert(connection,context,"studio_outputs",output_id,{"output_type":request.output_type,"title":request.purpose,"purpose":request.purpose},
+                         extra_columns=("generation_request_id",),extra_values=(generation_id,))
+        payload={**request_payload,"content":typed.content,"previous_version_id":previous_id,
+                 "revision_type":metadata["revision_type"],"change_reason":"typed_generation",
+                 "approval_required":True,"actual_model_selection":metadata["selection"],"generator_version":GENERATOR_VERSION,
+                 "execution_lineage":settings["execution_lineage"],"source_lineage":{"tenant_id":context.tenant_id,"workspace_id":context.workspace_id,
+                    "notebook_id":context.notebook_id,"source_version_ids":list(request.source_version_ids),"run_id":request.run_id,"run_result_id":request.run_result_id}}
+        self._insert(connection,context,"output_versions",version_id,payload,state="generating",
+            aggregate_id=None if previous is None else previous[0],
+            extra_columns=("studio_output_id","generation_settings_snapshot_id","content_version","previous_version_id"),
+            extra_values=(output_id,settings_id,1 if previous is None else previous[1]+1,previous_id))
+        self._transition(connection,context,"OutputVersion",version_id,1,"draft",self._opaque("transition",*scope,"draft"))
+        for table_kind,record in (("generation_settings",settings_id),("studio_output",output_id),("output_version",version_id)):
+            connection.execute("INSERT INTO notebook_bindings(tenant_id,workspace_id,notebook_id,binding_kind,record_id,version_id,created_by,created_at) "
+                "VALUES(%s,%s,%s,%s,%s,NULL,%s,now()) ON CONFLICT DO NOTHING",
+                (context.tenant_id,context.workspace_id,context.notebook_id,table_kind,record,context.actor_id))
+        for index,citation in enumerate(citations):
+            self._insert(connection,context,"evidence_references",self._opaque("evidence-reference",*scope,str(index)),citation,
+                         extra_columns=("output_version_id","source_version_id","evidence_span_id"),
+                         extra_values=(version_id,citation["source_version_id"],citation["evidence_span_id"]))
+        result={"studio_output_id":output_id,"output_version_id":version_id}
+        self._finish(connection,context,operation,idempotency_key,fingerprint,result,"OutputVersion",version_id)
+        return result
 
     def create_generation(self, context: StudioContext, request: StudioGenerationRequest, idempotency_key: str):
         if self._cloud_store is None:
