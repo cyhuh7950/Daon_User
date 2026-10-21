@@ -195,3 +195,11 @@ def test_reference_document_id_and_no_effect_structure():
   if isinstance(node,ast.Call):
    called=node.func.id if isinstance(node.func,ast.Name) else node.func.attr if isinstance(node.func,ast.Attribute) else ''
    assert called not in blocked
+
+
+@pytest.mark.parametrize('invalid',[True,-1,'3',3.0])
+def test_price_conditions_are_unbounded_revision_but_strict_integer(invalid):
+ from daon_user_api.routing_pricing import PricePreconditions,RoutingPriceStorageError
+ assert PricePreconditions(4,if_match='"current:4"').expected_version==4
+ with pytest.raises(RoutingPriceStorageError):PricePreconditions(invalid)
+ with pytest.raises(RoutingPriceStorageError):PricePreconditions(0,if_match='one',if_none_match='*')

@@ -169,3 +169,80 @@ def calculate_text_upper_bound(price_input,*,registry,input_upper,billed_output_
             return result
     except RoutingPricingError:raise
     except (RoutingSourceError,ValueError,TypeError,OverflowError,ArithmeticError,AttributeError):raise RoutingPricingError() from None
+
+
+class RoutingPriceStorageError(ValueError):
+    def __init__(self,code='PRICE_SOURCE_UNAVAILABLE',status=503):
+        self.code=code;self.status=status;super().__init__(code)
+@dataclass(frozen=True,slots=True)
+class PricePreconditions:
+    expected_version:int
+    if_match:str|None=None
+    if_none_match:str|None=None
+    def __post_init__(self):
+        if type(self.expected_version) is not int or self.expected_version<0:raise RoutingPriceStorageError('PRICE_INPUT_INVALID',422)
+        for value in (self.if_match,self.if_none_match):
+            if value is not None and (type(value) is not str or not 1<=len(value)<=256 or any(ord(ch)<32 or ord(ch)==127 for ch in value)):raise RoutingPriceStorageError('PRICE_INPUT_INVALID',422)
+        if self.if_match is not None and self.if_none_match is not None:raise RoutingPriceStorageError('PRICE_INPUT_INVALID',422)
+    def as_dict(self):
+        self.__post_init__();return dict(expected_version=self.expected_version,if_match=self.if_match,if_none_match=self.if_none_match)
+
+def price_input_dict(value):
+    _check(type(value) is PriceInput);value.__post_init__()
+    return dict(schema_version=value.schema_version,expected_version=value.expected_version,workspace_id=value.workspace_id,connection_id=value.connection_id,model_id=value.model_id,connection_version=value.connection_version,catalog_version=value.catalog_version,endpoint_version=value.endpoint_version,credential_source=value.credential_source,currency=value.currency,valid_from=value.valid_from.isoformat(),valid_until=value.valid_until.isoformat(),billing_basis=value.billing_basis,unit_prices={key:format(getattr(value.unit_prices,key),'f') for key in _PRICE_KEYS},evidence=dict(source_kind=value.evidence.source_kind,reference=value.evidence.reference,document_version=value.evidence.document_version,document_digest=value.evidence.document_digest,reviewed_at=value.evidence.reviewed_at.isoformat()))
+
+@dataclass(frozen=True,slots=True)
+class PriceSourceView:
+    series_id:str
+    price_version:int
+    current_revision:int
+    price_input:PriceInput
+    content_digest:str
+    verification_state:str
+    revoked:bool
+    expired:bool
+    target_changed:bool
+    @property
+    def version_etag(self):return '"routing-price:'+self.series_id+':'+str(self.price_version)+':'+self.content_digest+':'+('revoked' if self.revoked else 'unverified')+'"'
+    @property
+    def current_etag(self):return '"routing-price-current:'+self.series_id+':'+str(self.current_revision)+'"'
+    def __post_init__(self):
+        _id(self.series_id)
+        _check(type(self.price_version) is int and self.price_version>=1 and type(self.current_revision) is int and self.current_revision>=1)
+        _check(type(self.price_input) is PriceInput);self.price_input.__post_init__()
+        _check(type(self.content_digest) is str and re.fullmatch('[0-9a-f]{64}',self.content_digest) is not None and type(self.verification_state) is str and self.verification_state=='unverified')
+        _check(all(type(value) is bool for value in (self.revoked,self.expired,self.target_changed)))
+
+class PriceSourceService:
+    """서버 내부 미검증 자료만 저장한다. HTTP/실행 quote 연결 없음."""
+    def __init__(self,repository,reauthentication,*,registry,clock):
+        _check(type(registry) is CurrencyRegistry);registry.__post_init__()
+        self.repository=repository;self.reauthentication=reauthentication;self.registry=registry;self.clock=clock
+    def _body(self,context,body,operation):
+        if operation=='routing_price.register':
+            value=parse_price_input(body,self.registry,now=self.clock())
+            if value.workspace_id!=context.workspace_id:raise RoutingPriceStorageError('PRICE_ANCHOR_UNSUPPORTED',422)
+            return price_input_dict(value)
+        if operation!='routing_price.revoke' or type(body) is not dict or set(body)!={'series_id','price_version','reason_code'}:raise RoutingPriceStorageError('PRICE_INPUT_INVALID',422)
+        _id(body['series_id'])
+        if type(body['price_version']) is not int or body['price_version']<1 or type(body['reason_code']) is not str or body['reason_code'] not in {'ADMIN_REVOKED','POLICY_WITHDRAWN'}:raise RoutingPriceStorageError('PRICE_INPUT_INVALID',422)
+        return dict(body)
+    @staticmethod
+    def _conditions(value):
+        if type(value) is not PricePreconditions:raise RoutingPriceStorageError('PRICE_INPUT_INVALID',422)
+        value.__post_init__()
+    def binding(self,context,body,*,operation,preconditions,idempotency_key,access_token):
+        self._conditions(preconditions)
+        self.reauthentication.current(context,access_token=access_token)
+        value=self._body(context,body,operation)
+        return self.repository.prepare_binding(context,value,operation=operation,preconditions=preconditions,idempotency_key=idempotency_key,reauthentication=self.reauthentication,access_token=access_token)
+    def _write(self,operation,*,context,body,preconditions,idempotency_key,access_token,proof):
+        self._conditions(preconditions)
+        self.reauthentication.current(context,access_token=access_token)
+        value=self._body(context,body,operation)
+        return self.repository.write(context,value,operation=operation,preconditions=preconditions,idempotency_key=idempotency_key,reauthentication=self.reauthentication,access_token=access_token,proof=proof)
+    def register_price(self,**request):return self._write('routing_price.register',**request)
+    def revoke_price(self,**request):return self._write('routing_price.revoke',**request)
+    def get_price(self,context,series_id,price_version=None,*,access_token):
+        self.reauthentication.current(context,access_token=access_token)
+        return self.repository.get(context,series_id,price_version)
