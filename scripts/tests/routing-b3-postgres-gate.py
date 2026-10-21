@@ -79,7 +79,7 @@ def verify_container(value,*,kind,revision,pg_id=None,qa_image=None):
     return value['Id']
 
 CURRENT_TEST='preflight'
-EXCEPTION_TYPES=frozenset({'ValueError','TypeError','IdentityError','AuthorizationError','RoutingExecutionError','CloudDatabaseError','ImportError','ModuleNotFoundError','ProgrammingError','IntegrityError','OperationalError','AssertionError','Exception'})
+EXCEPTION_TYPES=frozenset({'ValueError','TypeError','IdentityError','AuthorizationError','RoutingExecutionError','CloudDatabaseError','ImportError','ModuleNotFoundError','ProgrammingError','IntegrityError','OperationalError','InsufficientPrivilege','ForeignKeyViolation','NotNullViolation','CheckViolation','UniqueViolation','AssertionError','Exception'})
 
 def safe_exception_type(error):
     name=type(error).__name__
@@ -94,7 +94,7 @@ def expect_denial(call,expected_type,code,status):
 
 def emit(stage,**values):
     global CURRENT_TEST
-    allowed={'status','schema','sql_hashes','test_name','safe_code','sqlstate','column','permission_type','permission_name','groups','model_calls','identity_fixture','exception_type'}
+    allowed={'status','schema','sql_hashes','test_name','safe_code','sqlstate','column','permission_type','permission_name','groups','model_calls','identity_fixture','exception_type','constraint','table'}
     require(set(values)<=allowed,'B3_OUTPUT_FIELDS_INVALID')
     require(type(stage) is str and re.fullmatch('[A-Za-z0-9_-]{1,64}',stage),'B3_OUTPUT_FIELDS_INVALID')
     require(values.get('status') in {'RUNNING','PASS','FAIL'},'B3_OUTPUT_FIELDS_INVALID')
@@ -105,6 +105,7 @@ def emit(stage,**values):
         elif key=='groups':require(type(value) is int and 0<=value<=6,'B3_OUTPUT_FIELDS_INVALID')
         elif key=='model_calls':require(type(value) is int and value==0,'B3_OUTPUT_FIELDS_INVALID')
         elif key=='identity_fixture':require(value=='isolated-synthetic-sqlite-mirrored-whitelist','B3_OUTPUT_FIELDS_INVALID')
+        elif key in {'constraint','table'}:require(value is None or type(value) is str and re.fullmatch('[a-z_][a-z0-9_]{0,62}',value),'B3_OUTPUT_FIELDS_INVALID')
         elif key=='exception_type':require(type(value) is str and value in EXCEPTION_TYPES,'B3_OUTPUT_FIELDS_INVALID')
         elif key=='safe_code':require(type(value) is str and re.fullmatch('B3_[A-Z0-9_]+',value),'B3_OUTPUT_FIELDS_INVALID')
         elif value is not None:require(type(value) is str and re.fullmatch('[A-Za-z0-9_]{1,128}',value),'B3_OUTPUT_FIELDS_INVALID')
@@ -355,21 +356,31 @@ def run_probe(secrets):
         require(response.headers.get('cache-control')=='no-store','B3_HTTP_CACHE_INVALID')
         return response
     def group2():
+        emit('group2_http',status='RUNNING')
         run=completed['value'][2].run_id
         require(asyncio.run(http_read(owner.access_token,run)).status_code==200,'B3_HTTP_READ_FAILED')
         for token,r,w in ((owner.access_token,'missing-run',W),(other.access_token,run,W),(owner.access_token,run,'other-workspace')):
             result=asyncio.run(http_read(token,r,w));require(result.status_code==404 and result.json()['error']['code']=='RESOURCE_UNAVAILABLE','B3_HTTP_HIDDEN_NOT_IDENTICAL')
+        emit('group2_source_acl',status='RUNNING')
         source_access(False)
         try:require(asyncio.run(http_read(owner.access_token,run)).status_code==404,'B3_SOURCE_REVOCATION_IGNORED')
         finally:source_access(True)
+        emit('group2_role',status='RUNNING')
         with connect(secrets['pg_password']) as conn:conn.execute("UPDATE identity_auth_tenant_roles SET state='inactive' WHERE tenant_id=%s AND user_id=%s",(T,A))
         try:hidden(ctx,run)
         finally:
             with connect(secrets['pg_password']) as conn:conn.execute("UPDATE identity_auth_tenant_roles SET state='active' WHERE tenant_id=%s AND user_id=%s",(T,A))
-        with connect(secrets['pg_password']) as conn:conn.execute("DELETE FROM notebook_bindings WHERE tenant_id=%s AND workspace_id=%s AND notebook_id=%s AND binding_kind='source' AND record_id=%s",(T,W,N,source.source_id))
-        try:hidden(ctx,run)
-        finally:
-            with connect(secrets['pg_password']) as conn:conn.execute("INSERT INTO notebook_bindings(tenant_id,workspace_id,notebook_id,binding_kind,record_id,version_id,created_by,created_at) VALUES(%s,%s,%s,'source',%s,%s,%s,%s)",(T,W,N,source.source_id,source.source_version_id,A,now))
+        emit('group2_binding',status='RUNNING')
+        from daon_user_api.notebook import NotebookContext
+        from daon_user_api.notebook_postgres import PostgresNotebookRepository
+        unbound=SimpleNamespace(**{**vars(source),'context_item_id':'source-unbound-b3','source_id':'source-unbound-b3','source_version_id':'version-unbound-b3'})
+        seed_source(unbound);p,e,bound_grant,v=prepare('qa-b3-unbound',items=(unbound,))
+        notebook_context=NotebookContext(T,W,A,ctx.trace_id,ctx.policy_version)
+        with connect(secrets['pg_password']) as conn:
+            binding_version=1+conn.execute('SELECT count(*) FROM notebook_source_unbindings WHERE tenant_id=%s AND workspace_id=%s AND notebook_id=%s',(T,W,N)).fetchone()[0]
+        PostgresNotebookRepository(store).unbind_source(notebook_context,N,source_id=unbound.source_id,source_version_id=unbound.source_version_id,expected_etag='"notebook-binding:'+str(binding_version)+'"',idempotency_key='qa-b3-unbind',request_fingerprint='b'*64,now=datetime.now(timezone.utc))
+        hidden(ctx,bound_grant.run_id)
+        emit('group2_retention',status='RUNNING')
         item=SimpleNamespace(**{**vars(source),'context_item_id':'source-retention-b3','source_id':'source-retention-b3','source_version_id':'version-retention-b3'})
         seed_source(item);p,e,g,v=prepare('qa-b3-retention',items=(item,))
         with connect(secrets['pg_password']) as conn:
@@ -418,10 +429,28 @@ def run_probe(secrets):
         expect_denial(lambda:repo.reconcile(ctx,target,1,receipt),RoutingExecutionError,'ROUTING_RECEIPT_REUSED',409)
         with connect(secrets['pg_password']) as conn:require(conn.execute("SELECT count(*) FROM routing_attempt_events WHERE plan_id=%s AND event_kind='reconciled'",(g.plan_id,)).fetchone()==(1,),'B3_RECONCILE_DUPLICATED')
     def group5():
+        emit('group5_persist',status='RUNNING')
         writer=Questions(store,None)
         selected=TextModelSelection('CUSTOM','https://fixture.invalid/v1','qa-pinned-profile','qa-pinned-deployment','qa-pinned-model',1,'server_internal','qa-pinned-connection',0,1)
-        result=writer.persist_completed(ctx,run_id='qa-b3-pinned',source_id=source.source_id,source_version_id=source.source_version_id,question='Synthetic pinned QA',selection=selected,evidence=(),result=GroundedTextResult('Synthetic pinned answer',(),False,{}),context_sources=(source,))
+        def persist():return writer.persist_completed(ctx,run_id='qa-b3-pinned',source_id=source.source_id,source_version_id=source.source_version_id,question='Synthetic pinned QA',selection=selected,evidence=(),result=GroundedTextResult('Synthetic pinned answer',(),False,{}),context_sources=(source,))
+        emit('group5_missing_parent',status='RUNNING')
+        try:persist()
+        except Exception as error:
+            metadata=safe_error_metadata(error)
+            require(metadata['sqlstate']=='23503' and metadata['table']=='operations_cost_receipts' and metadata['constraint']=='operations_cost_receipts_provider_connection_id_fkey','B3_PINNED_UNEXPECTED_PARENT_FAILURE')
+            emit('group5_missing_parent',status='PASS',exception_type=safe_exception_type(error),**metadata)
+        else:raise ValueError('B3_PINNED_MISSING_PARENT_ACCEPTED')
+        with connect(secrets['pg_password']) as conn:
+            require(conn.execute('SELECT count(*) FROM runs WHERE tenant_id=%s AND workspace_id=%s AND record_id=%s',(T,W,'qa-b3-pinned')).fetchone()==(0,),'B3_PINNED_ROLLBACK_FAILED')
+            require(conn.execute('SELECT count(*) FROM run_results WHERE tenant_id=%s AND workspace_id=%s AND run_id=%s',(T,W,'qa-b3-pinned')).fetchone()==(0,),'B3_PINNED_ROLLBACK_FAILED')
+        emit('group5_parent',status='RUNNING')
+        # 기존 비용 원장의 참조 부모만 합성한다. disabled/unverified/Secret 없음, 모델 호출 허가가 아니다.
+        with connect(secrets['pg_password']) as conn:
+            conn.execute("INSERT INTO system_provider_connections(connection_id,provider_code,display_name,base_url,enabled,verification_status,updated_by,trace_id,policy_version,access_mode,credential_requirement,short_code,adapter_type,provider_name) VALUES(%s,'CUSTOM','Synthetic B3 pinned parent','https://fixture.invalid/v1',false,'unverified',%s,%s,%s,'public','none','ZQ','CUSTOM','Synthetic QA')",('qa-pinned-connection',A,ctx.trace_id,ctx.policy_version))
+        emit('group5_persist',status='RUNNING')
+        result=persist()
         require(result.run_id=='qa-b3-pinned','B3_PINNED_WRITER_INVALID')
+        emit('group5_projection',status='RUNNING')
         view=repo.read_routing(ctx,result.run_id)
         require(view['routing_mode']=='pinned' and view['run_state']=='completed' and view['final_selection']['model_id']=='qa-pinned-model' and len(view['attempts'])==1,'B3_PINNED_READ_INCOMPATIBLE')
     business=('runs','run_results','model_attempts','routing_decisions','run_snapshots','notebook_bindings','routing_attempt_events','routing_billing_receipts','workspace_routing_policy_current','routing_policy_versions')
@@ -458,7 +487,7 @@ def run_probe(secrets):
             try:group();emit(name,status='PASS')
             except Exception as error:
                 failures.append(name)
-                emit(name,status='FAIL',exception_type=safe_exception_type(error),safe_code=str(error) if isinstance(error,ValueError) and re.fullmatch('B3_[A-Z0-9_]+',str(error)) else 'B3_GATE_FAILED',**safe_error_metadata(error))
+                emit(name,status='FAIL',test_name=CURRENT_TEST,exception_type=safe_exception_type(error),safe_code=str(error) if isinstance(error,ValueError) and re.fullmatch('B3_[A-Z0-9_]+',str(error)) else 'B3_GATE_FAILED',**safe_error_metadata(error))
         require(not failures,'B3_GROUPS_FAILED')
         emit('complete',status='PASS',groups=6,model_calls=0,identity_fixture='isolated-synthetic-sqlite-mirrored-whitelist')
     finally:
@@ -466,7 +495,7 @@ def run_probe(secrets):
 
 
 def safe_error_metadata(error):
-    result=dict(sqlstate=None,column=None,permission_type=None,permission_name=None)
+    result=dict(sqlstate=None,column=None,permission_type=None,permission_name=None,constraint=None,table=None)
     cause=error;seen=set()
     for _ in range(8):
         if cause is None or id(cause) in seen:break
@@ -475,6 +504,9 @@ def safe_error_metadata(error):
         if result['sqlstate'] is None and type(state) is str and re.fullmatch('[A-Z0-9]{5}',state):result['sqlstate']=state
         column=getattr(diag,'column_name',None)
         if result['column'] is None and type(column) is str and re.fullmatch('[a-z_][a-z0-9_]{0,62}',column):result['column']=column
+        for key,attribute in [('constraint','constraint_name'),('table','table_name')]:
+            identifier=getattr(diag,attribute,None)
+            if result[key] is None and type(identifier) is str and re.fullmatch('[a-z_][a-z0-9_]{0,62}',identifier):result[key]=identifier
         primary=getattr(diag,'message_primary',None)
         if state=='42501' and type(primary) is str and result['permission_name'] is None:
             matched=re.fullmatch(r'permission denied for (table|relation|sequence|function) ([a-z_][a-z0-9_]{0,62})',primary)

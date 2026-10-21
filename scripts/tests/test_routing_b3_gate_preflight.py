@@ -94,7 +94,7 @@ def test_permission_diagnostic_extracts_only_exact_safe_identifier(kind):
  from types import SimpleNamespace
  inner=SimpleNamespace(sqlstate='42501',diag=SimpleNamespace(sqlstate='42501',column_name=None,message_primary='permission denied for '+kind+' routing_authorization_plans'),__context__=None,__cause__=None)
  outer=SimpleNamespace(sqlstate=None,diag=None,__context__=inner,__cause__=None)
- assert gate.safe_error_metadata(outer)==dict(sqlstate='42501',column=None,permission_type=kind,permission_name='routing_authorization_plans')
+ assert gate.safe_error_metadata(outer)==dict(sqlstate='42501',column=None,permission_type=kind,permission_name='routing_authorization_plans',constraint=None,table=None)
 
 @pytest.mark.parametrize('message',[
  'permission denied for table secret https://example.com',
@@ -114,11 +114,11 @@ def test_permission_diagnostic_never_emits_raw_message_or_nonallowlisted_name(me
 def test_error_diagnostic_retains_safe_sqlstate_and_column_without_raw_values():
  from types import SimpleNamespace
  error=SimpleNamespace(sqlstate='23502',diag=SimpleNamespace(sqlstate='23502',column_name='created_at',message_primary='raw secret must never be printed'),__context__=None,__cause__=None)
- assert gate.safe_error_metadata(error)==dict(sqlstate='23502',column='created_at',permission_type=None,permission_name=None)
+ assert gate.safe_error_metadata(error)==dict(sqlstate='23502',column='created_at',permission_type=None,permission_name=None,constraint=None,table=None)
  error.__context__=error
  assert gate.safe_error_metadata(error)['column']=='created_at'
  error.sqlstate='unsafe state';error.diag.sqlstate=None;error.diag.column_name='column with raw text'
- assert gate.safe_error_metadata(error)==dict(sqlstate=None,column=None,permission_type=None,permission_name=None)
+ assert gate.safe_error_metadata(error)==dict(sqlstate=None,column=None,permission_type=None,permission_name=None,constraint=None,table=None)
 
 
 def test_execution_gate_pins_reviewed_product_commit_and_denies_other_product_drift():
@@ -256,3 +256,45 @@ def test_fixture_stage_and_exception_diagnostics_are_closed_and_secret_safe(caps
  source=P.read_text(encoding='utf-8')
  for stage in ['imports','identity','mirror','source','policy','runtime']:
   assert "emit('fixture_"+stage+"',status='RUNNING')" in source
+
+
+def test_group2_uses_real_append_only_unbinding_and_substage_diagnostics():
+ import ast
+ source=P.read_text(encoding='utf-8');tree=ast.parse(source)
+ group=next(n for n in ast.walk(tree) if isinstance(n,ast.FunctionDef) and n.name=='group2')
+ body=ast.get_source_segment(source,group)
+ assert 'DELETE FROM notebook_bindings' not in body
+ assert 'PostgresNotebookRepository(store).unbind_source' in body
+ for stage in ['http','source_acl','role','binding','retention']:
+  assert "emit('group2_"+stage+"',status='RUNNING')" in body
+ assert "emit('group5_persist',status='RUNNING')" in source
+ assert "emit('group5_projection',status='RUNNING')" in source
+ assert "emit(name,status='FAIL',test_name=CURRENT_TEST," in source
+
+
+def test_safe_sql_diagnostic_identifiers_are_bounded_without_raw_values(capsys):
+ from types import SimpleNamespace
+ error=SimpleNamespace(sqlstate='23503',diag=SimpleNamespace(column_name=None,constraint_name='fk_attempt_run',table_name='model_attempts'),__cause__=None,__context__=None)
+ result=gate.safe_error_metadata(error)
+ assert result['constraint']=='fk_attempt_run' and result['table']=='model_attempts'
+ error.diag.constraint_name='secret sql raw value';error.diag.table_name='a'*64
+ result=gate.safe_error_metadata(error)
+ assert result['constraint'] is None and result['table'] is None
+ assert gate.safe_exception_type(type('ForeignKeyViolation',(Exception,),{})())=='ForeignKeyViolation'
+ assert gate.safe_exception_type(type('InsufficientPrivilege',(Exception,),{})())=='InsufficientPrivilege'
+ with pytest.raises(ValueError,match='B3_OUTPUT_FIELDS_INVALID'):gate.emit('group2',status='FAIL',constraint='unsafe message')
+ assert capsys.readouterr().out==''
+
+
+def test_pinned_writer_fixture_keeps_fk_negative_and_real_parent_positive():
+ import ast
+ source=P.read_text(encoding='utf-8');tree=ast.parse(source)
+ group=next(n for n in ast.walk(tree) if isinstance(n,ast.FunctionDef) and n.name=='group5')
+ body=ast.get_source_segment(source,group)
+ assert "emit('group5_missing_parent',status='RUNNING')" in body
+ assert "'operations_cost_receipts_provider_connection_id_fkey'" in body
+ assert 'B3_PINNED_ROLLBACK_FAILED' in body
+ assert 'INSERT INTO system_provider_connections' in body
+ assert "false,'unverified'" in body
+ assert body.index('group5_missing_parent')<body.index('INSERT INTO system_provider_connections')<body.index('result=persist()')
+ assert 'connection_id=None' not in body and 'provider_called=False' not in body
