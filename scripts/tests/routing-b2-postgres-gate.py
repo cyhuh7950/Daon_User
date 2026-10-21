@@ -2,11 +2,10 @@
 실행 책임은 main이며 사전검사 단위시험은 Docker/SQL을 실행하지 않는다.
 """
 from __future__ import annotations
-import hashlib,json,os,re,subprocess,sys
+import hashlib,json,os,re,stat,subprocess,sys
 from pathlib import Path
 
 ISSUE='R3-B2-ROUTING-20261021'
-ROOT='/home/daon/deploy/daon-user-routing-b2-qa-20261021'
 DB='qa_routing_b2_20261021'
 APP='qa_routing_b2_app_20261021'
 PG='daon-user-routing-b2-pg-20261021'
@@ -19,6 +18,33 @@ HASHES={'0074_routing_policy.sql':'03568962142b86c611bf0a4811540b75b7b645373af0c
 
 def require(ok,code):
     if not ok:raise ValueError(code)
+
+def read_approved_root(wrapper):
+    """운영 wrapper의 단일 literal 정본만 읽는다. shell/env/CLI 평가는 없다."""
+    wrapper=Path(wrapper)
+    try:
+        for entry in (wrapper,*wrapper.parents):
+            require(not entry.is_symlink() and not entry.is_junction(),'B2_WRAPPER_LINK_FORBIDDEN')
+        before=wrapper.lstat()
+        require(stat.S_ISREG(before.st_mode) and before.st_size<=65536,'B2_WRAPPER_FILE_INVALID')
+        with wrapper.open('rb') as stream:
+            opened=os.fstat(stream.fileno())
+            require((before.st_dev,before.st_ino)==(opened.st_dev,opened.st_ino),'B2_WRAPPER_FILE_CHANGED')
+            raw=stream.read(65537)
+            after=os.fstat(stream.fileno())
+        require(len(raw)<=65536 and (before.st_size,before.st_mtime_ns)==(after.st_size,after.st_mtime_ns),'B2_WRAPPER_FILE_CHANGED')
+        text=raw.decode('utf-8')
+    except (OSError,UnicodeError) as error:
+        raise ValueError('B2_WRAPPER_READ_FAILED') from None
+    assignments=[line for line in text.splitlines() if not line.lstrip().startswith('#') and re.search(r'\bROOT\s*=',line)]
+    require(len(assignments)==1,'B2_WRAPPER_ROOT_AMBIGUOUS')
+    match=re.fullmatch(r'readonly ROOT=(/[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*)',assignments[0])
+    require(match is not None,'B2_WRAPPER_ROOT_NOT_LITERAL')
+    root=match.group(1)
+    require(root.rsplit('/',1)[-1]=='daon-user-routing-b2-qa-'+ISSUE.rsplit('-',1)[-1],'B2_WRAPPER_NAMESPACE_INVALID')
+    return root
+
+ROOT=read_approved_root(Path(__file__).absolute().parent.parent/'run-routing-b2-postgres-gate.sh')
 
 def validate_target(config):
     expected=dict(host='127.0.0.1',database=DB,owner='postgres',app_role=APP,revision='0072',source_root=ROOT)

@@ -11,7 +11,7 @@ spec=importlib.util.spec_from_file_location('b2_gate',P);gate=importlib.util.mod
 ])
 def test_nonapproved_target_fails_before_any_io(mutation):
     config=dict(host='127.0.0.1',database='qa_routing_b2_20261021',owner='postgres',
-      app_role='qa_routing_b2_app_20261021',pg_id='a'*64,revision='0072',source_root='/home/daon/deploy/daon-user-routing-b2-qa-20261021')
+      app_role='qa_routing_b2_app_20261021',pg_id='a'*64,revision='0072',source_root=gate.ROOT)
     with pytest.raises(ValueError):gate.validate_target({**config,**mutation})
 
 
@@ -128,3 +128,36 @@ def test_execution_gate_pins_reviewed_product_commit_and_denies_other_product_dr
  assert 'git diff --name-only "$PRODUCT_BASE" "$revision"' in shell
  assert 'scripts/run-routing-b2-postgres-gate.sh|scripts/tests/routing-b2-postgres-gate.py|scripts/tests/test_routing_b2_gate_preflight.py) ;; *) safe product_drift FAIL; exit 22' in shell
  assert '04f72f837a30d48830e36f38426c51b096027ee1' not in shell
+
+
+def test_wrapper_root_is_single_static_configuration():
+ wrapper=P.parent.parent/'run-routing-b2-postgres-gate.sh'
+ assert gate.read_approved_root(wrapper)==gate.ROOT
+ source=wrapper.read_text(encoding='utf-8')
+ assert 'scripts/run-routing-b2-postgres-gate.sh | tar' in source
+ assert 'COPY scripts/run-routing-b2-postgres-gate.sh /qa/scripts/run-routing-b2-postgres-gate.sh' in source
+
+@pytest.mark.parametrize('content',[
+ '', 'readonly ROOT=$HOME/other', 'readonly ROOT=$(pwd)',
+ 'readonly ROOT=/tmp/other', 'readonly ROOT=relative/other',
+ 'readonly ROOT='+gate.ROOT+';echo bad',
+ 'readonly ROOT='+gate.ROOT+'\nROOT=/tmp/other',
+ 'readonly ROOT='+gate.ROOT+'\nreadonly ROOT='+gate.ROOT,
+ 'readonly ROOT='+gate.ROOT.replace('/deploy/','/deploy/../deploy/'),
+ 'readonly ROOT="'+gate.ROOT+'"',
+])
+def test_wrapper_root_rejects_nonliteral_or_ambiguous_configuration(tmp_path,content):
+ wrapper=tmp_path/'gate.sh';wrapper.write_text(content,encoding='utf-8')
+ with pytest.raises(ValueError,match='B2_WRAPPER_'):gate.read_approved_root(wrapper)
+
+def test_wrapper_root_rejects_missing_and_oversize_files(tmp_path):
+ wrapper=tmp_path/'gate.sh'
+ with pytest.raises(ValueError,match='B2_WRAPPER_'):gate.read_approved_root(wrapper)
+ wrapper.write_bytes(b'x'*65537)
+ with pytest.raises(ValueError,match='B2_WRAPPER_'):gate.read_approved_root(wrapper)
+
+def test_wrapper_root_rejects_symlink_before_read(tmp_path,monkeypatch):
+ wrapper=tmp_path/'gate.sh';wrapper.write_text('readonly ROOT='+gate.ROOT,encoding='utf-8')
+ original=Path.is_symlink
+ monkeypatch.setattr(Path,'is_symlink',lambda self: self==wrapper or original(self))
+ with pytest.raises(ValueError,match='B2_WRAPPER_'):gate.read_approved_root(wrapper)
