@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import csv
+from io import StringIO
+from unittest.mock import patch
 import struct
 import unittest
 import zipfile
@@ -43,6 +46,169 @@ class StudioExportTests(unittest.TestCase):
                 self.assertEqual(json.loads(exported.content)["metadata"]["output_version_id"], "version-1")
             else:
                 self.assertIn(b"version-1", exported.content)
+
+    def test_e_table_pdf_has_real_columns_repeated_headers_and_full_korean_rows(self):
+        content={"rows":[{"항목":f"항목 {i}","확인 내용":"긴 한국어 확인 내용 "*12+f"끝표식{i}"} for i in range(55)]}
+        pdf=PdfReader(BytesIO(export_studio_output("pdf","실제 비교표",content,METADATA,output_type="comparison_table").content))
+        self.assertGreater(len(pdf.pages),1)
+        all_text="".join(page.extract_text() for page in pdf.pages).replace(" ","").replace("\n","")
+        for i in range(55):self.assertIn(f"끝표식{i}",all_text)
+        first=pdf.pages[0];coords=[]
+        first.extract_text(visitor_text=lambda text,cm,tm,font,size:coords.append((text,cm[4]+tm[4])))
+        left=[x for text,x in coords if "항목 0" in text];right=[x for text,x in coords if "긴 한국어" in text]
+        self.assertTrue(left and right)
+        self.assertGreater(min(right)-min(left),100,"행 구분자 텍스트가 아니라 실제 다른 열 위치여야 한다")
+        for page in pdf.pages[:-1]:self.assertIn("확인 내용",page.extract_text())
+
+    def test_e_slides_pdf_starts_each_slide_on_a_page_and_preserves_overflow(self):
+        content={"slides":[{"title":"첫 장","body":"첫 내용"},{"title":"둘째 장","body":"한글 긴 설명 "*2500+"마지막장본문끝"},{"title":"셋째 장","body":"셋째 내용"}]}
+        pdf=PdfReader(BytesIO(export_studio_output("pdf","발표",content,METADATA,output_type="slides").content))
+        texts=[page.extract_text() for page in pdf.pages]
+        self.assertGreaterEqual(len(texts),4)
+        self.assertIn("첫 내용",texts[0]);self.assertNotIn("둘째 장",texts[0])
+        self.assertIn("마지막장본문끝","".join(texts).replace("\n",""))
+        last=next(text for text in texts if "셋째 장" in text)
+        self.assertIn("셋째 내용",last);self.assertNotIn("마지막장본문끝",last)
+        self.assertIn("version-1",texts[-1])
+
+    def test_e_infographic_all_formats_show_actual_metric_cards_and_escaped_information(self):
+        content={"metrics":[{"label":"확인 수치","value":"37","unit":"건","description":"실제 집계"},{"label":"확인 상태 <script>","value":"미확인 & 검토 필요"}]}
+        svg=export_studio_output("svg","정보 카드",content,METADATA,output_type="infographic")
+        root=ElementTree.fromstring(svg.content);ns={"s":"http://www.w3.org/2000/svg"}
+        self.assertGreaterEqual(len(root.findall("s:rect",ns)),2)
+        texts=" ".join(t.text or "" for t in root.findall("s:text",ns))
+        for value in ("확인 수치","37","건","실제 집계","확인 상태 <script>","미확인 & 검토 필요"):self.assertIn(value,texts)
+        self.assertEqual(root.findall("s:script",ns),[])
+        png=Image.open(BytesIO(export_studio_output("png","정보 카드",content,METADATA,output_type="infographic").content)).convert("RGB")
+        self.assertGreater(sum(p!=(255,255,255) for p in png.crop((40,80,760,160)).get_flattened_data()),100)
+        pdf=PdfReader(BytesIO(export_studio_output("pdf","정보 카드",content,METADATA,output_type="infographic").content))
+        text="".join(page.extract_text() for page in pdf.pages)
+        for value in ("확인 수치","37","건","미확인 & 검토 필요"):self.assertIn(value,text)
+
+    def test_e_empty_infographic_reports_missing_information_without_fake_chart(self):
+        for format_name in ("svg","pdf","png"):
+            with self.subTest(format=format_name):
+                result=export_studio_output(format_name,"빈 카드",{"metrics":[]},METADATA,output_type="infographic")
+                if format_name=="svg":
+                    self.assertIn("표시할 지표나 정보가 없습니다",result.content.decode())
+                    self.assertNotIn(b"<circle",result.content)
+                elif format_name=="pdf":self.assertIn("표시할 지표나 정보가 없습니다",PdfReader(BytesIO(result.content)).pages[0].extract_text())
+                else:self.assertIn("표시할 지표나 정보가 없습니다",Image.open(BytesIO(result.content)).info["Studio"])
+
+    def test_e_csv_formula_cells_are_literal_and_original_text_is_preserved(self):
+        dangerous=["=1+1","+SUM(A1:A2)","-2+3","@cmd"," \t=HYPERLINK(\"https://invalid\")","\r=1","\t=2"]
+        content={"rows":[{"값":value,"설명":"일반 한글"} for value in dangerous]}
+        result=export_studio_output("csv","=제목",content,{**METADATA,"evidence_appendix":"+위험"},output_type="comparison_table")
+        rows=list(csv.reader(StringIO(result.content.decode("utf-8-sig"))))
+        self.assertEqual(rows[0],["제목","'=제목"])
+        for original,row in zip(dangerous,rows[2:]):self.assertEqual(row,["'"+original,"일반 한글"])
+        self.assertEqual(rows[-1],["evidence_appendix","'+위험"])
+
+    def test_e_checklist_pdf_splits_one_long_row_without_losing_text(self):
+        content={"items":[{"항목":"검토 대상","판정":"미확인","필요 조치":"조건과 근거를 함께 확인해야 합니다. "*350+"긴행마지막표식"}]}
+        pdf=PdfReader(BytesIO(export_studio_output("pdf","검토표",content,METADATA,output_type="compliance_checklist").content))
+        self.assertGreater(len(pdf.pages),1)
+        # 반복 header가 페이지 중간에서 분할된 셀 문장을 끊으므로 표 header만 제외해 원문을 비교한다.
+        text="".join(page.extract_text().replace("항목\n판정\n필요 조치\n","") for page in pdf.pages).replace("\n","").replace(" ","")
+        self.assertEqual(text.count("조건과근거를함께확인해야합니다."),350)
+        self.assertIn("긴행마지막표식",text)
+        self.assertIn("version-1",text)
+
+    def test_e_long_information_card_wraps_preserves_zero_and_bounds_image_allocation(self):
+        content={"metrics":[{"label":"긴 카드","value":"한글 정보 "*100+"카드끝표식"},{"label":"확인된 수","value":0}]}
+        svg=ElementTree.fromstring(export_studio_output("svg","한글 카드",content,METADATA,output_type="infographic").content)
+        text="".join(t.text or "" for t in svg.findall("{http://www.w3.org/2000/svg}text"))
+        self.assertIn("카드끝표식",text);self.assertIn("값: 0",text)
+        self.assertGreater(int(svg.attrib["height"]),400)
+        for kind in ("png","svg"):
+            for size in (10000,100000):
+                # 첫 크기는 변 길이 한도 이내에서도 픽셀 상한을 넘는다. 두 번째는 치수도 초과한다.
+                with self.subTest(format=kind,size=size), patch("PIL.Image.new",side_effect=AssertionError("oversized allocation forbidden")):
+                    with self.assertRaisesRegex(StudioExportError,"^EXPORT_TOO_LARGE$"):
+                        export_studio_output(kind,"카드",{"metrics":[{"label":"긴 정보","value":"한글"*size}]},METADATA,output_type="infographic")
+
+    def test_e_legacy_scalar_zero_false_and_empty_string_metrics_are_not_dropped(self):
+        content={"metrics":[0,False,""]}
+        svg=ElementTree.fromstring(export_studio_output("svg","이전 정보",content,METADATA,output_type="infographic").content)
+        ns={"s":"http://www.w3.org/2000/svg"}
+        self.assertEqual(len(svg.findall("s:rect",ns)),3)
+        text=" ".join(t.text or "" for t in svg.findall("s:text",ns))
+        self.assertIn("0",text);self.assertIn("False",text);self.assertIn("빈 문자열",text)
+        self.assertNotIn("표시할 지표나 정보가 없습니다",text)
+
+    def test_e_actual_infographic_shape_preserves_sibling_summary_in_visible_formats(self):
+        from PIL import ImageDraw
+        from copy import deepcopy
+        content={"title":"저장한 카드 제목","summary":"실제 저장 요약 고유끝표식","metrics":[{"label":"근거 1","value":"인용 1","evidence":"page 2"}],"warnings":["추가 확인 필요"],"사용자 항목":"사용자 값 <원문>"}
+        original=deepcopy(content)
+        svg=ElementTree.fromstring(export_studio_output("svg","출력 제목",content,METADATA,output_type="infographic").content)
+        text=" ".join(t.text or "" for t in svg.findall("{http://www.w3.org/2000/svg}text"))
+        for value in ("저장한 카드 제목","실제 저장 요약 고유끝표식","추가 확인 필요","사용자 값 <원문>"):self.assertIn(value,text)
+        pdf=PdfReader(BytesIO(export_studio_output("pdf","출력 제목",content,METADATA,output_type="infographic").content))
+        self.assertIn("실제 저장 요약 고유끝표식","".join(page.extract_text() for page in pdf.pages))
+        rendered=[];draw_text=ImageDraw.ImageDraw.text
+        def record_text(draw,xy,text,*args,**kwargs):
+            rendered.append(str(text));return draw_text(draw,xy,text,*args,**kwargs)
+        with patch.object(ImageDraw.ImageDraw,"text",record_text):
+            image=Image.open(BytesIO(export_studio_output("png","출력 제목",content,METADATA,output_type="infographic").content))
+        self.assertIn("실제 저장 요약 고유끝표식"," ".join(rendered),"PNG metadata가 아니라 실제 draw.text 본문이어야 한다")
+        self.assertGreater(image.height,200);self.assertEqual(content,original)
+
+    def test_e_typed_visual_labels_are_korean_but_original_json_csv_xlsx_keys_are_unchanged(self):
+        content={"rows":[{"key":"대상","baseline":"기준값","current":"현재값","state":"미확인","evidence":"인용","사용자 열 <원문>":"안전값"}]}
+        pdf=PdfReader(BytesIO(export_studio_output("pdf","표",content,METADATA,output_type="comparison_table").content))
+        text="".join(page.extract_text() for page in pdf.pages)
+        for label in ("항목","기준","현재","상태","근거","산출물 버전","사용자 열 <원문>"):self.assertIn(label,text)
+        for raw in ("baseline","current","state","output_version_id"):self.assertNotIn(raw,text)
+        cards={"metrics":[{"label":"수치","value":0}]}
+        svg=ElementTree.fromstring(export_studio_output("svg","카드",cards,METADATA,output_type="infographic").content)
+        text=" ".join(t.text or "" for t in svg.findall("{http://www.w3.org/2000/svg}text"))
+        self.assertIn("항목: 수치",text);self.assertIn("값: 0",text);self.assertNotIn("label:",text);self.assertNotIn("value:",text)
+        slides=PdfReader(BytesIO(export_studio_output("pdf","발표",{"slides":[{"title":"장 제목","body":"장 본문"}]},METADATA,output_type="slides").content))
+        self.assertIn("본문: 장 본문",slides.pages[0].extract_text());self.assertNotIn("body:",slides.pages[0].extract_text())
+        self.assertEqual(json.loads(export_studio_output("json","카드",cards,METADATA,output_type="infographic").content)["content"],cards)
+        csv_rows=list(csv.reader(StringIO(export_studio_output("csv","표",content,METADATA,output_type="comparison_table").content.decode("utf-8-sig"))))
+        self.assertEqual(csv_rows[1],list(content["rows"][0]))
+        with zipfile.ZipFile(BytesIO(export_studio_output("xlsx","표",content,METADATA,output_type="comparison_table").content)) as archive:
+            self.assertIn(b"baseline",archive.read("xl/worksheets/sheet1.xml"))
+
+    def test_e_infographic_svg_rejects_invalid_xml_without_silently_deleting_text(self):
+        valid={"metrics":[{"label":"한글 😀","value":"줄1\t줄2\n줄3\r줄4"}]}
+        ElementTree.fromstring(export_studio_output("svg","유니코드 제목",valid,METADATA,output_type="infographic").content)
+        for invalid in ("\u0001","\ud800"):
+            for location in ("title","body","metadata"):
+                with self.subTest(location=location,character=ord(invalid)):
+                    title="제목"+invalid if location=="title" else "제목"
+                    content={"metrics":[{"label":"항목","value":"값"+invalid}]} if location=="body" else valid
+                    metadata={**METADATA,"추가 정보":"값"+invalid} if location=="metadata" else METADATA
+                    with self.assertRaisesRegex(StudioExportError,"^STUDIO_OUTPUT_UNAVAILABLE$"):
+                        export_studio_output("svg",title,content,metadata,output_type="infographic")
+        for fmt in ("png","pdf"):
+            self.assertTrue(export_studio_output(fmt,"한글 제목",valid,METADATA,output_type="infographic").content)
+
+    def test_e_slide_sibling_warnings_and_unknown_user_fields_are_visible(self):
+        content={"title":"저장한 발표 제목","slides":[{"title":"첫 장","body":"첫 내용"}],"warnings":["발표주의끝표식"],"사용자 메모":"추가 정보 <원문>"}
+        pdf=PdfReader(BytesIO(export_studio_output("pdf","다운로드 제목",content,METADATA,output_type="slides").content))
+        text="".join(page.extract_text() for page in pdf.pages)
+        for value in ("저장한 발표 제목","발표주의끝표식","사용자 메모","추가 정보 <원문>"):self.assertIn(value,text)
+
+    def test_e_actual_compliance_and_comparison_siblings_preserve_warnings_and_lineage(self):
+        from dataclasses import asdict,replace
+        from daon_user_api.compliance_check import ComplianceChecker
+        from daon_user_api.comparison_table import ComparisonTable
+        result=ComplianceChecker().check([{"item_id":"check-qa","judgement":"compliant","evidence":"","action":"추가 검토"}],"ruleset-qa","ruleset-v2","request-qa","model-qa")
+        content=asdict(replace(result,warnings=result.warnings+("경고고유끝표식",)))
+        pdf=PdfReader(BytesIO(export_studio_output("pdf","준수 점검",content,METADATA,output_type="compliance_checklist").content))
+        text="".join(page.extract_text() for page in pdf.pages)
+        for value in ("경고고유끝표식","missing_evidence","ruleset-qa","ruleset-v2","request-qa","model-qa","규칙집 ID","생성 계보","요청 ID"):
+            self.assertIn(value,text)
+        for key in ("ruleset_id","ruleset_version","request_id","lineage"):
+            self.assertNotIn(key,text)
+        comparison=asdict(ComparisonTable().compare({"기준":"값1"},{"기준":"값2"},"baseline-v1","current-v2",{"기준":("인용1","인용2")}))
+        comparison["사용자 요약"]="비교근거끝표식"
+        pdf=PdfReader(BytesIO(export_studio_output("pdf","비교",comparison,METADATA,output_type="comparison_table").content))
+        text="".join(page.extract_text() for page in pdf.pages)
+        for value in ("비교근거끝표식","사용자 요약","기준 버전","현재 버전","차이"):self.assertIn(value,text)
 
     def test_invalid_format_and_oversized_content_fail_closed(self) -> None:
         with self.assertRaisesRegex(StudioExportError, "EXPORT_FORMAT_UNSUPPORTED"):

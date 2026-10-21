@@ -168,6 +168,208 @@ def _pdf(text: str) -> bytes:
     return output.getvalue()
 
 
+
+# 이미지 압축률과 관계없는 메모리/치수 한도. 초과 시 내용 생략 대신 안전 실패한다.
+MAX_RENDER_PIXELS = 8 * 1024 * 1024
+MAX_RENDER_DIMENSION = 16384
+
+
+def _literal_csv_cell(value: object) -> str:
+    text = str(value)
+    # CSV quoting alone does not prevent spreadsheet formula evaluation.
+    # Prefix text without changing/removing any character of the original value.
+    return "'" + text if text.startswith(("\t", "\r", "\n")) or text.lstrip().startswith(("=", "+", "-", "@")) else text
+
+
+def _display(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False) if isinstance(value, (Mapping, list, tuple)) else str(value)
+
+
+
+_VISUAL_LABELS = {
+    "key":"항목", "baseline":"기준", "current":"현재", "state":"상태", "evidence":"근거",
+    "label":"항목", "value":"값", "body":"본문", "title":"제목", "summary":"요약", "warnings":"주의사항",
+    "unit":"단위", "description":"설명", "slide_number":"장 번호", "item_id":"점검 항목",
+    "judgement":"판정", "action":"필요 조치", "output_version_id":"산출물 버전", "created_at":"작성 시각",
+    "knowledge_scope":"지식 범위", "evidence_appendix":"근거 부록",
+    "ruleset_id":"규칙집 ID", "ruleset_version":"규칙집 버전", "request_id":"요청 ID", "model_id":"모델 ID",
+    "lineage":"생성 계보", "difference":"차이", "baseline_version":"기준 버전", "current_version":"현재 버전",
+}
+
+
+def _visual_label(key: str) -> str:
+    return _VISUAL_LABELS.get(key, key)
+
+
+def _visual_value(value: object) -> str:
+    if isinstance(value, Mapping):
+        return "\n".join(f"{_visual_label(key)}: {_visual_value(item)}" for key, item in value.items())
+    if isinstance(value, (list, tuple)) and any(isinstance(item, Mapping) for item in value):
+        return "\n".join(_visual_value(item) for item in value)
+    return _display(value)
+
+
+def _validate_svg_xml(value: object) -> None:
+    # XML 1.0 Fifth Edition character ranges; reject, never silently delete.
+    if isinstance(value, str):
+        if any(not (ord(ch) in (9,10,13) or 0x20 <= ord(ch) <= 0xD7FF
+                    or 0xE000 <= ord(ch) <= 0xFFFD or 0x10000 <= ord(ch) <= 0x10FFFF) for ch in value):
+            raise StudioExportError("STUDIO_OUTPUT_UNAVAILABLE")
+    elif isinstance(value, Mapping):
+        for key, item in value.items():
+            _validate_svg_xml(key); _validate_svg_xml(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _validate_svg_xml(item)
+
+def _metric_cards(content: object) -> list[list[str]]:
+    def scalar(value: object) -> str:
+        return "빈 문자열 (저장값)" if value == "" else _display(value)
+    if isinstance(content, Mapping) and "metrics" in content:
+        # 실제 저장 DTO의 title/summary/warnings 및 사용자 추가 필드를 지표와 함께 보존한다.
+        siblings = [f"{_visual_label(key)}: {_visual_value(value)}" for key, value in content.items() if key != "metrics"]
+        cards = [siblings] if siblings else []
+        records = content["metrics"]
+        if not isinstance(records, (list, tuple)):
+            return cards if records is None or records == {} else cards + [["정보", scalar(records)]]
+        for item in records:
+            if item is None or item == {} or item == []:
+                continue
+            cards.append([f"{_visual_label(key)}: {_visual_value(value)}" for key, value in item.items()]
+                         if isinstance(item, Mapping) else [scalar(item)])
+        return cards
+    if content is None or content == {} or content == []:
+        return []
+    return [[f"{_visual_label(key)}: {_visual_value(value)}" for key, value in content.items()]] if isinstance(content, Mapping) else [[scalar(content)]]
+
+
+def _typed_pdf(title: str, content: object, metadata: Mapping[str, str], output_type: str) -> bytes:
+    from pathlib import Path
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, LongTable, TableStyle, PageBreak, Spacer
+
+    font = "DaonNanumGothic"
+    if font not in pdfmetrics.getRegisteredFontNames():
+        pdfmetrics.registerFont(TTFont(font, str(Path(__file__).parent / "assets" / "NanumGothic-Regular.ttf")))
+    body = ParagraphStyle("studio-body", fontName=font, fontSize=9, leading=14, wordWrap="CJK", splitLongWords=1)
+    heading = ParagraphStyle("studio-heading", parent=body, fontSize=16, leading=22, spaceAfter=14)
+    def paragraph(value: object, style=body):
+        return Paragraph(escape(str(value)).replace("\n", "<br/>"), style)
+    story = []
+    if output_type == "slides" and isinstance(content, Mapping) and isinstance(content.get("slides"), (list, tuple)) and content["slides"]:
+        for index, slide in enumerate(content["slides"]):
+            if index:
+                story.append(PageBreak())
+            story.append(paragraph(f"{title} · {index + 1}", heading))
+            if isinstance(slide, Mapping):
+                for key, value in slide.items():
+                    story.append(paragraph(value if key == "title" else f"{_visual_label(key)}: {_visual_value(value)}", heading if key == "title" else body))
+                    story.append(Spacer(1, 8))
+            else:
+                story.append(paragraph(slide))
+        for key, value in content.items():
+            if key != "slides":
+                story.append(paragraph(f"{_visual_label(key)}: {_visual_value(value)}"))
+    elif output_type in {"comparison_table", "compliance_checklist"}:
+        story.append(paragraph(title, heading))
+        rows = _structured_rows(content)
+        rows = [[_visual_label(key) for key in rows[0]], *rows[1:]]
+        columns = max((len(row) for row in rows), default=1)
+        if columns > 32:
+            raise StudioExportError("EXPORT_TOO_LARGE")
+        cells = [[paragraph(value) for value in row] + [paragraph("")] * (columns - len(row)) for row in rows]
+        table = LongTable(cells, colWidths=[(A4[0] - 80) / columns] * columns, repeatRows=1, splitInRow=1, hAlign="LEFT")
+        table.setStyle(TableStyle([("GRID", (0,0), (-1,-1), .5, colors.HexColor("#94a3b8")),
+            ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#e2e8f0")), ("VALIGN", (0,0), (-1,-1), "TOP"),
+            ("LEFTPADDING", (0,0), (-1,-1), 6), ("RIGHTPADDING", (0,0), (-1,-1), 6),
+            ("TOPPADDING", (0,0), (-1,-1), 6), ("BOTTOMPADDING", (0,0), (-1,-1), 6)]))
+        story.append(table)
+        if isinstance(content, Mapping):
+            collection = next((key for key in ("items", "rows", "sections") if content.get(key)), None)
+            for key, value in content.items():
+                if key != collection:
+                    story.append(paragraph(f"{_visual_label(key)}: {_visual_value(value)}"))
+    else:
+        story.append(paragraph(title, heading))
+        cards = _metric_cards(content)
+        if not cards:
+            cards = [["표시할 지표나 정보가 없습니다. 원본 자료를 확인해 주세요."]]
+        for card in cards:
+            table = LongTable([[paragraph(line)] for line in card], colWidths=[A4[0] - 80], splitInRow=1, hAlign="LEFT")
+            table.setStyle(TableStyle([("BOX", (0,0), (-1,-1), .8, colors.HexColor("#94a3b8")),
+                ("BACKGROUND", (0,0), (-1,-1), colors.HexColor("#f8fafc")),
+                ("LEFTPADDING", (0,0), (-1,-1), 10), ("RIGHTPADDING", (0,0), (-1,-1), 10),
+                ("TOPPADDING", (0,0), (-1,-1), 5), ("BOTTOMPADDING", (0,0), (-1,-1), 5)]))
+            story.extend([table, Spacer(1, 12)])
+    story.extend([Spacer(1, 16), paragraph("근거 부록", heading)])
+    story.extend(paragraph(f"{_visual_label(key)}: {value}") for key, value in metadata.items())
+    output = BytesIO()
+    SimpleDocTemplate(output, pagesize=A4, leftMargin=40, rightMargin=40, topMargin=40, bottomMargin=40,
+                      invariant=1).build(story)
+    return output.getvalue()
+
+
+def _card_layout(title: str, content: object, metadata: Mapping[str, str]):
+    from pathlib import Path
+    from PIL import ImageFont
+    font = ImageFont.truetype(str(Path(__file__).parent / "assets" / "NanumGothic-Regular.ttf"), 16)
+    width = 800
+    def wrap(text: str, available: int):
+        lines = []
+        for part in text.expandtabs(4).split("\n"):
+            line = ""
+            for ch in part:
+                if line and font.getlength(line + ch) > available:
+                    lines.append(line); line = ""
+                line += ch
+            lines.append(line)
+        return lines
+    def check(height: int):
+        if height > MAX_RENDER_DIMENSION or width * height > MAX_RENDER_PIXELS:
+            raise StudioExportError("EXPORT_TOO_LARGE")
+    heading = wrap(title, 720); y = 24 + len(heading) * 24 + 20
+    cards = _metric_cards(content) or [["표시할 지표나 정보가 없습니다. 원본 자료를 확인해 주세요."]]
+    placed = []
+    for card in cards:
+        lines = [part for line in card for part in wrap(line, 680)]
+        height = 32 + len(lines) * 24
+        check(y + height + 20)
+        placed.append((y, height, lines)); y += height + 16
+    footer = [part for key, value in metadata.items() for part in wrap(f"{_visual_label(key)}: {value}", 720)]
+    height = y + len(footer) * 24 + 24
+    check(height)
+    return width, height, heading, placed, y, footer, font
+
+
+def _infographic(format_name: str, title: str, content: object, metadata: Mapping[str, str]) -> bytes:
+    width, height, heading, cards, footer_y, footer, font = _card_layout(title, content, metadata)
+    if format_name == "svg":
+        elements = [f'<text x="40" y="{44+i*24}" font-size="16">{escape(line)}</text>' for i,line in enumerate(heading)]
+        for y, h, lines in cards:
+            elements.append(f'<rect x="40" y="{y}" width="720" height="{h}" rx="8" fill="#f8fafc" stroke="#94a3b8"/>')
+            elements.extend(f'<text x="60" y="{y+32+i*24}" font-size="16">{escape(line)}</text>' for i,line in enumerate(lines))
+        elements.extend(f'<text x="40" y="{footer_y+24+i*24}" font-size="16">{escape(line)}</text>' for i,line in enumerate(footer))
+        return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">'
+                f'<title>{escape(title)}</title>'+"".join(elements)+"</svg>").encode("utf-8")
+    from PIL import Image, ImageDraw, PngImagePlugin
+    image = Image.new("RGB", (width, height), "white"); draw = ImageDraw.Draw(image)
+    for i,line in enumerate(heading):
+        draw.text((40,24+i*24), line, font=font, fill="#0f172a")
+    for y,h,lines in cards:
+        draw.rounded_rectangle((40,y,760,y+h),radius=8,fill="#f8fafc",outline="#94a3b8")
+        for i,line in enumerate(lines):
+            draw.text((60,y+16+i*24),line,font=font,fill="#0f172a")
+    for i,line in enumerate(footer):
+        draw.text((40,footer_y+i*24),line,font=font,fill="#0f172a")
+    info=PngImagePlugin.PngInfo()
+    info.add_itxt("Studio", _payload(title,content,dict(metadata)) + ("\n표시할 지표나 정보가 없습니다" if not _metric_cards(content) else ""))
+    output=BytesIO();image.save(output,format="PNG",pnginfo=info)
+    return output.getvalue()
+
 def _chunk(kind: bytes, data: bytes) -> bytes:
     return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", binascii.crc32(kind + data) & 0xffffffff)
 
@@ -262,18 +464,23 @@ def export_studio_output(format_name: str, title: str, content: object, metadata
             # No media provider/encoder is configured. Never manufacture a
             # downloadable placeholder that looks like a completed artifact.
             raise StudioExportError("STUDIO_OUTPUT_UNAVAILABLE")
+    if format_name == "svg" and output_type == "infographic":
+        _validate_svg_xml((title, content, metadata))
     encoded_content = json.dumps(content, ensure_ascii=False).encode("utf-8") if not isinstance(content, str) else content.encode("utf-8")
     if len(encoded_content) > MAX_EXPORT_BYTES:
         raise StudioExportError("EXPORT_TOO_LARGE")
     text = _payload(title, content, metadata)
     if format_name == "docx": data = _docx(text)
     elif format_name == "xlsx": data = _xlsx([["제목", title], *_structured_rows(content), [], ["근거 부록", ""], *[[key, value] for key, value in metadata.items()]])
-    elif format_name == "pdf": data = _pdf(text)
+    elif format_name == "pdf": data = _typed_pdf(title, content, metadata, output_type) if output_type in {"comparison_table", "compliance_checklist", "slides", "infographic"} else _pdf(text)
     elif format_name == "json": data = json.dumps({"title": title, "output_type": output_type, "content": content, "metadata": metadata}, ensure_ascii=False).encode()
-    elif format_name == "svg": data = _svg_graph(title, content, metadata)
-    elif format_name == "png": data = _png_graph(text, content)
+    elif format_name == "svg": data = _infographic(format_name, title, content, metadata) if output_type == "infographic" else _svg_graph(title, content, metadata)
+    elif format_name == "png": data = _infographic(format_name, title, content, metadata) if output_type == "infographic" else _png_graph(text, content)
     else:
-        output = StringIO(); writer = csv.writer(output, lineterminator="\n"); writer.writerow(["제목", title]); writer.writerows(_structured_rows(content)); writer.writerow([]); writer.writerow(["근거 부록"]); writer.writerows(metadata.items()); data = output.getvalue().encode("utf-8-sig")
+        output = StringIO(); writer = csv.writer(output, lineterminator="\n")
+        rows = [["제목", title], *_structured_rows(content), [], ["근거 부록"], *metadata.items()]
+        writer.writerows([_literal_csv_cell(value) for value in row] for row in rows)
+        data = output.getvalue().encode("utf-8-sig")
     if len(data) > MAX_EXPORT_BYTES:
         raise StudioExportError("EXPORT_TOO_LARGE")
     filename = f"studio-{metadata['output_version_id']}.{format_name}"
