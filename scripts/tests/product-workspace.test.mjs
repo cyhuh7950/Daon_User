@@ -13,7 +13,6 @@ import {
   projectQuestionFailureState,
   questionFailureMessage,
 } from "../../packages/ui/src/product-workspace-model.js";
-import * as routingWorkspaceModel from '../../packages/ui/src/product-workspace-model.js';
 import { classifyConversationIntent, buildSourceScopeMismatch } from "../../packages/ui/src/conversation-intent.js";
 import { uploadSource } from "../../apps/web/lib/source-upload-api.js";
 import * as sourceRetryApi from "../../apps/web/lib/source-upload-api.js";
@@ -276,12 +275,10 @@ function s17Adapter(overrides = {}) {
     listSources: async () => [], listKnowledgePackages: async () => [], listStudioOutputs: async () => [],
     listConnectors: async () => [{ ...s17Connector }], ...overrides };
 }
-async function mountS17ReconnectWorkspace(initialAdapter, outputRoot = null, selectionUrl = null) {
+async function mountS17ReconnectWorkspace(initialAdapter) {
   const root = path.resolve(import.meta.dirname, "../..");
-  const output = await mkdtemp(path.join(outputRoot ?? root, ".workspace-s17-reconnect-"));
+  const output = await mkdtemp(path.join(root, ".workspace-s17-reconnect-"));
   const dom = installMinimalDom();
-  if(selectionUrl){let current=new URL(selectionUrl);window.location={get href(){return current.href;},get hash(){return current.hash;}};
-    window.history={state:{existing:true},replaceState(state,_title,value){this.state=state;current=new URL(value,current);}};}
   let reactRoot;
   try {
     const { build } = await import("vite");
@@ -2254,146 +2251,4 @@ test("저장된 공통 Studio DTO 1건으로 재진입해도 신규 Pane과 기�
   } finally {
     await rm(output, { recursive: true, force: true });
   }
-});
-
-
-const b3Grant=()=>({routing_plan_id:'plan-b3',routing_plan_authorization:'memory-only-permit',run_id:'run-b3',
- plan_digest:'a'.repeat(64),expires_at:new Date(Date.now()+60000).toISOString(),requires_step_up:true,
- routing_preview:{schema_version:1,routing_policy_version_id:'policy-b3',plan_digest:'a'.repeat(64),candidates:[{candidate_order:1,model_id:'QA-model',deployment_id:'deployment-b3',provider_kind:'server_internal'}],exclusions:[]}});
-const b3Policy=()=>({version:1,policy_version_id:'policy-b3',body:{enabled:true},execution_enabled:false,readiness:'observations_unavailable'});
-const b3Details=()=>({schema_version:1,run_id:'run-b3',routing_mode:'auto',routing_policy_version_id:'policy-b3',routing_plan_id:'plan-b3',plan_digest:'a'.repeat(64),run_state:'completed',candidates:b3Grant().routing_preview.candidates,exclusions:[],attempts:[{attempt_id:'attempt-b3',candidate_order:1,state:'succeeded',started_at:'2026-10-21T00:00:00Z',finished_at:'2026-10-21T00:00:01Z',failure_code:null,cost_state:'unknown',cost_amount:null,currency:null}],final_selection:{candidate_order:1,model_id:'QA-model',attempt_id:'attempt-b3'}});
-const b3Mode=w=>findElements(w.container,node=>node.tagName==='SELECT' && node.getAttribute('aria-label')==='질문 모델 선택 방식')[0];
-test('B3 React auto prepares previews then explicitly executes once without repeat password',async()=>{
- const calls=[],w=await mountS17ReconnectWorkspace(s18Adapter({getRoutingPolicy:async()=>b3Policy(),authorizeQuestion:async input=>{calls.push(['prepare',input]);return b3Grant();},askQuestion:async(input,options)=>{calls.push(['execute',input,options]);return {...s18Answer('B3 실제 답변'),run_id:'run-b3'};},getRunRoutingDecision:async()=>b3Details()}),tmpdir());let submitted;
- try{
-  assert.ok(b3Mode(w));await w.act(async()=>s18Props(b3Mode(w)).onChange({currentTarget:{value:'auto'}}));await s18Type(w,'B3 질문');
-  await w.act(async()=>{submitted=s18Submit(w);await Promise.resolve();await Promise.resolve();});
-  assert.match(w.container.textContent,/실행 후보 확인/u);assert.match(w.container.textContent,/QA-model/u);assert.equal(calls.length,1);
-  assert.equal(s18AuthPassword(w),undefined,'success requires_step_up is not another challenge');
-  const execute=findElements(w.container,node=>node.tagName==='BUTTON' && node.textContent==='확인한 후보로 실행')[0];
-  await w.act(async()=>{execute.dispatchEvent(new MinimalEvent('click'));execute.dispatchEvent(new MinimalEvent('click'));await submitted;});
-  assert.equal(calls.filter(c=>c[0]==='execute').length,1);assert.equal(calls[1][2].routingPlanAuthorization,'memory-only-permit');
-  assert.match(w.container.textContent,/B3 실제 답변/u);assert.match(w.container.textContent,/비용 미확인/u);assert.doesNotMatch(w.container.textContent,/memory-only-permit/u);
- }finally{if(submitted){await w.act(async()=>{const cancel=findElements(w.container,n=>n.tagName==='BUTTON' && n.textContent==='자동 질문 취소')[0];cancel?.dispatchEvent(new MinimalEvent('click'));});await submitted;}await w.cleanup();}
-});
-
-
-test('B3 routing fragment is scoped exact metadata and rejects duplicate or foreign selectors',()=>{
- assert.equal(typeof routingWorkspaceModel.routingSelectionFragment,'function','scoped routing fragment metadata is unavailable');
- const {parseRoutingSelection,routingSelectionFragment}=routingWorkspaceModel;
- const hash=routingSelectionFragment('run-1','workspace-1','notebook-1');
- assert.equal(parseRoutingSelection(hash,'workspace-1','notebook-1'),'run-1');
- for(const value of [hash+'&actor=other',hash+'&routing-run=run-2',hash.replace('notebook-1','other'),hash.replace('run-1','bad%2Fid')])assert.throws(()=>parseRoutingSelection(value,'workspace-1','notebook-1'));
- assert.equal(parseRoutingSelection('#existing-citation','workspace-1','notebook-1'),null);
- assert.doesNotMatch(hash,/permit|nonce|password|question/u);
-});
-
-
-test('B3 React refresh restores failed Run by scoped fragment using GET only',async()=>{
- const calls=[],hash=routingWorkspaceModel.routingSelectionFragment('run-b3','workspace-1','notebook-s18');
- const w=await mountS17ReconnectWorkspace(s18Adapter({getRunRoutingDecision:async id=>{calls.push(['read',id]);return {...b3Details(),run_state:'failed',final_selection:null};},askQuestion:async()=>{calls.push(['execute']);throw new Error('must not call');},authorizeQuestion:async()=>{calls.push(['prepare']);throw new Error('must not call');}}),tmpdir(),'https://app.example.com/notebooks/notebook-s18'+hash);
- try{await w.act(async()=>{await Promise.resolve();await Promise.resolve();});assert.deepEqual(calls,[['read','run-b3']]);assert.match(w.container.textContent,/실행 상태 · failed/u);assert.equal(window.history.state.existing,true);}
- finally{await w.cleanup();}
-});
-
-
-test('B3 React prompts only on challenge and cancellation discards the prepared permit',async()=>{
- let authorizations=0,executions=0,submission;
- const w=await mountS17ReconnectWorkspace(s18Adapter({getRoutingPolicy:async()=>b3Policy(),authorizeQuestion:async input=>{
-   authorizations++;if(!input.password)throw new Error('REAUTHENTICATION_REQUIRED');assert.equal(input.password,'fixture-b3-password');return b3Grant();
- },askQuestion:async()=>{executions++;return s18Answer();}}),tmpdir());
- try{
-  await w.act(async()=>s18Props(b3Mode(w)).onChange({currentTarget:{value:'auto'}}));await s18Type(w);
-  await w.act(async()=>{submission=s18Submit(w);await Promise.resolve();await Promise.resolve();});
-  assert.ok(s18AuthPassword(w));s18AuthPassword(w).value='fixture-b3-password';
-  const authenticate=findElements(w.container,n=>n.tagName==='BUTTON' && n.textContent==='인증 후 질문 제출')[0];
-  await w.act(async()=>{authenticate.dispatchEvent(new MinimalEvent('click'));await Promise.resolve();await Promise.resolve();});
-  assert.match(w.container.textContent,/실행 후보 확인/u);assert.equal(authorizations,2);assert.equal(executions,0);
-  const cancel=findElements(w.container,n=>n.tagName==='BUTTON' && n.textContent==='자동 질문 취소')[0];
-  await w.act(async()=>{cancel.dispatchEvent(new MinimalEvent('click'));await submission;});
-  assert.equal(executions,0);assert.equal(s18AuthPassword(w),undefined);assert.doesNotMatch(w.container.textContent,/fixture-b3-password|memory-only-permit/u);
- }finally{await w.cleanup();}
-});
-test('B3 React ignores late prepare after Notebook switch and never dispatches',async()=>{
- const delayed=deferred();let executions=0,submission;
- const w=await mountS17ReconnectWorkspace(s18Adapter({getRoutingPolicy:async()=>b3Policy(),authorizeQuestion:async()=>delayed.promise,askQuestion:async()=>{executions++;return s18Answer();}}),tmpdir());
- try{
-  await w.act(async()=>s18Props(b3Mode(w)).onChange({currentTarget:{value:'auto'}}));await s18Type(w);
-  await w.act(async()=>{submission=s18Submit(w);await Promise.resolve();});
-  await w.render(s18Adapter({notebookContext:{notebook_id:'new-notebook',sources:[]},getRoutingPolicy:async()=>b3Policy()}));
-  await w.act(async()=>{delayed.resolve(b3Grant());await submission;});
-  assert.equal(executions,0);assert.doesNotMatch(w.container.textContent,/실행 후보 확인|memory-only-permit/u);
- }finally{delayed.resolve(b3Grant());await w.cleanup();}
-});
-for(const hash of ['#existing-citation','#routing-run=run-b3&routing-workspace=foreign&routing-notebook=notebook-s18',
- '#routing-run=run-b3&routing-workspace=workspace-1&routing-notebook=notebook-s18&routing-run=other'])test('B3 React does not restore invalid or unrelated fragment '+hash,async()=>{
- let reads=0;const w=await mountS17ReconnectWorkspace(s18Adapter({getRunRoutingDecision:async()=>{reads++;return b3Details();}}),tmpdir(),'https://app.example.com/notebooks/notebook-s18'+hash);
- try{await w.act(async()=>{await Promise.resolve();});assert.equal(reads,0);assert.equal(window.location.hash,hash);assert.doesNotMatch(w.container.textContent,/QA-model/u);}finally{await w.cleanup();}
-});
-test('B3 React denied restored Run clears details and never retries execution',async()=>{
- let reads=0;const w=await mountS17ReconnectWorkspace(s18Adapter({getRunRoutingDecision:async()=>{reads++;throw new Error('RESOURCE_UNAVAILABLE');}}),tmpdir(),'https://app.example.com/notebooks/notebook-s18'+routingWorkspaceModel.routingSelectionFragment('run-b3','workspace-1','notebook-s18'));
- try{await w.act(async()=>{await Promise.resolve();});assert.equal(reads,1);assert.match(w.container.textContent,/접근 권한/u);assert.doesNotMatch(w.container.textContent,/QA-model|memory-only-permit/u);}finally{await w.cleanup();}
-});
-
-
-for(const reason of ['policy-change','expiry'])test('B3 React '+reason+' discards approval and dispatches zero',async()=>{
- let policies=0,executions=0,submission;
- const w=await mountS17ReconnectWorkspace(s18Adapter({getRoutingPolicy:async()=>{policies++;return {...b3Policy(),policy_version_id:reason==='policy-change' && policies>1?'policy-new':'policy-b3'};},
-  authorizeQuestion:async()=>({...b3Grant(),expires_at:reason==='expiry'?new Date(Date.now()+25).toISOString():b3Grant().expires_at}),
-  askQuestion:async()=>{executions++;return s18Answer();}}),tmpdir());
- try{
-  await w.act(async()=>s18Props(b3Mode(w)).onChange({currentTarget:{value:'auto'}}));await s18Type(w);
-  await w.act(async()=>{submission=s18Submit(w);await Promise.resolve();await Promise.resolve();});
-  if(reason==='policy-change'){const execute=findElements(w.container,n=>n.tagName==='BUTTON' && n.textContent==='확인한 후보로 실행')[0];await w.act(async()=>{execute.dispatchEvent(new MinimalEvent('click'));await submission;});}
-  else{await w.act(async()=>{await new Promise(resolve=>setTimeout(resolve,40));await submission;});}
-  assert.equal(executions,0);assert.match(w.container.textContent,reason==='expiry'?/만료/u:/정책.*변경/u);assert.doesNotMatch(w.container.textContent,/memory-only-permit/u);
- }finally{await w.cleanup();}
-});
-for(const hash of ['', '#existing-citation'])test('B3 React stores only owned safe selection and preserves other history '+hash,async()=>{
- let submission;
- const w=await mountS17ReconnectWorkspace(s18Adapter({getRoutingPolicy:async()=>b3Policy(),authorizeQuestion:async()=>b3Grant(),askQuestion:async()=>({...s18Answer(),run_id:'run-b3'}),getRunRoutingDecision:async()=>b3Details()}),
- tmpdir(),'https://app.example.com/notebooks/notebook-s18?view=current'+hash);
- try{
-  await w.act(async()=>s18Props(b3Mode(w)).onChange({currentTarget:{value:'auto'}}));await s18Type(w);
-  await w.act(async()=>{submission=s18Submit(w);await Promise.resolve();await Promise.resolve();});
-  const execute=findElements(w.container,n=>n.tagName==='BUTTON' && n.textContent==='확인한 후보로 실행')[0];await w.act(async()=>{execute.dispatchEvent(new MinimalEvent('click'));await submission;});
-  assert.equal(new URL(window.location.href).search,'?view=current');assert.equal(window.history.state.existing,true);
-  if(hash){assert.equal(window.location.hash,hash);assert.match(w.container.textContent,/새로고침 복원을 지원하지 않습니다/u);}
-  else{assert.equal(routingWorkspaceModel.parseRoutingSelection(window.location.hash,'workspace-1','notebook-s18'),'run-b3');assert.doesNotMatch(window.location.href,/permit|nonce|선택/u);}
-  await w.render(s18Adapter({notebookContext:{notebook_id:'other-notebook',sources:[]}}));
-  assert.equal(window.location.hash,hash);assert.doesNotMatch(w.container.textContent,/QA-model/u);
- }finally{await w.cleanup();}
-});
-
-
-test('B3 React refreshes the same Run after execute settles instead of retaining generating',async()=>{
- const pending=deferred();let reads=0,executes=0,submission;
- const w=await mountS17ReconnectWorkspace(s18Adapter({getRoutingPolicy:async()=>b3Policy(),authorizeQuestion:async()=>b3Grant(),
-  askQuestion:async()=>{executes++;return pending.promise;},getRunRoutingDecision:async()=>{reads++;return {...b3Details(),run_state:reads===1?'generating':'completed',final_selection:reads===1?null:b3Details().final_selection};}}),tmpdir());
- try{
-  await w.act(async()=>s18Props(b3Mode(w)).onChange({currentTarget:{value:'auto'}}));await s18Type(w);
-  await w.act(async()=>{submission=s18Submit(w);await Promise.resolve();await Promise.resolve();});
-  const execute=findElements(w.container,n=>n.tagName==='BUTTON' && n.textContent==='확인한 후보로 실행')[0];
-  await w.act(async()=>{execute.dispatchEvent(new MinimalEvent('click'));await Promise.resolve();await Promise.resolve();});
-  assert.equal(reads,1);assert.match(w.container.textContent,/실행 상태 · generating/u);
-  await w.act(async()=>{pending.resolve({...s18Answer(),run_id:'run-b3'});await submission;await Promise.resolve();});
-  assert.equal(executes,1);assert.equal(reads,2);assert.match(w.container.textContent,/실행 상태 · completed/u);assert.match(w.container.textContent,/최종 모델 · QA-model/u);
- }finally{pending.resolve({...s18Answer(),run_id:'run-b3'});if(submission)await submission;await w.cleanup();}
-});
-
-
-test('B3 React refreshes failed settlement and ignores an older late generating read',async()=>{
- const pending=deferred(),earlyRead=deferred();let reads=0,executes=0,submission;
- const w=await mountS17ReconnectWorkspace(s18Adapter({getRoutingPolicy:async()=>b3Policy(),authorizeQuestion:async()=>b3Grant(),
-  askQuestion:async()=>{executes++;return pending.promise;},getRunRoutingDecision:async()=>{reads++;return reads===1?earlyRead.promise:{...b3Details(),run_state:'failed',final_selection:null};}}),tmpdir());
- try{
-  await w.act(async()=>s18Props(b3Mode(w)).onChange({currentTarget:{value:'auto'}}));await s18Type(w);
-  await w.act(async()=>{submission=s18Submit(w);await Promise.resolve();await Promise.resolve();});
-  const execute=findElements(w.container,n=>n.tagName==='BUTTON' && n.textContent==='확인한 후보로 실행')[0];
-  await w.act(async()=>{execute.dispatchEvent(new MinimalEvent('click'));await Promise.resolve();await Promise.resolve();});assert.equal(reads,1);
-  await w.act(async()=>{pending.reject(new Error('ROUTING_RUN_UNCERTAIN'));await submission;await Promise.resolve();});
-  assert.equal(executes,1);assert.equal(reads,2);assert.match(w.container.textContent,/실행 상태 · failed/u);
-  await w.act(async()=>{earlyRead.resolve({...b3Details(),run_state:'generating',final_selection:null});await Promise.resolve();});
-  assert.match(w.container.textContent,/실행 상태 · failed/u);assert.doesNotMatch(w.container.textContent,/실행 상태 · generating/u);
- }finally{earlyRead.resolve(b3Details());pending.resolve({...s18Answer(),run_id:'run-b3'});if(submission)await submission;await w.cleanup();}
 });

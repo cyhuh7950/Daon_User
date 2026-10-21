@@ -148,13 +148,6 @@ export function browserSessionCookieName(profile = "production") {
 }
 
 function routeFor(method, segments) {
-  if(segments.length===3 && segments[0]==='runs' && SAFE_SEGMENT.test(segments[1]) && segments[2]==='routing-decision') {
-    const keys=new Set(['workspace_id']);
-    return method==='GET'?{path:`/api/v1/runs/${encodeURIComponent(segments[1])}/routing-decision`,query:keys,requiredQuery:keys}:{methodRejected:true};
-  }
-  if(segments.length===3 && segments[0]==='workspaces' && SAFE_SEGMENT.test(segments[1]) && segments[2]==='routing-policy') {
-    return ['GET','PUT'].includes(method)?{path:`/api/v1/workspaces/${encodeURIComponent(segments[1])}/routing-policy`,query:new Set(method==='GET'?['include_permissions']:[]),strictQuery:true,routingPolicy:true}:{methodRejected:true};
-  }
   if (segments.length === 2 && segments[0] === "account" && new Set(["profile", "devices", "sessions"]).has(segments[1])) {
     const profile = segments[1] === "profile";
     return (method === "GET" || profile && method === "PATCH")
@@ -1224,7 +1217,6 @@ export function createBffProxy({
       if (values.length > 1 || values.some(([key, value]) => !route.query.has(key)
         || !SAFE_SEGMENT.test(value) || /\s/u.test(value))) return createBffSafeError(400, "INVALID_REQUEST", trace);
     }
-    if(route.routingPolicy && new URL(request.url).searchParams.has('include_permissions') && new URL(request.url).searchParams.get('include_permissions')!=='1')return createBffSafeError(400,'INVALID_REQUEST',trace);
     if (route.requiredQuery) {
       const query = new URL(request.url).searchParams;
       if ([...query.keys()].some((key) => !route.requiredQuery.has(key))
@@ -1277,7 +1269,7 @@ export function createBffProxy({
     }
     const headers = new Headers();
     for (const [key, value] of request.headers) {
-      if (REQUEST_HEADERS.has(key.toLowerCase()) || route.routingPolicy && request.method==='PUT' && key.toLowerCase()==='if-none-match') headers.set(key, value);
+      if (REQUEST_HEADERS.has(key.toLowerCase())) headers.set(key, value);
     }
     if (route.profileSessionBinding || route.orgSessionBinding) headers.set("X-Daon-Expected-Session-Id", expectedProfileSession);
     if (route.studioExport && request.headers.has("x-daon-step-up-authorization")) {

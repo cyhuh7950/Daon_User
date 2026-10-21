@@ -60,187 +60,6 @@
     }
   ],
   "paths": {
-  "/api/v1/workspaces/{id}/routing-policy": {
-    "get": {
-  "tags": [
-    "Model"
-  ],
-  "x-implementation-owner": "R3-B1",
-  "responses": {
-    "400": {
-      "$ref": "#/components/responses/BadRequest"
-    },
-    "401": {
-      "$ref": "#/components/responses/Unauthorized"
-    },
-    "403": {
-      "$ref": "#/components/responses/Forbidden"
-    },
-    "404": {
-      "$ref": "#/components/responses/NotFound"
-    },
-    "409": {
-      "$ref": "#/components/responses/Conflict"
-    },
-    "422": {
-      "$ref": "#/components/responses/BadRequest"
-    },
-    "412": {
-      "$ref": "#/components/responses/PreconditionFailed"
-    },
-    "500": {
-      "$ref": "#/components/responses/SafeFailure"
-    },
-    "503": {
-      "$ref": "#/components/responses/SafeFailure"
-    },
-    "200": {
-      "description": "B1 후보 정책 안전 조회/저장. 자동 호출은 비활성.",
-      "headers": {
-        "X-Trace-Id": {
-          "$ref": "#/components/headers/XTraceId"
-        },
-        "ETag": {
-          "$ref": "#/components/headers/ETag"
-        },
-        "Cache-Control": {
-          "schema": {
-            "type": "string",
-            "const": "no-store"
-          }
-        }
-      },
-      "content": {
-        "application/json": {
-          "schema": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/RoutingPolicyEnvelope"
-              },
-              {
-                "$ref": "#/components/schemas/RoutingPolicyPermissionsEnvelope"
-              }
-            ]
-          }
-        }
-      }
-    }
-  },
-  "parameters": [
-    {
-      "$ref": "#/components/parameters/ResourceId"
-    },
-    {
-      "name": "include_permissions",
-      "in": "query",
-      "required": false,
-      "schema": {
-        "type": "string",
-        "const": "1"
-      }
-    }
-  ],
-  "operationId": "getWorkspaceRoutingPolicy",
-  "summary": "후보 정책 조회 (VIEW)"
-},
-    "put": {
-      "tags": [
-        "Model"
-      ],
-      "x-implementation-owner": "R3-B1",
-      "responses": {
-        "400": {
-          "$ref": "#/components/responses/BadRequest"
-        },
-        "401": {
-          "$ref": "#/components/responses/Unauthorized"
-        },
-        "403": {
-          "$ref": "#/components/responses/Forbidden"
-        },
-        "404": {
-          "$ref": "#/components/responses/NotFound"
-        },
-        "409": {
-          "$ref": "#/components/responses/Conflict"
-        },
-        "422": {
-          "$ref": "#/components/responses/BadRequest"
-        },
-        "412": {"$ref":"#/components/responses/PreconditionFailed"},
-          "500": {"$ref":"#/components/responses/SafeFailure"},
-          "503": {
-          "$ref": "#/components/responses/SafeFailure"
-        },
-        "200": {
-          "description": "B1 후보 정책 안전 조회/저장. 자동 호출은 비활성.",
-          "headers": {
-            "X-Trace-Id": {"$ref":"#/components/headers/XTraceId"},
-            "ETag": {
-              "$ref": "#/components/headers/ETag"
-            }
-          },
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RoutingPolicyEnvelope"
-              }
-            }
-          }
-        },
-        "428": {
-          "description": "필수 조건 헤더 없음",
-          "headers": {"X-Trace-Id":{"$ref":"#/components/headers/XTraceId"}},
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SafeErrorEnvelope"
-              }
-            }
-          }
-        }
-      },
-      "parameters": [
-        {
-          "$ref": "#/components/parameters/ResourceId"
-        },
-        {
-          "$ref": "#/components/parameters/IdempotencyKey"
-        },
-        {
-          "name": "If-Match",
-          "in": "header",
-          "required": false,
-          "schema": {
-            "type": "string"
-          }
-        },
-        {
-          "name": "If-None-Match",
-          "in": "header",
-          "required": false,
-          "schema": {
-            "type": "string",
-            "const": "*"
-          }
-        }
-      ],
-      "operationId": "putWorkspaceRoutingPolicy",
-      "summary": "후보 정책 불변 버전 저장 (POLICY_MANAGE)",
-      "description": "생성 expected_version=0 + If-None-Match:*; 갱신 현재 expected_version + If-Match. 조건 누락428, 두 헤더 동시422, 경합409. 모델 호출0.",
-      "requestBody": {
-        "required": true,
-        "content": {
-          "application/json": {
-            "schema": {
-              "$ref": "#/components/schemas/RoutingPolicyRequest"
-            }
-          }
-        }
-      }
-    }
-  }
-,
     "/api/v1/organization/admin/tenants": {"get":{"operationId":"listManagedOrganizations","tags":["Workspace"],"summary":"시스템 관리자 전용 실제 조직 목록","x-implementation-owner":"S39-L3","parameters":[],"responses":{"200":{"description":"시스템 관리자 전용 실제 조직 목록","headers":{"X-Trace-Id":{"$ref":"#/components/headers/XTraceId"},"ETag":{"$ref":"#/components/headers/ETag"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/OrganizationTenantsEnvelope"}}}},"400":{"$ref":"#/components/responses/BadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/NotFound"},"409":{"$ref":"#/components/responses/Conflict"},"412":{"$ref":"#/components/responses/PreconditionFailed"},"422":{"$ref":"#/components/responses/BadRequest"},"500":{"$ref":"#/components/responses/SafeFailure"},"503":{"$ref":"#/components/responses/SafeFailure"}}}},
     "/api/v1/organization/tenants/{tenant_id}/workspaces": {"get":{"operationId":"listManagedOrganizationWorkspaces","tags":["Workspace"],"summary":"선택 조직의 실제 organization Workspace 목록","x-implementation-owner":"S39-L3","parameters":[{"name":"tenant_id","in":"path","required":true,"schema":{"$ref":"#/components/schemas/OpaqueId"}}],"responses":{"200":{"description":"선택 조직의 실제 organization Workspace 목록","headers":{"X-Trace-Id":{"$ref":"#/components/headers/XTraceId"},"ETag":{"$ref":"#/components/headers/ETag"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/OrganizationWorkspacesEnvelope"}}}},"400":{"$ref":"#/components/responses/BadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/NotFound"},"409":{"$ref":"#/components/responses/Conflict"},"412":{"$ref":"#/components/responses/PreconditionFailed"},"422":{"$ref":"#/components/responses/BadRequest"},"500":{"$ref":"#/components/responses/SafeFailure"},"503":{"$ref":"#/components/responses/SafeFailure"}}}},
     "/api/v1/organization/tenants/{tenant_id}/invitations": {"get":{"operationId":"listOrganizationInvitations","tags":["Workspace"],"summary":"선택 조직의 안전 초대 목록","x-implementation-owner":"S39-L3","parameters":[{"name":"tenant_id","in":"path","required":true,"schema":{"$ref":"#/components/schemas/OpaqueId"}}],"responses":{"200":{"description":"선택 조직의 안전 초대 목록","headers":{"X-Trace-Id":{"$ref":"#/components/headers/XTraceId"},"ETag":{"$ref":"#/components/headers/ETag"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/OrganizationInvitationsEnvelope"}}}},"400":{"$ref":"#/components/responses/BadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/NotFound"},"409":{"$ref":"#/components/responses/Conflict"},"412":{"$ref":"#/components/responses/PreconditionFailed"},"422":{"$ref":"#/components/responses/BadRequest"},"500":{"$ref":"#/components/responses/SafeFailure"},"503":{"$ref":"#/components/responses/SafeFailure"}}},"post":{"operationId":"createOrganizationInvitation","tags":["Workspace"],"summary":"선택 Workspace에 고정한 초대 생성","x-implementation-owner":"S39-L3","parameters":[{"name":"tenant_id","in":"path","required":true,"schema":{"$ref":"#/components/schemas/OpaqueId"}},{"$ref":"#/components/parameters/IdempotencyKey"},{"$ref":"#/components/parameters/OrganizationExpectedSessionId"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/OrganizationInvitationCreate"}}}},"responses":{"201":{"description":"선택 Workspace에 고정한 초대 생성","headers":{"X-Trace-Id":{"$ref":"#/components/headers/XTraceId"},"ETag":{"$ref":"#/components/headers/ETag"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/OrganizationInvitationEnvelope"}}}},"400":{"$ref":"#/components/responses/BadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/NotFound"},"409":{"$ref":"#/components/responses/Conflict"},"412":{"$ref":"#/components/responses/PreconditionFailed"},"422":{"$ref":"#/components/responses/BadRequest"},"500":{"$ref":"#/components/responses/SafeFailure"},"503":{"$ref":"#/components/responses/SafeFailure"}}}},
@@ -254,9 +73,7 @@
         "operationId": "getOwnAccountProfile", "tags": ["Session"], "summary": "본인 표시 이름과 저장 version 조회", "x-implementation-owner": "S36-C3",
         "responses": {
           "200": {"description": "본인 프로필", "headers": {"X-Trace-Id": {"$ref": "#/components/headers/XTraceId"}, "ETag": {"$ref": "#/components/headers/ETag"}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AccountProfileEnvelope"}}}},
-          "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "412": {"$ref": "#/components/responses/PreconditionFailed"}, "422": {"$ref": "#/components/responses/BadRequest"}, "500": {"$ref": "#/components/responses/SafeFailure"}, "412": {"$ref":"#/components/responses/PreconditionFailed"},
-          "500": {"$ref":"#/components/responses/SafeFailure"},
-          "503": {"$ref": "#/components/responses/SafeFailure"}
+          "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "412": {"$ref": "#/components/responses/PreconditionFailed"}, "422": {"$ref": "#/components/responses/BadRequest"}, "500": {"$ref": "#/components/responses/SafeFailure"}, "503": {"$ref": "#/components/responses/SafeFailure"}
         }
       },
       "patch": {
@@ -266,9 +83,7 @@
         "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AccountProfilePatch"}}}},
         "responses": {
           "200": {"description": "표시 이름 저장 영수증", "headers": {"X-Trace-Id": {"$ref": "#/components/headers/XTraceId"}, "ETag": {"$ref": "#/components/headers/ETag"}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AccountProfileMutationEnvelope"}}}},
-          "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "412": {"$ref": "#/components/responses/PreconditionFailed"}, "422": {"$ref": "#/components/responses/BadRequest"}, "500": {"$ref": "#/components/responses/SafeFailure"}, "412": {"$ref":"#/components/responses/PreconditionFailed"},
-          "500": {"$ref":"#/components/responses/SafeFailure"},
-          "503": {"$ref": "#/components/responses/SafeFailure"}
+          "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "412": {"$ref": "#/components/responses/PreconditionFailed"}, "422": {"$ref": "#/components/responses/BadRequest"}, "500": {"$ref": "#/components/responses/SafeFailure"}, "503": {"$ref": "#/components/responses/SafeFailure"}
         }
       }
     },
@@ -278,9 +93,7 @@
         "parameters": [{"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}}, {"name": "cursor", "in": "query", "schema": {"type": "string", "minLength": 1, "maxLength": 2048}}],
         "responses": {
           "200": {"description": "본인 장치 페이지", "headers": {"X-Trace-Id": {"$ref": "#/components/headers/XTraceId"}, "ETag": {"$ref": "#/components/headers/ETag"}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AccountDevicesEnvelope"}}}},
-          "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "412": {"$ref": "#/components/responses/PreconditionFailed"}, "422": {"$ref": "#/components/responses/BadRequest"}, "500": {"$ref": "#/components/responses/SafeFailure"}, "412": {"$ref":"#/components/responses/PreconditionFailed"},
-          "500": {"$ref":"#/components/responses/SafeFailure"},
-          "503": {"$ref": "#/components/responses/SafeFailure"}
+          "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "412": {"$ref": "#/components/responses/PreconditionFailed"}, "422": {"$ref": "#/components/responses/BadRequest"}, "500": {"$ref": "#/components/responses/SafeFailure"}, "503": {"$ref": "#/components/responses/SafeFailure"}
         }
       }
     },
@@ -290,9 +103,7 @@
         "parameters": [{"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}}, {"name": "cursor", "in": "query", "schema": {"type": "string", "minLength": 1, "maxLength": 2048}}],
         "responses": {
           "200": {"description": "본인 세션 페이지", "headers": {"X-Trace-Id": {"$ref": "#/components/headers/XTraceId"}, "ETag": {"$ref": "#/components/headers/ETag"}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AccountSessionsEnvelope"}}}},
-          "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "412": {"$ref": "#/components/responses/PreconditionFailed"}, "422": {"$ref": "#/components/responses/BadRequest"}, "500": {"$ref": "#/components/responses/SafeFailure"}, "412": {"$ref":"#/components/responses/PreconditionFailed"},
-          "500": {"$ref":"#/components/responses/SafeFailure"},
-          "503": {"$ref": "#/components/responses/SafeFailure"}
+          "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "412": {"$ref": "#/components/responses/PreconditionFailed"}, "422": {"$ref": "#/components/responses/BadRequest"}, "500": {"$ref": "#/components/responses/SafeFailure"}, "503": {"$ref": "#/components/responses/SafeFailure"}
         }
       }
     },
@@ -349,8 +160,6 @@
           "500": {
             "$ref": "#/components/responses/SafeFailure"
           },
-          "412": {"$ref":"#/components/responses/PreconditionFailed"},
-          "500": {"$ref":"#/components/responses/SafeFailure"},
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -421,8 +230,6 @@
           "500": {
             "$ref": "#/components/responses/SafeFailure"
           },
-          "412": {"$ref":"#/components/responses/PreconditionFailed"},
-          "500": {"$ref":"#/components/responses/SafeFailure"},
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -495,8 +302,6 @@
           "500": {
             "$ref": "#/components/responses/SafeFailure"
           },
-          "412": {"$ref":"#/components/responses/PreconditionFailed"},
-          "500": {"$ref":"#/components/responses/SafeFailure"},
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -564,8 +369,6 @@
           "500": {
             "$ref": "#/components/responses/SafeFailure"
           },
-          "412": {"$ref":"#/components/responses/PreconditionFailed"},
-          "500": {"$ref":"#/components/responses/SafeFailure"},
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -649,8 +452,6 @@
           "500": {
             "$ref": "#/components/responses/SafeFailure"
           },
-          "412": {"$ref":"#/components/responses/PreconditionFailed"},
-          "500": {"$ref":"#/components/responses/SafeFailure"},
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -690,8 +491,6 @@
           "431": {
             "$ref": "#/components/responses/RequestHeaderFieldsTooLarge"
           },
-          "412": {"$ref":"#/components/responses/PreconditionFailed"},
-          "500": {"$ref":"#/components/responses/SafeFailure"},
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           },
@@ -743,8 +542,6 @@
           "412": {"$ref": "#/components/responses/PreconditionFailed"},
           "431": {"$ref": "#/components/responses/RequestHeaderFieldsTooLarge"},
           "500": {"$ref": "#/components/responses/SafeFailure"},
-          "412": {"$ref":"#/components/responses/PreconditionFailed"},
-          "500": {"$ref":"#/components/responses/SafeFailure"},
           "503": {"$ref": "#/components/responses/ServiceUnavailable"}
         }
       }
@@ -765,8 +562,6 @@
           "412": {"$ref": "#/components/responses/PreconditionFailed"},
           "431": {"$ref": "#/components/responses/RequestHeaderFieldsTooLarge"},
           "500": {"$ref": "#/components/responses/SafeFailure"},
-          "412": {"$ref":"#/components/responses/PreconditionFailed"},
-          "500": {"$ref":"#/components/responses/SafeFailure"},
           "503": {"$ref": "#/components/responses/ServiceUnavailable"},
           "504": {"$ref": "#/components/responses/RequestTimeout"}
         }
@@ -788,8 +583,6 @@
           "409": { "$ref": "#/components/responses/Conflict" },
           "412": { "$ref": "#/components/responses/PreconditionFailed" },
           "500": { "$ref": "#/components/responses/SafeFailure" },
-          "412": {"$ref":"#/components/responses/PreconditionFailed"},
-          "500": {"$ref":"#/components/responses/SafeFailure"},
           "503": { "$ref": "#/components/responses/ServiceUnavailable" }
         }
       }
@@ -804,9 +597,7 @@
           "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" },
           "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" },
           "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" },
-          "500": { "$ref": "#/components/responses/SafeFailure" }, "412": {"$ref":"#/components/responses/PreconditionFailed"},
-          "500": {"$ref":"#/components/responses/SafeFailure"},
-          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+          "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" }
         }
       },
       "post": {
@@ -820,9 +611,7 @@
           "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" },
           "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" },
           "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" },
-          "500": { "$ref": "#/components/responses/SafeFailure" }, "412": {"$ref":"#/components/responses/PreconditionFailed"},
-          "500": {"$ref":"#/components/responses/SafeFailure"},
-          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+          "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" }
         }
       }
     },
@@ -836,9 +625,7 @@
           "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" },
           "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" },
           "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" },
-          "500": { "$ref": "#/components/responses/SafeFailure" }, "412": {"$ref":"#/components/responses/PreconditionFailed"},
-          "500": {"$ref":"#/components/responses/SafeFailure"},
-          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+          "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" }
         }
       },
       "patch": {
@@ -851,9 +638,7 @@
           "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" },
           "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" },
           "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" },
-          "500": { "$ref": "#/components/responses/SafeFailure" }, "412": {"$ref":"#/components/responses/PreconditionFailed"},
-          "500": {"$ref":"#/components/responses/SafeFailure"},
-          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+          "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" }
         }
       }
     },
@@ -870,9 +655,7 @@
           "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" },
           "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" },
           "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" },
-          "500": { "$ref": "#/components/responses/SafeFailure" }, "412": {"$ref":"#/components/responses/PreconditionFailed"},
-          "500": {"$ref":"#/components/responses/SafeFailure"},
-          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+          "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" }
         }
       }
     },
@@ -887,9 +670,7 @@
           "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" },
           "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" },
           "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" },
-          "500": { "$ref": "#/components/responses/SafeFailure" }, "412": {"$ref":"#/components/responses/PreconditionFailed"},
-          "500": {"$ref":"#/components/responses/SafeFailure"},
-          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+          "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" }
         }
       }
     },
@@ -917,8 +698,6 @@
           "409": { "$ref": "#/components/responses/Conflict" },
           "412": { "$ref": "#/components/responses/PreconditionFailed" },
           "500": { "$ref": "#/components/responses/SafeFailure" },
-          "412": {"$ref":"#/components/responses/PreconditionFailed"},
-          "500": {"$ref":"#/components/responses/SafeFailure"},
           "503": { "$ref": "#/components/responses/ServiceUnavailable" }
         }
       }
@@ -1218,8 +997,6 @@
           "403": { "$ref": "#/components/responses/Forbidden" }, "409": { "$ref": "#/components/responses/Conflict" },
           "404": { "$ref": "#/components/responses/NotFound" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" },
           "413": { "$ref": "#/components/responses/SafeFailure" }, "415": { "$ref": "#/components/responses/SafeFailure" }, "422": { "$ref": "#/components/responses/SafeFailure" }, "502": { "$ref": "#/components/responses/SafeFailure" },
-          "412": {"$ref":"#/components/responses/PreconditionFailed"},
-          "500": {"$ref":"#/components/responses/SafeFailure"},
           "503": { "$ref": "#/components/responses/SafeFailure" }, "504": { "$ref": "#/components/responses/SafeFailure" }
         }
       }
@@ -1234,9 +1011,7 @@
         "responses": {
           "200": { "description": "본문 없는 불변 snapshot", "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WebsiteSnapshotEnvelope" } } } },
           "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" }, "412": {"$ref":"#/components/responses/PreconditionFailed"},
-          "500": {"$ref":"#/components/responses/SafeFailure"},
-          "503": { "$ref": "#/components/responses/SafeFailure" }
+          "403": { "$ref": "#/components/responses/Forbidden" }, "503": { "$ref": "#/components/responses/SafeFailure" }
           ,"404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" }
         }
       }
@@ -1332,8 +1107,6 @@
           "415": {
             "$ref": "#/components/responses/UnsupportedMediaType"
           },
-          "412": {"$ref":"#/components/responses/PreconditionFailed"},
-          "500": {"$ref":"#/components/responses/SafeFailure"},
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           },
@@ -1435,8 +1208,6 @@
           "404": { "$ref": "#/components/responses/NotFound" },
           "409": { "$ref": "#/components/responses/Conflict" },
           "412": { "$ref": "#/components/responses/PreconditionFailed" },
-          "412": {"$ref":"#/components/responses/PreconditionFailed"},
-          "500": {"$ref":"#/components/responses/SafeFailure"},
           "503": { "$ref": "#/components/responses/ServiceUnavailable" },
           "500": { "$ref": "#/components/responses/SafeFailure" }
         }
@@ -1448,9 +1219,7 @@
         "summary": "호환용 외부 Question Run 결속 추가 인증", "description": "관리자 설정 Step-up과 분리된 호환 API입니다. Product 질문 UI는 이 경로를 호출하지 않으며 유효 Session, EXTERNAL_LLM 권한과 effective Egress Policy를 질문 실행 시 검증합니다.", "x-implementation-owner": "R1-M8-09-EGRESS-POLICY-C01",
         "parameters": [{ "$ref": "#/components/parameters/ResourceId" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GroundedQuestionAuthorizationRequest" } } } },
-        "responses": { "201": { "description": "Run/effective policy 결속 opaque authorization", "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GroundedQuestionAuthorizationEnvelope" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" }, "412": {"$ref":"#/components/responses/PreconditionFailed"},
-          "500": {"$ref":"#/components/responses/SafeFailure"},
-          "503": { "$ref": "#/components/responses/ServiceUnavailable" } }
+        "responses": { "201": { "description": "Run/effective policy 결속 opaque authorization", "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GroundedQuestionAuthorizationEnvelope" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" } }
       }
     },
     "/api/v1/workspaces/{id}/questions": {
@@ -1490,8 +1259,6 @@
           "404": { "$ref": "#/components/responses/NotFound" },
           "409": { "$ref": "#/components/responses/Conflict" },
           "412": { "$ref": "#/components/responses/PreconditionFailed" },
-          "412": {"$ref":"#/components/responses/PreconditionFailed"},
-          "500": {"$ref":"#/components/responses/SafeFailure"},
           "503": { "$ref": "#/components/responses/ServiceUnavailable" },
           "500": { "$ref": "#/components/responses/SafeFailure" }
         }
@@ -1520,8 +1287,6 @@
           "404": { "$ref": "#/components/responses/NotFound" },
           "409": { "$ref": "#/components/responses/Conflict" },
           "412": { "$ref": "#/components/responses/PreconditionFailed" },
-          "412": {"$ref":"#/components/responses/PreconditionFailed"},
-          "500": {"$ref":"#/components/responses/SafeFailure"},
           "503": { "$ref": "#/components/responses/ServiceUnavailable" },
           "504": { "$ref": "#/components/responses/SafeFailure" },
           "500": { "$ref": "#/components/responses/SafeFailure" }
@@ -1546,8 +1311,6 @@
           "404": { "$ref": "#/components/responses/NotFound" },
           "409": { "$ref": "#/components/responses/Conflict" },
           "412": { "$ref": "#/components/responses/PreconditionFailed" },
-          "412": {"$ref":"#/components/responses/PreconditionFailed"},
-          "500": {"$ref":"#/components/responses/SafeFailure"},
           "503": { "$ref": "#/components/responses/ServiceUnavailable" },
           "504": { "$ref": "#/components/responses/SafeFailure" },
           "500": { "$ref": "#/components/responses/SafeFailure" }
@@ -1600,8 +1363,6 @@
           "404": { "$ref": "#/components/responses/NotFound" },
           "409": { "$ref": "#/components/responses/Conflict" },
           "412": { "$ref": "#/components/responses/PreconditionFailed" },
-          "412": {"$ref":"#/components/responses/PreconditionFailed"},
-          "500": {"$ref":"#/components/responses/SafeFailure"},
           "503": { "$ref": "#/components/responses/ServiceUnavailable" },
           "500": { "$ref": "#/components/responses/SafeFailure" }
         }
@@ -2467,96 +2228,46 @@
       }
     },
     "/api/v1/runs/{id}/routing-decision": {
-  "get": {
-    "operationId": "getRunRoutingDecision",
-    "tags": [
-      "Model"
-    ],
-    "summary": "Run Routing Decision 조회",
-    "x-implementation-owner": "R1-M6-14",
-    "responses": {
-      "200": {
-        "description": "Current authorized Run routing details",
-        "headers": {
-          "Cache-Control": {
-            "schema": {
-              "type": "string",
-              "const": "no-store"
-            }
+      "get": {
+        "operationId": "getRunRoutingDecision",
+        "tags": [
+          "Model"
+        ],
+        "summary": "Run Routing Decision 조회",
+        "x-implementation-owner": "R1-M6-14",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/SuccessResponse"
           },
-          "X-Trace-Id": {
-            "$ref": "#/components/headers/XTraceId"
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
           },
-          "ETag": {
-            "$ref": "#/components/headers/ETag"
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
           }
         },
-        "content": {
-          "application/json": {
-            "schema": {
-              "$ref": "#/components/schemas/RoutingDecisionReadEnvelope"
-            }
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
           }
-        }
-      },
-      "400": {
-        "$ref": "#/components/responses/BadRequest"
-      },
-      "401": {
-        "$ref": "#/components/responses/Unauthorized"
-      },
-      "403": {
-        "$ref": "#/components/responses/Forbidden"
-      },
-      "404": {
-        "$ref": "#/components/responses/NotFound"
-      },
-      "409": {
-        "$ref": "#/components/responses/Conflict"
-      },
-      "412": {
-        "$ref": "#/components/responses/PreconditionFailed"
-      },
-      "500": {
-        "$ref": "#/components/responses/SafeFailure"
-      },
-      "422": {
-        "description": "Invalid query",
-        "content": {
-          "application/json": {
-            "schema": {
-              "$ref": "#/components/schemas/SafeErrorEnvelope"
-            }
-          }
-        },
-        "headers": {
-          "X-Trace-Id": {
-            "$ref": "#/components/headers/XTraceId"
-          }
-        }
-      },
-      "503": {
-        "$ref": "#/components/responses/ServiceUnavailable"
+        ]
       }
     },
-    "parameters": [
-      {
-        "$ref": "#/components/parameters/ResourceId"
-      },
-      {
-        "name": "workspace_id",
-        "in": "query",
-        "required": true,
-        "schema": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
-        }
-      }
-    ]
-  }
-},
     "/api/v1/runs/{id}/rule-evaluations": {
       "get": {
         "operationId": "listRunRuleEvaluations",
@@ -3696,8 +3407,6 @@
           "409": { "$ref": "#/components/responses/Conflict" },
           "412": { "$ref": "#/components/responses/PreconditionFailed" },
           "500": { "$ref": "#/components/responses/SafeFailure" },
-          "412": {"$ref":"#/components/responses/PreconditionFailed"},
-          "500": {"$ref":"#/components/responses/SafeFailure"},
           "503": { "$ref": "#/components/responses/ServiceUnavailable" }
         }
       }
@@ -5912,702 +5621,6 @@
       }
     },
     "schemas": {
-"RoutingCandidateRead":{
-  "type": "object",
-  "additionalProperties": false,
-  "required": [
-    "candidate_order",
-    "model_id",
-    "deployment_id",
-    "provider_kind"
-  ],
-  "properties": {
-    "candidate_order": {
-      "type": "integer",
-      "minimum": 1,
-      "maximum": 8
-    },
-    "model_id": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 255
-    },
-    "deployment_id": {
-      "$ref": "#/components/schemas/OpaqueId"
-    },
-    "provider_kind": {
-      "type": "string",
-      "enum": [
-        "local",
-        "local_runtime",
-        "server_internal",
-        "external_api"
-      ]
-    }
-  }
-},"RoutingExclusionRead":{
-  "type": "object",
-  "additionalProperties": false,
-  "required": [
-    "deployment_id",
-    "reason"
-  ],
-  "properties": {
-    "deployment_id": {
-      "$ref": "#/components/schemas/OpaqueId"
-    },
-    "reason": {
-      "type": "string",
-      "enum": [
-        "OBSERVATION_MISSING",
-        "OBSERVATION_BINDING_INVALID",
-        "BUDGET_UNVERIFIED",
-        "OBSERVATION_IDENTITY_MISMATCH",
-        "PROVENANCE_UNCONFIRMED",
-        "OBSERVATION_STALE",
-        "OBSERVATION_INCOMPARABLE",
-        "OBSERVATION_UNIT_INVALID",
-        "QUALITY_BELOW_MINIMUM",
-        "CURRENT_CANDIDATE_BLOCKED",
-        "PRICE_UNCONFIRMED",
-        "BUDGET_EXCEEDED",
-        "DATA_REALM_BLOCKED"
-      ]
-    }
-  }
-},"RoutingPreview":{
-  "type": "object",
-  "additionalProperties": false,
-  "required": [
-    "schema_version",
-    "routing_policy_version_id",
-    "plan_digest",
-    "candidates",
-    "exclusions"
-  ],
-  "properties": {
-    "schema_version": {
-      "type": "integer",
-      "const": 1
-    },
-    "routing_policy_version_id": {
-      "$ref": "#/components/schemas/OpaqueId"
-    },
-    "plan_digest": {
-      "type": "string",
-      "pattern": "^[0-9a-f]{64}$"
-    },
-    "candidates": {
-      "type": "array",
-      "maxItems": 8,
-      "items": {
-        "$ref": "#/components/schemas/RoutingCandidateRead"
-      }
-    },
-    "exclusions": {
-      "type": "array",
-      "maxItems": 8,
-      "items": {
-        "$ref": "#/components/schemas/RoutingExclusionRead"
-      }
-    }
-  }
-},"RoutingAttemptRead":{
-  "type": "object",
-  "additionalProperties": false,
-  "required": [
-    "attempt_id",
-    "candidate_order",
-    "state",
-    "started_at",
-    "finished_at",
-    "failure_code",
-    "cost_state",
-    "cost_amount",
-    "currency"
-  ],
-  "properties": {
-    "attempt_id": {
-      "$ref": "#/components/schemas/OpaqueId"
-    },
-    "candidate_order": {
-      "type": "integer",
-      "minimum": 1,
-      "maximum": 8
-    },
-    "state": {
-      "type": "string",
-      "enum": [
-        "succeeded",
-        "failed",
-        "uncertain",
-        "dispatch_claimed"
-      ]
-    },
-    "started_at": {
-      "type": "string",
-      "format": "date-time"
-    },
-    "finished_at": {
-      "oneOf": [
-        {
-          "type": "string",
-          "format": "date-time"
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "failure_code": {
-      "oneOf": [
-        {
-          "type": "string",
-          "enum": [
-            "RATE_LIMITED",
-            "TEMPORARILY_UNAVAILABLE",
-            "CAPACITY_UNAVAILABLE",
-            "TIMEOUT",
-            "AUTH_DENIED",
-            "EGRESS_POLICY_DENIED",
-            "POLICY_CHANGED",
-            "INVALID_REQUEST",
-            "INVALID_RESPONSE",
-            "CANCELLED",
-            "TRANSPORT_UNCERTAIN",
-            "RESULT_PERSISTENCE_UNCERTAIN"
-          ]
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "cost_state": {
-      "type": "string",
-      "enum": [
-        "known",
-        "unknown",
-        "uncertain"
-      ]
-    },
-    "cost_amount": {
-      "oneOf": [
-        {
-          "type": "string",
-          "pattern": "^(0|[1-9][0-9]{0,11})(\\.[0-9]{1,6})?$"
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "currency": {
-      "oneOf": [
-        {
-          "type": "string",
-          "pattern": "^[A-Z]{3}$"
-        },
-        {
-          "type": "null"
-        }
-      ]
-    }
-  },
-  "allOf": [
-    {
-      "if": {
-        "properties": {
-          "cost_state": {
-            "const": "known"
-          }
-        },
-        "required": [
-          "cost_state"
-        ]
-      },
-      "then": {
-        "properties": {
-          "cost_amount": {
-            "type": "string",
-            "pattern": "^(0|[1-9][0-9]{0,11})(\\.[0-9]{1,6})?$"
-          },
-          "currency": {
-            "type": "string",
-            "pattern": "^[A-Z]{3}$"
-          }
-        }
-      },
-      "else": {
-        "properties": {
-          "cost_amount": {
-            "type": "null"
-          },
-          "currency": {
-            "type": "null"
-          }
-        }
-      }
-    }
-  ]
-},"RoutingFinalSelection":{
-  "type": "object",
-  "additionalProperties": false,
-  "required": [
-    "candidate_order",
-    "model_id",
-    "attempt_id"
-  ],
-  "properties": {
-    "candidate_order": {
-      "type": "integer",
-      "minimum": 1,
-      "maximum": 8
-    },
-    "model_id": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 255
-    },
-    "attempt_id": {
-      "$ref": "#/components/schemas/OpaqueId"
-    }
-  }
-},"RoutingDecisionRead":{
-  "type": "object",
-  "additionalProperties": false,
-  "required": [
-    "schema_version",
-    "run_id",
-    "routing_mode",
-    "routing_policy_version_id",
-    "routing_plan_id",
-    "plan_digest",
-    "run_state",
-    "candidates",
-    "exclusions",
-    "attempts",
-    "final_selection"
-  ],
-  "properties": {
-    "schema_version": {
-      "type": "integer",
-      "const": 1
-    },
-    "run_id": {
-      "$ref": "#/components/schemas/OpaqueId"
-    },
-    "routing_mode": {
-      "type": "string",
-      "enum": [
-        "pinned",
-        "auto"
-      ]
-    },
-    "routing_policy_version_id": {
-      "oneOf": [
-        {
-          "$ref": "#/components/schemas/OpaqueId"
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "routing_plan_id": {
-      "oneOf": [
-        {
-          "$ref": "#/components/schemas/OpaqueId"
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "plan_digest": {
-      "oneOf": [
-        {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "run_state": {
-      "type": "string",
-      "enum": [
-        "accepted",
-        "planning",
-        "retrieving",
-        "generating",
-        "validating",
-        "completed",
-        "failed",
-        "cancelled"
-      ]
-    },
-    "candidates": {
-      "type": "array",
-      "maxItems": 8,
-      "items": {
-        "$ref": "#/components/schemas/RoutingCandidateRead"
-      }
-    },
-    "exclusions": {
-      "type": "array",
-      "maxItems": 8,
-      "items": {
-        "$ref": "#/components/schemas/RoutingExclusionRead"
-      }
-    },
-    "attempts": {
-      "type": "array",
-      "maxItems": 8,
-      "items": {
-        "$ref": "#/components/schemas/RoutingAttemptRead"
-      }
-    },
-    "final_selection": {
-      "oneOf": [
-        {
-          "$ref": "#/components/schemas/RoutingFinalSelection"
-        },
-        {
-          "type": "null"
-        }
-      ]
-    }
-  }
-},"RoutingDecisionReadEnvelope":{
-  "type": "object",
-  "additionalProperties": false,
-  "required": [
-    "data",
-    "meta"
-  ],
-  "properties": {
-    "data": {
-      "$ref": "#/components/schemas/RoutingDecisionRead"
-    },
-    "meta": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "trace_id",
-        "workspace_id"
-      ],
-      "properties": {
-        "trace_id": {
-          "$ref": "#/components/schemas/OpaqueId"
-        },
-        "workspace_id": {
-          "$ref": "#/components/schemas/OpaqueId"
-        }
-      }
-    }
-  }
-},
-  "FallbackPolicyBody": {
-    "additionalProperties": false,
-    "properties": {
-      "mode": {
-        "const": "transient_only",
-        "title": "Mode",
-        "type": "string"
-      }
-    },
-    "required": [
-      "mode"
-    ],
-    "title": "FallbackPolicyBody",
-    "type": "object"
-  },
-  "RankingProfileBody": {
-    "additionalProperties": false,
-    "properties": {
-      "version": {
-        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
-        "title": "Version",
-        "type": "string"
-      },
-      "evaluation_set": {
-        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
-        "title": "Evaluation Set",
-        "type": "string"
-      },
-      "minimum_quality": {
-        "maximum": 10000,
-        "minimum": 0,
-        "title": "Minimum Quality",
-        "type": "integer"
-      },
-      "observation_window": {
-        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
-        "title": "Observation Window",
-        "type": "string"
-      },
-      "input_class": {
-        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
-        "title": "Input Class",
-        "type": "string"
-      },
-      "minimum_samples": {
-        "maximum": 10000000,
-        "minimum": 1,
-        "title": "Minimum Samples",
-        "type": "integer"
-      },
-      "max_age_seconds": {
-        "maximum": 3600,
-        "minimum": 1,
-        "title": "Max Age Seconds",
-        "type": "integer"
-      },
-      "tier_mapping_version": {
-        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
-        "title": "Tier Mapping Version",
-        "type": "string"
-      },
-      "locality_mapping_version": {
-        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
-        "title": "Locality Mapping Version",
-        "type": "string"
-      }
-    },
-    "required": [
-      "version",
-      "evaluation_set",
-      "minimum_quality",
-      "observation_window",
-      "input_class",
-      "minimum_samples",
-      "max_age_seconds",
-      "tier_mapping_version",
-      "locality_mapping_version"
-    ],
-    "title": "RankingProfileBody",
-    "type": "object"
-  },
-  "RoutingBudgetBody": {
-    "additionalProperties": false,
-    "properties": {
-      "currency": {
-        "pattern": "^[A-Z]{3}$",
-        "title": "Currency",
-        "type": "string"
-      },
-      "run_limit": {
-        "pattern": "^(0|[1-9][0-9]{0,11})(\\.[0-9]{1,6})?$",
-        "title": "Run Limit",
-        "type": "string"
-      },
-      "max_attempts": {
-        "maximum": 8,
-        "minimum": 1,
-        "title": "Max Attempts",
-        "type": "integer"
-      }
-    },
-    "required": [
-      "currency",
-      "run_limit",
-      "max_attempts"
-    ],
-    "title": "RoutingBudgetBody",
-    "type": "object"
-  },
-  "RoutingCandidateBody": {
-    "additionalProperties": false,
-    "properties": {
-      "connection_id": {
-        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
-        "title": "Connection Id",
-        "type": "string"
-      },
-      "model_id": {
-        "maxLength": 255,
-        "minLength": 1,
-        "pattern": "^[^\\x00-\\x20\\x7f]+$",
-        "title": "Model Id",
-        "type": "string"
-      },
-      "credential_source": {
-        "enum": [
-          "workspace",
-          "personal"
-        ],
-        "title": "Credential Source",
-        "type": "string"
-      },
-      "connection_version": {
-        "minimum": 1,
-        "title": "Connection Version",
-        "type": "integer"
-      },
-      "catalog_version": {
-        "minimum": 1,
-        "title": "Catalog Version",
-        "type": "integer"
-      },
-      "credential_version": {
-        "minimum": 0,
-        "title": "Credential Version",
-        "type": "integer"
-      },
-      "endpoint_version": {
-        "minimum": 1,
-        "title": "Endpoint Version",
-        "type": "integer"
-      }
-    },
-    "required": [
-      "connection_id",
-      "model_id",
-      "credential_source",
-      "connection_version",
-      "catalog_version",
-      "credential_version",
-      "endpoint_version"
-    ],
-    "title": "RoutingCandidateBody",
-    "type": "object"
-  },
-  "RoutingPolicyRequest": {
-    "additionalProperties": false,
-    "properties": {
-      "schema_version": {
-        "const": 1,
-        "title": "Schema Version",
-        "type": "integer"
-      },
-      "expected_version": {
-        "minimum": 0,
-        "title": "Expected Version",
-        "type": "integer"
-      },
-      "enabled": {
-        "title": "Enabled",
-        "type": "boolean"
-      },
-      "capability": {
-        "const": "text_generation",
-        "title": "Capability",
-        "type": "string"
-      },
-      "candidates": {
-        "items": {
-          "$ref": "#/components/schemas/RoutingCandidateBody"
-        },
-        "maxItems": 8,
-        "minItems": 1,
-        "title": "Candidates",
-        "type": "array"
-      },
-      "ranking_profile": {
-        "$ref": "#/components/schemas/RankingProfileBody"
-      },
-      "fallback_policy": {
-        "$ref": "#/components/schemas/FallbackPolicyBody"
-      },
-      "budget": {
-        "$ref": "#/components/schemas/RoutingBudgetBody"
-      }
-    },
-    "required": [
-      "schema_version",
-      "expected_version",
-      "enabled",
-      "capability",
-      "candidates",
-      "ranking_profile",
-      "fallback_policy",
-      "budget"
-    ],
-    "title": "RoutingPolicyBody",
-    "type": "object"
-  },
-  "RoutingPolicyEnvelope": {
-    "type": "object",
-    "additionalProperties": false,
-    "required": [
-      "data",
-      "meta"
-    ],
-    "properties": {
-      "data": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "version",
-          "policy_version_id",
-          "digest_sha256",
-          "body",
-          "execution_enabled",
-          "readiness"
-        ],
-        "properties": {
-          "version": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "policy_version_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "digest_sha256": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "body": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/RoutingPolicyRequest"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "execution_enabled": {
-            "const": false
-          },
-          "readiness": {
-            "enum": [
-              "policy_absent",
-              "disabled",
-              "observations_unavailable"
-            ]
-          }
-        }
-      },
-      "meta": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "trace_id",
-          "workspace_id"
-        ],
-        "properties": {
-          "trace_id": {
-            "type": "string"
-          },
-          "workspace_id": {
-            "type": "string"
-          },
-          "replayed": {
-            "type": "boolean"
-          }
-        }
-      }
-    }
-  }
-,
       "OrganizationMeta": {"type":"object","additionalProperties":false,"required":["trace_id"],"properties":{"trace_id":{"$ref":"#/components/schemas/OpaqueId"}}},
       "OrganizationManagedTenant": {"type":"object","additionalProperties":false,"required":["tenant_id","display_name"],"properties":{"tenant_id":{"$ref":"#/components/schemas/OpaqueId"},"display_name":{"type":"string","minLength":1,"maxLength":160}}},
       "OrganizationManagedWorkspace": {"type":"object","additionalProperties":false,"required":["workspace_id","display_name"],"properties":{"workspace_id":{"$ref":"#/components/schemas/OpaqueId"},"display_name":{"type":"string","minLength":1,"maxLength":160}}},
@@ -7982,380 +6995,49 @@
       "GroundedQuestionRequest": {
         "type": "object",
         "additionalProperties": false,
-        "description": "A grounded question may include exactly one Source or Knowledge Context. When neither is provided, the question is handled by the ordinary general work-support/LLM path. Ordinary product use is authorized by the current session, EXTERNAL_LLM permission, and effective Egress Policy without per-question reauthentication.",
-        "required": [
-          "notebook_id",
-          "question"
-        ],
+      "description": "A grounded question may include exactly one Source or Knowledge Context. When neither is provided, the question is handled by the ordinary general work-support/LLM path. Ordinary product use is authorized by the current session, EXTERNAL_LLM permission, and effective Egress Policy without per-question reauthentication.",
+        "required": ["notebook_id", "question"],
         "oneOf": [
-          {
-            "required": [
-              "source_id",
-              "source_version_id"
-            ],
-            "not": {
-              "required": [
-                "knowledge_context"
-              ]
-            }
-          },
-          {
-            "required": [
-              "knowledge_context"
-            ],
-            "not": {
-              "anyOf": [
-                {
-                  "required": [
-                    "source_id"
-                  ]
-                },
-                {
-                  "required": [
-                    "source_version_id"
-                  ]
-                }
-              ]
-            }
-          },
-          {
-            "not": {
-              "anyOf": [
-                {
-                  "required": [
-                    "source_id"
-                  ]
-                },
-                {
-                  "required": [
-                    "source_version_id"
-                  ]
-                },
-                {
-                  "required": [
-                    "knowledge_context"
-                  ]
-                }
-              ]
-            }
-          }
+          { "required": ["source_id", "source_version_id"], "not": { "required": ["knowledge_context"] } },
+          { "required": ["knowledge_context"], "not": { "anyOf": [{ "required": ["source_id"] }, { "required": ["source_version_id"] }] } },
+          { "not": { "anyOf": [{ "required": ["source_id"] }, { "required": ["source_version_id"] }, { "required": ["knowledge_context"] }] } }
         ],
         "properties": {
-          "notebook_id": {
-            "$ref": "#/components/schemas/OpaqueId"
-          },
-          "source_id": {
-            "$ref": "#/components/schemas/OpaqueId"
-          },
-          "source_version_id": {
-            "$ref": "#/components/schemas/OpaqueId"
-          },
-          "knowledge_context": {
-            "$ref": "#/components/schemas/QuestionKnowledgeContext"
-          },
-          "question": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 2000
-          },
-          "step_up_authorization_id": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/OpaqueId"
-              }
-            ],
-            "deprecated": true,
-            "description": "Compatibility-only input. Product clients omit it; the ordinary question route does not consume per-question Step-up."
-          },
-          "routing_mode": {
-            "type": "string",
-            "enum": [
-              "pinned",
-              "auto"
-            ]
-          },
-          "routing_policy_version_id": {
-            "$ref": "#/components/schemas/OpaqueId"
-          },
-          "routing_plan_id": {
-            "$ref": "#/components/schemas/OpaqueId"
-          },
-          "routing_plan_authorization": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "writeOnly": true
-          }
-        },
-        "allOf": [
-          {
-            "if": {
-              "properties": {
-                "routing_mode": {
-                  "const": "auto"
-                }
-              },
-              "required": [
-                "routing_mode"
-              ]
-            },
-            "then": {
-              "required": [
-                "routing_policy_version_id",
-                "routing_plan_id",
-                "routing_plan_authorization"
-              ],
-              "not": {
-                "required": [
-                  "step_up_authorization_id"
-                ]
-              }
-            },
-            "else": {
-              "not": {
-                "anyOf": [
-                  {
-                    "required": [
-                      "routing_policy_version_id"
-                    ]
-                  },
-                  {
-                    "required": [
-                      "routing_plan_id"
-                    ]
-                  },
-                  {
-                    "required": [
-                      "routing_plan_authorization"
-                    ]
-                  }
-                ]
-              }
-            }
-          }
-        ]
+          "notebook_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "source_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "source_version_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "knowledge_context": { "$ref": "#/components/schemas/QuestionKnowledgeContext" },
+          "question": { "type": "string", "minLength": 1, "maxLength": 2000 },
+          "step_up_authorization_id": { "allOf": [{ "$ref": "#/components/schemas/OpaqueId" }], "deprecated": true, "description": "Compatibility-only input. Product clients omit it; the ordinary question route does not consume per-question Step-up." }
+        }
       },
-
       "GroundedQuestionAuthorizationRequest": {
-        "type": "object",
-        "additionalProperties": false,
-        "description": "기존 직접 선택 인증과 명시 auto Plan 준비. auto는 현재 후보 정책이 요구할 때만 비밀번호 재인증하며, 실행에는 별도 일회 Plan permit이 필요하다.",
-        "required": [
-          "notebook_id",
-          "question"
-        ],
+        "type": "object", "additionalProperties": false,
+      "description": "Authorization for a grounded question or a general work-support/LLM question without Source or Knowledge Context.",
+        "required": ["notebook_id", "question", "password"],
         "oneOf": [
-          {
-            "required": [
-              "source_id",
-              "source_version_id"
-            ],
-            "not": {
-              "required": [
-                "knowledge_context"
-              ]
-            }
-          },
-          {
-            "required": [
-              "knowledge_context"
-            ],
-            "not": {
-              "anyOf": [
-                {
-                  "required": [
-                    "source_id"
-                  ]
-                },
-                {
-                  "required": [
-                    "source_version_id"
-                  ]
-                }
-              ]
-            }
-          },
-          {
-            "not": {
-              "anyOf": [
-                {
-                  "required": [
-                    "source_id"
-                  ]
-                },
-                {
-                  "required": [
-                    "source_version_id"
-                  ]
-                },
-                {
-                  "required": [
-                    "knowledge_context"
-                  ]
-                }
-              ]
-            }
-          }
+          { "required": ["source_id", "source_version_id"], "not": { "required": ["knowledge_context"] } },
+          { "required": ["knowledge_context"], "not": { "anyOf": [{ "required": ["source_id"] }, { "required": ["source_version_id"] }] } },
+          { "not": { "anyOf": [{ "required": ["source_id"] }, { "required": ["source_version_id"] }, { "required": ["knowledge_context"] }] } }
         ],
         "properties": {
-          "notebook_id": {
-            "$ref": "#/components/schemas/OpaqueId"
-          },
-          "source_id": {
-            "$ref": "#/components/schemas/OpaqueId"
-          },
-          "source_version_id": {
-            "$ref": "#/components/schemas/OpaqueId"
-          },
-          "knowledge_context": {
-            "$ref": "#/components/schemas/QuestionKnowledgeContext"
-          },
-          "question": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 2000
-          },
-          "password": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 1024,
-            "writeOnly": true
-          },
-          "routing_mode": {
-            "type": "string",
-            "enum": [
-              "pinned",
-              "auto"
-            ]
-          },
-          "routing_policy_version_id": {
-            "$ref": "#/components/schemas/OpaqueId"
-          }
-        },
-        "allOf": [
-          {
-            "if": {
-              "properties": {
-                "routing_mode": {
-                  "const": "auto"
-                }
-              },
-              "required": [
-                "routing_mode"
-              ]
-            },
-            "then": {
-              "required": [
-                "routing_policy_version_id"
-              ]
-            },
-            "else": {
-              "required": [
-                "password"
-              ],
-              "not": {
-                "required": [
-                  "routing_policy_version_id"
-                ]
-              }
-            }
-          }
-        ]
+          "notebook_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "source_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "source_version_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "knowledge_context": { "$ref": "#/components/schemas/QuestionKnowledgeContext" },
+          "question": { "type": "string", "minLength": 1, "maxLength": 2000 },
+          "password": { "type": "string", "minLength": 1, "maxLength": 1024, "writeOnly": true }
+        }
       },
-
       "GroundedQuestionAuthorizationEnvelope": {
-  "type": "object",
-  "additionalProperties": false,
-  "required": [
-    "data",
-    "meta"
-  ],
-  "properties": {
-    "data": {
-      "oneOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "step_up_authorization_id",
-            "expires_at",
-            "run_id",
-            "request_fingerprint"
-          ],
-          "properties": {
-            "step_up_authorization_id": {
-              "$ref": "#/components/schemas/OpaqueId"
-            },
-            "expires_at": {
-              "type": "string",
-              "format": "date-time"
-            },
-            "run_id": {
-              "$ref": "#/components/schemas/OpaqueId"
-            },
-            "request_fingerprint": {
-              "type": "string",
-              "pattern": "^sha256:[0-9a-f]{64}$"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "routing_plan_id",
-            "routing_plan_authorization",
-            "expires_at",
-            "run_id",
-            "plan_digest",
-            "requires_step_up",
-            "routing_preview"
-          ],
-          "properties": {
-            "routing_plan_id": {
-              "$ref": "#/components/schemas/OpaqueId"
-            },
-            "routing_plan_authorization": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 4096
-            },
-            "expires_at": {
-              "type": "string",
-              "format": "date-time"
-            },
-            "run_id": {
-              "$ref": "#/components/schemas/OpaqueId"
-            },
-            "plan_digest": {
-              "type": "string",
-              "pattern": "^[0-9a-f]{64}$"
-            },
-            "requires_step_up": {
-              "type": "boolean"
-            },
-            "routing_preview": {
-              "$ref": "#/components/schemas/RoutingPreview"
-            }
-          }
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": {
+          "data": { "type": "object", "additionalProperties": false, "required": ["step_up_authorization_id", "expires_at", "run_id", "request_fingerprint"], "properties": {
+            "step_up_authorization_id": { "$ref": "#/components/schemas/OpaqueId" }, "expires_at": { "type": "string", "format": "date-time" }, "run_id": { "$ref": "#/components/schemas/OpaqueId" }, "request_fingerprint": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+          } },
+          "meta": { "type": "object", "additionalProperties": false, "required": ["trace_id"], "properties": { "trace_id": { "$ref": "#/components/schemas/OpaqueId" } } }
         }
-      ]
-    },
-    "meta": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "trace_id"
-      ],
-      "properties": {
-        "trace_id": {
-          "$ref": "#/components/schemas/OpaqueId"
-        }
-      }
-    }
-  }
-},
-
+      },
       "GroundedCitation": {
         "type": "object",
         "additionalProperties": false,
@@ -8823,79 +7505,16 @@
           "NO_AVAILABLE_UNDERSTANDING_MODEL",
           "NO_AVAILABLE_DEPLOYMENT",
           "ACCOUNT_SESSION_CHANGED",
-          "WEBSITE_URL_INVALID",
-          "WEBSITE_ACCESS_DENIED",
-          "WEBSITE_FETCH_BLOCKED",
-          "WEBSITE_IDEMPOTENCY_KEY_REUSED",
-          "WEBSITE_IMPORT_IN_PROGRESS",
-          "WEBSITE_CONTENT_TOO_LARGE",
-          "WEBSITE_MEDIA_UNSUPPORTED",
-          "WEBSITE_TEXT_UNAVAILABLE",
-          "WEBSITE_FETCH_FAILED",
-          "WEBSITE_STORAGE_UNAVAILABLE",
-          "WEBSITE_FETCH_TIMEOUT",
-          "OPEN_LAW_INPUT_INVALID",
-          "OPEN_LAW_ACCESS_DENIED",
-          "OPEN_LAW_EGRESS_BLOCKED",
-          "OPEN_LAW_NOT_FOUND",
-          "OPEN_LAW_PREVIEW_CHANGED",
-          "OPEN_LAW_IMPORT_CONFLICT",
-          "OPEN_LAW_IMPORT_IN_PROGRESS",
-          "OPEN_LAW_BINDING_CONFLICT",
-          "OPEN_LAW_CONTENT_TOO_LARGE",
-          "OPEN_LAW_TEXT_UNAVAILABLE",
-          "OPEN_LAW_PROTOCOL_INVALID",
-          "OPEN_LAW_UPSTREAM_FAILED",
-          "OPEN_LAW_CREDENTIAL_REQUIRED",
-          "OPEN_LAW_UNAVAILABLE",
-          "OPEN_LAW_BUSY",
-          "OPEN_LAW_STORAGE_UNAVAILABLE",
-          "OPEN_LAW_TIMEOUT",
-          "APPROVAL_REQUEST_EXPIRED",
-          "APPROVAL_REQUEST_PENDING",
-          "APPROVAL_REQUEST_REQUIRED",
-          "PRECONDITION_FAILED",
-          "IDEMPOTENCY_KEY_REUSED",
-          "PRECONDITION_REQUIRED",
-          "ROUTING_BUDGET_UNVERIFIED",
-          "ROUTING_CANDIDATE_CHANGED",
-          "ROUTING_CANDIDATE_UNAVAILABLE",
-          "ROUTING_CREDENTIAL_DENIED",
-          "ROUTING_METADATA_UNAVAILABLE",
-          "ROUTING_PINNED_UNCHANGED",
-          "ROUTING_PLAN_INVALID",
-          "ROUTING_POLICY_ABSENT",
-          "ROUTING_POLICY_ACCESS_DENIED",
-          "ROUTING_POLICY_DISABLED",
-          "ROUTING_POLICY_UNAVAILABLE",
-          "ROUTING_UPPER_POLICY_DENIED",
-          "RULESET_SNAPSHOT_REQUIRED",
-          "VERSION_CONFLICT",
-          "ROUTING_AUTHORIZATION_CONSUMED",
-          "ROUTING_AUTHORIZATION_EXPIRED",
-          "ROUTING_AUTHORIZATION_INVALID",
-          "ROUTING_AUTHORIZATION_REQUIRED",
-          "ROUTING_CANDIDATES_EXHAUSTED",
-          "ROUTING_CANDIDATE_PROOF_INVALID",
-          "ROUTING_CURRENT_ACCESS_DENIED",
-          "ROUTING_DISPATCH_ALREADY_CLAIMED",
-          "ROUTING_DISPATCH_NOT_CLAIMED",
-          "ROUTING_DISPATCH_ORDER_INVALID",
-          "ROUTING_EXECUTION_UNAVAILABLE",
-          "ROUTING_LINEAGE_INVALID",
-          "ROUTING_NEW_PREPARE_REQUIRED",
-          "ROUTING_PLAN_NOT_READY",
-          "ROUTING_POLICY_CHANGED",
-          "ROUTING_PRICE_UNCONFIRMED",
-          "ROUTING_RECEIPT_REUSED",
-          "ROUTING_RESULT_ACCESS_DENIED",
-          "ROUTING_RESULT_INVALID",
-          "ROUTING_RUN_FAILED",
-          "ROUTING_RUN_UNCERTAIN",
-          "ROUTING_SESSION_REQUIRED"
+          "WEBSITE_URL_INVALID", "WEBSITE_ACCESS_DENIED", "WEBSITE_FETCH_BLOCKED",
+          "WEBSITE_IDEMPOTENCY_KEY_REUSED", "WEBSITE_IMPORT_IN_PROGRESS", "WEBSITE_CONTENT_TOO_LARGE",
+          "WEBSITE_MEDIA_UNSUPPORTED", "WEBSITE_TEXT_UNAVAILABLE", "WEBSITE_FETCH_FAILED", "WEBSITE_STORAGE_UNAVAILABLE", "WEBSITE_FETCH_TIMEOUT",
+          "OPEN_LAW_INPUT_INVALID", "OPEN_LAW_ACCESS_DENIED", "OPEN_LAW_EGRESS_BLOCKED", "OPEN_LAW_NOT_FOUND",
+          "OPEN_LAW_PREVIEW_CHANGED", "OPEN_LAW_IMPORT_CONFLICT", "OPEN_LAW_IMPORT_IN_PROGRESS", "OPEN_LAW_BINDING_CONFLICT",
+          "OPEN_LAW_CONTENT_TOO_LARGE", "OPEN_LAW_TEXT_UNAVAILABLE", "OPEN_LAW_PROTOCOL_INVALID", "OPEN_LAW_UPSTREAM_FAILED",
+          "OPEN_LAW_CREDENTIAL_REQUIRED", "OPEN_LAW_UNAVAILABLE", "OPEN_LAW_BUSY", "OPEN_LAW_STORAGE_UNAVAILABLE", "OPEN_LAW_TIMEOUT",
+          "APPROVAL_REQUEST_EXPIRED", "APPROVAL_REQUEST_PENDING", "APPROVAL_REQUEST_REQUIRED", "PRECONDITION_FAILED"
         ]
       },
-
       "CostLimitExceededDetails": {
         "type": "object",
         "additionalProperties": false,
@@ -10647,96 +9266,6 @@
         "type": "object", "additionalProperties": false, "required": ["data", "meta"],
         "properties": { "data": {}, "meta": { "type": "object", "additionalProperties": true } }
       }
-    ,
-"RoutingPolicyPermissionsEnvelope": {
-  "type": "object",
-  "additionalProperties": false,
-  "required": [
-    "data",
-    "meta"
-  ],
-  "properties": {
-    "data": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "version",
-        "policy_version_id",
-        "digest_sha256",
-        "body",
-        "execution_enabled",
-        "readiness"
-      ],
-      "properties": {
-        "version": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "policy_version_id": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "digest_sha256": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "body": {
-          "anyOf": [
-            {
-              "$ref": "#/components/schemas/RoutingPolicyRequest"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "execution_enabled": {
-          "const": false
-        },
-        "readiness": {
-          "enum": [
-            "policy_absent",
-            "disabled",
-            "observations_unavailable"
-          ]
-        }
-      }
-    },
-    "meta": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "trace_id",
-        "workspace_id",
-        "permissions"
-      ],
-      "properties": {
-        "trace_id": {
-          "type": "string"
-        },
-        "workspace_id": {
-          "type": "string"
-        },
-        "permissions": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "policy_manage"
-          ],
-          "properties": {
-            "policy_manage": {
-              "type": "boolean"
-            }
-          }
-        }
-      }
     }
-  }
-}
-}
   }
 }

@@ -196,10 +196,6 @@ from .user_provider_credentials import (
     PostgresUserProviderCredentialService,
     UserProviderCredentialError,
 )
-from .routing_policy import RoutingPolicyBody, RoutingPolicyError
-from .routing_execution import QuestionAutoExecution, RoutingExecutionError, PlanApproval
-from .routing_attempts_postgres import PostgresRoutingAttemptsRepository
-from .routing_policy_postgres import postgres_routing_policy_service
 from .workspace_model_defaults import (
     PostgresWorkspaceModelDefaultsService, PostgresWorkspaceModelResolver,
     WorkspaceModelDefaultsContext, WorkspaceModelDefaultsError,
@@ -959,7 +955,6 @@ class RuntimeDependencies:
     provider_connection_service: Any | None = None
     provider_health_settings_service: PostgresProviderHealthCheckSettingsService | None = None
     workspace_model_defaults_service: Any | None = None
-    routing_policy_service: Any | None = None
     operations_status_service: OperationsStatusService | None = None
     output_version_settings_service: OutputVersionSettingsService | None = None
     screen_preference_service: ScreenPreferenceService | None = None
@@ -1237,25 +1232,9 @@ class QuestionBody(BaseModel):
     knowledge_context: QuestionKnowledgeContextBody | None = None
     question: str
     step_up_authorization_id: str | None = Field(default=None, min_length=1, max_length=4096)
-    routing_mode: Literal["pinned", "auto"] | None = None
-    routing_policy_version_id: str | None = Field(default=None, min_length=1, max_length=255)
-    routing_plan_id: str | None = Field(default=None, min_length=1, max_length=255)
-    routing_plan_authorization: str | None = Field(default=None, min_length=1, max_length=4096)
 
     @model_validator(mode="after")
     def validate_source_contract(self) -> "QuestionBody":
-        if any(key.startswith("routing_") and getattr(self,key) is None for key in self.model_fields_set):
-            raise ValueError("QUESTION_CONTEXT_INVALID")
-        if self.routing_mode == "auto" and "step_up_authorization_id" in self.model_fields_set:
-            raise ValueError("QUESTION_CONTEXT_INVALID")
-        if self.routing_mode == "auto" and (not self.routing_policy_version_id
-                or not self.routing_plan_id or not self.routing_plan_authorization
-                or self.step_up_authorization_id is not None):
-            raise ValueError("QUESTION_CONTEXT_INVALID")
-        if self.routing_mode != "auto" and (self.routing_plan_id is not None or self.routing_plan_authorization is not None):
-            raise ValueError("QUESTION_CONTEXT_INVALID")
-        if self.routing_mode != "auto" and self.routing_policy_version_id is not None:
-            raise ValueError("QUESTION_CONTEXT_INVALID")
         legacy = self.source_id is not None or self.source_version_id is not None
         if legacy != (self.source_id is not None and self.source_version_id is not None):
             raise ValueError("QUESTION_CONTEXT_INVALID")
@@ -1274,17 +1253,9 @@ class QuestionAuthorizationBody(BaseModel):
     # Development auth bypass does not require a password.  Production still
     # enforces re-authentication immediately before issuing step-up below.
     password: str | None = None
-    routing_mode: Literal["pinned", "auto"] | None = None
-    routing_policy_version_id: str | None = Field(default=None, min_length=1, max_length=255)
 
     @model_validator(mode="after")
     def validate_source_contract(self) -> "QuestionAuthorizationBody":
-        if any(key.startswith("routing_") and getattr(self,key) is None for key in self.model_fields_set):
-            raise ValueError("QUESTION_CONTEXT_INVALID")
-        if self.routing_mode == "auto" and not self.routing_policy_version_id:
-            raise ValueError("QUESTION_CONTEXT_INVALID")
-        if self.routing_mode != "auto" and self.routing_policy_version_id is not None:
-            raise ValueError("QUESTION_CONTEXT_INVALID")
         legacy = self.source_id is not None or self.source_version_id is not None
         if legacy != (self.source_id is not None and self.source_version_id is not None):
             raise ValueError("QUESTION_CONTEXT_INVALID")
@@ -2550,9 +2521,6 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         user_provider_credential_service = PostgresUserProviderCredentialService(
             dependencies.cloud_store, provider_cipher,
         )
-    routing_policy_service = dependencies.routing_policy_service
-    if routing_policy_service is None and dependencies.cloud_store is not None:
-        routing_policy_service = postgres_routing_policy_service(dependencies.cloud_store)
     workspace_model_defaults_service = dependencies.workspace_model_defaults_service
     if workspace_model_defaults_service is None and dependencies.cloud_store is not None:
         workspace_model_defaults_service = PostgresWorkspaceModelDefaultsService(dependencies.cloud_store)
@@ -2667,10 +2635,6 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             adapter_registry=QuestionAdapterRegistry(),
             qa_structured_ollama_workspace_id=dependencies.settings.qa_structured_ollama_workspace_id,
             run_cost_sessions=_build_run_cost_sessions(dependencies.cloud_store,dependencies.settings),
-            auto_execution=QuestionAutoExecution(routing_policy_service,
-                PostgresRoutingAttemptsRepository(dependencies.cloud_store),
-                PostgresWorkspaceModelResolver(dependencies.cloud_store,provider_cipher,user_provider_credential_service),
-                dependencies.cloud_store),
         )
     studio_report_repository = dependencies.studio_report_repository
     studio_report_service = dependencies.studio_report_service
@@ -2961,9 +2925,6 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, _error: RequestValidationError) -> JSONResponse:
-        if (request.method == "PUT" and getattr(request.scope.get("route"), "path", "")
-                == "/api/v1/workspaces/{id}/routing-policy"):
-            return _error_response(422, "INVALID_REQUEST", request.state.trace_id)
         if request.url.path in {"/api/v1/account/profile", "/api/v1/account/devices", "/api/v1/account/sessions"}:
             return _error_response(422, "ACCOUNT_INPUT_INVALID", request.state.trace_id)
         organization_operation = (request.method, getattr(request.scope.get("route"), "path", ""))
@@ -3350,14 +3311,6 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             error.status, error.code if error.code in safe_codes else "INVALID_REQUEST",
             request.state.trace_id,
         )
-
-    @app.exception_handler(RoutingExecutionError)
-    async def routing_execution_error(request: Request, error: RoutingExecutionError) -> JSONResponse:
-        return _error_response(error.status,error.code,request.state.trace_id,retryable=False)
-
-    @app.exception_handler(RoutingPolicyError)
-    async def routing_policy_error(request: Request, error: RoutingPolicyError) -> JSONResponse:
-        return _error_response(error.status, error.code, request.state.trace_id, retryable=error.retryable)
 
     @app.exception_handler(WorkspaceModelDefaultsError)
     async def workspace_model_defaults_error(
@@ -4885,23 +4838,6 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         response.headers["ETag"] = f'"run-result:{stored.run_result_id}"'
         return response
 
-    @app.get("/api/v1/runs/{id}/routing-decision")
-    async def get_run_routing_decision(id: str, request: Request) -> JSONResponse:
-        if set(request.query_params)!={'workspace_id'}:
-            raise HTTPException(status_code=422,detail='REQUEST_VALIDATION_FAILED')
-        values=request.query_params.getlist('workspace_id')
-        if len(values)!=1 or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,127}',values[0]) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,255}',id):
-            raise HTTPException(status_code=422,detail='REQUEST_VALIDATION_FAILED')
-        principal=_principal(request,dependencies);workspace=values[0]
-        if dependencies.cloud_store is None:
-            raise RoutingExecutionError('ROUTING_EXECUTION_UNAVAILABLE',503)
-        context=QuestionContext(principal.tenant_id,workspace,principal.user_id,request.state.trace_id,
-            dependencies.settings.policy_version,session_id=principal.session_id)
-        repository=PostgresRoutingAttemptsRepository(dependencies.cloud_store)
-        data=await asyncio.to_thread(repository.read_routing,context,id)
-        return JSONResponse({'data':data,'meta':{'trace_id':request.state.trace_id,'workspace_id':workspace}},
-            headers={'Cache-Control':'no-store','ETag':'"routing-read:'+hashlib.sha256(canonical_json_bytes(data)).hexdigest()+'"'})
-
     @app.post("/api/v1/workspaces/{id}/questions/authorization", status_code=201)
     async def authorize_grounded_question(
         id: str, body: QuestionAuthorizationBody, request: Request,
@@ -4912,7 +4848,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         principal = _principal(request, dependencies)
         grant = dependencies.authorization_service.authorize_action(
             principal=principal, workspace_id=id, action=Action.QUERY,
-            requested_permissions=() if body.routing_mode == "auto" else (Permission.EXTERNAL_LLM,),
+            requested_permissions=(Permission.EXTERNAL_LLM,),
             trace_id=request.state.trace_id,
             policy_version=dependencies.settings.policy_version,
         )
@@ -4921,7 +4857,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         context = QuestionContext(
             principal.tenant_id, id, principal.user_id,
             request.state.trace_id, dependencies.settings.policy_version,
-            body.notebook_id,session_id=principal.session_id if body.routing_mode == "auto" else None,
+            body.notebook_id,
         )
         context_mode, context_sources, source_id, source_version_id = _question_inputs(
             principal, id, request, body,
@@ -4936,39 +4872,6 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 for item in context_sources
             ),
         )
-        if body.routing_mode == "auto":
-            run_id=_question_run_id(principal,id,body.notebook_id,idempotency_key)
-            def authorize_auto_plan(plan,requires_step_up):
-                value=plan.as_dict()
-                if requires_step_up:
-                    roles={"workspace_manager":{Role.PERSONAL_OWNER,Role.WORKSPACE_ADMIN,Role.ORGANIZATION_ADMIN},
-                        "organization_admin":{Role.PERSONAL_OWNER,Role.ORGANIZATION_ADMIN}}
-                    if any(entry["authorization_mode"]=="step_up_required" and grant.role not in roles[entry["required_approver"]]
-                            for entry in value["candidates"]):
-                        raise AuthorizationError("ACTION_DENIED",403)
-                    if not body.password:raise IdentityError("REAUTHENTICATION_REQUIRED",401)
-                    access_token,_=_credential(request)
-                    step=dependencies.identity_service.issue_step_up_after_reauthentication(access_token=access_token,
-                        password=body.password,action_group="external_transfer",target_id=value["plan_id"],
-                        policy_version=plan.digest_sha256,trace_id=request.state.trace_id)
-                    dependencies.identity_service.consume_step_up(step_up_authorization=step.authorization,
-                        access_token=access_token,action_group="external_transfer",target_id=value["plan_id"],
-                        policy_version=plan.digest_sha256,trace_id=request.state.trace_id,
-                        operation="question.auto.plan.authorize",idempotency_key=idempotency_key)
-                return PlanApproval(plan.digest_sha256,principal.user_id,principal.session_id,
-                    "reauthenticated" if requires_step_up else "policy_approved")
-            prepared=await asyncio.to_thread(question_answering_service.prepare_authorization,context,
-                source_id=source_id,source_version_id=source_version_id,question=body.question,
-                context_mode=context_mode,context_sources=context_sources,routing_mode="auto",
-                routing_policy_version_id=body.routing_policy_version_id,run_id=run_id,
-                idempotency_key=idempotency_key,authorize_plan=authorize_auto_plan)
-            response=JSONResponse({"data":{"routing_plan_id":prepared.plan_id,
-                "routing_plan_authorization":prepared.authorization,"expires_at":prepared.expires_at,
-                "run_id":prepared.run_id,"plan_digest":prepared.plan_digest,"requires_step_up":prepared.requires_step_up,
-                "routing_preview":prepared.routing_preview},
-                "meta":{"trace_id":request.state.trace_id}},status_code=201)
-            response.headers["ETag"]='"routing-authorization:'+prepared.plan_digest+'"'
-            return response
         prepared = await asyncio.to_thread(
             question_answering_service.prepare_authorization, context,
             source_id=source_id, source_version_id=source_version_id,
@@ -5044,12 +4947,12 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         question_context = QuestionContext(
             principal.tenant_id, id, principal.user_id,
             request.state.trace_id, dependencies.settings.policy_version,
-            body.notebook_id,session_id=principal.session_id if body.routing_mode == "auto" else None,
+            body.notebook_id,
         )
         replay_fingerprint = question_request_fingerprint(
             question_context, run_id=run_id, idempotency_key=idempotency_key,
             request_payload=body.model_dump(
-                exclude={"step_up_authorization_id","routing_mode","routing_policy_version_id","routing_plan_id","routing_plan_authorization"}, exclude_none=True,
+                exclude={"step_up_authorization_id"}, exclude_none=True,
             ),
         )
         context_mode, context_sources, source_id, source_version_id = _question_inputs(
@@ -5065,15 +4968,6 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 for item in context_sources
             ),
         )
-        if body.routing_mode == "auto":
-            if not body.routing_plan_id or not body.routing_plan_authorization:
-                raise RoutingExecutionError("ROUTING_AUTHORIZATION_REQUIRED",401)
-            answer=await asyncio.to_thread(question_answering_service.ask,question_context,
-                source_id=source_id,source_version_id=source_version_id,question=body.question,run_id=run_id,
-                context_mode=context_mode,context_sources=context_sources,idempotency_key=idempotency_key,
-                routing_mode="auto",routing_policy_version_id=body.routing_policy_version_id,
-                routing_plan_id=body.routing_plan_id,routing_plan_authorization=body.routing_plan_authorization)
-            return _question_result_response(answer,request,id,question=body.question,context_mode=context_mode)
         replay = await asyncio.to_thread(
             question_answering_service.replay, question_context,
             run_id=run_id, request_fingerprint=replay_fingerprint,
@@ -5186,7 +5080,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             approved_authorization=approved_authorization,
             context_mode=context_mode, context_sources=context_sources,
             request_fingerprint=replay_fingerprint, replay_checked=True,
-            request_payload=body.model_dump(exclude={"step_up_authorization_id","routing_mode","routing_policy_version_id","routing_plan_id","routing_plan_authorization"}, exclude_none=True),
+            request_payload=body.model_dump(exclude={"step_up_authorization_id"}, exclude_none=True),
             idempotency_key=idempotency_key,
         )
         return _question_result_response(
@@ -7376,60 +7270,6 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             "meta": {"trace_id": request.state.trace_id, "workspace_id": id},
         })
         response.headers["ETag"] = view.etag
-        return response
-
-    @app.get("/api/v1/workspaces/{id}/routing-policy")
-    async def get_routing_policy(id: str, request: Request) -> JSONResponse:
-        _require_query_keys(request, frozenset({"include_permissions"}))
-        include_permissions = request.query_params.getlist("include_permissions")
-        if include_permissions and include_permissions != ["1"]:
-            raise HTTPException(status_code=400)
-        principal = _principal(request, dependencies)
-        dependencies.authorization_service.authorize_action(
-            principal=principal, workspace_id=id, action=Action.VIEW,
-            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version)
-        if routing_policy_service is None:
-            raise RoutingPolicyError("ROUTING_POLICY_UNAVAILABLE", 503)
-        context = WorkspaceModelDefaultsContext(principal.tenant_id, id, principal.user_id,
-            request.state.trace_id, dependencies.settings.policy_version)
-        result = await asyncio.to_thread(routing_policy_service.get, context)
-        meta = {"trace_id": request.state.trace_id, "workspace_id": id}
-        if include_permissions:
-            try:
-                dependencies.authorization_service.authorize_action(
-                    principal=principal, workspace_id=id, action=Action.POLICY_MANAGE,
-                    trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version)
-                can_manage = True
-            except AuthorizationError as error:
-                if error.code != "ACTION_DENIED" or error.http_status != 403:
-                    raise
-                can_manage = False
-            meta["permissions"] = {"policy_manage": can_manage}
-        response = JSONResponse({"data": {k: v for k, v in result.items() if k != "etag"},
-            "meta": meta})
-        response.headers["ETag"] = result["etag"]
-        return response
-
-    @app.put("/api/v1/workspaces/{id}/routing-policy")
-    async def put_routing_policy(id: str, body: RoutingPolicyBody, request: Request,
-        idempotency_key: str = Header(alias="Idempotency-Key"),
-        if_match: str | None = Header(default=None, alias="If-Match"),
-        if_none_match: str | None = Header(default=None, alias="If-None-Match")) -> JSONResponse:
-        _require_query_keys(request, frozenset())
-        _idempotency_key(idempotency_key)
-        principal = _principal(request, dependencies)
-        dependencies.authorization_service.authorize_action(
-            principal=principal, workspace_id=id, action=Action.POLICY_MANAGE,
-            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version)
-        if routing_policy_service is None:
-            raise RoutingPolicyError("ROUTING_POLICY_UNAVAILABLE", 503)
-        context = WorkspaceModelDefaultsContext(principal.tenant_id, id, principal.user_id,
-            request.state.trace_id, dependencies.settings.policy_version)
-        result, replayed = await asyncio.to_thread(routing_policy_service.put, context, body,
-            if_match=if_match, if_none_match=if_none_match, idempotency_key=idempotency_key)
-        response = JSONResponse({"data": {k: v for k, v in result.items() if k != "etag"},
-            "meta": {"trace_id": request.state.trace_id, "workspace_id": id, "replayed": replayed}})
-        response.headers["ETag"] = result["etag"]
         return response
 
     @app.get("/api/v1/workspaces/{id}/model-defaults")

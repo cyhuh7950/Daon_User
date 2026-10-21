@@ -43,22 +43,6 @@ export function normalizeProductWorkspaceState(state) {
 }
 
 export function questionFailureMessage(code) {
-  const routingActions={
-    ROUTING_OBSERVATIONS_UNAVAILABLE:'후보 관측 수집이 준비되지 않아 자동 선택을 실행할 수 없습니다. 직접 선택을 사용하거나 관리자에게 관측 상태 확인을 요청해 주세요.',
-    ROUTING_PLAN_NOT_READY:'자동 실행 후보가 준비되지 않았습니다. 직접 선택을 사용하거나 후보 상태를 확인해 주세요.',
-    ROUTING_BUDGET_UNVERIFIED:'상위 예산의 통화·범위·기간을 확인할 수 없습니다. 관리자에게 예산 연결을 요청해 주세요.',
-    ROUTING_PRICE_UNCONFIRMED:'후보의 전송 내용에 맞는 가격 근거가 준비되지 않았습니다. 관리자에게 가격 연결을 요청해 주세요.',
-    ROUTING_POLICY_DISABLED:'자동 선택 정책이 비활성 상태입니다. 직접 선택을 사용해 주세요.',
-    ROUTING_POLICY_CHANGED:'준비 후 정책이 변경됐습니다. 후보를 다시 준비하고 확인해 주세요.',
-    ROUTING_AUTHORIZATION_EXPIRED:'실행 승인이 만료됐습니다. 후보를 다시 준비하고 확인해 주세요.',
-    ROUTING_EXECUTION_UNAVAILABLE:'자동 실행 또는 저장 이력을 확인할 수 없습니다. 잠시 후 상태를 다시 확인해 주세요.',
-    ROUTING_RUN_UNCERTAIN:'실행 결과가 불확정입니다. 추가 실행 전에 실행 상세와 비용 상태를 확인해 주세요.',
-    ROUTING_RESULT_ACCESS_DENIED:'현재 자료 접근 권한이 변경되어 답변 표시가 차단됐습니다. 권한을 확인해 주세요.',
-    COST_LIMIT_EXCEEDED:'확인된 예산 한도를 초과해 실행하지 않았습니다. 예산 정책을 확인해 주세요.',
-    TEMPORARILY_UNAVAILABLE:'모델이 일시적으로 준비되지 않았습니다. 실행 상세를 확인한 후 다시 준비해 주세요.',
-  };
-  if(routingActions[code])return routingActions[code];
-
   if (code === "EGRESS_POLICY_DENIED") {
     return `조직 또는 Workspace의 외부 전송 정책으로 차단되었습니다. 정책 설정을 확인해 주세요. (${code})`;
   }
@@ -181,18 +165,4 @@ export function isSheetCellContent(value, locatorValue, sourceVersionId) {
     const bounds = cellBounds(range);
     return bounds && bounds[0] <= endX && bounds[2] >= x && bounds[1] <= endY && bounds[3] >= y;
   });
-}
-
-
-const ROUTING_SELECTION_ID=/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u;
-export function routingSelectionFragment(runId,workspaceId,notebookId) {
- if(![runId,workspaceId,notebookId].every(x=>typeof x==='string' && ROUTING_SELECTION_ID.test(x)))throw new Error('ROUTING_SELECTION_INVALID');
- return '#'+new URLSearchParams({'routing-run':runId,'routing-workspace':workspaceId,'routing-notebook':notebookId}).toString();
-}
-export function parseRoutingSelection(hash,workspaceId,notebookId) {
- if(!hash || !hash.startsWith('#routing-'))return null;
- const params=new URLSearchParams(hash.slice(1)),keys=['routing-run','routing-workspace','routing-notebook'];
- if([...params.keys()].some(k=>!keys.includes(k)) || keys.some(k=>params.getAll(k).length!==1 || !ROUTING_SELECTION_ID.test(params.get(k)??''))
-   || params.get('routing-workspace')!==workspaceId || params.get('routing-notebook')!==notebookId)throw new Error('ROUTING_SELECTION_INVALID');
- return params.get('routing-run');
 }

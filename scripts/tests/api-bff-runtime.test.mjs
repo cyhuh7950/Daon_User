@@ -1958,30 +1958,3 @@ test("BFF exposes screen preference as same-origin exact GET PUT only", async ()
     { url: "https://api.example.com/api/v1/preferences/screen", method: "PUT", contentType: "application/json" },
   ]);
 });
-
-
-test('B3 routing read requires one Workspace and policy precondition is exact-path only',async()=>{
- const calls=[],proxy=createBffProxy({baseUrl:new URL('https://api.example.com'),fetchImpl:async(url,init)=>{calls.push({url:String(url),headers:init.headers});return Response.json({data:{}});}});
- const parts=['runs','run-a','routing-decision'],root='https://app.example.com/bff/api/'+parts.join('/');
- assert.equal((await proxy(new Request(root+'?workspace_id=workspace-a'),parts)).status,200);
- assert.equal(calls.at(-1).url,'https://api.example.com/api/v1/runs/run-a/routing-decision?workspace_id=workspace-a');
- const before=calls.length;
- for(const query of ['', 'workspace_id=','workspace_id=a&workspace_id=b','workspace_id=a&actor_id=other'])assert.equal((await proxy(new Request(root+'?'+query),parts)).status,400);
- assert.equal(calls.length,before);
- const policy=['workspaces','workspace-a','routing-policy'];
- assert.equal((await proxy(new Request('https://app.example.com/bff/api/'+policy.join('/'),{method:'PUT',headers:{origin:'https://app.example.com','content-type':'application/json','if-none-match':'*','idempotency-key':'policy-create'},body:'{}'}),policy)).status,200);
- assert.equal(calls.at(-1).headers.get('if-none-match'),'*');
- await proxy(new Request('https://app.example.com/bff/api/workspaces/workspace-a/questions',{method:'POST',headers:{origin:'https://app.example.com','content-type':'application/json','if-none-match':'*'},body:'{}'}),['workspaces','workspace-a','questions']);
- assert.equal(calls.at(-1).headers.get('if-none-match'),null);
-});
-
-
-test('B3 policy capability query permits exact GET opt-in only',async()=>{
- const calls=[],proxy=createBffProxy({baseUrl:new URL('https://api.example.com'),fetchImpl:async(url)=>{calls.push(String(url));return Response.json({data:{}});}});
- const parts=['workspaces','workspace-a','routing-policy'],url='https://app.example.com/bff/api/'+parts.join('/');
- assert.equal((await proxy(new Request(url+'?include_permissions=1'),parts)).status,200);
- assert.equal(calls[0],'https://api.example.com/api/v1/workspaces/workspace-a/routing-policy?include_permissions=1');
- for(const q of ['include_permissions=true','include_permissions=0','include_permissions=1&include_permissions=1','include_permissions=1&other=1'])assert.equal((await proxy(new Request(url+'?'+q),parts)).status,400);
- assert.equal((await proxy(new Request(url+'?include_permissions=1',{method:'PUT',headers:{origin:'https://app.example.com','content-type':'application/json'},body:'{}'}),parts)).status,400);
- assert.equal(calls.length,1);
-});
