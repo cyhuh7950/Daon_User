@@ -637,21 +637,16 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((initial.status_code, saved.status_code, reset.status_code), (200, 200, 200))
         self.assertEqual((unauthenticated.status_code, unauthenticated.json()["error"]["code"]), (401, "AUTHENTICATION_REQUIRED"))
 
-    async def test_development_bypass_session_matches_web_contract(self) -> None:
-        self.dependencies.settings = replace(self.settings, profile="development", dev_auth_bypass=True)
-        app = create_app(self.dependencies)
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1") as client:
-            response = await client.get("/api/v1/session")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(
-            set(response.json()["data"]),
-            {
-                "user_id", "tenant_id", "workspace_id", "session_id", "device_id",
-                "login_id",
-                "client_kind", "delivery", "expires_at", "recovery_operations",
-                "password_change_required", "is_system_admin",
-            },
-        )
+    async def test_development_bypass_is_rejected_and_session_requires_authentication(self) -> None:
+        with self.assertRaisesRegex(ValueError, "AUTH_BYPASS_UNSUPPORTED"):
+            replace(self.settings, profile="development", dev_auth_bypass=True)
+        with patch.object(self.dependencies.authorization_repository, "bootstrap_workspace", wraps=self.dependencies.authorization_repository.bootstrap_workspace) as bootstrap:
+            response = await self.client.get("/api/v1/session")
+            self.assertEqual((response.status_code,response.json()["error"]["code"]), (401,"AUTHENTICATION_REQUIRED"))
+            bootstrap.assert_not_called()
+        authenticated = await self.client.get("/api/v1/session",headers={"cookie":f"{WEB_SESSION_COOKIE}={self.web.access_token}"})
+        self.assertEqual(authenticated.status_code,200)
+        self.assertEqual(authenticated.json()["data"]["user_id"],self.identity.describe_access(self.web.access_token,trace_id=TRACE_ID,policy_version=POLICY_VERSION).principal.user_id)
 
     async def test_notebook_create_list_get_update_title_contract(self) -> None:
         auth = {"cookie": f"{WEB_SESSION_COOKIE}={self.web.access_token}"}
@@ -1853,3 +1848,20 @@ class RuntimeSettingsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@pytest.mark.parametrize("profile", ["test", "development", "production"])
+def test_auth_bypass_activation_is_rejected_before_runtime_or_storage(profile):
+    options = dict(profile=profile, bind_host="127.0.0.1", port=8000,
+        cloud_database_dsn="postgresql:///qa", public_gateway_url="https://qa.example.com",
+        step_up_token_key_file=Path("/qa-step-up-key"), trusted_proxy_ips=("127.0.0.1",))
+    assert RuntimeSettings(**options).dev_auth_bypass is False
+    with pytest.raises(ValueError, match="AUTH_BYPASS_UNSUPPORTED"):
+        RuntimeSettings(**options, dev_auth_bypass=True)
+
+
+@pytest.mark.parametrize("value", ["true", "TRUE", "1", "yes", ""])
+def test_auth_bypass_environment_activation_or_invalid_value_fails_closed(value):
+    with patch.dict("os.environ", {"DAON_RUNTIME_PROFILE":"development", "DAON_DEV_AUTH_BYPASS":value}, clear=True):
+        with pytest.raises(ValueError, match="AUTH_BYPASS_UNSUPPORTED"):
+            RuntimeSettings.from_env()
