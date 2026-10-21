@@ -214,15 +214,27 @@ def run_probe(secrets):
             return port,service,auth,repo.read(ctx,auth.plan_id)
         emit('group1_pointer',status='PASS')
         emit('group2_claim',status='RUNNING')
-        port,engine,auth,plan=prepare('qa-run-claim','qa-claim-pool')
+        emit('group2_prepare',status='RUNNING')
+        port=Port('qa-claim-pool');engine=RoutingExecutionService(repo,port,clock=lambda:now)
+        auth=engine.prepare(ctx,route,'b'*64,'qa-run-claim',authorize_plan=lambda p,r:PlanApproval(p.digest_sha256,A,ctx.session_id,'policy_approved'))
+        emit('group2_read',status='RUNNING')
+        plan=repo.read(ctx,auth.plan_id)
         def claim(i):return repo.claim(ctx,plan,idempotency_key='qa-claim-key',request_digest='b'*64,recheck=port.recheck)
+        emit('group2_claim_race',status='RUNNING')
         require(sorted(race(claim))==[False,True],'B2_CLAIM_RACE_FAILED')
+        emit('group2_claim_replay',status='RUNNING')
         require(repo.claim(ctx,plan,idempotency_key='qa-claim-key',request_digest='b'*64,recheck=port.recheck) is False,'B2_REPLAY_FAILED')
+        emit('group2_wrong_request',status='RUNNING')
         expect_denial(lambda:repo.claim(ctx,plan,idempotency_key='qa-other-key',request_digest='f'*64,recheck=port.recheck),RoutingExecutionError,'ROUTING_AUTHORIZATION_INVALID',403)
+        emit('group2_wrong_nonce',status='RUNNING')
         expect_denial(lambda:engine.execute(ctx,plan_id=auth.plan_id,authorization='wrong-nonce',request_digest='b'*64,idempotency_key='qa-claim-key'),RoutingExecutionError,'ROUTING_AUTHORIZATION_INVALID',403)
+        emit('group2_wrong_scope',status='RUNNING')
         expect_denial(lambda:repo.read(replace(ctx,workspace_id='other-workspace'),auth.plan_id),RoutingExecutionError,'ROUTING_AUTHORIZATION_INVALID',403)
+        emit('group2_claim_attempt',status='RUNNING')
         attempt=repo.claim_attempt(ctx,plan,1,recheck=port.recheck)
+        emit('group2_duplicate_attempt',status='RUNNING')
         expect_denial(lambda:repo.claim_attempt(ctx,plan,1,recheck=port.recheck),RoutingExecutionError,'ROUTING_DISPATCH_ALREADY_CLAIMED',409)
+        emit('group2_persisted_counts',status='RUNNING')
         with connect(secrets['pg_password']) as conn:
             require(conn.execute('SELECT count(*) FROM routing_execution_claims WHERE plan_id=%s',(auth.plan_id,)).fetchone()==(1,),'B2_CLAIM_COUNT_INVALID')
             require(conn.execute('SELECT count(*) FROM routing_dispatch_outbox WHERE plan_id=%s',(auth.plan_id,)).fetchone()==(1,),'B2_OUTBOX_COUNT_INVALID')
@@ -322,6 +334,24 @@ def run_probe(secrets):
         emit('group6_savepoint_and_success',status='PASS');emit('complete',status='PASS',groups=6,provider_calls=0)
     finally:store.close()
 
+def safe_error_metadata(error):
+    result=dict(sqlstate=None,column=None,permission_type=None,permission_name=None)
+    cause=error;seen=set()
+    for _ in range(8):
+        if cause is None or id(cause) in seen:break
+        seen.add(id(cause));diag=getattr(cause,'diag',None)
+        state=getattr(cause,'sqlstate',None) or getattr(diag,'sqlstate',None)
+        if result['sqlstate'] is None and type(state) is str and re.fullmatch('[A-Z0-9]{5}',state):result['sqlstate']=state
+        column=getattr(diag,'column_name',None)
+        if result['column'] is None and type(column) is str and re.fullmatch('[a-z_][a-z0-9_]{0,62}',column):result['column']=column
+        primary=getattr(diag,'message_primary',None)
+        if state=='42501' and type(primary) is str and result['permission_name'] is None:
+            matched=re.fullmatch(r'permission denied for (table|relation|sequence|function) ([a-z_][a-z0-9_]{0,62})',primary)
+            if matched:result['permission_type'],result['permission_name']=matched.groups()
+        cause=getattr(cause,'__cause__',None) or getattr(cause,'__context__',None)
+    return result
+
+
 def main():
     stage=sys.argv[1] if len(sys.argv)==2 else ''
     require(stage in {'bootstrap','probe'},'B2_STAGE_INVALID')
@@ -333,12 +363,5 @@ if __name__=='__main__':
     try:main()
     except Exception as error:
         code=str(error) if type(error) is ValueError and re.fullmatch('B2_[A-Z0-9_]+',str(error)) else 'B2_GATE_FAILED'
-        state=getattr(error,'sqlstate',None);column=None;cause=error
-        for _ in range(5):
-            if cause is None:break
-            diag=getattr(cause,'diag',None)
-            if diag is not None:
-                state=state or getattr(diag,'sqlstate',None);column=getattr(diag,'column_name',None)
-            cause=getattr(cause,'__context__',None)
-        emit('failed',test_name=CURRENT_TEST,column=column if type(column) is str and re.fullmatch('[a-z_]{1,63}',column) else None,status='FAIL',safe_code=code,sqlstate=state if type(state) is str and re.fullmatch('[A-Z0-9]{5}',state) else None)
+        emit('failed',test_name=CURRENT_TEST,status='FAIL',safe_code=code,**safe_error_metadata(error))
         raise SystemExit(1) from None

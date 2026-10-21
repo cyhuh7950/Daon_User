@@ -87,3 +87,35 @@ def test_restrictive_source_umask_does_not_prevent_rootless_image_code_read():
   assert ((file_mode|0o444)&0o004)==0o004
   assert ((directory_mode|0o555)&0o005)==0o005
  assert 'chmod -R a+rX "$ROOT"' not in shell and 'chmod -R a+rX "$STATE"' not in shell
+
+
+@pytest.mark.parametrize('kind',['table','relation','sequence','function'])
+def test_permission_diagnostic_extracts_only_exact_safe_identifier(kind):
+ from types import SimpleNamespace
+ inner=SimpleNamespace(sqlstate='42501',diag=SimpleNamespace(sqlstate='42501',column_name=None,message_primary='permission denied for '+kind+' routing_authorization_plans'),__context__=None,__cause__=None)
+ outer=SimpleNamespace(sqlstate=None,diag=None,__context__=inner,__cause__=None)
+ assert gate.safe_error_metadata(outer)==dict(sqlstate='42501',column=None,permission_type=kind,permission_name='routing_authorization_plans')
+
+@pytest.mark.parametrize('message',[
+ 'permission denied for table secret https://example.com',
+ 'permission denied for table schema.name','permission denied for table "quoted name"',
+ 'permission denied for function name(text)','permission denied for table name\nsecret',
+ 'password authentication failed','permission denied for database some_database',
+ 'prefix permission denied for table safe_name',
+])
+def test_permission_diagnostic_never_emits_raw_message_or_nonallowlisted_name(message):
+ from types import SimpleNamespace
+ error=SimpleNamespace(sqlstate='42501',diag=SimpleNamespace(sqlstate='42501',column_name=None,message_primary=message),__context__=None,__cause__=None)
+ output=gate.safe_error_metadata(error)
+ assert output['permission_type'] is None and output['permission_name'] is None
+ assert 'message' not in output
+
+
+def test_error_diagnostic_retains_safe_sqlstate_and_column_without_raw_values():
+ from types import SimpleNamespace
+ error=SimpleNamespace(sqlstate='23502',diag=SimpleNamespace(sqlstate='23502',column_name='created_at',message_primary='raw secret must never be printed'),__context__=None,__cause__=None)
+ assert gate.safe_error_metadata(error)==dict(sqlstate='23502',column='created_at',permission_type=None,permission_name=None)
+ error.__context__=error
+ assert gate.safe_error_metadata(error)['column']=='created_at'
+ error.sqlstate='unsafe state';error.diag.sqlstate=None;error.diag.column_name='column with raw text'
+ assert gate.safe_error_metadata(error)==dict(sqlstate=None,column=None,permission_type=None,permission_name=None)
