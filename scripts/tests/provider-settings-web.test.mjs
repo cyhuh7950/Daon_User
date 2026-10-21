@@ -1220,3 +1220,182 @@ test('B3 missing policy capability stays read-only despite system-admin session'
  try{assert.match(w.container.textContent,/권한을 확인하지 못해 읽기 전용/u);assert.equal(buttonByText(w.container,'현재 정책 비활성화'),undefined);assert.equal(fixture.requests.filter(x=>x.method==='PUT').length,0);}
  finally{await w.cleanup();}
 });
+
+
+function candidateMetadata(source='public') {
+ const connection={display_name:'Registered candidate',provider_name:'Compatible',base_url:'https://candidate.example/v1',adapter_type:'openai_compatible',short_code:'CA',connection_id:'add-connection',provider_code:'CUSTOM',version:3,credential_version:2,access_mode:source,credential_requirement:'required',enabled:true,configured:true,verification_status:'verified',catalog_status:'ready',allowed_model_ids:['add-model'],models:[{model_id:'add-model',catalog_status:'ready',catalog_version:4,effective_capabilities:['text_generation']}]};
+ return {workspaceId:'workspace-001',metadataWorkspaceId:'workspace-001',connections:[connection],credentials:source==='personal'?[{connection_id:connection.connection_id,provider_code:'CUSTOM',configured:true,verification_status:'verified',credential_version:9}]:[],modelDefaults:{workspace_id:'workspace-001',available_models:[{connection_id:connection.connection_id,provider_code:'CUSTOM',connection_version:3,catalog_version:4,credential_version:2,configured:true,verification_status:'verified',model_id:'add-model',catalog_status:'ready',effective_capabilities:['text_generation']}]}};
+}
+
+test('B3 candidate projection binds current public and personal versions with closed safe references',()=>{
+ const project=providerSettingsApi.projectRoutingCandidates;
+ const expected={connection_id:'add-connection',model_id:'add-model',credential_source:'workspace',connection_version:3,catalog_version:4,credential_version:2,endpoint_version:3};
+ assert.deepEqual(project(candidateMetadata()),[expected]);
+ assert.deepEqual(project(candidateMetadata('personal')),[{...expected,credential_source:'personal',credential_version:9}]);
+ const noKey=candidateMetadata();noKey.connections[0].credential_requirement='none';noKey.connections[0].credential_version=0;noKey.connections[0].configured=false;noKey.modelDefaults.available_models[0].credential_version=0;noKey.modelDefaults.available_models[0].configured=false;
+ assert.deepEqual(project(noKey),[{...expected,credential_version:0}]);
+});
+
+test('B3 candidate projection rejects missing mismatched ambiguous and wrong-source metadata',()=>{
+ const project=providerSettingsApi.projectRoutingCandidates;
+ for(const mutate of [
+  x=>x.metadataWorkspaceId='other',x=>x.modelDefaults.workspace_id='other',x=>x.connections=[],x=>x.credentials=undefined,
+  x=>x.connections[0].version='3',x=>x.connections[0].enabled=false,x=>x.connections[0].version=4,
+  x=>x.connections.push(structuredClone(x.connections[0])),x=>x.modelDefaults.available_models.push(structuredClone(x.modelDefaults.available_models[0])),
+  x=>x.connections[0].models.push(structuredClone(x.connections[0].models[0])),x=>x.connections[0].allowed_model_ids.push('add-model'),
+  x=>x.connections[0].allowed_model_ids=[],x=>x.connections[0].models[0].catalog_version=5,
+  x=>x.connections[0].models[0].effective_capabilities=[],x=>x.connections[0].configured=false,
+  x=>x.modelDefaults.available_models[0].credential_version=0,
+ ]){const value=candidateMetadata();mutate(value);assert.deepEqual(project(value),[]);}
+ for(const mutate of [x=>x.credentials=[],x=>x.credentials[0].verification_status='unverified',x=>x.credentials[0].configured=false,x=>x.credentials[0].credential_version=0,x=>x.credentials.push(structuredClone(x.credentials[0]))]){const value=candidateMetadata('personal');mutate(value);assert.deepEqual(project(value),[]);}
+ const refs=project(candidateMetadata());assert.deepEqual(project(candidateMetadata(),refs),[]);
+});
+
+
+function candidateUiFixture({source='public',permission=true,delayMetadata=false,noPolicy=false,count=1}={}) {
+ const base=capPolicyFixture({permission}),metadata=candidateMetadata(source),original=base.fixture.fetch,pendingMetadata=[];
+ base.fixture.fetch=async(url,options={})=>{
+  const path=String(url),method=options.method??'GET';
+  let payload;
+  if(path==='/bff/api/admin/provider-connections' && method==='GET')payload={data:metadata.connections};
+  if(path==='/bff/api/provider-credentials' && method==='GET')payload={data:{credentials:metadata.credentials}};
+  if(path==='/bff/api/workspaces/workspace-001/model-defaults' && method==='GET'){
+   payload={data:{...metadata.modelDefaults,defaults:[],version:0}};
+   if(delayMetadata){base.fixture.requests.push({path,method});return new Promise(resolve=>pendingMetadata.push(()=>resolve(Response.json(payload,{headers:{etag:'"defaults-0"'}}))));}
+  }
+  if(payload){base.fixture.requests.push({path,method});return Response.json(payload,{headers:{etag:'"defaults-0"'}});}
+  const response=await original(url,options);
+  if(path.includes('/routing-policy?') && method==='GET'){
+   const value=await response.json();
+   if(noPolicy)Object.assign(value.data,{version:0,policy_version_id:null,digest_sha256:null,body:null,readiness:'policy_absent'});
+   else if(count>1)value.data.body.candidates=Array.from({length:count},(_,index)=>({...value.data.body.candidates[0],model_id:'existing-'+index}));
+   return Response.json(value,{headers:{etag:response.headers.get('etag')}});
+  }
+  return response;
+ };
+ return {...base,metadata,pendingMetadata,setMetadataDelay:value=>{delayMetadata=value;}};
+}
+
+for(const source of ['public','personal'])test(`B3 candidate React adds current ${source} reference and saves exact existing policy`,async()=>{
+ const {fixture,body}=candidateUiFixture({source}),w=await mountAdminFixture(fixture,'candidate-'+source);
+ try{
+  await fill(w.act,controlFor(w.container,'등록된 모델 후보'),JSON.stringify(['add-connection','add-model']));
+  await click(w.act,buttonByText(w.container,'선택한 후보 추가'));
+  assert.equal(buttonByText(w.container,'선택한 후보 추가').disabled,true);
+  await click(w.act,buttonByText(w.container,'후보 정책 저장'));
+  const write=fixture.requests.find(x=>x.method==='PUT');
+  assert.deepEqual(write.body,{...body,expected_version:2,candidates:[...body.candidates,{connection_id:'add-connection',model_id:'add-model',credential_source:source==='personal'?'personal':'workspace',connection_version:3,catalog_version:4,credential_version:source==='personal'?9:2,endpoint_version:3}]});
+  assert.equal(fixture.requests.filter(x=>x.method==='GET' && /provider-connections|provider-credentials|model-defaults/u.test(x.path)).length,3);
+ }finally{await w.cleanup();}
+});
+
+
+for(const [name,options] of [['no-right',{permission:false}],['no-policy',{noPolicy:true}],['maximum',{count:8}]])test(`B3 candidate additions stay closed for ${name}`,async()=>{
+ const {fixture}=candidateUiFixture(options),w=await mountAdminFixture(fixture,'candidate-'+name);
+ try{const add=buttonByText(w.container,'선택한 후보 추가');assert.ok(!add || add.disabled);assert.equal(fixture.requests.filter(x=>x.method==='PUT').length,0);if(name==='maximum')assert.match(w.container.textContent,/최대 8개/u);}
+ finally{await w.cleanup();}
+});
+
+test('B3 candidate refresh recovers current references without automatic extra fetches',async()=>{
+ const {fixture,metadata}=candidateUiFixture();metadata.connections[0].version=4;
+ const w=await mountAdminFixture(fixture,'candidate-refresh');
+ try{assert.equal(controlFor(w.container,'등록된 모델 후보').disabled,true);metadata.modelDefaults.available_models[0].connection_version=4;
+  await click(w.act,buttonByText(w.container,'후보 목록 다시 조회'));
+  assert.equal(controlFor(w.container,'등록된 모델 후보').disabled,false);
+  await fill(w.act,controlFor(w.container,'등록된 모델 후보'),JSON.stringify(['add-connection','add-model']));
+  await click(w.act,buttonByText(w.container,'선택한 후보 추가'));await click(w.act,buttonByText(w.container,'현재 정책 비활성화'));
+  const write=fixture.requests.find(x=>x.method==='PUT');assert.equal(write.body.candidates.length,1);assert.equal(write.body.candidates[0].model_id,'known-model');assert.equal(write.body.enabled,false);
+  assert.equal(fixture.requests.filter(x=>x.method==='GET' && /provider-connections|provider-credentials|model-defaults/u.test(x.path)).length,6);
+ }finally{await w.cleanup();}
+});
+
+test('B3 late old-Workspace metadata cannot populate current candidate choices',async()=>{
+ const {fixture,pendingMetadata}=candidateUiFixture({delayMetadata:true}),w=await mountAdminFixture(fixture,'candidate-late-scope');
+ try{assert.equal(controlFor(w.container,'등록된 모델 후보').disabled,true);assert.equal(pendingMetadata.length,1);
+  await w.render({workspaceId:'workspace-other'});await w.act(async()=>pendingMetadata.shift()());
+  const add=buttonByText(w.container,'선택한 후보 추가');assert.ok(!add || add.disabled);assert.equal(fixture.requests.filter(x=>x.method==='PUT').length,0);
+  assert.doesNotMatch(w.container.textContent,/정책을 저장했습니다/u);
+ }finally{await w.cleanup();}
+});
+
+test('B3 personal credential deletion discards candidate metadata until explicit reload',async()=>{
+ const {fixture}=candidateUiFixture({source:'personal'}),original=fixture.fetch;
+ fixture.fetch=async(url,options={})=>String(url)==='/bff/api/session'?Response.json({data:{workspace_id:'workspace-001',is_system_admin:false}}):String(url)==='/bff/api/provider-credentials/add-connection' && options.method==='DELETE'?Response.json({data:{}}):original(url,options);
+ const w=await mountAdminFixture(fixture,'candidate-key-change');
+ try{assert.equal(controlFor(w.container,'등록된 모델 후보').disabled,false);
+  await click(w.act,buttonByText(w.container,'내 계정 키 삭제'));
+  assert.equal(controlFor(w.container,'등록된 모델 후보').disabled,true);assert.equal(buttonByText(w.container,'선택한 후보 추가').disabled,true);
+ }finally{await w.cleanup();}
+});
+
+
+test('B3 malformed personal credential list cannot be treated as complete metadata',()=>{
+ const metadata=candidateMetadata();metadata.credentials=[null];
+ assert.deepEqual(providerSettingsApi.projectRoutingCandidates(metadata),[]);
+});
+
+
+test('B3 metadata epoch rejects captured credentials after concurrent Key replacement and recovers only by refresh',async()=>{
+ const setup=candidateUiFixture({source:'personal'}),{fixture,metadata,pendingMetadata}=setup,original=fixture.fetch,pendingKey=[];
+ fixture.fetch=async(url,options={})=>{
+  if(String(url)==='/bff/api/session')return Response.json({data:{workspace_id:'workspace-001',is_system_admin:false}});
+  if(String(url)==='/bff/api/provider-credentials/add-connection' && options.method==='PUT')return new Promise(resolve=>pendingKey.push(()=>{metadata.credentials[0].credential_version=10;resolve(Response.json({data:metadata.credentials[0]}));}));
+  return original(url,options);
+ };
+ const w=await mountAdminFixture(fixture,'candidate-key-epoch');
+ try{
+  await fill(w.act,controlFor(w.container,'API Key 또는 Client Key'),'synthetic-key');
+  const replace=buttonByText(w.container,'내 계정 키 시험 및 저장');assert.equal(replace.disabled,false);
+  await click(w.act,replace);assert.equal(pendingKey.length,1);
+  setup.setMetadataDelay(true);
+  const reload=buttonByText(w.container,'후보 목록 다시 조회');assert.equal(reload.disabled,false);await click(w.act,reload);
+  assert.equal(pendingMetadata.length,1);assert.equal(buttonByText(w.container,'내 계정 키 시험 및 저장').disabled,true);
+  await w.act(async()=>pendingKey.shift()());await w.act(async()=>pendingMetadata.shift()());
+  assert.equal(controlFor(w.container,'등록된 모델 후보').disabled,true);
+  setup.setMetadataDelay(false);await click(w.act,buttonByText(w.container,'후보 목록 다시 조회'));
+  assert.equal(controlFor(w.container,'등록된 모델 후보').disabled,false);
+  await fill(w.act,controlFor(w.container,'등록된 모델 후보'),JSON.stringify(['add-connection','add-model']));await click(w.act,buttonByText(w.container,'선택한 후보 추가'));await click(w.act,buttonByText(w.container,'후보 정책 저장'));
+  const write=fixture.requests.find(x=>x.method==='PUT' && x.path.endsWith('/routing-policy'));assert.equal(write.body.candidates[1].credential_version,10);
+ }finally{await w.cleanup();}
+});
+
+
+for(const kind of ['connection','default'])test(`B3 metadata epoch rejects pending load after ${kind} update`,async()=>{
+ const setup=candidateUiFixture(),{fixture,metadata,pendingMetadata}=setup,original=fixture.fetch,pendingMutation=[];
+ fixture.fetch=async(url,options={})=>{
+  const path=String(url);
+  if((kind==='connection' && path==='/bff/api/admin/provider-connections/add-connection' && options.method==='PUT')
+    || (kind==='default' && path==='/bff/api/workspaces/workspace-001/model-defaults' && options.method==='PATCH')){
+   return new Promise(resolve=>pendingMutation.push(()=>{
+    if(kind==='connection'){metadata.connections[0].version=4;metadata.modelDefaults.available_models[0].connection_version=4;resolve(Response.json({data:metadata.connections[0]}));}
+    else resolve(Response.json({data:{...metadata.modelDefaults,defaults:[{capability:'text_generation',connection_id:'add-connection',model_id:'add-model',version:1}],version:1}},{headers:{etag:'"defaults-1"'}}));
+   }));
+  }
+  return original(url,options);
+ };
+ const w=await mountAdminFixture(fixture,'candidate-epoch-'+kind);
+ try{
+  if(kind==='default')await fill(w.act,controlFor(w.container,'텍스트 생성 기본 모델'),JSON.stringify(['add-connection','add-model']));
+  const save=buttonByText(w.container,kind==='connection'?'연결 시험 및 저장':'기본 모델 저장');assert.equal(save.disabled,false);await click(w.act,save);assert.equal(pendingMutation.length,1);
+  setup.setMetadataDelay(true);await click(w.act,buttonByText(w.container,'후보 목록 다시 조회'));assert.equal(pendingMetadata.length,1);
+  await w.act(async()=>pendingMutation.shift()());await w.act(async()=>pendingMetadata.shift()());
+  assert.equal(controlFor(w.container,'등록된 모델 후보').disabled,true);
+  setup.setMetadataDelay(false);await click(w.act,buttonByText(w.container,'후보 목록 다시 조회'));
+  assert.equal(controlFor(w.container,'등록된 모델 후보').disabled,false);
+ }finally{await w.cleanup();}
+});
+
+
+test('B3 failed Key mutation also discards an in-flight metadata snapshot before explicit refresh',async()=>{
+ const setup=candidateUiFixture({source:'personal'}),{fixture,pendingMetadata}=setup,original=fixture.fetch,pendingKey=[];
+ fixture.fetch=async(url,options={})=>String(url)==='/bff/api/session'?Response.json({data:{workspace_id:'workspace-001',is_system_admin:false}}):String(url)==='/bff/api/provider-credentials/add-connection' && options.method==='PUT'?new Promise(resolve=>pendingKey.push(()=>resolve(Response.json({error:{code:'PERSISTENCE_UNAVAILABLE'}},{status:503})))):original(url,options);
+ const w=await mountAdminFixture(fixture,'candidate-key-failed-epoch');
+ try{
+  await fill(w.act,controlFor(w.container,'API Key 또는 Client Key'),'synthetic-key');await click(w.act,buttonByText(w.container,'내 계정 키 시험 및 저장'));
+  setup.setMetadataDelay(true);await click(w.act,buttonByText(w.container,'후보 목록 다시 조회'));
+  await w.act(async()=>pendingKey.shift()());await w.act(async()=>pendingMetadata.shift()());
+  assert.equal(controlFor(w.container,'등록된 모델 후보').disabled,true);
+  assert.equal(fixture.requests.filter(x=>x.method==='PUT' && x.path.endsWith('/routing-policy')).length,0);
+  setup.setMetadataDelay(false);await click(w.act,buttonByText(w.container,'후보 목록 다시 조회'));assert.equal(controlFor(w.container,'등록된 모델 후보').disabled,false);
+ }finally{await w.cleanup();}
+});

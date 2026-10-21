@@ -206,6 +206,17 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
   const [status, setStatus] = useState({ kind: "loading", message: "Provider 설정을 불러오는 중입니다." });
   const [modelDefaults, setModelDefaults] = useState(null);
   const [routingPolicy,setRoutingPolicy]=useState(null);
+  const [routingMetadata,setRoutingMetadata]=useState(null);
+  const [routingCandidateChoice,setRoutingCandidateChoice]=useState('');
+  const routingMetadataEpochRef=useRef(0);
+  const invalidateRoutingMetadata=useCallback(()=>{
+    routingMetadataEpochRef.current+=1;
+    setRoutingMetadata(null);setRoutingCandidateChoice('');
+    setStatus(current=>current.kind==='loading'?{kind:'ready',message:'연결 정보가 변경되었습니다. 후보 목록을 다시 조회해 주세요.'}:current);
+  },[]);
+  const providerLoadRef=useRef(null);
+  const requestedWorkspaceRef=useRef(workspaceId??null);
+  requestedWorkspaceRef.current=workspaceId??null;
   const [routingPolicyError,setRoutingPolicyError]=useState(false);
   const [routingPolicyRevision,setRoutingPolicyRevision]=useState(0);
   const [routingDraft,setRoutingDraft]=useState(null);
@@ -219,7 +230,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
     routingSaveRef.current?.controller.abort();routingSaveRef.current=null;
     if(routingLoadedScopeRef.current!==resolvedWorkspaceId)setRoutingSaveStatus('');
     routingLoadedScopeRef.current=null;
-    setRoutingPolicy(null);setRoutingDraft(null);setRoutingPolicyError(false);setRoutingSaving(false);
+    setRoutingPolicy(null);setRoutingDraft(null);setRoutingPolicyError(false);setRoutingSaving(false);setRoutingCandidateChoice('');
     if(!resolvedWorkspaceId)return undefined;
     const controller=new AbortController();
     providerSettingsApi.getRoutingPolicy(resolvedWorkspaceId,{signal:controller.signal}).then(result=>{
@@ -228,7 +239,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
     return()=>{controller.abort();routingSaveRef.current?.controller.abort();};
   },[resolvedWorkspaceId,routingPolicyRevision]);
   async function saveCandidatePolicy(disableOnly=false) {
-    if(routingLoadedScopeRef.current!==resolvedWorkspaceId || routingSaveRef.current || routingPolicy?.permissions?.policy_manage!==true || !routingPolicy.body || !routingDraft)return;
+    if(resolvedWorkspaceId!==(workspaceId??resolvedWorkspaceId) || routingLoadedScopeRef.current!==resolvedWorkspaceId || routingSaveRef.current || routingPolicy?.permissions?.policy_manage!==true || !routingPolicy.body || !routingDraft)return;
     const scope=resolvedWorkspaceId,controller=new AbortController();
     const key=globalThis.crypto?.randomUUID?.();
     if(!key){setRoutingSaveStatus('안전한 요청 식별자를 만들 수 없어 저장하지 않았습니다.');return;}
@@ -273,7 +284,8 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
     setConfirmDelete(false);
   }, [discardPreview]);
 
-  const applyConnections = useCallback((items, preferredId = null) => {
+  const applyConnections = useCallback((items, preferredId = null, fromCurrentLoad=false) => {
+    if(!fromCurrentLoad)invalidateRoutingMetadata();
     const projectedItems = withDefaultProviders(items);
     setConnections(projectedItems);
     const selected = projectedItems.find((item) => item.connection_id === preferredId) ?? projectedItems[0];
@@ -283,18 +295,23 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
       setDraft(emptyConnectionDraft());
       setPreviewModelIds([]);
     }
-  }, [selectConnection]);
+  }, [selectConnection,invalidateRoutingMetadata]);
 
-  const applyUserCredentials = useCallback((snapshot) => {
+  const applyUserCredentials = useCallback((snapshot,fromCurrentLoad=false) => {
+    if(!fromCurrentLoad)invalidateRoutingMetadata();
     const items = Array.isArray(snapshot?.credentials) ? snapshot.credentials : [];
     setUserCredentials(Object.fromEntries(items.map((item) => [item.connection_id, item])));
-  }, []);
+  }, [invalidateRoutingMetadata]);
 
   const load = useCallback(async () => {
+    invalidateRoutingMetadata();
+    const operation={workspaceId:workspaceId??null,metadataEpoch:routingMetadataEpochRef.current};providerLoadRef.current=operation;
+    const current=()=>providerLoadRef.current===operation && requestedWorkspaceRef.current===operation.workspaceId && routingMetadataEpochRef.current===operation.metadataEpoch;
     discardPreview();
     setStatus({ kind: "loading", message: "Provider 설정을 불러오는 중입니다." });
     try {
       const session = await providerSettingsApi.getSession();
+      if(!current())return;
       const activeWorkspaceId = workspaceId ?? session.payload?.data?.workspace_id;
       if (typeof activeWorkspaceId !== "string" || !activeWorkspaceId.trim()) throw new Error("RESOURCE_UNAVAILABLE");
       setResolvedWorkspaceId(activeWorkspaceId);
@@ -305,35 +322,54 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
         providerSettingsApi.listUserCredentials(),
         systemAdmin ? providerSettingsApi.getHealthSettings() : Promise.resolve(null)
       ]);
-      applyConnections(Array.isArray(result.payload?.data) ? result.payload.data : []);
-      applyUserCredentials(personal.payload?.data);
+      if(!current())return;
+      applyConnections(Array.isArray(result.payload?.data) ? result.payload.data : [],null,true);
+      applyUserCredentials(personal.payload?.data,true);
       if (health?.payload?.data) {
         setHealthSettings(health.payload.data);
         setHealthIntervalDraft(health.payload.data.interval_minutes);
       }
       try {
         const defaultsResult = await providerSettingsApi.getModelDefaults(activeWorkspaceId);
+        if(!current())return;
         const snapshot = defaultsResult.payload?.data;
         if (!snapshot || snapshot.workspace_id !== activeWorkspaceId || !defaultsResult.etag) throw new Error("MODEL_DEFAULTS_INVALID");
         setModelDefaults({ ...snapshot, etag: defaultsResult.etag });
+        if(Array.isArray(result.payload?.data) && Array.isArray(personal.payload?.data?.credentials)){
+          setRoutingMetadata({metadataEpoch:operation.metadataEpoch,workspaceId:activeWorkspaceId,metadataWorkspaceId:activeWorkspaceId,modelDefaults:snapshot,connections:result.payload.data,credentials:personal.payload.data.credentials});
+        }
         const currentText = snapshot.defaults?.find((item) => item.capability === "text_generation");
         setTextModelChoice(currentText ? modelKey(currentText.connection_id, currentText.model_id) : "");
         const currentAsr=snapshot.defaults?.find(item=>item.capability==='speech_to_text');
         setAsrModelChoice(currentAsr ? modelKey(currentAsr.connection_id,currentAsr.model_id) : '');
         setDefaultStatus("");
       } catch {
-        setModelDefaults(null);
+        if(!current())return;
+        setRoutingMetadata(null);setModelDefaults(null);
         setTextModelChoice("");
         setAsrModelChoice("");
         setDefaultStatus("기본 모델을 불러오지 못했습니다. 새로고침 후 다시 시도해 주세요.");
       }
       setStatus({ kind: "ready", message: systemAdmin ? "시스템 연결과 모델 목록을 조회했습니다." : "공유 Provider 연결과 개인 키 설정을 조회했습니다." });
     } catch {
+      if(!current())return;
+      setRoutingMetadata(null);
       setStatus({ kind: "error", message: "Provider 설정을 불러오지 못했습니다. 다시 시도해 주세요." });
     }
-  }, [applyConnections, applyUserCredentials, workspaceId, discardPreview]);
+  }, [applyConnections, applyUserCredentials, workspaceId, discardPreview,invalidateRoutingMetadata]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load();return()=>{providerLoadRef.current=null;}; }, [load]);
+
+  const routingCandidateOptions=providerSettingsApi.projectRoutingCandidates(
+    routingMetadata && routingMetadata.metadataEpoch===routingMetadataEpochRef.current && resolvedWorkspaceId===(workspaceId??resolvedWorkspaceId) && routingMetadata.workspaceId===resolvedWorkspaceId? routingMetadata:null,
+    routingDraft?.candidates??[]);
+  const routingCandidateSelected=routingCandidateOptions.find(candidate=>modelKey(candidate.connection_id,candidate.model_id)===routingCandidateChoice);
+  function addRoutingCandidate(){
+    if(routingMetadata?.metadataEpoch!==routingMetadataEpochRef.current || routingSaving || routingPolicy?.permissions?.policy_manage!==true || routingLoadedScopeRef.current!==resolvedWorkspaceId
+      || resolvedWorkspaceId!==(workspaceId??resolvedWorkspaceId) || !routingDraft || !routingCandidateSelected)return;
+    setRoutingDraft({...routingDraft,candidates:[...routingDraft.candidates,routingCandidateSelected]});
+    setRoutingCandidateChoice('');
+  }
 
   const selectedConnection = connections.find((item) => item.connection_id === selectedId) ?? null;
   const connectionUsage = summarizeConnectionUsage(connections);
@@ -367,6 +403,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
     if (!resolvedWorkspaceId || !modelDefaults?.etag || !textModelChoice || savingDefault) return;
     const selected = textModelOptions.find((item) => modelKey(item.connection_id, item.model_id) === textModelChoice);
     if (!selected) return;
+    invalidateRoutingMetadata();
     setSavingDefault(true);
     setDefaultStatus("기본 모델을 저장하는 중입니다.");
     try {
@@ -375,9 +412,11 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
         model_id: selected.model_id, expected_version: savedTextModel?.version ?? 0,
       }, modelDefaults.etag, operationKey("text-model-default"));
       if (!result.payload?.data || !result.etag) throw new Error("MODEL_DEFAULTS_INVALID");
+      invalidateRoutingMetadata();
       setModelDefaults({ ...result.payload.data, etag: result.etag });
       setDefaultStatus("텍스트 생성 기본 모델을 저장했습니다. 실제 모델 호출 결과는 문서 처리나 질문에서 확인해 주세요.");
     } catch (error) {
+      invalidateRoutingMetadata();
       setDefaultStatus(error?.code === "VERSION_CONFLICT" || error?.code === "PRECONDITION_FAILED"
         ? "기본 모델 설정이 다른 변경과 충돌했습니다. 새로고침 후 다시 선택해 주세요."
         : "기본 모델을 저장하지 못했습니다. 연결과 권한을 확인한 뒤 다시 시도해 주세요.");
@@ -390,6 +429,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
     if(!isSystemAdmin || !resolvedWorkspaceId || !modelDefaults?.etag || !asrModelChoice || savingDefault)return;
     const selected=asrModelOptions.find(item=>modelKey(item.connection_id,item.model_id)===asrModelChoice);
     if(!selected)return;
+    invalidateRoutingMetadata();
     setSavingDefault(true);setDefaultStatus('QA ASR 역할을 저장하는 중입니다.');
     try{
       const result=await providerSettingsApi.saveModelDefault(resolvedWorkspaceId,{
@@ -397,9 +437,10 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
         expected_version:savedAsrModel?.version??0,
       },modelDefaults.etag,operationKey('qa-asr-model-default'));
       if(!result.payload?.data || !result.etag || result.payload.data.workspace_id!==resolvedWorkspaceId)throw new Error('MODEL_DEFAULTS_INVALID');
+      invalidateRoutingMetadata();
       setModelDefaults({...result.payload.data,etag:result.etag});
       setDefaultStatus('QA 음성 인식 역할을 저장했습니다. 실제 전사는 WAV 처리 결과에서 확인하세요.');
-    }catch{setDefaultStatus('QA ASR 역할을 저장하지 못했습니다. 현재 Workspace와 연결·권한을 확인하세요.');}
+    }catch{invalidateRoutingMetadata();setDefaultStatus('QA ASR 역할을 저장하지 못했습니다. 현재 Workspace와 연결·권한을 확인하세요.');}
     finally{setSavingDefault(false);}
   }
 
@@ -414,22 +455,26 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
     if (isSystemAdmin && route && draft.access_mode === "personal" && includeCredential) return;
     if (!isSystemAdmin) {
       if (!includeCredential || !connectionId || !credential || selectedConnection?.access_mode !== "personal" || !canUsePersonalCredential) return;
+      invalidateRoutingMetadata();
       setStatus({ kind: "saving", message: "개인 Provider 키를 저장하는 중입니다." });
       try {
         const current = userCredentials[connectionId];
         const result = await providerSettingsApi.replaceUserCredential(connectionId, {
           credential, expected_version: current?.credential_version ?? 0
         });
+        invalidateRoutingMetadata();
         setUserCredentials((items) => ({ ...items, [connectionId]: result.payload.data }));
         setCredential("");
         setStatus({ kind: "ready", message: result.payload.data.verification_status === "verified" ? "개인 Key 연결 시험에 성공했습니다. 이제 이 계정에서 사용할 수 있습니다." : "개인 Key 연결 시험이 확인되지 않았습니다." });
       } catch (error) {
+        invalidateRoutingMetadata();
         setCredential("");
         setStatus({ kind: "error", message: safeProviderErrorMessage("credential", error) });
       }
       return;
     }
     const action = includeCredential ? "credential" : "provider";
+    invalidateRoutingMetadata();
     setStatus({ kind: "saving", message: "Provider 연결 설정을 저장하는 중입니다." });
     try {
       let result;
@@ -468,6 +513,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
       if(nativeAsr)await load();
       setStatus({ kind: "ready", message: nativeAsr ? "ASR ready/metadata를 확인하고 등록했습니다. 실제 전사는 WAV 처리 결과에서 확인하세요." : item.verification_status === "verified" ? "연결 시험에 성공했고 Provider 연결을 저장했습니다." : "Provider 연결을 사용 대기 상태로 저장했습니다." });
     } catch (error) {
+      invalidateRoutingMetadata();
       if (!compatible) setCredential("");
       setStatus({ kind: "error", message: safeProviderErrorMessage(action, error) });
     }
@@ -479,18 +525,21 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
     const needsReentry = projectProviderConnection(selectedConnection, current).needsReentry === true;
     if (!isSystemAdmin || selectedConnection?.access_mode !== "personal" || !needsReentry
       || !ownPersonalCredential.trim()) return;
+    invalidateRoutingMetadata();
     setStatus({ kind: "saving", message: "내 개인 Provider 키를 다시 검증하는 중입니다." });
     try {
       const result = await providerSettingsApi.replaceUserCredential(connectionId, {
         credential: ownPersonalCredential,
         expected_version: current.credential_version,
       });
+      invalidateRoutingMetadata();
       setUserCredentials((items) => ({ ...items, [connectionId]: result.payload.data }));
       setOwnPersonalCredential("");
       setStatus({ kind: "ready", message: result.payload.data.verification_status === "verified"
         ? "개인 Key 연결 시험에 성공했습니다. 이제 이 계정에서 사용할 수 있습니다."
         : "개인 Key 연결 시험이 확인되지 않았습니다." });
     } catch (error) {
+      invalidateRoutingMetadata();
       setOwnPersonalCredential("");
       setStatus({ kind: "error", message: safeProviderErrorMessage("credential", error) });
     }
@@ -543,12 +592,14 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
 
   async function deleteUserCredential() {
     if (!selectedConnection || !userCredentials[selectedConnection.connection_id]) return;
+    invalidateRoutingMetadata();
     setStatus({ kind: "saving", message: "개인 Provider 키를 삭제하는 중입니다." });
     try {
       const current = userCredentials[selectedConnection.connection_id];
       await providerSettingsApi.deleteUserCredential(selectedConnection.connection_id, {
         expected_version: current.credential_version
       });
+      invalidateRoutingMetadata();
       setUserCredentials((items) => {
         const next = { ...items };
         delete next[selectedConnection.connection_id];
@@ -557,12 +608,14 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
       setCredential("");
       setStatus({ kind: "ready", message: "이 계정의 개인 키를 삭제했습니다." });
     } catch (error) {
+      invalidateRoutingMetadata();
       setStatus({ kind: "error", message: safeProviderErrorMessage("credential", error) });
     }
   }
 
   async function deleteCredential() {
     if (!selectedConnection) return;
+    invalidateRoutingMetadata();
     setStatus({ kind: "saving", message: "Credential을 삭제하는 중입니다." });
     try {
       await providerSettingsApi.deleteCredential(selectedConnection.connection_id, {
@@ -572,12 +625,14 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
       await load();
       setStatus({ kind: "ready", message: "시스템 Key를 삭제했습니다. 연결과 모델 설정은 유지됩니다." });
     } catch (error) {
+      invalidateRoutingMetadata();
       setStatus({ kind: "error", message: safeProviderErrorMessage("credential", error) });
     }
   }
 
   async function deleteConnection() {
     if (!isSystemAdmin || !selectedConnection || !confirmDelete) return;
+    invalidateRoutingMetadata();
     setStatus({ kind: "saving", message: "Provider 연결을 삭제하는 중입니다." });
     try {
       await providerSettingsApi.deleteConnection(selectedConnection.connection_id, {
@@ -587,6 +642,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
       setConfirmDelete(false);
       setStatus({ kind: "ready", message: "Provider 연결을 삭제했습니다." });
     } catch (error) {
+      invalidateRoutingMetadata();
       setConfirmDelete(false);
       setStatus({ kind: "error", message: safeProviderErrorMessage("provider", error) });
     }
@@ -594,6 +650,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
 
   async function refreshCatalog() {
     if (!selectedConnection) return;
+    invalidateRoutingMetadata();
     setStatus({ kind: "saving", message: "모델 카탈로그를 새로고침하는 중입니다." });
     try {
       const result = await providerSettingsApi.refreshCatalog(selectedConnection.connection_id, {
@@ -603,6 +660,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
       applyConnections([...connections.filter((connection) => connection.connection_id !== item.connection_id), item], item.connection_id);
       setStatus({ kind: "ready", message: "모델 카탈로그를 새로고침했습니다." });
     } catch (error) {
+      invalidateRoutingMetadata();
       setStatus({ kind: "error", message: safeProviderErrorMessage("catalog", error) });
     }
   }
@@ -746,7 +804,13 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
           <p>등록 목록은 실행 시 동결된 정렬 순서가 아닙니다.</p>
           {routingPolicy.permissions?.policy_manage===true && routingDraft?<fieldset disabled={routingSaving}>
             <legend>기존 후보 정책 편집</legend>
-            <p>저장된 후보 참조·버전만 재사용합니다. 신규 후보 등록은 필요한 서버 참조 정보가 없어 지원하지 않습니다. 후보 변경·활성화는 서버의 상위 예산·관측·가격 검사를 통과해야 합니다.</p>
+            <p>현재 Workspace의 등록된 사용 가능 모델 참조만 추가합니다. 이 목록은 실행 허가가 아니며 저장 시 현재 권한·후보·외부 전송·예산을 다시 검사합니다. 관측·가격·상위 예산 정보가 준비되지 않으면 활성화할 수 없습니다.</p>
+            <label>등록된 모델 후보<select value={routingCandidateChoice} onChange={event=>setRoutingCandidateChoice(event.target.value)} disabled={routingSaving || !routingCandidateOptions.length}>
+              <option value="">선택해 주세요</option>{routingCandidateOptions.map(candidate=><option key={modelKey(candidate.connection_id,candidate.model_id)} value={modelKey(candidate.connection_id,candidate.model_id)}>{candidate.model_id} · {candidate.credential_source==='personal'?'내 개인 Key':'공용 연결'} · Catalog v{candidate.catalog_version}</option>)}
+            </select></label>
+            <button type="button" disabled={routingSaving || !routingCandidateSelected} onClick={addRoutingCandidate}>선택한 후보 추가</button>
+            {!routingCandidateOptions.length?<p>{routingDraft.candidates.length>=8?'후보는 최대 8개까지 등록할 수 있습니다.':'추가 가능한 현재 모델 참조가 없습니다. 목록이 변경되었거나 아직 준비되지 않았다면 후보 목록을 다시 조회해 주세요.'}</p>:null}
+            <button type="button" className="secondary-button" disabled={routingSaving || status.kind==='loading'} onClick={load}>후보 목록 다시 조회</button>
             <label>정책 활성 상태<select value={routingDraft.enabled?'enabled':'disabled'} onChange={event=>setRoutingDraft({...routingDraft,enabled:event.target.value==='enabled'})}><option value="disabled">비활성</option><option value="enabled">활성화 요청</option></select></label>
             <ol>{routingDraft.candidates.map((candidate,index)=><li key={`${candidate.connection_id}:${candidate.model_id}`}>
               {candidate.model_id}
