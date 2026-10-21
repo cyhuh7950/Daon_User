@@ -123,7 +123,7 @@ def test_error_diagnostic_retains_safe_sqlstate_and_column_without_raw_values():
 
 def test_execution_gate_pins_reviewed_product_commit_and_denies_other_product_drift():
  shell=P.parent.parent.joinpath('run-routing-b2-postgres-gate.sh').read_text(encoding='utf-8')
- assert 'readonly PRODUCT_BASE=05071f1d0d89514f1bc5f12aad0a9241e6ce7d7e' in shell
+ assert 'readonly PRODUCT_BASE=3bfb0f3d29d5f4bace7d26541a34500cbc128d10' in shell
  assert 'git merge-base --is-ancestor "$PRODUCT_BASE" "$revision"' in shell
  assert 'git diff --name-only "$PRODUCT_BASE" "$revision"' in shell
  assert 'scripts/run-routing-b2-postgres-gate.sh|scripts/tests/routing-b2-postgres-gate.py|scripts/tests/test_routing_b2_gate_preflight.py) ;; *) safe product_drift FAIL; exit 22' in shell
