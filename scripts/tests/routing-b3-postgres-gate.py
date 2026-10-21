@@ -79,6 +79,11 @@ def verify_container(value,*,kind,revision,pg_id=None,qa_image=None):
     return value['Id']
 
 CURRENT_TEST='preflight'
+EXCEPTION_TYPES=frozenset({'ValueError','TypeError','IdentityError','AuthorizationError','RoutingExecutionError','CloudDatabaseError','ImportError','ModuleNotFoundError','ProgrammingError','IntegrityError','OperationalError','AssertionError','Exception'})
+
+def safe_exception_type(error):
+    name=type(error).__name__
+    return name if name in EXCEPTION_TYPES else 'Exception'
 
 def expect_denial(call,expected_type,code,status):
     try:call()
@@ -89,7 +94,7 @@ def expect_denial(call,expected_type,code,status):
 
 def emit(stage,**values):
     global CURRENT_TEST
-    allowed={'status','schema','sql_hashes','test_name','safe_code','sqlstate','column','permission_type','permission_name','groups','model_calls','identity_fixture'}
+    allowed={'status','schema','sql_hashes','test_name','safe_code','sqlstate','column','permission_type','permission_name','groups','model_calls','identity_fixture','exception_type'}
     require(set(values)<=allowed,'B3_OUTPUT_FIELDS_INVALID')
     require(type(stage) is str and re.fullmatch('[A-Za-z0-9_-]{1,64}',stage),'B3_OUTPUT_FIELDS_INVALID')
     require(values.get('status') in {'RUNNING','PASS','FAIL'},'B3_OUTPUT_FIELDS_INVALID')
@@ -100,6 +105,7 @@ def emit(stage,**values):
         elif key=='groups':require(type(value) is int and 0<=value<=6,'B3_OUTPUT_FIELDS_INVALID')
         elif key=='model_calls':require(type(value) is int and value==0,'B3_OUTPUT_FIELDS_INVALID')
         elif key=='identity_fixture':require(value=='isolated-synthetic-sqlite-mirrored-whitelist','B3_OUTPUT_FIELDS_INVALID')
+        elif key=='exception_type':require(type(value) is str and value in EXCEPTION_TYPES,'B3_OUTPUT_FIELDS_INVALID')
         elif key=='safe_code':require(type(value) is str and re.fullmatch('B3_[A-Z0-9_]+',value),'B3_OUTPUT_FIELDS_INVALID')
         elif value is not None:require(type(value) is str and re.fullmatch('[A-Za-z0-9_]{1,128}',value),'B3_OUTPUT_FIELDS_INVALID')
     CURRENT_TEST=stage
@@ -162,8 +168,30 @@ def bootstrap(secrets):
         require(row==(APP,APP,False,False,False,False,False,False,False),'B3_RESTRICTED_ROLE_INVALID')
     emit('bootstrap',status='PASS',schema='baseline0072+exactSQL0074/0075',sql_hashes=HASHES)
 
+def create_identity_fixture(path,now,tenant):
+    from dataclasses import replace
+    from test_identity_support import create_service,MutableClock,policy
+    from daon_user_api.identity import ClientKind
+    return create_service(path,clock=MutableClock(now),policies=(replace(policy(ClientKind.WEB),tenant_id=tenant),))
+
+
+def synthetic_login(identity,tenant,subject=None):
+    import secrets
+    from test_identity_support import FakeVerifiedOidcProvider
+    from daon_user_api.identity import ClientKind,DevicePlatform
+    provider=FakeVerifiedOidcProvider(subject=subject or 'qa-'+secrets.token_hex(12),authorization_code=secrets.token_urlsafe(32))
+    start=identity.begin_oidc_login(issuer='https://login.example.com',client_id='daon-web',audience='daon-user-api',
+        redirect_uri='https://app.example.com/auth/callback',client_kind=ClientKind.WEB,tenant_id=tenant,
+        trace_id='trace-b3-qa',policy_version='policy-b3-qa')
+    provider.expected_nonce=start.nonce
+    return identity.complete_oidc_login(state=start.state,authorization_code=provider.authorization_code,
+        code_verifier=start.code_verifier,client_id='daon-web',redirect_uri='https://app.example.com/auth/callback',
+        provider=provider,platform=DevicePlatform.WEB,trace_id='trace-b3-qa',policy_version='policy-b3-qa')
+
+
 def run_probe(secrets):
     """완전 합성 QA. SQLite 인증과 PG 현재자료 검사는 별도 실제 저장소다."""
+    emit('fixture_imports',status='RUNNING')
     import asyncio,sqlite3,tempfile,secrets as random
     from contextlib import contextmanager
     from datetime import datetime,timedelta,timezone
@@ -187,19 +215,12 @@ def run_probe(secrets):
     # 정본 Git에 포함된 순수 합성 인증 fixture만 이용한다. 외부 OIDC/모델 호출은 없다.
     sys.path.insert(0,'/qa/services/api/tests')
     from test_identity_support import create_service,FakeVerifiedOidcProvider,MutableClock
+    emit('fixture_identity',status='RUNNING')
     now=datetime.now(timezone.utc);T,W,N='tenant-b3-qa','workspace-b3-qa','notebook-b3-qa'
     temp=tempfile.TemporaryDirectory(prefix='b3-identity-',dir='/tmp')
     identity_path=Path(temp.name)/'identity.sqlite3'
-    identity,identity_repository,audit,clock=create_service(identity_path,clock=MutableClock(now))
-    def login(subject=None):
-        provider=FakeVerifiedOidcProvider(subject=subject or 'qa-'+random.token_hex(12),authorization_code=random.token_urlsafe(32))
-        start=identity.begin_oidc_login(issuer='https://login.example.com',client_id='daon-web',audience='daon-user-api',
-            redirect_uri='https://app.example.com/auth/callback',client_kind=ClientKind.WEB,tenant_id=T,
-            trace_id='trace-b3-qa',policy_version='policy-b3-qa')
-        provider.expected_nonce=start.nonce
-        return identity.complete_oidc_login(state=start.state,authorization_code=provider.authorization_code,
-            code_verifier=start.code_verifier,client_id='daon-web',redirect_uri='https://app.example.com/auth/callback',
-            provider=provider,platform=DevicePlatform.WEB,trace_id='trace-b3-qa',policy_version='policy-b3-qa')
+    identity,identity_repository,audit,clock=create_identity_fixture(identity_path,now,T)
+    def login(subject=None):return synthetic_login(identity,T,subject)
     owner_subject='qa-'+random.token_hex(12)
     owner=login(owner_subject);other=login();A=owner.user_id
     auth_repository=SqliteAuthorizationRepository(identity_path)
@@ -209,6 +230,7 @@ def run_probe(secrets):
         conn.execute("INSERT INTO auth_memberships VALUES(?,?,?,'editor','active',1,?)",(T,W,other.user_id,now.isoformat()))
     authorization=AuthorizationService(repository=auth_repository,audit_store=audit,clock=clock,identity_service=identity)
     ctx=QuestionContext(T,W,A,'trace-b3-qa','policy-b3-qa',N,owner.session_id)
+    emit('fixture_mirror',status='RUNNING')
     # 합성 SQLite 생성행을 제한된 identity/auth 테이블에만 이식한다.
     identity_tables=('users','memberships','devices','sessions','auth_workspaces','auth_tenant_roles','auth_memberships',
         'auth_tenant_policies','auth_tenant_permission_rules','auth_workspace_policies','auth_workspace_permission_rules','auth_source_access')
@@ -244,12 +266,14 @@ def run_probe(secrets):
                 yield ReadTrace()
     store=ObservedStore(dsn);repo=PostgresRoutingAttemptsRepository(store)
     source=SimpleNamespace(origin='raw_source',context_item_id='source-b3-qa',source_id='source-b3-qa',source_version_id='source-version-b3-qa',digest_sha256=None,knowledge_registration_id=None)
+    emit('fixture_source',status='RUNNING')
     def seed_source(item):
         with store._transaction(CloudAccessContext(T,W,A,'question.execute')) as conn:
             Questions._insert_canon(conn,ctx,'sources',item.source_id,{'filename':'synthetic-b3.txt'},state='registered')
             Questions._insert_canon(conn,ctx,'source_versions',item.source_version_id,{'origin_kind':'raw_source'},extra_columns=('source_id',),extra_values=(item.source_id,))
             conn.execute("INSERT INTO notebook_bindings(tenant_id,workspace_id,notebook_id,binding_kind,record_id,version_id,created_by,created_at) VALUES(%s,%s,%s,'source',%s,%s,%s,%s)",(T,W,N,item.source_id,item.source_version_id,A,now))
     seed_source(source)
+    emit('fixture_policy',status='RUNNING')
     candidate=VerifiedCandidate('qa-connection','qa-model','qa-deployment',1,1,0,1,'workspace',None,upper_budget_reference='d'*64)
     body=dict(schema_version=1,expected_version=0,enabled=True,capability='text_generation',candidates=[{k:v for k,v in candidate.references().items() if k not in {'deployment_id','upper_budget_reference'}}],ranking_profile=dict(version='qa-rank',evaluation_set='qa-eval',minimum_quality=7000,observation_window='qa-window',input_class='short',minimum_samples=1,max_age_seconds=3600,tier_mapping_version='qa-tier',locality_mapping_version='qa-locality'),fallback_policy=dict(mode='transient_only'),budget=dict(currency='USD',run_limit='1.00',max_attempts=1))
     policy=dict(body=body,version=1,policy_version_id='qa-policy-v1',digest_sha256=digest(body))
@@ -422,6 +446,7 @@ def run_probe(secrets):
             require(read.status_code==200 and read.json()['meta']['permissions']=={'policy_manage':False},'B3_CAP_ROLE_INVALID')
         asyncio.run(cap())
         require(fingerprint()==before and len(audit.list(tenant_id=T,limit=100).items)>prior,'B3_CAP_AUDIT_OR_WRITE_INVALID')
+    emit('fixture_runtime',status='RUNNING')
     dependencies=RuntimeDependencies(settings=RuntimeSettings.for_test(database_path=identity_path,policy_version=ctx.policy_version),identity_service=identity,
         identity_repository=identity_repository,authorization_service=authorization,authorization_repository=auth_repository,audit_store=audit,
         cloud_store=store,routing_policy_service=postgres_routing_policy_service(store))
@@ -433,7 +458,7 @@ def run_probe(secrets):
             try:group();emit(name,status='PASS')
             except Exception as error:
                 failures.append(name)
-                emit(name,status='FAIL',safe_code=str(error) if isinstance(error,ValueError) and re.fullmatch('B3_[A-Z0-9_]+',str(error)) else 'B3_GATE_FAILED',**safe_error_metadata(error))
+                emit(name,status='FAIL',exception_type=safe_exception_type(error),safe_code=str(error) if isinstance(error,ValueError) and re.fullmatch('B3_[A-Z0-9_]+',str(error)) else 'B3_GATE_FAILED',**safe_error_metadata(error))
         require(not failures,'B3_GROUPS_FAILED')
         emit('complete',status='PASS',groups=6,model_calls=0,identity_fixture='isolated-synthetic-sqlite-mirrored-whitelist')
     finally:
@@ -469,5 +494,5 @@ if __name__=='__main__':
     try:main()
     except Exception as error:
         code=str(error) if type(error) is ValueError and re.fullmatch('B3_[A-Z0-9_]+',str(error)) else 'B3_GATE_FAILED'
-        emit('failed',test_name=CURRENT_TEST,status='FAIL',safe_code=code,**safe_error_metadata(error))
+        emit('failed',test_name=CURRENT_TEST,status='FAIL',exception_type=safe_exception_type(error),safe_code=code,**safe_error_metadata(error))
         raise SystemExit(1) from None

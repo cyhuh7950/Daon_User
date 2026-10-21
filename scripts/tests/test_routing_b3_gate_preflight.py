@@ -222,3 +222,37 @@ def test_b3_legacy_denials_use_real_repository_and_inherited_current_access():
  assert "'ROUTING_AUTHORIZATION_EXPIRED',403" in body
  assert 'ROUTING_CURRENT_ACCESS_DENIED' not in body
  assert 'RoutingExecutionService(repo,p).execute(fresh,' in body
+
+
+def test_synthetic_identity_real_login_bootstrap_and_runtime_dependency_composition(tmp_path,monkeypatch):
+ import sys
+ from datetime import datetime,timezone
+ root=P.parents[2]
+ monkeypatch.syspath_prepend(str(root/'services/api/src'))
+ monkeypatch.syspath_prepend(str(root/'services/api/tests'))
+ from daon_user_api.authorization import AuthorizationService,SqliteAuthorizationRepository,Role
+ from daon_user_api.runtime import RuntimeDependencies,RuntimeSettings,create_app
+ path=tmp_path/'identity.sqlite3';tenant='tenant-b3-qa';workspace='workspace-b3-qa'
+ identity,repository,audit,clock=gate.create_identity_fixture(path,datetime.now(timezone.utc),tenant)
+ owner=gate.synthetic_login(identity,tenant);other=gate.synthetic_login(identity,tenant)
+ assert owner.user_id!=other.user_id
+ auth_repository=SqliteAuthorizationRepository(path)
+ auth_repository.bootstrap_workspace(tenant_id=tenant,workspace_id=workspace,owner_user_id=owner.user_id,owner_role=Role.ORGANIZATION_ADMIN,workspace_kind='organization',data_area='cloud_sync',cost_limit_cents=1000,now=clock())
+ authorization=AuthorizationService(repository=auth_repository,audit_store=audit,clock=clock,identity_service=identity)
+ dependencies=RuntimeDependencies(settings=RuntimeSettings.for_test(database_path=path,policy_version='policy-b3-qa'),identity_service=identity,identity_repository=repository,authorization_service=authorization,authorization_repository=auth_repository,audit_store=audit)
+ assert create_app(dependencies) is not None
+
+
+def test_fixture_stage_and_exception_diagnostics_are_closed_and_secret_safe(capsys):
+ import secrets
+ secret=secrets.token_urlsafe(32)
+ class UnknownFailure(Exception):pass
+ assert gate.safe_exception_type(ValueError(secret))=='ValueError'
+ assert gate.safe_exception_type(UnknownFailure(secret))=='Exception'
+ gate.emit('fixture_identity',status='FAIL',exception_type=gate.safe_exception_type(ValueError(secret)))
+ assert secret not in capsys.readouterr().out
+ with pytest.raises(ValueError,match='B3_OUTPUT_FIELDS_INVALID'):gate.emit('fixture_identity',status='FAIL',exception_type=secret)
+ assert capsys.readouterr().out==''
+ source=P.read_text(encoding='utf-8')
+ for stage in ['imports','identity','mirror','source','policy','runtime']:
+  assert "emit('fixture_"+stage+"',status='RUNNING')" in source
