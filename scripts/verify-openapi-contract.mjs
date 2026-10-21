@@ -1038,7 +1038,27 @@ function validateSystemOperationsContract(document) {
     &&same(u.items.required,["producer_id","safe_code","impact_code"])&&u.items.oneOf?.length===3);
 }
 
+function validateQuestionAutoContract(document) {
+  const s=document.components?.schemas, q=s?.GroundedQuestionRequest, a=s?.GroundedQuestionAuthorizationRequest;
+  const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b), require=value=>{if(!value)fail("B2 question auto contract mismatch");};
+  const mode={type:"string",enum:["pinned","auto"]}, ref={$ref:"#/components/schemas/OpaqueId"};
+  const token={type:"string",minLength:1,maxLength:4096,writeOnly:true};
+  const condition={properties:{routing_mode:{const:"auto"}},required:["routing_mode"]};
+  require(q?.additionalProperties===false && a?.additionalProperties===false);
+  for(const row of [q,a])require(same(row.properties.routing_mode,mode)&&same(row.properties.routing_policy_version_id,ref));
+  require(same(q.properties.routing_plan_id,ref)&&same(q.properties.routing_plan_authorization,token));
+  require(same(q.allOf,[{if:condition,then:{required:["routing_policy_version_id","routing_plan_id","routing_plan_authorization"],not:{required:["step_up_authorization_id"]}},else:{not:{anyOf:["routing_policy_version_id","routing_plan_id","routing_plan_authorization"].map(k=>({required:[k]}))}}}]));
+  require(same(a.required,["notebook_id","question"])&&same(a.allOf,[{if:condition,then:{required:["routing_policy_version_id"]},else:{required:["password"],not:{required:["routing_policy_version_id"]}}}]));
+  const branches=s.GroundedQuestionAuthorizationEnvelope?.properties?.data?.oneOf;
+  require(branches?.length===2&&branches.every(x=>x.type==="object"&&x.additionalProperties===false));
+  require(same(branches[0].required,["step_up_authorization_id","expires_at","run_id","request_fingerprint"]));
+  require(same(branches[1].required,["routing_plan_id","routing_plan_authorization","expires_at","run_id","plan_digest","requires_step_up"]));
+  require(same(Object.keys(branches[1].properties),branches[1].required)&&same(branches[1].properties.routing_plan_authorization,{type:"string",minLength:1,maxLength:4096})
+    &&branches[1].properties.plan_digest.pattern==="^[0-9a-f]{64}$"&&branches[1].properties.requires_step_up.type==="boolean");
+}
+
 export function validateOpenApiDocument(document) {
+  validateQuestionAutoContract(document);
   validateAccountSettings(document);
   validateStudioApprovalLifecycle(document);
   if (!isObject(document)) fail("document must be an object");
@@ -1080,6 +1100,10 @@ export function validateOpenApiDocument(document) {
   }
   if (Array.isArray(questionAuthorizationForScan?.required)) {
     questionAuthorizationForScan.required = questionAuthorizationForScan.required.map((field) => field === "password" ? "question_reauthentication_input" : field);
+  }
+  const questionPinnedRequired = questionAuthorizationForScan?.allOf?.[0]?.else?.required;
+  if (Array.isArray(questionPinnedRequired)) {
+    questionAuthorizationForScan.allOf[0].else.required = questionPinnedRequired.map(field => field === "password" ? "question_reauthentication_input" : field);
   }
   const serialized = JSON.stringify(secretScanDocument);
   for (const pattern of FORBIDDEN_SOURCE_TOKENS) if (pattern.test(serialized)) fail(`forbidden token ${pattern}`);

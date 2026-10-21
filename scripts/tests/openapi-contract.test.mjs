@@ -838,3 +838,22 @@ test("Question Citation 계약은 원본 페이지와 Daon 지식 구간을 같�
     assert.ok(document.components.schemas[name].allOf.some((condition) => condition.if?.properties?.kind?.const === "image_region" && condition.then?.properties?.value?.pattern));
   }
 });
+
+
+test("B2 auto Plan requires one-use proof and preserves closed pinned branch",async()=>{
+  const doc=await loadContract();assert.doesNotThrow(()=>validateOpenApiDocument(doc));
+  for(const mutate of [
+    d=>d.components.schemas.GroundedQuestionRequest.allOf[0].then.required.pop(),
+    d=>delete d.components.schemas.GroundedQuestionRequest.allOf[0].then.not,
+    d=>d.components.schemas.GroundedQuestionAuthorizationRequest.allOf[0].else.required.pop(),
+    d=>d.components.schemas.GroundedQuestionAuthorizationEnvelope.properties.data.oneOf[1].additionalProperties=true,
+    d=>d.components.schemas.GroundedQuestionAuthorizationEnvelope.properties.data.oneOf[1].properties.routing_plan_authorization.writeOnly=true,
+  ]){const changed=structuredClone(doc);mutate(changed);assert.throws(()=>validateOpenApiDocument(changed),/B2 question auto/);}
+});
+
+
+test("B2 returned permit is readable while request permit is write-only",async()=>{
+  const doc=await loadContract(),s=doc.components.schemas;
+  assert.equal(s.GroundedQuestionRequest.properties.routing_plan_authorization.writeOnly,true);
+  assert.notEqual(s.GroundedQuestionAuthorizationEnvelope.properties.data.oneOf[1].properties.routing_plan_authorization.writeOnly,true);
+});

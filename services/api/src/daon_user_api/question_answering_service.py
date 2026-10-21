@@ -515,6 +515,7 @@ class QuestionAnsweringService:
         concurrent_poll_seconds: float = 0.02,
         qa_structured_ollama_workspace_id: str = "",
         run_cost_sessions=None,
+        auto_execution=None,
     ) -> None:
         self._model_resolver = model_resolver
         self._repository = repository
@@ -529,6 +530,7 @@ class QuestionAnsweringService:
         self._concurrent_poll_seconds = max(0.001, concurrent_poll_seconds)
         self._qa_structured_ollama_workspace_id = qa_structured_ollama_workspace_id
         self._run_cost_sessions = run_cost_sessions
+        self._auto_execution = auto_execution
 
     def _generate_with_run_cost(self,prepared,*,general,session):
         try:
@@ -714,12 +716,8 @@ class QuestionAnsweringService:
             ready.append(item)
         return tuple(ready)
 
-    def prepare_authorization(
-        self, context: QuestionContext, *, source_id: str | None,
-        source_version_id: str | None, question: str,
-        context_mode: str = "raw_only",
-        context_sources: tuple[QuestionInputSource, ...] | None = None,
-    ) -> PreparedQuestionAuthorization:
+    def _prepare_route_inputs(self, context, *, source_id, source_version_id, question, context_sources):
+        """Shared current Source/evidence preparation for pinned and explicit auto."""
         general = is_general_conversation_intent(question) or (source_id is None and source_version_id is None)
         if (source_id is None) != (source_version_id is None):
             raise QuestionAnsweringError("QUESTION_CONTEXT_INVALID")
@@ -738,6 +736,28 @@ class QuestionAnsweringService:
             evidence = self._search_context(context, sources, question)
             if not evidence:
                 general = True
+        return sources, evidence, general
+
+    def prepare_authorization(
+        self, context: QuestionContext, *, source_id: str | None,
+        source_version_id: str | None, question: str,
+        context_mode: str = "raw_only",
+        context_sources: tuple[QuestionInputSource, ...] | None = None,
+        routing_mode: str = "pinned", routing_policy_version_id: str | None = None,
+        run_id: str | None = None, idempotency_key: str | None = None,
+        authorize_plan=None,
+    ) -> PreparedQuestionAuthorization:
+        if routing_mode != "pinned":
+            if routing_mode != "auto" or not routing_policy_version_id:
+                raise QuestionAnsweringError("QUESTION_CONTEXT_INVALID")
+            if self._auto_execution is None:
+                raise QuestionAnsweringError("ROUTING_EXECUTION_UNAVAILABLE", status=503)
+            return self._auto_execution.prepare_question(self, context, source_id=source_id,
+                source_version_id=source_version_id, question=question, context_mode=context_mode,
+                context_sources=context_sources, policy_version_id=routing_policy_version_id,
+                run_id=run_id, idempotency_key=idempotency_key, authorize_plan=authorize_plan)
+        sources, evidence, general = self._prepare_route_inputs(context, source_id=source_id,
+            source_version_id=source_version_id, question=question, context_sources=context_sources)
         model_context = WorkspaceModelContext(
             context.tenant_id, context.workspace_id, context.actor_id,
         )
@@ -770,7 +790,19 @@ class QuestionAnsweringService:
         replay_checked: bool = False,
         request_payload: Mapping[str, object] | None = None,
         idempotency_key: str | None = None,
+        routing_mode: str = "pinned", routing_policy_version_id: str | None = None,
+        routing_plan_id: str | None = None, routing_plan_authorization: str | None = None,
     ) -> StoredQuestionAnswer:
+        if routing_mode != "pinned":
+            if routing_mode != "auto" or not routing_policy_version_id:
+                raise QuestionAnsweringError("QUESTION_CONTEXT_INVALID")
+            if self._auto_execution is None:
+                raise QuestionAnsweringError("ROUTING_EXECUTION_UNAVAILABLE", status=503)
+            return self._auto_execution.execute_question(self, context, source_id=source_id,
+                source_version_id=source_version_id, question=question, context_mode=context_mode,
+                context_sources=context_sources, policy_version_id=routing_policy_version_id,
+                run_id=run_id, idempotency_key=idempotency_key, plan_id=routing_plan_id,
+                authorization=routing_plan_authorization, request_fingerprint=request_fingerprint)
         if (request_payload is None) != (idempotency_key is None):
             raise QuestionAnsweringError("QUESTION_CONTEXT_INVALID")
         logical_payload = dict(request_payload) if request_payload is not None else None

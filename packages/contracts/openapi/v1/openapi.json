@@ -7507,49 +7507,376 @@
       "GroundedQuestionRequest": {
         "type": "object",
         "additionalProperties": false,
-      "description": "A grounded question may include exactly one Source or Knowledge Context. When neither is provided, the question is handled by the ordinary general work-support/LLM path. Ordinary product use is authorized by the current session, EXTERNAL_LLM permission, and effective Egress Policy without per-question reauthentication.",
-        "required": ["notebook_id", "question"],
+        "description": "A grounded question may include exactly one Source or Knowledge Context. When neither is provided, the question is handled by the ordinary general work-support/LLM path. Ordinary product use is authorized by the current session, EXTERNAL_LLM permission, and effective Egress Policy without per-question reauthentication.",
+        "required": [
+          "notebook_id",
+          "question"
+        ],
         "oneOf": [
-          { "required": ["source_id", "source_version_id"], "not": { "required": ["knowledge_context"] } },
-          { "required": ["knowledge_context"], "not": { "anyOf": [{ "required": ["source_id"] }, { "required": ["source_version_id"] }] } },
-          { "not": { "anyOf": [{ "required": ["source_id"] }, { "required": ["source_version_id"] }, { "required": ["knowledge_context"] }] } }
+          {
+            "required": [
+              "source_id",
+              "source_version_id"
+            ],
+            "not": {
+              "required": [
+                "knowledge_context"
+              ]
+            }
+          },
+          {
+            "required": [
+              "knowledge_context"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "source_id"
+                  ]
+                },
+                {
+                  "required": [
+                    "source_version_id"
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "source_id"
+                  ]
+                },
+                {
+                  "required": [
+                    "source_version_id"
+                  ]
+                },
+                {
+                  "required": [
+                    "knowledge_context"
+                  ]
+                }
+              ]
+            }
+          }
         ],
         "properties": {
-          "notebook_id": { "$ref": "#/components/schemas/OpaqueId" },
-          "source_id": { "$ref": "#/components/schemas/OpaqueId" },
-          "source_version_id": { "$ref": "#/components/schemas/OpaqueId" },
-          "knowledge_context": { "$ref": "#/components/schemas/QuestionKnowledgeContext" },
-          "question": { "type": "string", "minLength": 1, "maxLength": 2000 },
-          "step_up_authorization_id": { "allOf": [{ "$ref": "#/components/schemas/OpaqueId" }], "deprecated": true, "description": "Compatibility-only input. Product clients omit it; the ordinary question route does not consume per-question Step-up." }
-        }
+          "notebook_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "source_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "source_version_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "knowledge_context": {
+            "$ref": "#/components/schemas/QuestionKnowledgeContext"
+          },
+          "question": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "step_up_authorization_id": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/OpaqueId"
+              }
+            ],
+            "deprecated": true,
+            "description": "Compatibility-only input. Product clients omit it; the ordinary question route does not consume per-question Step-up."
+          },
+          "routing_mode": {
+            "type": "string",
+            "enum": [
+              "pinned",
+              "auto"
+            ]
+          },
+          "routing_policy_version_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "routing_plan_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "routing_plan_authorization": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "writeOnly": true
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "routing_mode": {
+                  "const": "auto"
+                }
+              },
+              "required": [
+                "routing_mode"
+              ]
+            },
+            "then": {
+              "required": [
+                "routing_policy_version_id",
+                "routing_plan_id",
+                "routing_plan_authorization"
+              ],
+              "not": {
+                "required": [
+                  "step_up_authorization_id"
+                ]
+              }
+            },
+            "else": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "routing_policy_version_id"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "routing_plan_id"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "routing_plan_authorization"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        ]
       },
+
       "GroundedQuestionAuthorizationRequest": {
-        "type": "object", "additionalProperties": false,
-      "description": "Authorization for a grounded question or a general work-support/LLM question without Source or Knowledge Context.",
-        "required": ["notebook_id", "question", "password"],
+        "type": "object",
+        "additionalProperties": false,
+        "description": "기존 직접 선택 인증과 명시 auto Plan 준비. auto는 현재 후보 정책이 요구할 때만 비밀번호 재인증하며, 실행에는 별도 일회 Plan permit이 필요하다.",
+        "required": [
+          "notebook_id",
+          "question"
+        ],
         "oneOf": [
-          { "required": ["source_id", "source_version_id"], "not": { "required": ["knowledge_context"] } },
-          { "required": ["knowledge_context"], "not": { "anyOf": [{ "required": ["source_id"] }, { "required": ["source_version_id"] }] } },
-          { "not": { "anyOf": [{ "required": ["source_id"] }, { "required": ["source_version_id"] }, { "required": ["knowledge_context"] }] } }
+          {
+            "required": [
+              "source_id",
+              "source_version_id"
+            ],
+            "not": {
+              "required": [
+                "knowledge_context"
+              ]
+            }
+          },
+          {
+            "required": [
+              "knowledge_context"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "source_id"
+                  ]
+                },
+                {
+                  "required": [
+                    "source_version_id"
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "source_id"
+                  ]
+                },
+                {
+                  "required": [
+                    "source_version_id"
+                  ]
+                },
+                {
+                  "required": [
+                    "knowledge_context"
+                  ]
+                }
+              ]
+            }
+          }
         ],
         "properties": {
-          "notebook_id": { "$ref": "#/components/schemas/OpaqueId" },
-          "source_id": { "$ref": "#/components/schemas/OpaqueId" },
-          "source_version_id": { "$ref": "#/components/schemas/OpaqueId" },
-          "knowledge_context": { "$ref": "#/components/schemas/QuestionKnowledgeContext" },
-          "question": { "type": "string", "minLength": 1, "maxLength": 2000 },
-          "password": { "type": "string", "minLength": 1, "maxLength": 1024, "writeOnly": true }
-        }
+          "notebook_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "source_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "source_version_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "knowledge_context": {
+            "$ref": "#/components/schemas/QuestionKnowledgeContext"
+          },
+          "question": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "password": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "writeOnly": true
+          },
+          "routing_mode": {
+            "type": "string",
+            "enum": [
+              "pinned",
+              "auto"
+            ]
+          },
+          "routing_policy_version_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "routing_mode": {
+                  "const": "auto"
+                }
+              },
+              "required": [
+                "routing_mode"
+              ]
+            },
+            "then": {
+              "required": [
+                "routing_policy_version_id"
+              ]
+            },
+            "else": {
+              "required": [
+                "password"
+              ],
+              "not": {
+                "required": [
+                  "routing_policy_version_id"
+                ]
+              }
+            }
+          }
+        ]
       },
+
       "GroundedQuestionAuthorizationEnvelope": {
-        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data",
+          "meta"
+        ],
         "properties": {
-          "data": { "type": "object", "additionalProperties": false, "required": ["step_up_authorization_id", "expires_at", "run_id", "request_fingerprint"], "properties": {
-            "step_up_authorization_id": { "$ref": "#/components/schemas/OpaqueId" }, "expires_at": { "type": "string", "format": "date-time" }, "run_id": { "$ref": "#/components/schemas/OpaqueId" }, "request_fingerprint": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
-          } },
-          "meta": { "type": "object", "additionalProperties": false, "required": ["trace_id"], "properties": { "trace_id": { "$ref": "#/components/schemas/OpaqueId" } } }
+          "data": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "step_up_authorization_id",
+                  "expires_at",
+                  "run_id",
+                  "request_fingerprint"
+                ],
+                "properties": {
+                  "step_up_authorization_id": {
+                    "$ref": "#/components/schemas/OpaqueId"
+                  },
+                  "expires_at": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "run_id": {
+                    "$ref": "#/components/schemas/OpaqueId"
+                  },
+                  "request_fingerprint": {
+                    "type": "string",
+                    "pattern": "^sha256:[0-9a-f]{64}$"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "routing_plan_id",
+                  "routing_plan_authorization",
+                  "expires_at",
+                  "run_id",
+                  "plan_digest",
+                  "requires_step_up"
+                ],
+                "properties": {
+                  "routing_plan_id": {
+                    "$ref": "#/components/schemas/OpaqueId"
+                  },
+                  "routing_plan_authorization": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "expires_at": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "run_id": {
+                    "$ref": "#/components/schemas/OpaqueId"
+                  },
+                  "plan_digest": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  },
+                  "requires_step_up": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            ]
+          },
+          "meta": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "trace_id"
+            ],
+            "properties": {
+              "trace_id": {
+                "$ref": "#/components/schemas/OpaqueId"
+              }
+            }
+          }
         }
       },
+
       "GroundedCitation": {
         "type": "object",
         "additionalProperties": false,
@@ -8017,17 +8344,79 @@
           "NO_AVAILABLE_UNDERSTANDING_MODEL",
           "NO_AVAILABLE_DEPLOYMENT",
           "ACCOUNT_SESSION_CHANGED",
-          "WEBSITE_URL_INVALID", "WEBSITE_ACCESS_DENIED", "WEBSITE_FETCH_BLOCKED",
-          "WEBSITE_IDEMPOTENCY_KEY_REUSED", "WEBSITE_IMPORT_IN_PROGRESS", "WEBSITE_CONTENT_TOO_LARGE",
-          "WEBSITE_MEDIA_UNSUPPORTED", "WEBSITE_TEXT_UNAVAILABLE", "WEBSITE_FETCH_FAILED", "WEBSITE_STORAGE_UNAVAILABLE", "WEBSITE_FETCH_TIMEOUT",
-          "OPEN_LAW_INPUT_INVALID", "OPEN_LAW_ACCESS_DENIED", "OPEN_LAW_EGRESS_BLOCKED", "OPEN_LAW_NOT_FOUND",
-          "OPEN_LAW_PREVIEW_CHANGED", "OPEN_LAW_IMPORT_CONFLICT", "OPEN_LAW_IMPORT_IN_PROGRESS", "OPEN_LAW_BINDING_CONFLICT",
-          "OPEN_LAW_CONTENT_TOO_LARGE", "OPEN_LAW_TEXT_UNAVAILABLE", "OPEN_LAW_PROTOCOL_INVALID", "OPEN_LAW_UPSTREAM_FAILED",
-          "OPEN_LAW_CREDENTIAL_REQUIRED", "OPEN_LAW_UNAVAILABLE", "OPEN_LAW_BUSY", "OPEN_LAW_STORAGE_UNAVAILABLE", "OPEN_LAW_TIMEOUT",
-          "APPROVAL_REQUEST_EXPIRED", "APPROVAL_REQUEST_PENDING", "APPROVAL_REQUEST_REQUIRED", "PRECONDITION_FAILED"
-        ,
-"IDEMPOTENCY_KEY_REUSED","PRECONDITION_REQUIRED","ROUTING_BUDGET_UNVERIFIED","ROUTING_CANDIDATE_CHANGED","ROUTING_CANDIDATE_UNAVAILABLE","ROUTING_CREDENTIAL_DENIED","ROUTING_METADATA_UNAVAILABLE","ROUTING_PINNED_UNCHANGED","ROUTING_PLAN_INVALID","ROUTING_POLICY_ABSENT","ROUTING_POLICY_ACCESS_DENIED","ROUTING_POLICY_DISABLED","ROUTING_POLICY_UNAVAILABLE","ROUTING_UPPER_POLICY_DENIED","RULESET_SNAPSHOT_REQUIRED","VERSION_CONFLICT"]
+          "WEBSITE_URL_INVALID",
+          "WEBSITE_ACCESS_DENIED",
+          "WEBSITE_FETCH_BLOCKED",
+          "WEBSITE_IDEMPOTENCY_KEY_REUSED",
+          "WEBSITE_IMPORT_IN_PROGRESS",
+          "WEBSITE_CONTENT_TOO_LARGE",
+          "WEBSITE_MEDIA_UNSUPPORTED",
+          "WEBSITE_TEXT_UNAVAILABLE",
+          "WEBSITE_FETCH_FAILED",
+          "WEBSITE_STORAGE_UNAVAILABLE",
+          "WEBSITE_FETCH_TIMEOUT",
+          "OPEN_LAW_INPUT_INVALID",
+          "OPEN_LAW_ACCESS_DENIED",
+          "OPEN_LAW_EGRESS_BLOCKED",
+          "OPEN_LAW_NOT_FOUND",
+          "OPEN_LAW_PREVIEW_CHANGED",
+          "OPEN_LAW_IMPORT_CONFLICT",
+          "OPEN_LAW_IMPORT_IN_PROGRESS",
+          "OPEN_LAW_BINDING_CONFLICT",
+          "OPEN_LAW_CONTENT_TOO_LARGE",
+          "OPEN_LAW_TEXT_UNAVAILABLE",
+          "OPEN_LAW_PROTOCOL_INVALID",
+          "OPEN_LAW_UPSTREAM_FAILED",
+          "OPEN_LAW_CREDENTIAL_REQUIRED",
+          "OPEN_LAW_UNAVAILABLE",
+          "OPEN_LAW_BUSY",
+          "OPEN_LAW_STORAGE_UNAVAILABLE",
+          "OPEN_LAW_TIMEOUT",
+          "APPROVAL_REQUEST_EXPIRED",
+          "APPROVAL_REQUEST_PENDING",
+          "APPROVAL_REQUEST_REQUIRED",
+          "PRECONDITION_FAILED",
+          "IDEMPOTENCY_KEY_REUSED",
+          "PRECONDITION_REQUIRED",
+          "ROUTING_BUDGET_UNVERIFIED",
+          "ROUTING_CANDIDATE_CHANGED",
+          "ROUTING_CANDIDATE_UNAVAILABLE",
+          "ROUTING_CREDENTIAL_DENIED",
+          "ROUTING_METADATA_UNAVAILABLE",
+          "ROUTING_PINNED_UNCHANGED",
+          "ROUTING_PLAN_INVALID",
+          "ROUTING_POLICY_ABSENT",
+          "ROUTING_POLICY_ACCESS_DENIED",
+          "ROUTING_POLICY_DISABLED",
+          "ROUTING_POLICY_UNAVAILABLE",
+          "ROUTING_UPPER_POLICY_DENIED",
+          "RULESET_SNAPSHOT_REQUIRED",
+          "VERSION_CONFLICT",
+          "ROUTING_AUTHORIZATION_CONSUMED",
+          "ROUTING_AUTHORIZATION_EXPIRED",
+          "ROUTING_AUTHORIZATION_INVALID",
+          "ROUTING_AUTHORIZATION_REQUIRED",
+          "ROUTING_CANDIDATES_EXHAUSTED",
+          "ROUTING_CANDIDATE_PROOF_INVALID",
+          "ROUTING_CURRENT_ACCESS_DENIED",
+          "ROUTING_DISPATCH_ALREADY_CLAIMED",
+          "ROUTING_DISPATCH_NOT_CLAIMED",
+          "ROUTING_DISPATCH_ORDER_INVALID",
+          "ROUTING_EXECUTION_UNAVAILABLE",
+          "ROUTING_LINEAGE_INVALID",
+          "ROUTING_NEW_PREPARE_REQUIRED",
+          "ROUTING_PLAN_NOT_READY",
+          "ROUTING_POLICY_CHANGED",
+          "ROUTING_PRICE_UNCONFIRMED",
+          "ROUTING_RECEIPT_REUSED",
+          "ROUTING_RESULT_ACCESS_DENIED",
+          "ROUTING_RESULT_INVALID",
+          "ROUTING_RUN_FAILED",
+          "ROUTING_RUN_UNCERTAIN",
+          "ROUTING_SESSION_REQUIRED"
+        ]
       },
+
       "CostLimitExceededDetails": {
         "type": "object",
         "additionalProperties": false,

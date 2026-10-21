@@ -197,6 +197,8 @@ from .user_provider_credentials import (
     UserProviderCredentialError,
 )
 from .routing_policy import RoutingPolicyBody, RoutingPolicyError
+from .routing_execution import QuestionAutoExecution, RoutingExecutionError, PlanApproval
+from .routing_attempts_postgres import PostgresRoutingAttemptsRepository
 from .routing_policy_postgres import postgres_routing_policy_service
 from .workspace_model_defaults import (
     PostgresWorkspaceModelDefaultsService, PostgresWorkspaceModelResolver,
@@ -1235,9 +1237,25 @@ class QuestionBody(BaseModel):
     knowledge_context: QuestionKnowledgeContextBody | None = None
     question: str
     step_up_authorization_id: str | None = Field(default=None, min_length=1, max_length=4096)
+    routing_mode: Literal["pinned", "auto"] | None = None
+    routing_policy_version_id: str | None = Field(default=None, min_length=1, max_length=255)
+    routing_plan_id: str | None = Field(default=None, min_length=1, max_length=255)
+    routing_plan_authorization: str | None = Field(default=None, min_length=1, max_length=4096)
 
     @model_validator(mode="after")
     def validate_source_contract(self) -> "QuestionBody":
+        if any(key.startswith("routing_") and getattr(self,key) is None for key in self.model_fields_set):
+            raise ValueError("QUESTION_CONTEXT_INVALID")
+        if self.routing_mode == "auto" and "step_up_authorization_id" in self.model_fields_set:
+            raise ValueError("QUESTION_CONTEXT_INVALID")
+        if self.routing_mode == "auto" and (not self.routing_policy_version_id
+                or not self.routing_plan_id or not self.routing_plan_authorization
+                or self.step_up_authorization_id is not None):
+            raise ValueError("QUESTION_CONTEXT_INVALID")
+        if self.routing_mode != "auto" and (self.routing_plan_id is not None or self.routing_plan_authorization is not None):
+            raise ValueError("QUESTION_CONTEXT_INVALID")
+        if self.routing_mode != "auto" and self.routing_policy_version_id is not None:
+            raise ValueError("QUESTION_CONTEXT_INVALID")
         legacy = self.source_id is not None or self.source_version_id is not None
         if legacy != (self.source_id is not None and self.source_version_id is not None):
             raise ValueError("QUESTION_CONTEXT_INVALID")
@@ -1256,9 +1274,17 @@ class QuestionAuthorizationBody(BaseModel):
     # Development auth bypass does not require a password.  Production still
     # enforces re-authentication immediately before issuing step-up below.
     password: str | None = None
+    routing_mode: Literal["pinned", "auto"] | None = None
+    routing_policy_version_id: str | None = Field(default=None, min_length=1, max_length=255)
 
     @model_validator(mode="after")
     def validate_source_contract(self) -> "QuestionAuthorizationBody":
+        if any(key.startswith("routing_") and getattr(self,key) is None for key in self.model_fields_set):
+            raise ValueError("QUESTION_CONTEXT_INVALID")
+        if self.routing_mode == "auto" and not self.routing_policy_version_id:
+            raise ValueError("QUESTION_CONTEXT_INVALID")
+        if self.routing_mode != "auto" and self.routing_policy_version_id is not None:
+            raise ValueError("QUESTION_CONTEXT_INVALID")
         legacy = self.source_id is not None or self.source_version_id is not None
         if legacy != (self.source_id is not None and self.source_version_id is not None):
             raise ValueError("QUESTION_CONTEXT_INVALID")
@@ -2641,6 +2667,10 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             adapter_registry=QuestionAdapterRegistry(),
             qa_structured_ollama_workspace_id=dependencies.settings.qa_structured_ollama_workspace_id,
             run_cost_sessions=_build_run_cost_sessions(dependencies.cloud_store,dependencies.settings),
+            auto_execution=QuestionAutoExecution(routing_policy_service,
+                PostgresRoutingAttemptsRepository(dependencies.cloud_store),
+                PostgresWorkspaceModelResolver(dependencies.cloud_store,provider_cipher,user_provider_credential_service),
+                dependencies.cloud_store),
         )
     studio_report_repository = dependencies.studio_report_repository
     studio_report_service = dependencies.studio_report_service
@@ -3320,6 +3350,10 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             error.status, error.code if error.code in safe_codes else "INVALID_REQUEST",
             request.state.trace_id,
         )
+
+    @app.exception_handler(RoutingExecutionError)
+    async def routing_execution_error(request: Request, error: RoutingExecutionError) -> JSONResponse:
+        return _error_response(error.status,error.code,request.state.trace_id,retryable=False)
 
     @app.exception_handler(RoutingPolicyError)
     async def routing_policy_error(request: Request, error: RoutingPolicyError) -> JSONResponse:
@@ -4861,7 +4895,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         principal = _principal(request, dependencies)
         grant = dependencies.authorization_service.authorize_action(
             principal=principal, workspace_id=id, action=Action.QUERY,
-            requested_permissions=(Permission.EXTERNAL_LLM,),
+            requested_permissions=() if body.routing_mode == "auto" else (Permission.EXTERNAL_LLM,),
             trace_id=request.state.trace_id,
             policy_version=dependencies.settings.policy_version,
         )
@@ -4870,7 +4904,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         context = QuestionContext(
             principal.tenant_id, id, principal.user_id,
             request.state.trace_id, dependencies.settings.policy_version,
-            body.notebook_id,
+            body.notebook_id,session_id=principal.session_id if body.routing_mode == "auto" else None,
         )
         context_mode, context_sources, source_id, source_version_id = _question_inputs(
             principal, id, request, body,
@@ -4885,6 +4919,38 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 for item in context_sources
             ),
         )
+        if body.routing_mode == "auto":
+            run_id=_question_run_id(principal,id,body.notebook_id,idempotency_key)
+            def authorize_auto_plan(plan,requires_step_up):
+                value=plan.as_dict()
+                if requires_step_up:
+                    roles={"workspace_manager":{Role.PERSONAL_OWNER,Role.WORKSPACE_ADMIN,Role.ORGANIZATION_ADMIN},
+                        "organization_admin":{Role.PERSONAL_OWNER,Role.ORGANIZATION_ADMIN}}
+                    if any(entry["authorization_mode"]=="step_up_required" and grant.role not in roles[entry["required_approver"]]
+                            for entry in value["candidates"]):
+                        raise AuthorizationError("ACTION_DENIED",403)
+                    if not body.password:raise IdentityError("REAUTHENTICATION_REQUIRED",401)
+                    access_token,_=_credential(request)
+                    step=dependencies.identity_service.issue_step_up_after_reauthentication(access_token=access_token,
+                        password=body.password,action_group="external_transfer",target_id=value["plan_id"],
+                        policy_version=plan.digest_sha256,trace_id=request.state.trace_id)
+                    dependencies.identity_service.consume_step_up(step_up_authorization=step.authorization,
+                        access_token=access_token,action_group="external_transfer",target_id=value["plan_id"],
+                        policy_version=plan.digest_sha256,trace_id=request.state.trace_id,
+                        operation="question.auto.plan.authorize",idempotency_key=idempotency_key)
+                return PlanApproval(plan.digest_sha256,principal.user_id,principal.session_id,
+                    "reauthenticated" if requires_step_up else "policy_approved")
+            prepared=await asyncio.to_thread(question_answering_service.prepare_authorization,context,
+                source_id=source_id,source_version_id=source_version_id,question=body.question,
+                context_mode=context_mode,context_sources=context_sources,routing_mode="auto",
+                routing_policy_version_id=body.routing_policy_version_id,run_id=run_id,
+                idempotency_key=idempotency_key,authorize_plan=authorize_auto_plan)
+            response=JSONResponse({"data":{"routing_plan_id":prepared.plan_id,
+                "routing_plan_authorization":prepared.authorization,"expires_at":prepared.expires_at,
+                "run_id":prepared.run_id,"plan_digest":prepared.plan_digest,"requires_step_up":prepared.requires_step_up},
+                "meta":{"trace_id":request.state.trace_id}},status_code=201)
+            response.headers["ETag"]='"routing-authorization:'+prepared.plan_digest+'"'
+            return response
         prepared = await asyncio.to_thread(
             question_answering_service.prepare_authorization, context,
             source_id=source_id, source_version_id=source_version_id,
@@ -4960,12 +5026,12 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         question_context = QuestionContext(
             principal.tenant_id, id, principal.user_id,
             request.state.trace_id, dependencies.settings.policy_version,
-            body.notebook_id,
+            body.notebook_id,session_id=principal.session_id if body.routing_mode == "auto" else None,
         )
         replay_fingerprint = question_request_fingerprint(
             question_context, run_id=run_id, idempotency_key=idempotency_key,
             request_payload=body.model_dump(
-                exclude={"step_up_authorization_id"}, exclude_none=True,
+                exclude={"step_up_authorization_id","routing_mode","routing_policy_version_id","routing_plan_id","routing_plan_authorization"}, exclude_none=True,
             ),
         )
         context_mode, context_sources, source_id, source_version_id = _question_inputs(
@@ -4981,6 +5047,15 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 for item in context_sources
             ),
         )
+        if body.routing_mode == "auto":
+            if not body.routing_plan_id or not body.routing_plan_authorization:
+                raise RoutingExecutionError("ROUTING_AUTHORIZATION_REQUIRED",401)
+            answer=await asyncio.to_thread(question_answering_service.ask,question_context,
+                source_id=source_id,source_version_id=source_version_id,question=body.question,run_id=run_id,
+                context_mode=context_mode,context_sources=context_sources,idempotency_key=idempotency_key,
+                routing_mode="auto",routing_policy_version_id=body.routing_policy_version_id,
+                routing_plan_id=body.routing_plan_id,routing_plan_authorization=body.routing_plan_authorization)
+            return _question_result_response(answer,request,id,question=body.question,context_mode=context_mode)
         replay = await asyncio.to_thread(
             question_answering_service.replay, question_context,
             run_id=run_id, request_fingerprint=replay_fingerprint,
@@ -5093,7 +5168,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             approved_authorization=approved_authorization,
             context_mode=context_mode, context_sources=context_sources,
             request_fingerprint=replay_fingerprint, replay_checked=True,
-            request_payload=body.model_dump(exclude={"step_up_authorization_id"}, exclude_none=True),
+            request_payload=body.model_dump(exclude={"step_up_authorization_id","routing_mode","routing_policy_version_id","routing_plan_id","routing_plan_authorization"}, exclude_none=True),
             idempotency_key=idempotency_key,
         )
         return _question_result_response(

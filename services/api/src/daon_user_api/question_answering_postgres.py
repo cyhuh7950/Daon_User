@@ -49,12 +49,15 @@ class QuestionContext:
     trace_id: str
     policy_version: str
     notebook_id: str | None = None
+    session_id: str | None = None
 
     def __post_init__(self) -> None:
         if any(not isinstance(value, str) or not _SAFE_ID.fullmatch(value) for value in (
             self.tenant_id, self.workspace_id, self.actor_id,
             self.trace_id, self.policy_version,
         )) or (self.notebook_id is not None and not _SAFE_ID.fullmatch(self.notebook_id)):
+            raise QuestionRepositoryError("QUESTION_CONTEXT_INVALID")
+        if self.session_id is not None and not _SAFE_ID.fullmatch(self.session_id):
             raise QuestionRepositoryError("QUESTION_CONTEXT_INVALID")
 
 

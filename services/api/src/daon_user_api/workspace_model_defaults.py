@@ -419,6 +419,43 @@ class PostgresWorkspaceModelResolver:
             raise WorkspaceModelUnavailable(
                 "WORKSPACE_MODEL_RESOLUTION_UNAVAILABLE", retryable=error.retryable,
             ) from None
+        with self._resolved_row(context, capability, row) as resolved:
+            yield resolved
+
+    @contextmanager
+    def resolve_candidate(self, context: WorkspaceModelContext, candidate) -> Iterator[ResolvedModel]:
+        """Auto-only exact connection/model/source. Never consult a Workspace default."""
+        try:
+            with self._store._transaction(self._cloud(context)) as connection:
+                row = connection.execute(
+                    "SELECT c.version,c.connection_id,m.model_id,c.provider_code,c.base_url,"
+                    "c.encrypted_credential,c.credential_nonce,c.encryption_key_version,"
+                    "c.credential_schema_version,c.credential_version,c.enabled,c.verification_status,"
+                    "m.effective_capabilities,m.catalog_status,m.catalog_version,"
+                    "c.access_mode,c.credential_requirement,c.adapter_type "
+                    "FROM system_provider_connections c JOIN system_provider_models m ON m.connection_id=c.connection_id "
+                    "JOIN system_provider_allowed_models a ON a.connection_id=m.connection_id AND a.model_id=m.model_id "
+                    "WHERE c.connection_id=%s AND m.model_id=%s FOR SHARE OF c,m,a",
+                    (candidate.connection_id,candidate.model_id)).fetchone()
+        except CloudDatabaseError as error:
+            raise WorkspaceModelUnavailable("WORKSPACE_MODEL_RESOLUTION_UNAVAILABLE",retryable=error.retryable) from None
+        if row is None:
+            raise WorkspaceModelUnavailable("PROVIDER_MODEL_NOT_READY")
+        expected_mode="personal" if candidate.credential_source=="personal" else "public"
+        if str(row[15])!=expected_mode or (int(row[0]),int(row[14]),int(row[0]))!=(
+                candidate.connection_version,candidate.catalog_version,candidate.endpoint_version):
+            raise WorkspaceModelUnavailable("ROUTING_CANDIDATE_CHANGED")
+        with self._resolved_row(context,"text_generation",row) as selected:
+            if selected.credential_version!=candidate.credential_version:
+                raise WorkspaceModelUnavailable("ROUTING_CANDIDATE_CHANGED")
+            yield selected
+
+    @contextmanager
+    def _resolved_row(self, context: WorkspaceModelContext, capability: str, row) -> Iterator[ResolvedModel]:
+        native_asr = capability == "speech_to_text" and _qa_asr_enabled(context.workspace_id)
+        providers = frozenset({"CUSTOM"}) if native_asr else _ACTIVE_PROVIDERS.get(capability)
+        if providers is None:
+            raise WorkspaceModelUnavailable("PROVIDER_EXECUTION_NOT_READY")
         if row is None:
             raise WorkspaceModelUnavailable("WORKSPACE_MODEL_DEFAULT_UNAVAILABLE")
         values: Sequence[object] = row
