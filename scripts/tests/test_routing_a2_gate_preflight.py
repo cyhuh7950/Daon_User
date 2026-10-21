@@ -370,3 +370,25 @@ def test_other_organization_is_issued_while_actual_first_organization_lock_is_he
  assert "pg_try_advisory_xact_lock" in source
  assert 'other_future.result(timeout=20)' in source
  assert "require(other_future.done(),'A2_OTHER_ORG_BLOCKED')" in source
+
+
+
+def test_two_actual_identity_fixtures_do_not_collide_in_global_user_unique_keys(tmp_path):
+ from datetime import datetime,timezone
+ import sqlite3
+ now=datetime.now(timezone.utc);fixtures=[]
+ try:
+  for suffix in ('first','second'):
+   directory=tmp_path/suffix;directory.mkdir()
+   fixtures.append(gate.create_budget_fixture(directory,now,'tenant-a2-'+suffix,'workspace-a2-'+suffix,'owner-a2-'+suffix))
+  # 0032 PostgreSQL identity_users의 실제 global unique: PK, issuer+subject, login_id, email.
+  with sqlite3.connect(':memory:') as mirror:
+   mirror.execute('CREATE TABLE mirrored_users(user_id TEXT PRIMARY KEY,issuer TEXT,subject TEXT,login_id TEXT UNIQUE,email TEXT UNIQUE,UNIQUE(issuer,subject))')
+   for q in fixtures:
+    with sqlite3.connect(q['path']) as local:
+     rows=local.execute('SELECT user_id,issuer,subject,login_id,email FROM users').fetchall()
+     assert len(rows)==1 and rows[0][4] is not None
+     mirror.executemany('INSERT INTO mirrored_users VALUES(?,?,?,?,?)',rows)
+   assert mirror.execute('SELECT count(*) FROM mirrored_users').fetchone()==(2,)
+ finally:
+  for q in fixtures:q['repo'].close()

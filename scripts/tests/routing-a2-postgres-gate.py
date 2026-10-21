@@ -194,9 +194,10 @@ def create_budget_fixture(path,now,tenant,workspace,actor):
     path=Path(path)/'identity.sqlite3'
     clock=MutableClock(now);identity,repository,audit,_=create_service(path,clock=clock)
     password=secrets.token_urlsafe(28);login='qa-'+secrets.token_hex(12)
+    email='qa-'+hashlib.sha256(json.dumps([tenant,actor],separators=(',',':')).encode('utf-8')).hexdigest()[:40]+'@example.com'
     with repository.transaction() as conn:
         conn.execute('INSERT INTO tenants(tenant_id) VALUES (?)',(tenant,))
-        conn.execute("INSERT INTO users(user_id,issuer,subject,login_id,email,password_digest,email_verified_at,state) VALUES (?,?,?,?,?,?,?,'active')",(actor,'local',login,login,'qa@example.com',PASSWORD_HASHER.hash(password),clock().isoformat()))
+        conn.execute("INSERT INTO users(user_id,issuer,subject,login_id,email,password_digest,email_verified_at,state) VALUES (?,?,?,?,?,?,?,'active')",(actor,'local',login,login,email,PASSWORD_HASHER.hash(password),clock().isoformat()))
         conn.execute("INSERT INTO memberships VALUES (?,?,'member')",(tenant,actor))
         conn.execute('CREATE TABLE tenant_memberships(tenant_id TEXT,user_id TEXT,role TEXT,state TEXT,version INTEGER,updated_at TEXT,join_workspace_id TEXT)')
         conn.execute("INSERT INTO tenant_memberships VALUES (?,?,'organization_admin','active',1,?,NULL)",(tenant,actor,clock().isoformat()))
