@@ -16,11 +16,283 @@ test("pending compatible registration is a distinct no-cost UI action", async ()
   assert.match(source, /시험 없이 사용 대기/u);
 });
 
-async function bundleProvider(root, output, fileName) {
+test('SIX-A change classification separates metadata from verification and safe errors retain status only', async () => {
+  await import('react');
+  await import('react-dom/client');
+  const output=await mkdtemp(path.join(os.tmpdir(),'.provider-six-a-rules-'));
+  try {
+    const {connectionChangeNeedsVerification,providerDraftHasChanges,safeProviderErrorMessage}=await bundleProvider(path.resolve(import.meta.dirname,'../..'),output,'six-a-rules');
+    const saved={...s26Connection('a'),allowed_model_ids:['model-a'],verification_status:'verified'};
+    const draft={...saved,logical_model_ids:'model-a',auto_model_id:'',provider_name:saved.provider_name};
+    assert.equal(providerDraftHasChanges(draft,saved),false);
+    assert.equal(providerDraftHasChanges({...draft,enabled:false},saved),true);
+    assert.equal(connectionChangeNeedsVerification({...draft,display_name:'Renamed',enabled:false},saved),false);
+    for(const change of [{base_url:'https://other.example/v1'},{logical_model_ids:'model-b'},{access_mode:'personal',credential_requirement:'required'},{credential:'synthetic-memory-key'}])
+      assert.equal(connectionChangeNeedsVerification({...draft,...change},saved),true);
+    assert.equal(connectionChangeNeedsVerification({...draft,enabled:true},{...saved,enabled:false}),true);
+    for(const [code,pattern] of [['PROVIDER_CREDENTIAL_REQUIRED',/공용 Key/],['PROVIDER_AUTHENTICATION_FAILED',/인증/],['PROVIDER_CONNECTION_FAILED',/시간/],['PROVIDER_CONNECTION_FAILED',/Endpoint/],['PROVIDER_ALLOWED_MODEL_UNKNOWN',/모델/],['EGRESS_POLICY_DENIED',/정책/],['PERSISTENCE_UNAVAILABLE',/저장/]])
+      assert.match(safeProviderErrorMessage('provider',{code,status:503,message:'PRIVATE_RAW'}),pattern);
+    assert.doesNotMatch(safeProviderErrorMessage('personalCredential',{code:'PROVIDER_CREDENTIAL_REQUIRED'}),/공용 Key/);
+    assert.match(safeProviderErrorMessage('catalog',{code:'PROVIDER_CREDENTIAL_NOT_CONFIGURED'}),/먼저 API Key/);
+    assert.doesNotMatch(safeProviderErrorMessage('provider',{code:'PRIVATE_RAW',message:'PRIVATE_RAW'}),/PRIVATE_RAW/);
+  } finally {await rm(output,{recursive:true,force:true});}
+});
+
+test('SIX-A request failure retains safe HTTP status and trace without raw response text',async()=>{
+  const previous=globalThis.fetch;
+  globalThis.fetch=async()=>Response.json({error:{code:'PROVIDER_CREDENTIAL_REQUIRED',trace_id:'trace-safe-1',message:'PRIVATE_RAW'}},{status:409});
+  try {await assert.rejects(()=>providerSettingsApi.updateConnection('qa',{},'qa-key'),error=>error.status===409&&error.code==='PROVIDER_CREDENTIAL_REQUIRED'&&error.traceId==='trace-safe-1'&&!error.message.includes('PRIVATE_RAW'));}
+  finally {globalThis.fetch=previous;}
+});
+
+test('SIX-A metadata stays draft until explicit save, protects navigation and verifies persisted result',async()=>{
+  const item={...s26Connection('a'),allowed_model_ids:['model-a'],verification_status:'verified',catalog_status:'ready'};
+  const fixture=adminFixture({existingConnections:[item,s26Connection('b')]}),base=fixture.fetch;
+  fixture.fetch=async(url,options={})=>{
+    if(String(url)==='/bff/api/admin/provider-connections/s26-a'&&options.method==='PUT'){
+      const body=JSON.parse(options.body);fixture.requests.push({path:String(url),method:'PUT',body,key:options.headers['Idempotency-Key']});
+      Object.assign(item,body,{version:2});return Response.json({data:item});
+    }return base(url,options);
+  };
+  const view=await mountAdminFixture(fixture,'six-a-metadata');
+  try{
+    assert.equal(buttonByText(view.container,'변경사항 저장')?.disabled,true);
+    await setChecked(view.act,controlFor(view.container,'사용 후보에 포함'),false);
+    assert.equal(fixture.requests.filter(r=>r.method==='PUT').length,0);
+    assert.match(view.container.textContent,/저장하지 않은 변경/);
+    const beforeUnload=new MinimalEvent('beforeunload');window.document.dispatchEvent(beforeUnload);assert.equal(beforeUnload.defaultPrevented,true);
+    await click(view.act,findElements(view.container,n=>n.tagName==='BUTTON'&&n.textContent.includes('S26 connection b'))[0]);
+    assert.ok(buttonByText(view.container,'계속 편집'));
+    const disclosure=findElements(view.container,n=>n.getAttribute?.('aria-label')==='저장하지 않은 변경 확인')[0];
+    assert.equal(disclosure.getAttribute('role'),'region');assert.equal(disclosure.getAttribute('aria-modal'),null);
+    await click(view.act,buttonByText(view.container,'계속 편집'));
+    await click(view.act,buttonByText(view.container,'변경사항 저장'));
+    assert.equal(fixture.requests.filter(r=>r.method==='PUT').length,1);
+    assert.equal(fixture.requests.find(r=>r.method==='PUT').body.enabled,false);
+    assert.match(view.container.textContent,/저장됨/);
+    assert.equal(buttonByText(view.container,'변경사항 저장').disabled,true);
+  }finally{await view.cleanup();}
+});
+
+test('SIX-A lost metadata response confirms by GET without a second mutation',async()=>{
+  const item={...s26Connection('a'),allowed_model_ids:['model-a'],verification_status:'verified'};
+  const fixture=adminFixture({existingConnections:[item]}),base=fixture.fetch;
+  fixture.fetch=async(url,options={})=>{
+    if(String(url).endsWith('/s26-a')&&options.method==='PUT'){
+      const body=JSON.parse(options.body);fixture.requests.push({path:String(url),method:'PUT',body});
+      Object.assign(item,body,{version:2});throw new TypeError('PRIVATE_NETWORK_DETAIL');
+    }return base(url,options);
+  };
+  const view=await mountAdminFixture(fixture,'six-a-lost');
+  try{
+    await fill(view.act,controlFor(view.container,'연결 이름'),'QA renamed');
+    await click(view.act,buttonByText(view.container,'변경사항 저장'));
+    assert.match(view.container.textContent,/저장됨/);
+    assert.doesNotMatch(view.container.textContent,/PRIVATE_NETWORK/);
+    assert.equal(fixture.requests.filter(r=>r.method==='PUT').length,1);
+  }finally{await view.cleanup();}
+});
+
+test('SIX-A unknown credential response stays uncertain and recheck cannot repeat a paid probe',async()=>{
+  const item={...s26Connection('a'),access_mode:'public',credential_requirement:'required',configured:true,allowed_model_ids:['model-a'],verification_status:'verified'};
+  const fixture=adminFixture({existingConnections:[item]}),base=fixture.fetch;
+  fixture.fetch=async(url,options={})=>{
+    if(String(url).endsWith('/s26-a')&&options.method==='PUT'){
+      fixture.requests.push({path:String(url),method:'PUT'});throw new TypeError('PRIVATE_LOST');
+    }return base(url,options);
+  };
+  const view=await mountAdminFixture(fixture,'six-a-uncertain');
+  try{
+    await fill(view.act,controlFor(view.container,'API Key 또는 Client Key'),'synthetic-memory-key');
+    const handler=reactProps(buttonByText(view.container,'연결 시험 및 저장')).onClick;
+    await view.act(async()=>{handler();handler();await Promise.resolve();});
+    assert.equal(fixture.requests.filter(r=>r.method==='PUT').length,1);
+    assert.match(view.container.textContent,/불확실/);
+    assert.equal(buttonByText(view.container,'연결 시험 및 저장').disabled,true);
+    await click(view.act,buttonByText(view.container,'저장 상태 재조회'));
+    assert.equal(fixture.requests.filter(r=>r.method==='PUT').length,1);
+    assert.match(view.container.textContent,/자동으로 연결 시험을 반복하지 않습니다/);
+    await click(view.act,buttonByText(view.container,'변경 취소'));
+    assert.match(view.container.textContent,/입력만.*서버 저장 여부/);
+    assert.ok(buttonByText(view.container,'저장 상태 재조회'),'input cancel must retain the unresolved operation and its read-only recovery');
+    await fill(view.act,controlFor(view.container,'API Key 또는 Client Key'),'synthetic-reentered-key');
+    await fill(view.act,controlFor(view.container,'Endpoint'),'https://changed.example/v1');
+    assert.equal(buttonByText(view.container,'연결 시험 및 저장').disabled,true);
+    await view.act(async()=>reactProps(buttonByText(view.container,'연결 시험 및 저장')).onClick());
+    assert.equal(fixture.requests.filter(r=>r.method==='PUT').length,1,'unresolved cancellation may not create another mutation');
+    await click(view.act,buttonByText(view.container,'저장 상태 재조회'));
+    assert.equal(fixture.requests.filter(r=>r.method==='PUT').length,1);
+  }finally{await view.cleanup();}
+});
+
+test('SIX-A deterministic retry retains one idempotency key and changed input receives a new key',async()=>{
+  const item={...s26Connection('a'),allowed_model_ids:['model-a'],verification_status:'verified'};
+  const fixture=adminFixture({existingConnections:[item]}),base=fixture.fetch,keys=[];
+  fixture.fetch=async(url,options={})=>{
+    if(String(url).endsWith('/s26-a')&&options.method==='PUT'){
+      keys.push(options.headers['Idempotency-Key']);return Response.json({error:{code:'PROVIDER_SHORT_CODE_CONFLICT'}},{status:409});
+    }return base(url,options);
+  };
+  const view=await mountAdminFixture(fixture,'six-a-retry');
+  try{
+    await fill(view.act,controlFor(view.container,'연결 이름'),'QA renamed');
+    await click(view.act,buttonByText(view.container,'변경사항 저장'));
+    await click(view.act,buttonByText(view.container,'변경사항 저장'));
+    assert.equal(keys.length,2);assert.equal(keys[0],keys[1]);
+    await fill(view.act,controlFor(view.container,'연결 이름'),'QA renamed again');
+    await click(view.act,buttonByText(view.container,'변경사항 저장'));
+    assert.notEqual(keys[1],keys[2]);
+  }finally{await view.cleanup();}
+});
+
+test('SIX-A public switch cannot submit a personal Key as an existing shared Key and cancel restores saved policy',async()=>{
+  const item={...s26Connection('a'),access_mode:'personal',credential_requirement:'required',configured:false,allowed_model_ids:['model-a']};
+  const fixture=adminFixture({existingConnections:[item]});
+  const view=await mountAdminFixture(fixture,'six-a-public');
+  try{
+    await setChecked(view.act,controlFor(view.container,'공용 사용'),true);
+    assert.equal(buttonByText(view.container,'변경사항 저장').disabled,true);
+    await click(view.act,buttonByText(view.container,'연결 시험 및 저장'));
+    assert.equal(fixture.requests.filter(r=>r.method==='PUT'||r.method==='POST').length,0);
+    assert.match(view.container.textContent,/공용 Key가 필요/);
+    await click(view.act,buttonByText(view.container,'변경 취소'));
+    assert.equal(controlFor(view.container,'공용 사용').checked,false);
+  }finally{await view.cleanup();}
+});
+
+test('SIX-A actual parent dirty rerender preserves Provider draft and Notebook question while close cancel keeps editing',async()=>{
+  const output=await mkdtemp(path.join(os.tmpdir(),'.provider-six-a-parent-'));
+  const dom=installMinimalDom(),oldFetch=globalThis.fetch;let reactRoot;
+  const fixture=adminFixture({existingConnections:[{...s26Connection('a'),allowed_model_ids:['model-a'],verification_status:'verified'}]});
+  globalThis.fetch=fixture.fetch;
+  try{
+    const {createElement,act}=await import('react'),{createRoot}=await import('react-dom/client');
+    const {ActualWorkspace}=await bundleProvider(path.resolve(import.meta.dirname,'../..'),output,'six-a-parent','apps/web/components/actual-workspace.jsx');
+    const container=dom.document.createElement('div');dom.document.body.appendChild(container);reactRoot=createRoot(container);
+    await act(async()=>{reactRoot.render(createElement(ActualWorkspace,{workspaceId:'workspace-001',notebookId:'qa-notebook'}));await Promise.resolve();await Promise.resolve();});
+    const question=findElements(container,n=>n.tagName==='TEXTAREA')[0];assert.ok(question);
+    await act(async()=>reactProps(question).onChange({currentTarget:{value:'QA notebook question'}}));
+    await click(act,buttonByText(container,'설정'));
+    await click(act,findElements(container,n=>n.getAttribute?.('role')==='menuitem'&&n.textContent.includes('LLM'))[0]);
+    await fill(act,controlFor(container,'연결 이름'),'Unsaved QA draft');
+    assert.equal(controlFor(container,'연결 이름').value,'Unsaved QA draft');
+    await click(act,findElements(container,n=>n.getAttribute?.('aria-label')==='닫기')[0]);
+    assert.ok(buttonByText(container,'계속 편집'));
+    await click(act,buttonByText(container,'계속 편집'));
+    assert.equal(controlFor(container,'연결 이름').value,'Unsaved QA draft');
+    assert.equal(findElements(container,n=>n.tagName==='TEXTAREA'&&n.value==='QA notebook question').length,1);
+    await click(act,findElements(container,n=>n.getAttribute?.('aria-label')==='닫기')[0]);
+    await click(act,buttonByText(container,'변경 버리고 닫기'));
+    assert.equal(findElements(container,n=>n.tagName==='TEXTAREA'&&n.value==='QA notebook question').length,1);
+  }finally{if(reactRoot){const {act}=await import('react');await act(async()=>reactRoot.unmount());}globalThis.fetch=oldFetch;dom.restore();await rm(output,{recursive:true,force:true});}
+});
+
+test('SIX-A late save from another Workspace cannot overwrite the current draft or issue recovery reads',async()=>{
+  const item={...s26Connection('a'),allowed_model_ids:['model-a'],verification_status:'verified'};
+  const fixture=adminFixture({existingConnections:[item]}),base=fixture.fetch;let finish;
+  fixture.fetch=async(url,options={})=>String(url).endsWith('/s26-a')&&options.method==='PUT'
+    ? new Promise(resolve=>{finish=()=>resolve(Response.json({data:{...item,...JSON.parse(options.body),version:2}}));})
+    :base(url,options);
+  const view=await mountAdminFixture(fixture,'six-a-stale');
+  try{
+    await fill(view.act,controlFor(view.container,'연결 이름'),'Old Workspace edit');
+    await click(view.act,buttonByText(view.container,'변경사항 저장'));assert.equal(typeof finish,'function');
+    await view.render({workspaceId:'workspace-002'});
+    const snapshot=view.container.textContent,reads=fixture.requests.length;
+    await view.act(async()=>finish());
+    assert.equal(view.container.textContent,snapshot);assert.equal(fixture.requests.length,reads);
+    assert.equal(controlFor(view.container,'연결 이름').value,item.display_name);
+  }finally{await view.cleanup();}
+});
+
+test('SIX-A success response with mismatching reread remains unconfirmed instead of showing saved',async()=>{
+  const item={...s26Connection('a'),allowed_model_ids:['model-a'],verification_status:'verified'};
+  const fixture=adminFixture({existingConnections:[item]}),base=fixture.fetch;
+  fixture.fetch=async(url,options={})=>String(url).endsWith('/s26-a')&&options.method==='PUT'
+    ?Response.json({data:{...item,...JSON.parse(options.body),version:2}}):base(url,options);
+  const view=await mountAdminFixture(fixture,'six-a-reread');
+  try{
+    await fill(view.act,controlFor(view.container,'연결 이름'),'Changed but not persisted');
+    await click(view.act,buttonByText(view.container,'변경사항 저장'));
+    assert.match(view.container.textContent,/저장 여부가 불확실/);assert.ok(buttonByText(view.container,'저장 상태 재조회'));
+    assert.equal(controlFor(view.container,'연결 이름').value,'Changed but not persisted');
+  }finally{await view.cleanup();}
+});
+
+test('SIX-A replacing only a system Key cannot silently discard pending connection settings',async()=>{
+  const item={...s26Connection('a'),provider_code:'UPSTAGE',adapter_type:'UPSTAGE',credential_requirement:'required',configured:true};
+  const view=await mountAdminFixture(adminFixture({existingConnections:[item]}),'six-a-key-settings');
+  try{
+    await fill(view.act,controlFor(view.container,'API Key 또는 Client Key'),'synthetic-memory-key');
+    assert.equal(buttonByText(view.container,'시스템 키 시험 및 저장').disabled,false);
+    await fill(view.act,controlFor(view.container,'연결 이름'),'Keep unsaved metadata');
+    assert.equal(buttonByText(view.container,'시스템 키 시험 및 저장').disabled,true);
+    assert.equal(controlFor(view.container,'연결 이름').value,'Keep unsaved metadata');
+  }finally{await view.cleanup();}
+});
+
+test('SIX-A real upstream 503 reports connection and catalog investigation without inventing a timeout cause',async()=>{
+  const item={...s26Connection('a'),allowed_model_ids:['model-a']};
+  const fixture=adminFixture({existingConnections:[item]}),base=fixture.fetch;
+  fixture.fetch=async(url,options={})=>String(url).endsWith('/s26-a')&&options.method==='PUT'
+    ?Response.json({error:{code:'PROVIDER_CATALOG_UNAVAILABLE',trace_id:'trace-qa'}},{status:503}):base(url,options);
+  const view=await mountAdminFixture(fixture,'six-a-upstream');
+  try{
+    await fill(view.act,controlFor(view.container,'Endpoint'),'https://other.example/v1');
+    await click(view.act,buttonByText(view.container,'연결 시험 및 저장'));
+    assert.match(view.container.textContent,/모델 조회.*Endpoint.*네트워크.*상류/);
+    assert.doesNotMatch(view.container.textContent,/응답 시간이 초과됐습니다/);
+  }finally{await view.cleanup();}
+});
+
+test('SIX-A personal credential lost responses and 5xx retain per-connection lock and only read current metadata',async t=>{
+  for(const admin of [false,true])for(const failure of ['lost','503'])await t.test(`${admin?'admin-own':'ordinary'}-${failure}`,async()=>{
+    const item={...s26Connection('a'),provider_code:'UPSTAGE',adapter_type:'UPSTAGE',access_mode:'personal',credential_requirement:'required',configured:false,allowed_model_ids:['model-a']};
+    const own={connection_id:item.connection_id,provider_code:'UPSTAGE',configured:false,credential_version:7,verification_status:'unverified'};
+    const fixture=adminFixture({existingConnections:[item,s26Connection('b')],userCredentials:[own]}),base=fixture.fetch;
+    let writes=0,reads=0;
+    fixture.fetch=async(url,options={})=>{
+      if(String(url)==='/bff/api/session')return Response.json({data:{workspace_id:'workspace-001',is_system_admin:admin}});
+      if(String(url)==='/bff/api/provider-credentials')reads++;
+      if(String(url)==='/bff/api/provider-credentials/s26-a'&&options.method==='PUT'){
+        writes++;own.credential_version=8;
+        if(failure==='lost')throw new TypeError('PRIVATE_RAW_LOST');
+        return Response.json({error:{code:'PROVIDER_CATALOG_UNAVAILABLE'}},{status:503});
+      }return base(url,options);
+    };
+    const view=await mountAdminFixture(fixture,`six-a-personal-${admin}-${failure}`);
+    try{
+      const label=admin?'내 계정 개인 Key 재입력':'API Key 또는 Client Key',button=admin?'내 개인 Key 재입력 및 검증':'내 계정 키 시험 및 저장';
+      await fill(view.act,controlFor(view.container,label),'synthetic-private-input');
+      const retry=reactProps(buttonByText(view.container,button)).onClick;
+      await click(view.act,buttonByText(view.container,button));
+      assert.equal(writes,1);assert.ok(reads>=2);
+      assert.equal(controlFor(view.container,label).value,'');
+      assert.match(view.container.textContent,/현재 서버 등록 상태.*8.*미확정/);
+      assert.doesNotMatch(view.container.textContent,/개인 Key 연결 시험에 성공/);
+      assert.ok(buttonByText(view.container,'저장 상태 재조회'));
+      await fill(view.act,controlFor(view.container,label),'synthetic-reentered');await view.act(async()=>retry());
+      assert.equal(writes,1);
+      if(!admin){
+        const remove=buttonByText(view.container,'내 계정 키 삭제');assert.equal(remove.disabled,true);
+        await view.act(async()=>reactProps(remove).onClick());
+        assert.equal(fixture.requests.filter(r=>r.method==='DELETE').length,0);
+      }
+      await click(view.act,buttonByText(view.container,'저장 상태 재조회'));assert.equal(writes,1);
+      await click(view.act,findElements(view.container,n=>n.tagName==='BUTTON'&&n.textContent.includes('S26 connection b'))[0]);
+      await click(view.act,buttonByText(view.container,'변경 버리고 이동'));
+      await click(view.act,findElements(view.container,n=>n.tagName==='BUTTON'&&n.textContent.includes('S26 connection a'))[0]);
+      assert.ok(buttonByText(view.container,'저장 상태 재조회'),'navigation must not erase the unresolved connection lock');
+      await view.act(async()=>retry());assert.equal(writes,1);
+    }finally{await view.cleanup();}
+  });
+});
+
+async function bundleProvider(root, output, fileName, sourceEntry="apps/web/components/provider-settings-workspace.jsx") {
   const { build } = await import("vite");
   await build({ configFile: false, logLevel: "silent", root, build: {
     outDir: output, emptyOutDir: false,
-    lib: { entry: path.join(root, "apps/web/components/provider-settings-workspace.jsx"), formats: ["es"], fileName },
+    lib: { entry: path.join(root, sourceEntry), formats: ["es"], fileName },
     rollupOptions: { external: ["react", "react-dom", "react-dom/client"], output: { paths: Object.fromEntries(["react", "react-dom", "react-dom/client"].map(name => [name, import.meta.resolve(name)])) } },
   } });
   const entry = (await readdir(output)).find((name) => name.startsWith(fileName) && /\.m?js$/u.test(name));
@@ -448,7 +720,7 @@ test("new OpenAI-compatible public connection keeps generated ID after preview f
     assert.equal(creates[1].body.credential, "fixture-key");
     assert.equal(creates[1].body.test_credential, undefined);
     assert.equal(controlFor(container, "API Key 또는 Client Key").value, "");
-    assert.match(container.textContent, /연결 시험에 성공/u);
+    assert.match(container.textContent, /저장됨.*서버 저장값/u);
     await click(act, buttonByText(container, "새로고침"));
     assert.equal(findElements(container, (node) => node.tagName === "LABEL" && node.textContent.startsWith("Connection ID")).length, 0);
     assert.equal(controlFor(container, "호환 방식").value, "OpenAI 호환");
@@ -657,7 +929,8 @@ for (const [caseName, legacyAllowed] of [
       if (String(url) === "/bff/api/admin/provider-connections/route-legacy-save" && options.method === "PUT") {
         const body = JSON.parse(options.body);
         fixture.requests.push({ path: String(url), method: options.method, body });
-        return Response.json({ data: { ...existing, ...body, models: existing.models, version: 2 } });
+        Object.assign(existing, body, {version:2});
+        return Response.json({ data: existing });
       }
       return originalFetch(url, options);
     };
@@ -669,8 +942,8 @@ for (const [caseName, legacyAllowed] of [
       await fill(view.act, controlFor(view.container, "연결 이름"), "Renamed Route");
       const enabledCheckbox = findElements(view.container, (node) => node.tagName === "INPUT" && node.type === "checkbox" && node.parentNode?.textContent.includes("사용 후보에 포함"))[0];
       await setChecked(view.act, enabledCheckbox, false);
-      assert.equal(buttonByText(view.container, "연결 시험 및 저장").disabled, false);
-      await click(view.act, buttonByText(view.container, "연결 시험 및 저장"));
+      assert.equal(buttonByText(view.container, "변경사항 저장").disabled, false);
+      await click(view.act, buttonByText(view.container, "변경사항 저장"));
       const update = fixture.requests.find((item) => item.path === "/bff/api/admin/provider-connections/route-legacy-save" && item.method === "PUT");
       assert.ok(update);
       assert.equal(update.body.display_name, "Renamed Route");
@@ -696,7 +969,8 @@ test("saved legacy OpenRouter with five allowed models permits an unrelated admi
     if (String(url) === "/bff/api/admin/provider-connections/openrouter-legacy-save" && options.method === "PUT") {
       const body = JSON.parse(options.body);
       fixture.requests.push({ path: String(url), method: options.method, body });
-      return Response.json({ data: { ...existing, ...body, models: existing.models, version: 2 } });
+      Object.assign(existing, body, {version:2});
+        return Response.json({ data: existing });
     }
     return originalFetch(url, options);
   };
@@ -705,8 +979,8 @@ test("saved legacy OpenRouter with five allowed models permits an unrelated admi
     await fill(view.act, controlFor(view.container, "연결 이름"), "Renamed OpenRouter");
     const enabledCheckbox = findElements(view.container, (node) => node.tagName === "INPUT" && node.type === "checkbox" && node.parentNode?.textContent.includes("사용 후보에 포함"))[0];
     await setChecked(view.act, enabledCheckbox, false);
-    assert.equal(buttonByText(view.container, "연결 시험 및 저장").disabled, false);
-    await click(view.act, buttonByText(view.container, "연결 시험 및 저장"));
+    assert.equal(buttonByText(view.container, "변경사항 저장").disabled, false);
+    await click(view.act, buttonByText(view.container, "변경사항 저장"));
     const update = fixture.requests.find((item) => item.path === "/bff/api/admin/provider-connections/openrouter-legacy-save" && item.method === "PUT");
     assert.ok(update);
     assert.equal(update.body.enabled, false);

@@ -19,6 +19,36 @@ import * as sourceRetryApi from "../../apps/web/lib/source-upload-api.js";
 import { citationContentUrl } from "../../apps/web/lib/question-answering-api.js";
 import { unbindWorkspaceSource } from "../../apps/web/lib/product-workspace-api.js";
 
+test('SIX-A Provider popup requires discard confirmation for X and Escape and blocks close during save',async()=>{
+  const root=path.resolve(import.meta.dirname,'../..'),output=await mkdtemp(path.join(tmpdir(),'.six-a-shell-'));
+  const dom=installMinimalDom();let reactRoot;
+  try{
+    const {createElement,act}=await import('react'),{createRoot}=await import('react-dom/client'),{build}=await import('vite');
+    await build({configFile:false,logLevel:'silent',root,build:{outDir:output,emptyOutDir:false,lib:{entry:path.join(root,'packages/ui/src/product-workspace-shell.jsx'),formats:['es'],fileName:'six-a-shell'},rollupOptions:{external:['react','react-dom','react-dom/client'],output:{paths:Object.fromEntries(['react','react-dom','react-dom/client'].map(n=>[n,import.meta.resolve(n)]))}}}});
+    const entry=(await readdir(output)).find(n=>/\.m?js$/u.test(n));
+    const {ProductWorkspaceShell}=await import(pathToFileURL(path.join(output,entry)).href);
+    const container=dom.document.createElement('div');dom.document.body.appendChild(container);reactRoot=createRoot(container);
+    const current=s17Adapter();
+    const render=(dirty,saving)=>act(async()=>reactRoot.render(createElement(ProductWorkspaceShell,{workspaceId:'workspace-1',adapter:current,providerSettings:createElement('div',{key:'provider-settings'},'QA Provider settings'),providerSettingsDirty:dirty,providerSettingsSaving:saving})));
+    const button=t=>findElements(container,n=>n.tagName==='BUTTON'&&n.textContent.trim()===t)[0];
+    const click=n=>act(async()=>{assert.ok(n);n.dispatchEvent(new MinimalEvent('click'));});
+    const dialog=()=>findElements(container,n=>n.getAttribute?.('role')==='dialog')[0];
+    const props=n=>n[Object.keys(n).find(k=>k.startsWith('__reactProps'))];
+    await render(true,false);await click(button('설정'));await click(findElements(container,n=>n.getAttribute?.('role')==='menuitem'&&n.textContent.includes('LLM'))[0]);
+    await click(findElements(container,n=>n.getAttribute?.('aria-label')==='닫기')[0]);
+    assert.ok(button('계속 편집'));assert.match(container.textContent,/QA Provider settings/);
+    const disclosure=findElements(container,n=>n.getAttribute?.('aria-label')==='저장하지 않은 Provider 변경')[0];
+    assert.equal(disclosure.getAttribute('role'),'group');assert.equal(disclosure.getAttribute('aria-modal'),null);
+    await click(button('계속 편집'));
+    await act(async()=>props(dialog()).onKeyDown({key:'Escape',preventDefault(){},stopPropagation(){}}));
+    assert.ok(button('변경 버리고 닫기'));await click(button('변경 버리고 닫기'));assert.equal(dialog(),undefined);
+    await render(true,true);await click(button('설정'));await click(findElements(container,n=>n.getAttribute?.('role')==='menuitem'&&n.textContent.includes('LLM'))[0]);
+    await act(async()=>props(dialog()).onKeyDown({key:'Escape',preventDefault(){},stopPropagation(){}}));
+    assert.ok(dialog());assert.equal(findElements(container,n=>n.getAttribute?.('aria-label')==='닫기')[0].disabled,true);
+    await render(false,false);await click(findElements(container,n=>n.getAttribute?.('aria-label')==='닫기')[0]);assert.equal(dialog(),undefined);
+  }finally{if(reactRoot){const {act}=await import('react');await act(async()=>reactRoot.unmount());}dom.restore();await rm(output,{recursive:true,force:true});}
+});
+
 test("질문 정책 차단 안내는 입력 수정 대신 조직·Workspace 정책 원인을 표시한다", () => {
   assert.equal(questionFailureMessage("EGRESS_POLICY_DENIED"),
     "조직 또는 Workspace의 외부 전송 정책으로 차단되었습니다. 정책 설정을 확인해 주세요. (EGRESS_POLICY_DENIED)");

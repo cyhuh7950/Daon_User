@@ -11,9 +11,12 @@ async function request(path, { method = "GET", body, headers = {} } = {}) {
     error: { code: "RESOURCE_UNAVAILABLE", trace_id: response.headers.get("x-trace-id") }
   }));
   if (!response.ok) {
-    const error = new Error(payload?.error?.code ?? "RESOURCE_UNAVAILABLE");
-    error.code = payload?.error?.code ?? "RESOURCE_UNAVAILABLE";
-    error.traceId = payload?.error?.trace_id ?? response.headers.get("x-trace-id");
+    const code = /^[A-Z][A-Z0-9_]{0,79}$/u.test(payload?.error?.code ?? "") ? payload.error.code : "RESOURCE_UNAVAILABLE";
+    const error = new Error(code);
+    error.code = code;
+    error.status = response.status;
+    const trace = payload?.error?.trace_id ?? response.headers.get("x-trace-id");
+    error.traceId = typeof trace === "string" && /^[A-Za-z0-9._:-]{1,128}$/u.test(trace) ? trace : null;
     throw error;
   }
   return { payload, etag: response.headers.get("etag") };

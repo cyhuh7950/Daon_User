@@ -727,7 +727,7 @@ function SheetOriginalTable({ content }) {
   </>;
 }
 
-function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state = createProductWorkspaceState(), adapter = null, processingPollOptions = null, desktopOfflineStudio = null, providerSettings = null, onLogout = null,
+function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state = createProductWorkspaceState(), adapter = null, processingPollOptions = null, desktopOfflineStudio = null, providerSettings = null, providerSettingsDirty = false, providerSettingsSaving = false, onLogout = null,
   initialSourceVersionId = null, initialStudioOutput = null }) {
   const [viewState, setViewState] = useState(() => normalizeProductWorkspaceState(state));
   const notificationOutputScope = useRef({adapter, output:initialStudioOutput, consumed:false});
@@ -749,6 +749,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
   const [reportPending, setReportPending] = useState(false);
   const [settingsMenuOpen, setSettingsMenuOpen] = useState(false);
   const [modalView, setModalView] = useState(null);
+  const [providerCloseGuard,setProviderCloseGuard]=useState(false);
   const [loadRevision, setLoadRevision] = useState(0);
   const [knowledgePackages, setKnowledgePackages] = useState([]);
   const [connectors, setConnectors] = useState([]);
@@ -1849,6 +1850,9 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
     if (view === "manual") void loadManualHub();
   };
   const closeModal = (force = false) => {
+    if(modalView==="llm" && providerSettingsSaving)return;
+    if(modalView==="llm" && providerSettingsDirty && !force){setProviderCloseGuard(true);return;}
+    setProviderCloseGuard(false);
     if (modalView === "output-version" && outputRequestRef.current?.kind === "save") return;
     if (modalView === "question-step-up") cancelQuestionRequest();
     if (!force && modalView === "output-version" && outputSettingsDirty) {
@@ -2224,7 +2228,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
       </div>
       {modalView ? <div className="workspace-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeModal(); }}>
         <section ref={modalRef} className={`workspace-modal workspace-modal-${modalView}`} role="dialog" aria-modal="true" aria-labelledby="workspace-modal-title" onKeyDown={(event) => trapDialogFocus(event, closeModal)}>
-          <header className="workspace-modal-header"><div><span className="section-kicker">WORKSPACE SETTINGS</span><h2 id="workspace-modal-title">{modalView === "question-step-up" ? "외부 질문 추가 인증" : modalView === "llm" ? "LLM 설정" : modalView === "output-version" ? "출력·버전" : modalView === "sync" ? "동기화·승인" : modalView === "approval-policy" ? "승인 정책" : modalView === "organization-policy" ? "조직 정책" : modalView === "license" ? "라이선스" : modalView === "manual" ? "사용자 설명서" : "운영상태"}</h2></div><button className="modal-close" type="button" disabled={modalView === "output-version" && outputRequestRef.current?.kind === "save"} onClick={() => closeModal()} aria-label="닫기">×</button></header>
+          <header className="workspace-modal-header"><div><span className="section-kicker">WORKSPACE SETTINGS</span><h2 id="workspace-modal-title">{modalView === "question-step-up" ? "외부 질문 추가 인증" : modalView === "llm" ? "LLM 설정" : modalView === "output-version" ? "출력·버전" : modalView === "sync" ? "동기화·승인" : modalView === "approval-policy" ? "승인 정책" : modalView === "organization-policy" ? "조직 정책" : modalView === "license" ? "라이선스" : modalView === "manual" ? "사용자 설명서" : "운영상태"}</h2></div><button className="modal-close" type="button" disabled={(modalView === "output-version" && outputRequestRef.current?.kind === "save") || (modalView==="llm" && providerSettingsSaving)} onClick={() => closeModal()} aria-label="닫기">×</button></header>
           {modalView === "question-step-up" ? <div className="workspace-modal-content">
             <p>현재 선택한 자료와 질문의 외부 전송에 추가 인증이 필요합니다.</p>
             <label>현재 비밀번호<input ref={questionPasswordRef} type="password" autoComplete="off" aria-label="외부 질문 추가 인증 비밀번호" disabled={questionAuthPending} /></label>
@@ -2232,7 +2236,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
             {questionAuthPending ? <div role="status">추가 인증을 확인하고 있습니다.</div> : null}
             <button type="button" disabled={questionAuthPending} onClick={authenticateQuestion}>인증 후 질문 제출</button>
             <button type="button" onClick={() => closeModal()}>질문 인증 취소</button>
-          </div> : modalView === "llm" ? <div className="workspace-modal-content">{providerSettings ?? <div className="modal-unavailable" role="status"><strong>Provider 설정 연결이 필요합니다.</strong><p>현재 Workspace에서는 설정 상태를 불러올 수 없습니다.</p><button type="button" disabled>연결 기능 준비 중</button></div>}</div> : modalView === "output-version" ? <div className="workspace-modal-content output-version-settings">
+          </div> : modalView === "llm" ? <div className="workspace-modal-content">{providerSettings ?? <div className="modal-unavailable" role="status"><strong>Provider 설정 연결이 필요합니다.</strong><p>현재 Workspace에서는 설정 상태를 불러올 수 없습니다.</p><button type="button" disabled>연결 기능 준비 중</button></div>}{providerCloseGuard ? <div className="unsaved-settings-guard" role="group" aria-live="polite" aria-label="저장하지 않은 Provider 변경"><strong>저장하지 않은 변경이 있습니다.</strong><p>입력만 버리고 닫습니다. 서버 작업은 취소되지 않으며 서버 저장 여부가 불확실하면 재조회가 필요합니다.</p><button type="button" disabled={providerSettingsSaving} onClick={()=>setProviderCloseGuard(false)}>계속 편집</button><button type="button" disabled={providerSettingsSaving} onClick={()=>closeModal(true)}>변경 버리고 닫기</button></div> : null}{providerSettingsSaving ? <p role="status">Provider 저장 중에는 창을 닫을 수 없습니다.</p> : null}</div> : modalView === "output-version" ? <div className="workspace-modal-content output-version-settings">
             {outputSettingsPending && !outputSettings ? <div className="modal-unavailable" role="status">출력 설정을 불러오고 있습니다.</div> : null}
             {outputSettingsSafeError ? <div className="modal-unavailable" role="alert"><strong>출력 설정을 처리하지 못했습니다.</strong><p>현재 저장 상태를 확인할 수 없습니다. 다시 불러와 확인해 주세요.</p><button type="button" disabled={outputSettingsPending} onClick={() => void loadOutputVersionSettings()}>다시 불러오기</button></div> : null}
             {outputSettings && outputDraft ? <form onSubmit={(event) => { event.preventDefault(); void saveOutputVersionSettings(); }}>

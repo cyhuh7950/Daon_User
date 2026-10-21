@@ -1,5 +1,7 @@
 "use client";
 
+import { useMemo, useState } from "react";
+
 import { createProductWorkspaceState } from "@daon-user/ui/product-workspace-model";
 import { ProductWorkspaceShell } from "@daon-user/ui/product-workspace-shell";
 import { ProviderSettingsWorkspace } from "./provider-settings-workspace.jsx";
@@ -85,7 +87,9 @@ export function createWebProductWorkspaceAdapter(workspaceId, notebookId) {
 
 export function ActualWorkspace({ workspaceId, notebookId, notebookTitle, adapter, processingPollOptions, onLogout,
   initialSourceVersionId = null, initialStudioOutput = null }) {
-  const activeAdapter = workspaceId ? (adapter ?? createWebProductWorkspaceAdapter(workspaceId, notebookId)) : null;
+  const activeAdapter = useMemo(() => workspaceId ? (adapter ?? createWebProductWorkspaceAdapter(workspaceId, notebookId)) : null, [workspaceId, notebookId, adapter]);
+  const [providerSettingsDirty, setProviderSettingsDirty] = useState(false);
+  const [providerSettingsSaving, setProviderSettingsSaving] = useState(false);
   return (
     <ProductWorkspaceShell
       workspaceId={workspaceId}
@@ -94,7 +98,9 @@ export function ActualWorkspace({ workspaceId, notebookId, notebookTitle, adapte
       initialSourceVersionId={initialSourceVersionId}
       initialStudioOutput={initialStudioOutput}
       processingPollOptions={processingPollOptions}
-      providerSettings={<ProviderSettingsWorkspace workspaceId={workspaceId} embedded />}
+      providerSettings={<ProviderSettingsWorkspace key="provider-settings" workspaceId={workspaceId} embedded onDirtyChange={setProviderSettingsDirty} onSavingChange={setProviderSettingsSaving} />}
+      providerSettingsDirty={providerSettingsDirty}
+      providerSettingsSaving={providerSettingsSaving}
       onLogout={onLogout}
       state={createProductWorkspaceState(workspaceId
         ? { status: "loading" }
