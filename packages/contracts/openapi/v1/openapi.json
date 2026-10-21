@@ -2439,46 +2439,96 @@
       }
     },
     "/api/v1/runs/{id}/routing-decision": {
-      "get": {
-        "operationId": "getRunRoutingDecision",
-        "tags": [
-          "Model"
-        ],
-        "summary": "Run Routing Decision 조회",
-        "x-implementation-owner": "R1-M6-14",
-        "responses": {
-          "200": {
-            "$ref": "#/components/responses/SuccessResponse"
+  "get": {
+    "operationId": "getRunRoutingDecision",
+    "tags": [
+      "Model"
+    ],
+    "summary": "Run Routing Decision 조회",
+    "x-implementation-owner": "R1-M6-14",
+    "responses": {
+      "200": {
+        "description": "Current authorized Run routing details",
+        "headers": {
+          "Cache-Control": {
+            "schema": {
+              "type": "string",
+              "const": "no-store"
+            }
           },
-          "400": {
-            "$ref": "#/components/responses/BadRequest"
+          "X-Trace-Id": {
+            "$ref": "#/components/headers/XTraceId"
           },
-          "401": {
-            "$ref": "#/components/responses/Unauthorized"
-          },
-          "403": {
-            "$ref": "#/components/responses/Forbidden"
-          },
-          "404": {
-            "$ref": "#/components/responses/NotFound"
-          },
-          "409": {
-            "$ref": "#/components/responses/Conflict"
-          },
-          "412": {
-            "$ref": "#/components/responses/PreconditionFailed"
-          },
-          "500": {
-            "$ref": "#/components/responses/SafeFailure"
+          "ETag": {
+            "$ref": "#/components/headers/ETag"
           }
         },
-        "parameters": [
-          {
-            "$ref": "#/components/parameters/ResourceId"
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/RoutingDecisionReadEnvelope"
+            }
           }
-        ]
+        }
+      },
+      "400": {
+        "$ref": "#/components/responses/BadRequest"
+      },
+      "401": {
+        "$ref": "#/components/responses/Unauthorized"
+      },
+      "403": {
+        "$ref": "#/components/responses/Forbidden"
+      },
+      "404": {
+        "$ref": "#/components/responses/NotFound"
+      },
+      "409": {
+        "$ref": "#/components/responses/Conflict"
+      },
+      "412": {
+        "$ref": "#/components/responses/PreconditionFailed"
+      },
+      "500": {
+        "$ref": "#/components/responses/SafeFailure"
+      },
+      "422": {
+        "description": "Invalid query",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/SafeErrorEnvelope"
+            }
+          }
+        },
+        "headers": {
+          "X-Trace-Id": {
+            "$ref": "#/components/headers/XTraceId"
+          }
+        }
+      },
+      "503": {
+        "$ref": "#/components/responses/ServiceUnavailable"
       }
     },
+    "parameters": [
+      {
+        "$ref": "#/components/parameters/ResourceId"
+      },
+      {
+        "name": "workspace_id",
+        "in": "query",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        }
+      }
+    ]
+  }
+},
     "/api/v1/runs/{id}/rule-evaluations": {
       "get": {
         "operationId": "listRunRuleEvaluations",
@@ -5834,6 +5884,403 @@
       }
     },
     "schemas": {
+"RoutingCandidateRead":{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "candidate_order",
+    "model_id",
+    "deployment_id",
+    "provider_kind"
+  ],
+  "properties": {
+    "candidate_order": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8
+    },
+    "model_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255
+    },
+    "deployment_id": {
+      "$ref": "#/components/schemas/OpaqueId"
+    },
+    "provider_kind": {
+      "type": "string",
+      "enum": [
+        "local",
+        "local_runtime",
+        "server_internal",
+        "external_api"
+      ]
+    }
+  }
+},"RoutingExclusionRead":{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "deployment_id",
+    "reason"
+  ],
+  "properties": {
+    "deployment_id": {
+      "$ref": "#/components/schemas/OpaqueId"
+    },
+    "reason": {
+      "type": "string",
+      "enum": [
+        "OBSERVATION_MISSING",
+        "OBSERVATION_BINDING_INVALID",
+        "BUDGET_UNVERIFIED",
+        "OBSERVATION_IDENTITY_MISMATCH",
+        "PROVENANCE_UNCONFIRMED",
+        "OBSERVATION_STALE",
+        "OBSERVATION_INCOMPARABLE",
+        "OBSERVATION_UNIT_INVALID",
+        "QUALITY_BELOW_MINIMUM",
+        "CURRENT_CANDIDATE_BLOCKED",
+        "PRICE_UNCONFIRMED",
+        "BUDGET_EXCEEDED",
+        "DATA_REALM_BLOCKED"
+      ]
+    }
+  }
+},"RoutingPreview":{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "routing_policy_version_id",
+    "plan_digest",
+    "candidates",
+    "exclusions"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "routing_policy_version_id": {
+      "$ref": "#/components/schemas/OpaqueId"
+    },
+    "plan_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "candidates": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "$ref": "#/components/schemas/RoutingCandidateRead"
+      }
+    },
+    "exclusions": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "$ref": "#/components/schemas/RoutingExclusionRead"
+      }
+    }
+  }
+},"RoutingAttemptRead":{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "attempt_id",
+    "candidate_order",
+    "state",
+    "started_at",
+    "finished_at",
+    "failure_code",
+    "cost_state",
+    "cost_amount",
+    "currency"
+  ],
+  "properties": {
+    "attempt_id": {
+      "$ref": "#/components/schemas/OpaqueId"
+    },
+    "candidate_order": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8
+    },
+    "state": {
+      "type": "string",
+      "enum": [
+        "succeeded",
+        "failed",
+        "uncertain",
+        "dispatch_claimed"
+      ]
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "finished_at": {
+      "oneOf": [
+        {
+          "type": "string",
+          "format": "date-time"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "failure_code": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "RATE_LIMITED",
+            "TEMPORARILY_UNAVAILABLE",
+            "CAPACITY_UNAVAILABLE",
+            "TIMEOUT",
+            "AUTH_DENIED",
+            "EGRESS_POLICY_DENIED",
+            "POLICY_CHANGED",
+            "INVALID_REQUEST",
+            "INVALID_RESPONSE",
+            "CANCELLED",
+            "TRANSPORT_UNCERTAIN",
+            "RESULT_PERSISTENCE_UNCERTAIN"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "cost_state": {
+      "type": "string",
+      "enum": [
+        "known",
+        "unknown",
+        "uncertain"
+      ]
+    },
+    "cost_amount": {
+      "oneOf": [
+        {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,11})(\\.[0-9]{1,6})?$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "currency": {
+      "oneOf": [
+        {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "cost_state": {
+            "const": "known"
+          }
+        },
+        "required": [
+          "cost_state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "cost_amount": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]{0,11})(\\.[0-9]{1,6})?$"
+          },
+          "currency": {
+            "type": "string",
+            "pattern": "^[A-Z]{3}$"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "cost_amount": {
+            "type": "null"
+          },
+          "currency": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ]
+},"RoutingFinalSelection":{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "candidate_order",
+    "model_id",
+    "attempt_id"
+  ],
+  "properties": {
+    "candidate_order": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8
+    },
+    "model_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255
+    },
+    "attempt_id": {
+      "$ref": "#/components/schemas/OpaqueId"
+    }
+  }
+},"RoutingDecisionRead":{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "routing_mode",
+    "routing_policy_version_id",
+    "routing_plan_id",
+    "plan_digest",
+    "run_state",
+    "candidates",
+    "exclusions",
+    "attempts",
+    "final_selection"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "run_id": {
+      "$ref": "#/components/schemas/OpaqueId"
+    },
+    "routing_mode": {
+      "type": "string",
+      "enum": [
+        "pinned",
+        "auto"
+      ]
+    },
+    "routing_policy_version_id": {
+      "oneOf": [
+        {
+          "$ref": "#/components/schemas/OpaqueId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "routing_plan_id": {
+      "oneOf": [
+        {
+          "$ref": "#/components/schemas/OpaqueId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "plan_digest": {
+      "oneOf": [
+        {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "run_state": {
+      "type": "string",
+      "enum": [
+        "accepted",
+        "planning",
+        "retrieving",
+        "generating",
+        "validating",
+        "completed",
+        "failed",
+        "cancelled"
+      ]
+    },
+    "candidates": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "$ref": "#/components/schemas/RoutingCandidateRead"
+      }
+    },
+    "exclusions": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "$ref": "#/components/schemas/RoutingExclusionRead"
+      }
+    },
+    "attempts": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "$ref": "#/components/schemas/RoutingAttemptRead"
+      }
+    },
+    "final_selection": {
+      "oneOf": [
+        {
+          "$ref": "#/components/schemas/RoutingFinalSelection"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  }
+},"RoutingDecisionReadEnvelope":{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "data",
+    "meta"
+  ],
+  "properties": {
+    "data": {
+      "$ref": "#/components/schemas/RoutingDecisionRead"
+    },
+    "meta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trace_id",
+        "workspace_id"
+      ],
+      "properties": {
+        "trace_id": {
+          "$ref": "#/components/schemas/OpaqueId"
+        },
+        "workspace_id": {
+          "$ref": "#/components/schemas/OpaqueId"
+        }
+      }
+    }
+  }
+},
   "FallbackPolicyBody": {
     "additionalProperties": false,
     "properties": {
@@ -7789,93 +8236,97 @@
       },
 
       "GroundedQuestionAuthorizationEnvelope": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "data",
-          "meta"
-        ],
-        "properties": {
-          "data": {
-            "oneOf": [
-              {
-                "type": "object",
-                "additionalProperties": false,
-                "required": [
-                  "step_up_authorization_id",
-                  "expires_at",
-                  "run_id",
-                  "request_fingerprint"
-                ],
-                "properties": {
-                  "step_up_authorization_id": {
-                    "$ref": "#/components/schemas/OpaqueId"
-                  },
-                  "expires_at": {
-                    "type": "string",
-                    "format": "date-time"
-                  },
-                  "run_id": {
-                    "$ref": "#/components/schemas/OpaqueId"
-                  },
-                  "request_fingerprint": {
-                    "type": "string",
-                    "pattern": "^sha256:[0-9a-f]{64}$"
-                  }
-                }
-              },
-              {
-                "type": "object",
-                "additionalProperties": false,
-                "required": [
-                  "routing_plan_id",
-                  "routing_plan_authorization",
-                  "expires_at",
-                  "run_id",
-                  "plan_digest",
-                  "requires_step_up"
-                ],
-                "properties": {
-                  "routing_plan_id": {
-                    "$ref": "#/components/schemas/OpaqueId"
-                  },
-                  "routing_plan_authorization": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 4096
-                  },
-                  "expires_at": {
-                    "type": "string",
-                    "format": "date-time"
-                  },
-                  "run_id": {
-                    "$ref": "#/components/schemas/OpaqueId"
-                  },
-                  "plan_digest": {
-                    "type": "string",
-                    "pattern": "^[0-9a-f]{64}$"
-                  },
-                  "requires_step_up": {
-                    "type": "boolean"
-                  }
-                }
-              }
-            ]
-          },
-          "meta": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "trace_id"
-            ],
-            "properties": {
-              "trace_id": {
-                "$ref": "#/components/schemas/OpaqueId"
-              }
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "data",
+    "meta"
+  ],
+  "properties": {
+    "data": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "step_up_authorization_id",
+            "expires_at",
+            "run_id",
+            "request_fingerprint"
+          ],
+          "properties": {
+            "step_up_authorization_id": {
+              "$ref": "#/components/schemas/OpaqueId"
+            },
+            "expires_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "run_id": {
+              "$ref": "#/components/schemas/OpaqueId"
+            },
+            "request_fingerprint": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "routing_plan_id",
+            "routing_plan_authorization",
+            "expires_at",
+            "run_id",
+            "plan_digest",
+            "requires_step_up",
+            "routing_preview"
+          ],
+          "properties": {
+            "routing_plan_id": {
+              "$ref": "#/components/schemas/OpaqueId"
+            },
+            "routing_plan_authorization": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "expires_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "run_id": {
+              "$ref": "#/components/schemas/OpaqueId"
+            },
+            "plan_digest": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "requires_step_up": {
+              "type": "boolean"
+            },
+            "routing_preview": {
+              "$ref": "#/components/schemas/RoutingPreview"
             }
           }
         }
-      },
+      ]
+    },
+    "meta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trace_id"
+      ],
+      "properties": {
+        "trace_id": {
+          "$ref": "#/components/schemas/OpaqueId"
+        }
+      }
+    }
+  }
+},
 
       "GroundedCitation": {
         "type": "object",

@@ -287,6 +287,239 @@ class PostgresRoutingAttemptsRepository:
         return result
 
 
+    @staticmethod
+    def _read_record(conn,ctx,table,record_id,extra=()):
+        # table/columns are internal constants, never request strings.
+        fields=('canonical_json','canonical_text','digest_sha256','created_by',*extra)
+        row=conn.execute('SELECT '+','.join(fields)+' FROM '+table+
+            ' WHERE tenant_id=%s AND workspace_id=%s AND record_id=%s',
+            (ctx.tenant_id,ctx.workspace_id,record_id)).fetchone()
+        if row is None:raise RoutingExecutionError('RESOURCE_UNAVAILABLE',404)
+        result=dict(zip(fields,row,strict=True))
+        if (canonical_json_bytes(result['canonical_json']).decode()!=result['canonical_text']
+                or digest(result['canonical_json'])!=result['digest_sha256']):
+            raise RoutingExecutionError('RESOURCE_UNAVAILABLE',404)
+        return result
+
+    @staticmethod
+    def _read_access(conn,ctx,items):
+        from types import SimpleNamespace
+        from .question_answering_postgres import QuestionRepositoryError
+        from .open_law_source_access import OpenLawAccessError
+        try:
+            selected=[]
+            for item in items:
+                if set(item)!={'origin','context_item_id','source_id','source_version_id','digest_sha256'}:
+                    raise ValueError
+                registration=None
+                if item['origin']=='daon_knowledge':
+                    rows=conn.execute("SELECT record_id FROM knowledge_registrations WHERE tenant_id=%s AND workspace_id=%s "
+                        "AND registered_source_version_id=%s AND canonical_json->>'package_id'=%s",
+                        (ctx.tenant_id,ctx.workspace_id,item['source_version_id'],item['context_item_id'])).fetchall()
+                    if len(rows)!=1:raise ValueError
+                    registration=rows[0][0]
+                selected.append(SimpleNamespace(**item,knowledge_registration_id=registration))
+            # write=False checks notebook deletion, current VIEW/QUERY, bindings, source ACL,
+            # retention, law/website freshness and approved knowledge registration; inserts nothing.
+            Questions._knowledge_selections(conn,ctx,tuple(selected),write=False)
+        except (QuestionRepositoryError,OpenLawAccessError,KeyError,ValueError,TypeError):
+            raise RoutingExecutionError('RESOURCE_UNAVAILABLE',404) from None
+
+    def read_routing(self,ctx,run_id):
+        from dataclasses import replace
+        from .routing_execution import routing_preview
+        try:
+            with self.store._transaction(self._cloud(ctx,'routing_execution.projection')) as conn:
+                run=self._read_record(conn,ctx,'runs',run_id,('state','conversation_id'))
+                if run['created_by']!=ctx.actor_id:raise RoutingExecutionError('RESOURCE_UNAVAILABLE',404)
+                state=run['state']
+                if state not in {'accepted','planning','retrieving','generating','validating','completed','failed','cancelled'}:
+                    raise RoutingExecutionError('ROUTING_EXECUTION_UNAVAILABLE',503)
+                auto=run['canonical_json'].get('routing_mode')=='auto'
+                ready=conn.execute("SELECT to_regclass('public.routing_authorization_plans')").fetchone()
+                plan=None
+                if auto:
+                    if ready is None or ready[0] is None:raise RoutingExecutionError('ROUTING_EXECUTION_UNAVAILABLE',503)
+                    row=conn.execute('SELECT payload,content_digest FROM routing_authorization_plans '
+                        'WHERE tenant_id=%s AND workspace_id=%s AND run_id=%s AND actor_id=%s',
+                        (ctx.tenant_id,ctx.workspace_id,run_id,ctx.actor_id)).fetchone()
+                    if row is None:raise RoutingExecutionError('RESOURCE_UNAVAILABLE',404)
+                    try:plan=FrozenAuthorizationPlan(canonical_json_bytes(row[0]).decode(),row[1])
+                    except RoutingExecutionError:raise RoutingExecutionError('RESOURCE_UNAVAILABLE',404) from None
+                    p=plan.as_dict();bound=p['scope'];parents=p['parents']
+                    if (any(bound[k]!=getattr(ctx,k) for k in ('tenant_id','workspace_id','actor_id'))
+                            or p['run_id']!=run_id or run['canonical_json'].get('routing_plan_digest')!=plan.digest_sha256
+                            or run['conversation_id']!=parents['conversation_id']):
+                        raise RoutingExecutionError('RESOURCE_UNAVAILABLE',404)
+                    ctx=replace(ctx,notebook_id=bound['notebook_id'])
+                    decision_id=parents['routing_decision_id'];snapshot_id=parents['run_snapshot_id']
+                else:
+                    if state!='completed':raise RoutingExecutionError('RESOURCE_UNAVAILABLE',404)
+                    ids=conn.execute('SELECT record_id FROM routing_decisions WHERE tenant_id=%s AND workspace_id=%s AND run_id=%s',
+                        (ctx.tenant_id,ctx.workspace_id,run_id)).fetchall()
+                    snapshots=conn.execute('SELECT record_id FROM run_snapshots WHERE tenant_id=%s AND workspace_id=%s AND run_id=%s',
+                        (ctx.tenant_id,ctx.workspace_id,run_id)).fetchall()
+                    if len(ids)!=1 or len(snapshots)!=1:raise RoutingExecutionError('RESOURCE_UNAVAILABLE',404)
+                    decision_id=ids[0][0];snapshot_id=snapshots[0][0]
+                bindings=conn.execute("SELECT notebook_id FROM notebook_bindings WHERE tenant_id=%s AND workspace_id=%s "
+                    "AND binding_kind='conversation_thread' AND record_id=%s AND created_by=%s",
+                    (ctx.tenant_id,ctx.workspace_id,run['conversation_id'],ctx.actor_id)).fetchall()
+                if not auto:
+                    if len(bindings)!=1:raise RoutingExecutionError('RESOURCE_UNAVAILABLE',404)
+                    ctx=replace(ctx,notebook_id=bindings[0][0])
+                elif state=='completed' and (ctx.notebook_id,) not in bindings:
+                    raise RoutingExecutionError('RESOURCE_UNAVAILABLE',404)
+                decision=self._read_record(conn,ctx,'routing_decisions',decision_id,('run_id','routing_policy_version_id','egress_decision_id'))
+                snapshot=self._read_record(conn,ctx,'run_snapshots',snapshot_id,('run_id','scope_snapshot_id','routing_policy_version_id'))
+                if (decision['run_id']!=run_id or snapshot['run_id']!=run_id
+                        or any(x['created_by']!=ctx.actor_id for x in (decision,snapshot))):
+                    raise RoutingExecutionError('RESOURCE_UNAVAILABLE',404)
+                ss=self._read_record(conn,ctx,'scope_snapshots',snapshot['scope_snapshot_id'],('knowledge_scope_id',))
+                ks=self._read_record(conn,ctx,'knowledge_scopes',ss['knowledge_scope_id'])
+                scope_data=ks['canonical_json']
+                if (ss['canonical_json']!={**scope_data,'knowledge_scope_id':ss['knowledge_scope_id']}
+                        or snapshot['canonical_json'].get('knowledge_scope_id')!=ss['knowledge_scope_id']
+                        or not isinstance(scope_data.get('items'),list)):
+                    raise RoutingExecutionError('RESOURCE_UNAVAILABLE',404)
+                self._read_access(conn,ctx,scope_data['items'])
+                entries=[]
+                if auto:
+                    if (decision['routing_policy_version_id']!=p['policy_version_id']
+                            or snapshot['routing_policy_version_id']!=p['policy_version_id']
+                            or snapshot['scope_snapshot_id']!=parents['scope_snapshot_id']
+                            or ss['knowledge_scope_id']!=parents['scope_id']
+                            or decision['canonical_json'].get('routing_plan_digest')!=plan.digest_sha256
+                            or snapshot['canonical_json'].get('routing_plan_digest')!=plan.digest_sha256
+                            or decision['canonical_json'].get('candidate_order')!=[m['deployment_id'] for m in parents['models']]):
+                        raise RoutingExecutionError('RESOURCE_UNAVAILABLE',404)
+                    if (ss['created_by']!=ctx.actor_id or snapshot['canonical_json'].get('scope_snapshot_digest')!=p['source_scope_digest']
+                            or decision['egress_decision_id']!=parents['egress_decision_ids'][0]):
+                        raise RoutingExecutionError('RESOURCE_UNAVAILABLE',404)
+                    for entry,model,egress_id in zip(p['candidates'],parents['models'],parents['egress_decision_ids'],strict=True):
+                        deployment=self._read_record(conn,ctx,'model_deployments',model['deployment_id'],('provider_profile_id','model_artifact_id'))
+                        artifact=self._read_record(conn,ctx,'model_artifacts',model['artifact_id'])
+                        profile=self._read_record(conn,ctx,'provider_profiles',model['profile_id'])
+                        egress=self._read_record(conn,ctx,'egress_decisions',egress_id,('run_id','provider_profile_id'))
+                        if (deployment['provider_profile_id']!=model['profile_id'] or deployment['model_artifact_id']!=model['artifact_id']
+                                or deployment['canonical_json'].get('configured_deployment_id')!=entry['candidate']['deployment_id']
+                                or deployment['canonical_json'].get('model_id')!=entry['candidate']['model_id']
+                                or artifact['canonical_json'].get('model_id')!=entry['candidate']['model_id']
+                                or profile['canonical_json'].get('configured_profile_id')!=entry['candidate']['connection_id']
+                                or egress['run_id']!=run_id or egress['provider_profile_id']!=model['profile_id']
+                                or egress['created_by']!=ctx.actor_id or egress['canonical_json'].get('policy_digest')!=entry['egress_policy_digest']):
+                            raise RoutingExecutionError('RESOURCE_UNAVAILABLE',404)
+                    preview=routing_preview(plan);entries=preview['candidates']
+                else:
+                    for i,model_id in enumerate(decision['canonical_json'].get('candidate_order',[]),1):
+                        model=self._read_record(conn,ctx,'model_deployments',model_id)
+                        entries.append(dict(candidate_order=i,model_id=model['canonical_json']['model_id'],
+                            deployment_id=model['canonical_json']['configured_deployment_id'],
+                            provider_kind=run['canonical_json'].get('provider_kind')))
+                if len(entries)>8 or any(e['provider_kind'] not in {'local','local_runtime','server_internal','external_api'}
+                        or type(e['model_id']) is not str or not 1<=len(e['model_id'])<=255
+                        or any(ord(c)<32 or ord(c)==127 for c in e['model_id']) for e in entries):
+                    raise RoutingExecutionError('ROUTING_EXECUTION_UNAVAILABLE',503)
+                attempts=self._project_attempts(conn,ctx,run_id,decision_id,plan,entries)
+                result=conn.execute('SELECT selected_model_attempt_id,routing_decision_id FROM run_results '
+                    'WHERE tenant_id=%s AND workspace_id=%s AND run_id=%s',
+                    (ctx.tenant_id,ctx.workspace_id,run_id)).fetchall()
+                final=None
+                if state=='completed' and len(result)!=1:raise RoutingExecutionError('RESOURCE_UNAVAILABLE',404)
+                if state=='completed' and result[0][0] is not None:
+                    if len(result)!=1 or result[0][1]!=decision_id:raise RoutingExecutionError('RESOURCE_UNAVAILABLE',404)
+                    selected=[a for a in attempts if a['attempt_id']==result[0][0] and a['state']=='succeeded']
+                    if len(selected)!=1:raise RoutingExecutionError('RESOURCE_UNAVAILABLE',404)
+                    a=selected[0];final=dict(candidate_order=a['candidate_order'],model_id=entries[a['candidate_order']-1]['model_id'],attempt_id=a['attempt_id'])
+                return dict(schema_version=1,run_id=run_id,routing_mode='auto' if auto else 'pinned',
+                    routing_policy_version_id=p['policy_version_id'] if auto else None,
+                    routing_plan_id=p['plan_id'] if auto else None,plan_digest=plan.digest_sha256 if auto else None,
+                    run_state=state,candidates=entries,exclusions=preview['exclusions'] if auto else [],
+                    attempts=attempts,final_selection=final)
+        except CloudDatabaseError:
+            raise RoutingExecutionError('ROUTING_EXECUTION_UNAVAILABLE',503) from None
+        except (KeyError,ValueError,TypeError,IndexError):
+            raise RoutingExecutionError('ROUTING_EXECUTION_UNAVAILABLE',503) from None
+
+    def _project_attempts(self,conn,ctx,run_id,decision_id,plan,entries):
+        from .routing_execution import _SAFE_CODES
+        rows=conn.execute('SELECT record_id FROM model_attempts WHERE tenant_id=%s AND workspace_id=%s AND routing_decision_id=%s ORDER BY candidate_order',
+            (ctx.tenant_id,ctx.workspace_id,decision_id)).fetchall()
+        if len(rows)>8:raise RoutingExecutionError('ROUTING_EXECUTION_UNAVAILABLE',503)
+        result=[];events={};outboxes=[];p=None
+        if plan:
+            p=plan.as_dict()
+            for attempt,kind,payload,sha,created in conn.execute('SELECT attempt_id,event_kind,payload,content_digest,created_at FROM routing_attempt_events '
+                    'WHERE tenant_id=%s AND workspace_id=%s AND plan_id=%s ORDER BY created_at,event_kind',
+                    (ctx.tenant_id,ctx.workspace_id,p['plan_id'])).fetchall():
+                self._timestamp(created)
+                if digest(payload)!=sha or kind in events.setdefault(attempt,{}):raise RoutingExecutionError('ROUTING_EXECUTION_UNAVAILABLE',503)
+                events[attempt][kind]=(payload,created)
+            outboxes=conn.execute('SELECT attempt_id,candidate_order,created_at FROM routing_dispatch_outbox '
+                'WHERE tenant_id=%s AND workspace_id=%s AND plan_id=%s ORDER BY candidate_order',
+                (ctx.tenant_id,ctx.workspace_id,p['plan_id'])).fetchall()
+        for (attempt,) in rows:
+            record=self._read_record(conn,ctx,'model_attempts',attempt,('routing_decision_id','model_deployment_id','model_artifact_id','candidate_order','started_at','finished_at','safe_error_code','cost_amount'))
+            payload=record['canonical_json'];order=record['candidate_order']
+            if (record['created_by']!=ctx.actor_id or record['routing_decision_id']!=decision_id
+                    or type(order) is not int or not 1<=order<=len(entries) or payload.get('run_id')!=run_id
+                    or payload.get('deployment_id')!=record['model_deployment_id']
+                    or payload.get('model_artifact_id')!=record['model_artifact_id']):raise RoutingExecutionError('ROUTING_EXECUTION_UNAVAILABLE',503)
+            if payload.get('outcome') not in {'succeeded','failed','uncertain'}:
+                raise RoutingExecutionError('ROUTING_EXECUTION_UNAVAILABLE',503)
+            if record['safe_error_code']!=payload.get('safe_code'):
+                raise RoutingExecutionError('ROUTING_EXECUTION_UNAVAILABLE',503)
+            if plan is None:
+                fixed=self._read_record(conn,ctx,'routing_decisions',decision_id)['canonical_json'].get('candidate_order',[])
+                if order>len(fixed) or record['model_deployment_id']!=fixed[order-1]:
+                    raise RoutingExecutionError('ROUTING_EXECUTION_UNAVAILABLE',503)
+            cost_state='unknown';amount=None;currency=None
+            if plan:
+                expected='route-attempt-'+digest(dict(plan=p['plan_id'],order=order));ev=events.get(attempt,{})
+                if (attempt!=expected or 'terminal' not in ev or 'dispatch_claimed' not in ev or 'prepared' not in ev
+                        or (attempt,order,record['started_at']) not in outboxes
+                        or record['model_deployment_id']!=p['parents']['models'][order-1]['deployment_id']
+                        or record['model_artifact_id']!=p['parents']['models'][order-1]['artifact_id']):
+                    raise RoutingExecutionError('ROUTING_EXECUTION_UNAVAILABLE',503)
+                if not ev['prepared'][1]<=ev['dispatch_claimed'][1]<=record['started_at']<=ev['terminal'][1]<=record['finished_at']:
+                    raise RoutingExecutionError('ROUTING_EXECUTION_UNAVAILABLE',503)
+                terminal=ev['terminal'][0]
+                if any(payload.get(k)!=v for k,v in terminal.items()):raise RoutingExecutionError('ROUTING_EXECUTION_UNAVAILABLE',503)
+                if 'reconciled' in ev and ev['reconciled'][1]<ev['terminal'][1]:raise RoutingExecutionError('ROUTING_EXECUTION_UNAVAILABLE',503)
+                latest=ev.get('reconciled',ev['terminal'])[0]
+                outcome=AttemptOutcome(**latest,result=object() if latest.get('outcome')=='succeeded' else None)
+                cost_state=outcome.cost_state;amount=outcome.amount;currency=outcome.currency
+                if cost_state=='known':
+                    billing=p['candidates'][order-1]['quote']['billing_reference']
+                    receipt=conn.execute('SELECT workspace_id,plan_id,attempt_id,content_digest FROM routing_billing_receipts '
+                        'WHERE tenant_id=%s AND billing_scope_id=%s AND provider_code=%s AND account_reference=%s AND receipt_id=%s',
+                        (ctx.tenant_id,billing['scope_id'],billing['provider_code'],billing['account_reference'],outcome.receipt_id)).fetchone()
+                    bound=dict(plan_id=p['plan_id'],attempt_id=attempt,candidate_order=order,amount=amount,currency=currency,billing_reference=billing,receipt_id=outcome.receipt_id)
+                    if currency!=p['budget']['currency'] or receipt!=(ctx.workspace_id,p['plan_id'],attempt,digest(bound)):
+                        raise RoutingExecutionError('ROUTING_EXECUTION_UNAVAILABLE',503)
+            if record['finished_at']<record['started_at']:raise RoutingExecutionError('ROUTING_EXECUTION_UNAVAILABLE',503)
+            failure=record['safe_error_code']
+            if failure is not None and failure not in _SAFE_CODES:raise RoutingExecutionError('ROUTING_EXECUTION_UNAVAILABLE',503)
+            result.append(dict(attempt_id=attempt,candidate_order=order,state=payload['outcome'],started_at=self._timestamp(record['started_at']),
+                finished_at=self._timestamp(record['finished_at']),failure_code=failure,cost_state=cost_state,cost_amount=amount,currency=currency))
+        if plan:
+            if set(events)!={r[0] for r in outboxes}:raise RoutingExecutionError('ROUTING_EXECUTION_UNAVAILABLE',503)
+            for attempt,order,created in outboxes:
+                if attempt in {a['attempt_id'] for a in result}:continue
+                expected='route-attempt-'+digest(dict(plan=p['plan_id'],order=order));ev=events.get(attempt,{})
+                if (not 1<=order<=len(entries) or attempt!=expected or 'dispatch_claimed' not in ev or 'prepared' not in ev or 'terminal' in ev):
+                    raise RoutingExecutionError('ROUTING_EXECUTION_UNAVAILABLE',503)
+                if not ev['prepared'][1]<=ev['dispatch_claimed'][1]<=created:
+                    raise RoutingExecutionError('ROUTING_EXECUTION_UNAVAILABLE',503)
+                result.append(dict(attempt_id=attempt,candidate_order=order,state='dispatch_claimed',started_at=self._timestamp(created),
+                    finished_at=None,failure_code=None,cost_state='uncertain',cost_amount=None,currency=None))
+        if len({a['candidate_order'] for a in result})!=len(result):raise RoutingExecutionError('ROUTING_EXECUTION_UNAVAILABLE',503)
+        return sorted(result,key=lambda x:x['candidate_order'])
+
+    def _timestamp(self,value):
+        if not isinstance(value,datetime) or value.tzinfo is None or value>self.clock():raise RoutingExecutionError('ROUTING_EXECUTION_UNAVAILABLE',503)
+        return value.isoformat().replace('+00:00','Z')
+
+
 def insert_canon_exact(conn,ctx,table,record_id,payload,*,extra_columns=(),extra_values=(),state=None):
     allowed={'knowledge_scopes','scope_snapshots','provider_profiles','model_artifacts','model_deployments',
         'conversations','runs','egress_decisions','routing_decisions','run_snapshots','model_attempts','run_results','citations'}

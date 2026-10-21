@@ -1052,12 +1052,429 @@ function validateQuestionAutoContract(document) {
   const branches=s.GroundedQuestionAuthorizationEnvelope?.properties?.data?.oneOf;
   require(branches?.length===2&&branches.every(x=>x.type==="object"&&x.additionalProperties===false));
   require(same(branches[0].required,["step_up_authorization_id","expires_at","run_id","request_fingerprint"]));
-  require(same(branches[1].required,["routing_plan_id","routing_plan_authorization","expires_at","run_id","plan_digest","requires_step_up"]));
+  require(same(branches[1].required,["routing_plan_id","routing_plan_authorization","expires_at","run_id","plan_digest","requires_step_up","routing_preview"]));
   require(same(Object.keys(branches[1].properties),branches[1].required)&&same(branches[1].properties.routing_plan_authorization,{type:"string",minLength:1,maxLength:4096})
     &&branches[1].properties.plan_digest.pattern==="^[0-9a-f]{64}$"&&branches[1].properties.requires_step_up.type==="boolean");
 }
 
+function validateRoutingReadContract(document) {
+  const expected={
+  "RoutingCandidateRead": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "candidate_order",
+      "model_id",
+      "deployment_id",
+      "provider_kind"
+    ],
+    "properties": {
+      "candidate_order": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 8
+      },
+      "model_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 255
+      },
+      "deployment_id": {
+        "$ref": "#/components/schemas/OpaqueId"
+      },
+      "provider_kind": {
+        "type": "string",
+        "enum": [
+          "local",
+          "local_runtime",
+          "server_internal",
+          "external_api"
+        ]
+      }
+    }
+  },
+  "RoutingExclusionRead": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "deployment_id",
+      "reason"
+    ],
+    "properties": {
+      "deployment_id": {
+        "$ref": "#/components/schemas/OpaqueId"
+      },
+      "reason": {
+        "type": "string",
+        "enum": [
+          "OBSERVATION_MISSING",
+          "OBSERVATION_BINDING_INVALID",
+          "BUDGET_UNVERIFIED",
+          "OBSERVATION_IDENTITY_MISMATCH",
+          "PROVENANCE_UNCONFIRMED",
+          "OBSERVATION_STALE",
+          "OBSERVATION_INCOMPARABLE",
+          "OBSERVATION_UNIT_INVALID",
+          "QUALITY_BELOW_MINIMUM",
+          "CURRENT_CANDIDATE_BLOCKED",
+          "PRICE_UNCONFIRMED",
+          "BUDGET_EXCEEDED",
+          "DATA_REALM_BLOCKED"
+        ]
+      }
+    }
+  },
+  "RoutingPreview": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "schema_version",
+      "routing_policy_version_id",
+      "plan_digest",
+      "candidates",
+      "exclusions"
+    ],
+    "properties": {
+      "schema_version": {
+        "type": "integer",
+        "const": 1
+      },
+      "routing_policy_version_id": {
+        "$ref": "#/components/schemas/OpaqueId"
+      },
+      "plan_digest": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "candidates": {
+        "type": "array",
+        "maxItems": 8,
+        "items": {
+          "$ref": "#/components/schemas/RoutingCandidateRead"
+        }
+      },
+      "exclusions": {
+        "type": "array",
+        "maxItems": 8,
+        "items": {
+          "$ref": "#/components/schemas/RoutingExclusionRead"
+        }
+      }
+    }
+  },
+  "RoutingAttemptRead": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "attempt_id",
+      "candidate_order",
+      "state",
+      "started_at",
+      "finished_at",
+      "failure_code",
+      "cost_state",
+      "cost_amount",
+      "currency"
+    ],
+    "properties": {
+      "attempt_id": {
+        "$ref": "#/components/schemas/OpaqueId"
+      },
+      "candidate_order": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 8
+      },
+      "state": {
+        "type": "string",
+        "enum": [
+          "succeeded",
+          "failed",
+          "uncertain",
+          "dispatch_claimed"
+        ]
+      },
+      "started_at": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "finished_at": {
+        "oneOf": [
+          {
+            "type": "string",
+            "format": "date-time"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "failure_code": {
+        "oneOf": [
+          {
+            "type": "string",
+            "enum": [
+              "RATE_LIMITED",
+              "TEMPORARILY_UNAVAILABLE",
+              "CAPACITY_UNAVAILABLE",
+              "TIMEOUT",
+              "AUTH_DENIED",
+              "EGRESS_POLICY_DENIED",
+              "POLICY_CHANGED",
+              "INVALID_REQUEST",
+              "INVALID_RESPONSE",
+              "CANCELLED",
+              "TRANSPORT_UNCERTAIN",
+              "RESULT_PERSISTENCE_UNCERTAIN"
+            ]
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "cost_state": {
+        "type": "string",
+        "enum": [
+          "known",
+          "unknown",
+          "uncertain"
+        ]
+      },
+      "cost_amount": {
+        "oneOf": [
+          {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]{0,11})(\\.[0-9]{1,6})?$"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "currency": {
+        "oneOf": [
+          {
+            "type": "string",
+            "pattern": "^[A-Z]{3}$"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "allOf": [
+      {
+        "if": {
+          "properties": {
+            "cost_state": {
+              "const": "known"
+            }
+          },
+          "required": [
+            "cost_state"
+          ]
+        },
+        "then": {
+          "properties": {
+            "cost_amount": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]{0,11})(\\.[0-9]{1,6})?$"
+            },
+            "currency": {
+              "type": "string",
+              "pattern": "^[A-Z]{3}$"
+            }
+          }
+        },
+        "else": {
+          "properties": {
+            "cost_amount": {
+              "type": "null"
+            },
+            "currency": {
+              "type": "null"
+            }
+          }
+        }
+      }
+    ]
+  },
+  "RoutingFinalSelection": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "candidate_order",
+      "model_id",
+      "attempt_id"
+    ],
+    "properties": {
+      "candidate_order": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 8
+      },
+      "model_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 255
+      },
+      "attempt_id": {
+        "$ref": "#/components/schemas/OpaqueId"
+      }
+    }
+  },
+  "RoutingDecisionRead": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "schema_version",
+      "run_id",
+      "routing_mode",
+      "routing_policy_version_id",
+      "routing_plan_id",
+      "plan_digest",
+      "run_state",
+      "candidates",
+      "exclusions",
+      "attempts",
+      "final_selection"
+    ],
+    "properties": {
+      "schema_version": {
+        "type": "integer",
+        "const": 1
+      },
+      "run_id": {
+        "$ref": "#/components/schemas/OpaqueId"
+      },
+      "routing_mode": {
+        "type": "string",
+        "enum": [
+          "pinned",
+          "auto"
+        ]
+      },
+      "routing_policy_version_id": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "routing_plan_id": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "plan_digest": {
+        "oneOf": [
+          {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "run_state": {
+        "type": "string",
+        "enum": [
+          "accepted",
+          "planning",
+          "retrieving",
+          "generating",
+          "validating",
+          "completed",
+          "failed",
+          "cancelled"
+        ]
+      },
+      "candidates": {
+        "type": "array",
+        "maxItems": 8,
+        "items": {
+          "$ref": "#/components/schemas/RoutingCandidateRead"
+        }
+      },
+      "exclusions": {
+        "type": "array",
+        "maxItems": 8,
+        "items": {
+          "$ref": "#/components/schemas/RoutingExclusionRead"
+        }
+      },
+      "attempts": {
+        "type": "array",
+        "maxItems": 8,
+        "items": {
+          "$ref": "#/components/schemas/RoutingAttemptRead"
+        }
+      },
+      "final_selection": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/RoutingFinalSelection"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    }
+  },
+  "RoutingDecisionReadEnvelope": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "data": {
+        "$ref": "#/components/schemas/RoutingDecisionRead"
+      },
+      "meta": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "trace_id",
+          "workspace_id"
+        ],
+        "properties": {
+          "trace_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "workspace_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          }
+        }
+      }
+    }
+  }
+};
+  const same=(a,b)=>canonicalizeDocument(a)===canonicalizeDocument(b);
+  const require=value=>{if(!value)fail("B3 routing read contract mismatch");};
+  for(const [name,schema] of Object.entries(expected))require(same(document.components?.schemas?.[name],schema));
+  const op=document.paths?.["/api/v1/runs/{id}/routing-decision"]?.get;
+  require(same(op?.parameters,[{$ref:"#/components/parameters/ResourceId"},{name:"workspace_id",in:"query",required:true,schema:{type:"string",minLength:1,maxLength:128,pattern:"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"}}]));
+  require(op?.responses?.["200"]?.content?.["application/json"]?.schema?.$ref==="#/components/schemas/RoutingDecisionReadEnvelope");
+  require(op.responses["200"].headers?.["Cache-Control"]?.schema?.const==="no-store");
+  require(same(document.components.schemas.GroundedQuestionAuthorizationEnvelope.properties.data.oneOf[1].properties.routing_preview,{$ref:"#/components/schemas/RoutingPreview"}));
+}
+
 export function validateOpenApiDocument(document) {
+  validateRoutingReadContract(document);
   validateQuestionAutoContract(document);
   validateAccountSettings(document);
   validateStudioApprovalLifecycle(document);

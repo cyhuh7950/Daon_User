@@ -4885,6 +4885,23 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         response.headers["ETag"] = f'"run-result:{stored.run_result_id}"'
         return response
 
+    @app.get("/api/v1/runs/{id}/routing-decision")
+    async def get_run_routing_decision(id: str, request: Request) -> JSONResponse:
+        if set(request.query_params)!={'workspace_id'}:
+            raise HTTPException(status_code=422,detail='REQUEST_VALIDATION_FAILED')
+        values=request.query_params.getlist('workspace_id')
+        if len(values)!=1 or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,127}',values[0]) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,255}',id):
+            raise HTTPException(status_code=422,detail='REQUEST_VALIDATION_FAILED')
+        principal=_principal(request,dependencies);workspace=values[0]
+        if dependencies.cloud_store is None:
+            raise RoutingExecutionError('ROUTING_EXECUTION_UNAVAILABLE',503)
+        context=QuestionContext(principal.tenant_id,workspace,principal.user_id,request.state.trace_id,
+            dependencies.settings.policy_version,session_id=principal.session_id)
+        repository=PostgresRoutingAttemptsRepository(dependencies.cloud_store)
+        data=await asyncio.to_thread(repository.read_routing,context,id)
+        return JSONResponse({'data':data,'meta':{'trace_id':request.state.trace_id,'workspace_id':workspace}},
+            headers={'Cache-Control':'no-store','ETag':'"routing-read:'+hashlib.sha256(canonical_json_bytes(data)).hexdigest()+'"'})
+
     @app.post("/api/v1/workspaces/{id}/questions/authorization", status_code=201)
     async def authorize_grounded_question(
         id: str, body: QuestionAuthorizationBody, request: Request,
@@ -4947,7 +4964,8 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 idempotency_key=idempotency_key,authorize_plan=authorize_auto_plan)
             response=JSONResponse({"data":{"routing_plan_id":prepared.plan_id,
                 "routing_plan_authorization":prepared.authorization,"expires_at":prepared.expires_at,
-                "run_id":prepared.run_id,"plan_digest":prepared.plan_digest,"requires_step_up":prepared.requires_step_up},
+                "run_id":prepared.run_id,"plan_digest":prepared.plan_digest,"requires_step_up":prepared.requires_step_up,
+                "routing_preview":prepared.routing_preview},
                 "meta":{"trace_id":request.state.trace_id}},status_code=201)
             response.headers["ETag"]='"routing-authorization:'+prepared.plan_digest+'"'
             return response

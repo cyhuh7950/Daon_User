@@ -857,3 +857,18 @@ test("B2 returned permit is readable while request permit is write-only",async()
   assert.equal(s.GroundedQuestionRequest.properties.routing_plan_authorization.writeOnly,true);
   assert.notEqual(s.GroundedQuestionAuthorizationEnvelope.properties.data.oneOf[1].properties.routing_plan_authorization.writeOnly,true);
 });
+
+
+test("B3 routing read and preview have closed scoped safe projections",async()=>{
+  const doc=await loadContract(),operation=doc.paths['/api/v1/runs/{id}/routing-decision'].get;
+  assert.equal(operation.responses['200'].content?.['application/json']?.schema?.$ref,'#/components/schemas/RoutingDecisionReadEnvelope');
+  assert.equal(doc.components.schemas.GroundedQuestionAuthorizationEnvelope.properties.data.oneOf[1].properties.routing_preview.$ref,'#/components/schemas/RoutingPreview');
+  assert.doesNotThrow(()=>validateOpenApiDocument(doc));
+  for(const change of [
+    d=>d.components.schemas.RoutingDecisionRead.additionalProperties=true,
+    d=>d.components.schemas.RoutingAttemptRead.properties.cost_amount={type:'number'},
+    d=>d.components.schemas.RoutingCandidateRead.properties.endpoint={type:'string'},
+    d=>d.paths['/api/v1/runs/{id}/routing-decision'].get.parameters.pop(),
+    d=>d.components.schemas.RoutingPreview.required.pop(),
+  ]){const mutant=structuredClone(doc);change(mutant);assert.throws(()=>validateOpenApiDocument(mutant),/B3 routing read/);}
+});

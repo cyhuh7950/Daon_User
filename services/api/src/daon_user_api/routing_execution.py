@@ -66,7 +66,7 @@ class FrozenAuthorizationPlan:
     def __post_init__(self):
         try:
             value=json.loads(self.canonical_text)
-            if (set(value)!={'schema_version','scope','plan_id','run_id','route_plan_digest','request_digest',
+            if (set(value)-{'exclusions'}!={'schema_version','scope','plan_id','run_id','route_plan_digest','request_digest',
                     'policy_version_id','policy_digest','authorization_policy_version','candidates','budget',
                     'source_scope_digest','settings_digest','realm','expires_at','nonce_digest','parents'}
                     or value['schema_version']!='routing-authorization-v1'
@@ -94,6 +94,7 @@ class PreparedAutoAuthorization:
     run_id: str
     plan_digest: str
     requires_step_up: bool
+    routing_preview: dict | None = None
 
 
 @dataclass(frozen=True,slots=True)
@@ -175,6 +176,7 @@ def validate_quote(claims,now):
 
 
 def validate_plan_projection(value):
+    if 'exclusions' in value:validate_exclusions(value['exclusions'])
     bound=value['scope']
     if (type(bound) is not dict or set(bound)!={'tenant_id','workspace_id','actor_id','session_id','notebook_id'}
             or any(type(v) is not str or not _ID.fullmatch(v) for v in bound.values())):
@@ -221,6 +223,29 @@ def validate_plan_projection(value):
     start=datetime.fromisoformat(budget['starts_at']);end=datetime.fromisoformat(budget['expires_at'])
     expires=datetime.fromisoformat(value['expires_at'])
     if start.tzinfo is None or end.tzinfo is None or expires.tzinfo is None or not start<expires<=end:raise ValueError
+
+
+_EXCLUSION_CODES=frozenset({'OBSERVATION_MISSING','OBSERVATION_BINDING_INVALID','BUDGET_UNVERIFIED',
+    'OBSERVATION_IDENTITY_MISMATCH','PROVENANCE_UNCONFIRMED','OBSERVATION_STALE','OBSERVATION_INCOMPARABLE',
+    'OBSERVATION_UNIT_INVALID','QUALITY_BELOW_MINIMUM','CURRENT_CANDIDATE_BLOCKED','PRICE_UNCONFIRMED',
+    'BUDGET_EXCEEDED','DATA_REALM_BLOCKED'})
+
+
+def validate_exclusions(items):
+    if type(items) is not list or len(items)>8:raise ValueError
+    for item in items:
+        if (type(item) is not dict or set(item)!={'deployment_id','reason'}
+                or type(item['deployment_id']) is not str or not _ID.fullmatch(item['deployment_id'])
+                or item['reason'] not in _EXCLUSION_CODES):raise ValueError
+    if len({x['deployment_id'] for x in items})!=len(items):raise ValueError
+
+
+def routing_preview(plan):
+    p=plan.as_dict()
+    return dict(schema_version=1,routing_policy_version_id=p['policy_version_id'],plan_digest=plan.digest_sha256,
+        candidates=[dict(candidate_order=i,model_id=e['candidate']['model_id'],
+            deployment_id=e['candidate']['deployment_id'],provider_kind=e['provider_kind'])
+            for i,e in enumerate(p['candidates'],1)],exclusions=p.get('exclusions',[]))
 
 
 class RoutingExecutionService:
@@ -275,7 +300,8 @@ class RoutingExecutionService:
             policy_version_id=route['policy_version_id'],policy_digest=route['policy_digest'],
             authorization_policy_version=route['authorization_policy_version'],candidates=entries,budget=budget,
             source_scope_digest=route['source_scope_digest'],settings_digest=route['settings_digest'],realm=route['realm'],
-            expires_at=expires.isoformat(),nonce_digest=hashlib.sha256(nonce.encode()).hexdigest(),parents=parents)
+            expires_at=expires.isoformat(),nonce_digest=hashlib.sha256(nonce.encode()).hexdigest(),parents=parents,
+            exclusions=[dict(deployment_id=x['candidate']['deployment_id'],reason=x['reason']) for x in route['excluded']])
         plan=FrozenAuthorizationPlan(canonical_json_bytes(value).decode(),digest(value))
         requires=any(item['authorization_mode']=='step_up_required' for item in entries)
         approval=None if authorize_plan is None else authorize_plan(plan,requires)
@@ -285,7 +311,7 @@ class RoutingExecutionService:
                 or requires and approval.mode!='reauthenticated'):
             raise RoutingExecutionError('ROUTING_AUTHORIZATION_REQUIRED',401)
         self.repository.prepare(context,plan,recheck=self.candidate_port.recheck,materialize=self.candidate_port.materialize)
-        return PreparedAutoAuthorization(plan_id,nonce,expires.isoformat(),run_id,plan.digest_sha256,requires)
+        return PreparedAutoAuthorization(plan_id,nonce,expires.isoformat(),run_id,plan.digest_sha256,requires,routing_preview(plan))
 
     def execute(self,context,*,plan_id,authorization,request_digest,idempotency_key):
         if self.repository is None or self.candidate_port is None:

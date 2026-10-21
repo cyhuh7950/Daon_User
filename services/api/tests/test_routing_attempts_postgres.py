@@ -435,3 +435,35 @@ def test_same_receipt_replay_with_select_insert_only_acl_does_not_need_update(ex
     assert f.repo.reconcile(f.ctx,plan,1,outcome) is False
     assert len(f.store.db.receipts)==1
     assert sum(event[4]=='reconciled' for event in f.store.db.events)==1
+
+
+def test_legacy_plan_without_optional_exclusions_retains_exact_bytes_digest_and_execution_replay(execution,monkeypatch):
+    from daon_user_api.routing_execution import FrozenAuthorizationPlan,AttemptOutcome
+    from daon_user_api.routing_policy import digest
+    from daon_user_api.data_canon import canonical_json_bytes
+    f=execution;raw=deepcopy(next(iter(f.store.db.plans.values())));raw.pop('exclusions',None)
+    text=canonical_json_bytes(raw).decode();sha=digest(raw);legacy=FrozenAuthorizationPlan(text,sha)
+    assert legacy.canonical_text==text and legacy.digest_sha256==sha and 'exclusions' not in legacy.as_dict()
+    f.store.db.plans[(f.ctx.tenant_id,f.ctx.workspace_id,raw['plan_id'])]=raw
+    f.port.outcomes=[AttemptOutcome('succeeded',result=f.port.result)]
+    kwargs=dict(plan_id=raw['plan_id'],authorization=f.approval.authorization,request_digest='b'*64,idempotency_key='legacy-execute')
+    f.service.execute(f.ctx,**kwargs)
+    monkeypatch.setattr(f.repo,'result',lambda ctx,plan:f.port.result)
+    f.service.execute(f.ctx,**kwargs)
+    assert len(f.port.calls)==1
+    assert f.repo.read(f.ctx,raw['plan_id']).canonical_text==text
+
+
+def test_new_plan_exclusions_are_exact_frozen_safe_projection(execution):
+    from daon_user_api.routing_execution import RoutingExecutionService,RoutingExecutionError,FrozenAuthorizationPlan
+    from daon_user_api.routing_policy import FrozenRoutePlan,digest
+    from daon_user_api.data_canon import canonical_json_bytes
+    f=execution;raw=f.route.as_dict();raw['excluded']=[dict(candidate={'deployment_id':'excluded-deployment'},reason='OBSERVATION_MISSING')]
+    route=FrozenRoutePlan(canonical_json_bytes(raw).decode(),digest(raw));store=SQLStore()
+    engine=RoutingExecutionService(type(f.repo)(store,clock=lambda:f.now),f.port,clock=lambda:f.now)
+    prepared=engine.prepare(f.ctx,route,'b'*64,'run-excluded',authorize_plan=f.approve)
+    stored=next(iter(store.db.plans.values()))
+    assert stored['exclusions']==prepared.routing_preview['exclusions']==[dict(deployment_id='excluded-deployment',reason='OBSERVATION_MISSING')]
+    for exclusions in ([{'deployment_id':'x','reason':'RAW_SECRET'}],[{'deployment_id':'x','reason':'OBSERVATION_MISSING','endpoint':'secret'}]):
+        invalid=deepcopy(stored);invalid['exclusions']=exclusions
+        with pytest.raises(RoutingExecutionError):FrozenAuthorizationPlan(canonical_json_bytes(invalid).decode(),digest(invalid))
