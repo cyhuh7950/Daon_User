@@ -81,6 +81,14 @@ def verify_container(value,*,kind,revision,pg_id=None,qa_image=None):
     return value['Id']
 
 CURRENT_TEST='preflight'
+_PASSED_GROUPS=set()
+_FAILED_STAGES=set()
+_ROTATION_PASSED=False
+
+def reset_receipts():
+    global _ROTATION_PASSED,CURRENT_TEST
+    _PASSED_GROUPS.clear();_FAILED_STAGES.clear();_ROTATION_PASSED=False;CURRENT_TEST='preflight'
+
 EXCEPTION_TYPES=frozenset({'ValueError','TypeError','IdentityError','AuthorizationError','RoutingExecutionError','CloudDatabaseError','ImportError','ModuleNotFoundError','ProgrammingError','IntegrityError','OperationalError','InsufficientPrivilege','ForeignKeyViolation','NotNullViolation','CheckViolation','UniqueViolation','AssertionError','Exception','RoutingSourceError','OrganizationWorkflowError','RoutingPriceStorageError','RoutingPricingError'})
 
 def safe_exception_type(error):
@@ -95,18 +103,21 @@ def expect_denial(call,expected_type,code,status):
     raise ValueError('PRICE_EXPECTED_DENIAL_MISSING')
 
 def emit(stage,**values):
-    global CURRENT_TEST
+    global CURRENT_TEST,_ROTATION_PASSED
     allowed={'status','schema','sql_hashes','test_name','safe_code','sqlstate','column','permission_type','permission_name','groups','model_calls','identity_fixture','exception_type','constraint','table','not_run'}
     require(set(values)<=allowed,'PRICE_OUTPUT_FIELDS_INVALID')
     require(type(stage) is str and re.fullmatch('[A-Za-z0-9_-]{1,64}',stage),'PRICE_OUTPUT_FIELDS_INVALID')
     if stage=='complete':
-        require(values.get('status')=='PASS_WITH_NOT_RUN' and values.get('groups')==6 and values.get('model_calls')==0 and values.get('not_run')==['credential_rotation_positive'],'PRICE_OUTPUT_FIELDS_INVALID')
+        require(not _FAILED_STAGES and _PASSED_GROUPS=={'group'+str(i) for i in range(1,7)},'PRICE_COMPLETION_RECEIPTS_MISSING')
+        expected_status='PASS' if _ROTATION_PASSED else 'PASS_WITH_NOT_RUN'
+        expected_missing=[] if _ROTATION_PASSED else ['credential_rotation_positive']
+        require(values.get('status')==expected_status and values.get('groups')==6 and values.get('model_calls')==0 and values.get('not_run')==expected_missing,'PRICE_OUTPUT_FIELDS_INVALID')
     else:
         require('not_run' not in values,'PRICE_OUTPUT_FIELDS_INVALID')
         require(values.get('status') in {'RUNNING','PASS','FAIL'} or stage=='credential_rotation' and values.get('status')=='NOT_RUN' and values.get('safe_code')=='PRICE_CREDENTIAL_ROTATION_REQUIRES_EXCLUDED_SECRET','PRICE_OUTPUT_FIELDS_INVALID')
     for key,value in values.items():
         if key=='status':continue
-        if key=='not_run':require(stage=='complete' and type(value) is list and value==['credential_rotation_positive'],'PRICE_OUTPUT_FIELDS_INVALID')
+        if key=='not_run':require(stage=='complete' and type(value) is list and value==([] if _ROTATION_PASSED else ['credential_rotation_positive']),'PRICE_OUTPUT_FIELDS_INVALID')
         elif key=='sql_hashes':require(value==HASHES,'PRICE_OUTPUT_FIELDS_INVALID')
         elif key=='schema':require(value=='baseline0072+exactSQL0074/0075/0076/0077','PRICE_OUTPUT_FIELDS_INVALID')
         elif key=='groups':require(type(value) is int and 0<=value<=6,'PRICE_OUTPUT_FIELDS_INVALID')
@@ -116,6 +127,11 @@ def emit(stage,**values):
         elif key=='exception_type':require(type(value) is str and value in EXCEPTION_TYPES,'PRICE_OUTPUT_FIELDS_INVALID')
         elif key=='safe_code':require(type(value) is str and re.fullmatch('PRICE_[A-Z0-9_]+',value),'PRICE_OUTPUT_FIELDS_INVALID')
         elif value is not None:require(type(value) is str and re.fullmatch('[A-Za-z0-9_]{1,128}',value),'PRICE_OUTPUT_FIELDS_INVALID')
+    if stage=='credential_rotation' and values.get('status')=='PASS':
+        require(values.get('safe_code')=='PRICE_SYNTHETIC_CREDENTIAL_ROTATION_VERIFIED','PRICE_OUTPUT_FIELDS_INVALID')
+        _ROTATION_PASSED=True
+    if stage in {'group'+str(i) for i in range(1,7)} and values.get('status')=='PASS':_PASSED_GROUPS.add(stage)
+    if values.get('status')=='FAIL':_FAILED_STAGES.add(stage)
     CURRENT_TEST=stage
     print(json.dumps(dict(issue_id=ISSUE,stage=stage,**values),sort_keys=True),flush=True)
 
@@ -261,6 +277,27 @@ def price_body(q,expected=0):
     return dict(schema_version=1,expected_version=expected,workspace_id=q['ctx'].workspace_id,connection_id=q['connection'],model_id='qa/model-v1',connection_version=1,catalog_version=1,endpoint_version=1,credential_source='workspace',currency='USD',valid_from=now.isoformat(),valid_until=(now+timedelta(hours=24)).isoformat(),billing_basis='text_tokens_v1',unit_prices=dict(maximum_input_per_million='1.000001',maximum_output_per_million='2',mandatory_fee_per_request='0'),evidence=dict(source_kind='official_price_document',reference='https://prices.example.com/qa',document_version='synthetic-v1',document_digest='a'*64,reviewed_at=now.isoformat()))
 
 
+def synthetic_envelopes(connection_id):
+    """승인된 일회 QA 값만 메모리에서 암호화한다. 실제 Key/환경/파일은 읽지 않는다."""
+    import secrets
+    from daon_user_api.provider_credentials import ProviderCredentialCipher
+    master=bytearray(secrets.token_bytes(32));first=bytearray(secrets.token_bytes(32));second=bytearray(secrets.token_bytes(32))
+    try:
+        cipher=ProviderCredentialCipher(bytes(master),encryption_key_version=1)
+        return cipher.encrypt(connection_id,'CUSTOM',1,bytes(first)),cipher.encrypt(connection_id,'CUSTOM',2,bytes(second))
+    finally:
+        master[:]=b'\0'*len(master);first[:]=b'\0'*len(first);second[:]=b'\0'*len(second)
+
+
+def install_synthetic_envelope(q,secrets,sealed):
+    # 기존 CHECK를 만족하는 완전한 envelope만 소유 QA 행에 원자 저장한다.
+    # connection/catalog/endpoint 버전은 변경하지 않는다. 정상 관리자 API 호출이 아니다.
+    require(sealed.schema_version==1 and sealed.encryption_key_version==1 and sealed.credential_version in {1,2},'PRICE_QA_ENVELOPE_INVALID')
+    with connect(secrets['pg_password']) as conn:
+        result=conn.execute("UPDATE system_provider_connections SET encrypted_credential=%s,credential_nonce=%s,encryption_key_version=%s,credential_schema_version=%s,credential_version=%s,credential_requirement='required' WHERE connection_id=%s AND provider_code='CUSTOM' AND access_mode='public' AND credential_version=%s AND version=1",(sealed.ciphertext,sealed.nonce,sealed.encryption_key_version,sealed.schema_version,sealed.credential_version,q['connection'],sealed.credential_version-1))
+        require(result.rowcount==1,'PRICE_QA_ENVELOPE_CAS_FAILED')
+
+
 def seed_target(q,secrets,index):
     # 합성 공개 무자격 metadata. 실제 Provider 검증/요청/암호문 생성이 아니다.
     q['connection']='price-connection-'+str(index)
@@ -272,6 +309,7 @@ def seed_target(q,secrets,index):
 
 
 def run_probe(secrets):
+    reset_receipts()
     emit('fixture_imports',status='RUNNING')
     import tempfile
     from contextlib import contextmanager
@@ -463,7 +501,6 @@ def run_probe(secrets):
         def rotate():
             with connect(secrets['pg_password']) as conn:conn.execute('UPDATE system_provider_connections SET credential_version=1 WHERE connection_id=%s',(q['connection'],))
         sql_denial(rotate,{'23514'})
-        emit('credential_rotation',status='NOT_RUN',safe_code='PRICE_CREDENTIAL_ROTATION_REQUIRES_EXCLUDED_SECRET')
         step('group5_disabled_read_revoke')
         with connect(secrets['pg_password']) as conn:conn.execute('UPDATE system_provider_connections SET enabled=false WHERE connection_id=%s',(q['connection'],))
         loaded=read(q,v);require(loaded.target_changed,'PRICE_DISABLED_TARGET_HIDDEN');require(execute(q,revocation(q,loaded,'price-disabled-revoke-key')).revoked,'PRICE_DISABLED_REVOKE_FAILED')
@@ -507,6 +544,47 @@ def run_probe(secrets):
                 sql_denial(locked,{'55P03'});require(not finished.is_set(),'PRICE_ROLE_LOCK_BYPASSED')
             future.result(timeout=10)
         expect_denial(lambda:q['repository'].get(q['ctx'],v.series_id),RoutingPriceStorageError,'PRICE_CURRENT_ACCESS_DENIED',403)
+        credential_rotation()
+    def credential_rotation():
+        q=fixture('credential');step('group5_credential_envelope_v1')
+        sealed1,sealed2=synthetic_envelopes(q['connection']);install_synthetic_envelope(q,secrets,sealed1)
+        first=request(q,'price-credential-first-register');v1=execute(q,first)
+        def snapshot(version):
+            with limited(q,'routing_price.read') as conn:
+                return conn.execute('SELECT canonical_text,content_digest,payload FROM routing_price_versions WHERE series_id=%s AND price_version=%s',(v1.series_id,version)).fetchone()
+        old_snapshot=snapshot(1)
+        require(old_snapshot[2]['target']['credential_version']==1 and old_snapshot[2]['target']['has_credential'] is True and old_snapshot[2]['target']['credential_requirement']=='required','PRICE_CREDENTIAL_FIRST_SNAPSHOT_INVALID')
+        stale=request(q,'price-credential-stale-register',price_body(q,1),PricePreconditions(1,if_match=v1.current_etag))
+        before_business=business(q);before_counts=identity_counts(q)
+        step('group5_credential_envelope_v2');install_synthetic_envelope(q,secrets,sealed2)
+        step('group5_credential_stale_proof')
+        expect_denial(lambda:execute(q,stale),IdentityError,'STEP_UP_BINDING_DENIED',403)
+        require(business(q)==before_business and identity_counts(q)==before_counts,'PRICE_CREDENTIAL_STALE_SIDE_EFFECT')
+        replay=execute(q,first)
+        require(replay.target_changed and replay.verification_state=='unverified' and replay.price_version==1 and business(q)==before_business and identity_counts(q)==before_counts,'PRICE_CREDENTIAL_REPLAY_INVALID')
+        step('group5_credential_new_snapshot')
+        fresh=request(q,'price-credential-fresh-register',price_body(q,1),PricePreconditions(1,if_match=v1.current_etag))
+        issued_counts=identity_counts(q)
+        expect_denial(lambda:execute(q,{**fresh,'proof':stale['proof']}),IdentityError,'STEP_UP_BINDING_DENIED',403)
+        require(business(q)==before_business and identity_counts(q)==issued_counts,'PRICE_CREDENTIAL_PROOF_REUSE_SIDE_EFFECT')
+        v2=execute(q,fresh);second_snapshot=snapshot(2);new_old_snapshot=snapshot(1)
+        require(old_snapshot==new_old_snapshot and read(q,v1).target_changed,'PRICE_CREDENTIAL_HISTORY_CHANGED')
+        target1=old_snapshot[2]['target'];target2=second_snapshot[2]['target']
+        require(target1['credential_version']==1 and target2['credential_version']==2 and {k:v for k,v in target1.items() if k!='credential_version'}=={k:v for k,v in target2.items() if k!='credential_version'},'PRICE_CREDENTIAL_NOT_ISOLATED')
+        require(v2.series_id==v1.series_id and (v2.price_version,v2.current_revision,v2.target_changed,v2.verification_state)==(2,2,False,'unverified'),'PRICE_CREDENTIAL_SECOND_SNAPSHOT_INVALID')
+        require(identity_counts(q)==(issued_counts[0],issued_counts[1]+1),'PRICE_CREDENTIAL_CONSUMPTION_INVALID')
+        # 신규 가격 자료/멱등/감사의 정확 projection만 검사한다. 암호 바이트를 출력하지 않는다.
+        forbidden={'encrypted_credential','credential_nonce','ciphertext','nonce','master_key','plaintext','api_key','password','secret'}
+        def safe(value):
+            if isinstance(value,dict):return not (set(value)&forbidden) and all(safe(v) for v in value.values())
+            if isinstance(value,(list,tuple)):return all(safe(v) for v in value)
+            return not isinstance(value,(bytes,bytearray,memoryview))
+        with connect(secrets['pg_password']) as conn:
+            payloads=conn.execute('SELECT payload FROM routing_price_versions WHERE tenant_id=%s',(q['ctx'].tenant_id,)).fetchall()
+            replays=conn.execute('SELECT result FROM idempotency_records WHERE tenant_id=%s',(q['ctx'].tenant_id,)).fetchall()
+            audits=conn.execute('SELECT metadata FROM audit_events WHERE tenant_id=%s',(q['ctx'].tenant_id,)).fetchall()
+        require(safe(payloads) and safe(replays) and safe(audits),'PRICE_CREDENTIAL_UNSAFE_PROJECTION')
+        emit('credential_rotation',status='PASS',safe_code='PRICE_SYNTHETIC_CREDENTIAL_ROTATION_VERIFIED')
     def group6():
         q=fixture('race');step('group6_same_revision');r1=request(q,'price-race-first-key');r2=request(q,'price-race-second-key');barrier=Barrier(2)
         def run(r):
@@ -554,7 +632,7 @@ def run_probe(secrets):
                 code=str(error) if type(error) is ValueError and re.fullmatch('PRICE_[A-Z0-9_]+',str(error)) else 'PRICE_GATE_FAILED'
                 emit(name,status='FAIL',test_name=failed_test,exception_type=safe_exception_type(error),safe_code=code,**safe_error_metadata(error))
         require(not failures,'PRICE_GROUPS_FAILED')
-        emit('complete',status='PASS_WITH_NOT_RUN',groups=6,model_calls=0,not_run=['credential_rotation_positive'],identity_fixture='isolated-synthetic-sqlite-mirrored-whitelist')
+        emit('complete',status='PASS' if _ROTATION_PASSED else 'PASS_WITH_NOT_RUN',groups=6,model_calls=0,not_run=[] if _ROTATION_PASSED else ['credential_rotation_positive'],identity_fixture='isolated-synthetic-sqlite-mirrored-whitelist')
     finally:
         for store in stores:store.close()
         for q in fixtures:q['repo'].close()

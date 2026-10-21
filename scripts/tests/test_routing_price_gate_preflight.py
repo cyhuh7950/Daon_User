@@ -4,6 +4,13 @@ from pathlib import Path
 import pytest
 P=Path(__file__).with_name('routing-price-postgres-gate.py')
 spec=importlib.util.spec_from_file_location('price_gate',P);gate=importlib.util.module_from_spec(spec);spec.loader.exec_module(gate)
+
+@pytest.fixture(autouse=True)
+def isolated_receipts():
+ gate.reset_receipts()
+ yield
+ gate.reset_receipts()
+
 @pytest.mark.parametrize('mutation',[
  {'database':'daon_user'}, {'host':'local-postgres'}, {'host':'172.27.0.1'},
  {'owner':'daon_app'}, {'app_role':'postgres'}, {'dsn':'postgresql://secret@live/db'},
@@ -301,6 +308,9 @@ def test_provider_fixture_has_no_credentials_and_deleted_target_revoke_is_exerci
 
 def test_final_complete_carries_exact_not_run_without_hiding_limitation(capsys):
  import json
+ gate.reset_receipts()
+ for i in range(1,7):gate.emit('group'+str(i),status='PASS')
+ capsys.readouterr()
  gate.emit('complete',status='PASS_WITH_NOT_RUN',groups=6,model_calls=0,not_run=['credential_rotation_positive'])
  value=json.loads(capsys.readouterr().out)
  assert value['status']=='PASS_WITH_NOT_RUN' and value['not_run']==['credential_rotation_positive']
@@ -317,3 +327,76 @@ def test_drift_replay_uses_captured_post_registration_consumption_baseline():
  assert 'identity_counts(q)==drift_counts' in section
  assert "identity_counts(q)==(1,1)" not in section
  assert 'business(q)==drift_business' in section
+
+
+
+def test_actual_cipher_envelopes_are_memory_only_and_new_nonce_per_version():
+ first,second=gate.synthetic_envelopes('price-credential-fixture')
+ assert (first.credential_version,second.credential_version)==(1,2)
+ assert first.schema_version==second.schema_version==1 and first.encryption_key_version==second.encryption_key_version==1
+ valid_nonce=len(first.nonce)==len(second.nonce)==12 and first.nonce!=second.nonce
+ gate.require(valid_nonce,'PRICE_QA_NONCE_INVALID')
+ valid_cipher=len(first.ciphertext)>=48 and len(second.ciphertext)>=48 and first.ciphertext!=second.ciphertext
+ gate.require(valid_cipher,'PRICE_QA_CIPHERTEXT_INVALID')
+ assert 'ciphertext=' not in repr(first) and 'nonce=' not in repr(first)
+
+
+def test_existing_cipher_roundtrip_and_aad_mismatch_are_real_and_secret_safe():
+ import secrets
+ from daon_user_api.provider_credentials import ProviderCredentialCipher,ProviderCredentialError
+ master=secrets.token_bytes(32);plain=secrets.token_bytes(32)
+ cipher=ProviderCredentialCipher(master,encryption_key_version=1)
+ sealed=cipher.encrypt('price-credential-fixture','CUSTOM',1,plain)
+ matches=cipher.decrypt('price-credential-fixture','CUSTOM',1,sealed)==plain
+ gate.require(matches,'PRICE_QA_ROUNDTRIP_INVALID')
+ for connection,provider,version in [('other-connection','CUSTOM',1),('price-credential-fixture','OPENAI',1),('price-credential-fixture','CUSTOM',2)]:
+  with pytest.raises(ProviderCredentialError) as error:cipher.decrypt(connection,provider,version,sealed)
+  assert str(error.value)=='CREDENTIAL_DECRYPTION_FAILED'
+
+
+def test_final_pass_requires_all_actual_group_receipts_and_rotation_receipt(capsys):
+ import json
+ gate.reset_receipts()
+ with pytest.raises(ValueError):gate.emit('complete',status='PASS',groups=6,model_calls=0,not_run=[])
+ for i in range(1,7):gate.emit('group'+str(i),status='PASS')
+ with pytest.raises(ValueError):gate.emit('complete',status='PASS',groups=6,model_calls=0,not_run=[])
+ gate.emit('complete',status='PASS_WITH_NOT_RUN',groups=6,model_calls=0,not_run=['credential_rotation_positive'])
+ with pytest.raises(ValueError):gate.emit('credential_rotation',status='PASS',safe_code='PRICE_OTHER')
+ gate.emit('credential_rotation',status='PASS',safe_code='PRICE_SYNTHETIC_CREDENTIAL_ROTATION_VERIFIED')
+ gate.emit('complete',status='PASS',groups=6,model_calls=0,not_run=[])
+ rows=[json.loads(line) for line in capsys.readouterr().out.splitlines()]
+ assert rows[-1]['status']=='PASS' and rows[-1]['not_run']==[]
+ assert rows[-2]['stage']=='credential_rotation' and rows[-2]['status']=='PASS'
+ gate.reset_receipts()
+
+
+def test_credential_fixture_has_stale_proof_and_actual_snapshot_assertions():
+ import inspect
+ code=inspect.getsource(gate.run_probe)
+ assert "fixture('credential')" in code and 'group5_credential_stale_proof' in code
+ assert "'STEP_UP_BINDING_DENIED'" in code
+ assert 'group5_credential_new_snapshot' in code and 'old_snapshot==new_old_snapshot' in code
+ assert 'credential_version' in code and 'PRICE_SYNTHETIC_CREDENTIAL_ROTATION_VERIFIED' in code
+ assert 'replace_credential(' not in code and '.decrypt(' not in code
+
+
+
+@pytest.mark.parametrize('stage',['group3','credential_rotation'])
+def test_failure_after_receipt_cannot_be_hidden_by_final_pass(stage,capsys):
+ for i in range(1,7):gate.emit('group'+str(i),status='PASS')
+ gate.emit('credential_rotation',status='PASS',safe_code='PRICE_SYNTHETIC_CREDENTIAL_ROTATION_VERIFIED')
+ gate.emit(stage,status='FAIL')
+ with pytest.raises(ValueError):gate.emit('complete',status='PASS',groups=6,model_calls=0,not_run=[])
+ capsys.readouterr()
+
+
+def test_fixture_crypto_helper_never_reads_or_writes_external_secret_sources():
+ import inspect,ast
+ code=inspect.getsource(gate.synthetic_envelopes)
+ calls=[n for n in ast.walk(ast.parse(code)) if isinstance(n,ast.Call)]
+ names={n.func.id for n in calls if isinstance(n.func,ast.Name)}
+ assert not (names&{'open','print','input','getenv','eval','exec'})
+ assert 'environ' not in code and 'write_' not in code and '.decrypt(' not in code
+ code=inspect.getsource(gate.install_synthetic_envelope)
+ assert 'credential_version=%s AND version=1' in code
+ assert 'version=version+1' not in code and 'catalog_version=' not in code and 'base_url=' not in code
