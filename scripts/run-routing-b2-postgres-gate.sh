@@ -9,6 +9,7 @@ readonly TAG=daon-user-routing-b2-qa:20261021
 readonly PG_IMAGE=sha256:75f6767185020459c7e2c3f88fb66f1bd2d9790c435bc91512497146c8bf8d7e
 readonly BASE=python:3.14.3-slim@sha256:69f1ba39d930d9510073db2edf85af17f1552a5591b0d56c9e44524532271cae
 readonly ISSUE=R3-B2-ROUTING-20261021
+readonly PRODUCT_BASE=05071f1d0d89514f1bc5f12aad0a9241e6ce7d7e
 readonly STATE="$ROOT/.routing-b2-qa-state"
 readonly PROBE="$ROOT/scripts/tests/routing-b2-postgres-gate.py"
 phase=${1:-}
@@ -19,12 +20,12 @@ safe() { printf '{"issue_id":"%s","stage":"%s","status":"%s"}\n' "$ISSUE" "$1" "
 [[ $(realpath -e "$ROOT") == "$ROOT" && $(pwd -P) == "$ROOT" && ! -L "$ROOT" ]] || { safe source FAIL; exit 22; }
 [[ -z ${DOCKER_HOST:-} && -z ${DOCKER_CONTEXT:-} && $(docker context show) == default && $(docker context inspect default --format '{{.Endpoints.docker.Host}}') == unix:///var/run/docker.sock ]] || { safe docker_context FAIL; exit 22; }
 revision=$(git rev-parse HEAD)
-[[ $revision =~ ^[0-9a-f]{40}$ ]] && git merge-base --is-ancestor 04f72f837a30d48830e36f38426c51b096027ee1 "$revision" || exit 22
+[[ $revision =~ ^[0-9a-f]{40}$ ]] && git merge-base --is-ancestor "$PRODUCT_BASE" "$revision" || exit 22
 git diff --quiet && git diff --cached --quiet || { safe dirty FAIL; exit 22; }
 # 도구 commit 이외 제품/계약/SQL은 승인 checkpoint와 같아야 한다.
 while IFS= read -r changed; do
  case "$changed" in scripts/run-routing-b2-postgres-gate.sh|scripts/tests/routing-b2-postgres-gate.py|scripts/tests/test_routing_b2_gate_preflight.py) ;; *) safe product_drift FAIL; exit 22 ;; esac
-done < <(git diff --name-only 04f72f837a30d48830e36f38426c51b096027ee1 "$revision")
+done < <(git diff --name-only "$PRODUCT_BASE" "$revision")
 python3 - "$PROBE" "$ROOT" <<'PY'
 import importlib.util,sys
 s=importlib.util.spec_from_file_location('b2',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)

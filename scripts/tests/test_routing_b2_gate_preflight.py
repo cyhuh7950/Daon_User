@@ -119,3 +119,12 @@ def test_error_diagnostic_retains_safe_sqlstate_and_column_without_raw_values():
  assert gate.safe_error_metadata(error)['column']=='created_at'
  error.sqlstate='unsafe state';error.diag.sqlstate=None;error.diag.column_name='column with raw text'
  assert gate.safe_error_metadata(error)==dict(sqlstate=None,column=None,permission_type=None,permission_name=None)
+
+
+def test_execution_gate_pins_reviewed_product_commit_and_denies_other_product_drift():
+ shell=P.parent.parent.joinpath('run-routing-b2-postgres-gate.sh').read_text(encoding='utf-8')
+ assert 'readonly PRODUCT_BASE=05071f1d0d89514f1bc5f12aad0a9241e6ce7d7e' in shell
+ assert 'git merge-base --is-ancestor "$PRODUCT_BASE" "$revision"' in shell
+ assert 'git diff --name-only "$PRODUCT_BASE" "$revision"' in shell
+ assert 'scripts/run-routing-b2-postgres-gate.sh|scripts/tests/routing-b2-postgres-gate.py|scripts/tests/test_routing_b2_gate_preflight.py) ;; *) safe product_drift FAIL; exit 22' in shell
+ assert '04f72f837a30d48830e36f38426c51b096027ee1' not in shell
