@@ -169,3 +169,21 @@ def test_existing_route_money_integer_bound_and_exact_sum_are_preserved():
 def test_raw_bytes_must_be_utf8_and_never_auto_detect_other_encodings(encoding):
  with pytest.raises(RoutingSourceError) as error:parse(json.dumps(body()).encode(encoding))
  assert error.value.code=='BUDGET_INPUT_INVALID' and error.value.status==422
+
+
+def test_a2_server_context_and_preconditions_are_closed_immutable_values():
+ from daon_user_api.routing_sources import BudgetContext,BudgetPreconditions
+ principal=IdentityPrincipal('owner','session','device','tenant-1')
+ context=BudgetContext.from_principal(principal,workspace_id='workspace-1',trace_id='trace-1',policy_version='policy-1')
+ assert context.organization_id==context.tenant_id=='tenant-1'
+ for changes in [dict(actor_id=True),dict(session_id='bad/session'),dict(organization_id='other')]:
+  with pytest.raises(RoutingSourceError):replace(context,**changes)
+ for value in [True,-1,3]:
+  with pytest.raises(RoutingSourceError):BudgetPreconditions(value)
+
+@pytest.mark.parametrize('reason',[None,True,[],{}])
+def test_a2_revoke_body_cannot_raise_type_error_or_accept_untyped_reason(reason):
+ from daon_user_api.routing_sources import BudgetSourceService,BudgetContext
+ context=BudgetContext('tenant-1','tenant-1','workspace-1','owner','session','device','trace-1','policy-1')
+ service=BudgetSourceService(None,None,registry=REGISTRY,clock=lambda:NOW)
+ with pytest.raises(RoutingSourceError):service._body(context,dict(period_id='period-1',reason_code=reason),'routing_budget.revoke')

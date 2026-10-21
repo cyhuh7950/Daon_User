@@ -194,3 +194,72 @@ def require_organization_budget_manager(authorization,*,principal,organization_i
     grant=authorization.authorize_action(principal=principal,workspace_id=workspace_id,action=Action.POLICY_MANAGE,trace_id=trace_id,policy_version=policy_version)
     _check(grant.allowed is True and grant.role is Role.ORGANIZATION_ADMIN and grant.role_scope is RoleScope.TENANT and (grant.tenant_id,grant.actor_id,grant.workspace_id)==(principal.tenant_id,principal.user_id,workspace_id),'BUDGET_ORGANIZATION_DENIED',403)
     return OrganizationBudgetManager(grant.tenant_id,grant.actor_id,grant.workspace_id)
+
+
+@dataclass(frozen=True,slots=True)
+class BudgetContext:
+    tenant_id:str
+    organization_id:str
+    workspace_id:str
+    actor_id:str
+    session_id:str
+    device_id:str
+    trace_id:str
+    policy_version:str
+    def __post_init__(self):
+        for name in self.__dataclass_fields__:_id(getattr(self,name))
+        _check(self.tenant_id==self.organization_id,'BUDGET_ORGANIZATION_DENIED',403)
+    @classmethod
+    def from_principal(cls,principal,*,workspace_id,trace_id,policy_version):
+        return cls(principal.tenant_id,principal.tenant_id,workspace_id,principal.user_id,principal.session_id,principal.device_id,trace_id,policy_version)
+
+@dataclass(frozen=True,slots=True)
+class BudgetPreconditions:
+    expected_version:int
+    if_match:str|None=None
+    if_none_match:str|None=None
+    def __post_init__(self):
+        _check(type(self.expected_version) is int and self.expected_version in (0,1,2))
+        for value in (self.if_match,self.if_none_match):_check(value is None or type(value) is str and 1<=len(value)<=256 and all(ord(x)>=32 for x in value))
+    def as_dict(self):
+        self.__post_init__()
+        return dict(expected_version=self.expected_version,if_match=self.if_match,if_none_match=self.if_none_match)
+
+
+@dataclass(frozen=True,slots=True)
+class BudgetPeriodView:
+    source:BudgetSource
+    budget_scope_id:str
+    content_digest:str
+    @property
+    def etag(self):return '"routing-budget:'+self.source.period_id+':'+('2' if self.source.revoked else '1')+'"'
+
+class BudgetSourceService:
+    """A2 서버 전용 발급·현재 조회·철회. 공개 endpoint/factory에 연결하지 않는다."""
+    def __init__(self,repository,reauthentication,*,registry,clock):
+        _check(type(registry) is CurrencyRegistry)
+        self.repository=repository;self.reauthentication=reauthentication;self.registry=registry;self.clock=clock
+    def _body(self,context,body,operation):
+        if operation=='routing_budget.issue':
+            value=parse_budget_input(body,registry=self.registry)
+            _check(len(value.allocations)==1 and value.allocations[0].workspace_id==context.workspace_id,'BUDGET_ANCHOR_UNSUPPORTED',422)
+            return value.as_dict()
+        _check(operation=='routing_budget.revoke')
+        _check(type(body) is dict and set(body)=={'period_id','reason_code'})
+        _id(body['period_id']);_check(type(body['reason_code']) is str and body['reason_code'] in {'ADMIN_REVOKED','POLICY_WITHDRAWN'})
+        return dict(body)
+    def binding(self,context,body,*,preconditions,idempotency_key,operation):
+        from .routing_budget_reauthentication import digest
+        return self.reauthentication.binding(context,operation=operation,body_digest=digest(self._body(context,body,operation)),preconditions=preconditions,idempotency_key=idempotency_key)
+    def _write(self,operation,*,context,body,preconditions,idempotency_key,access_token,proof):
+        self.reauthentication.current(context,access_token=access_token)
+        value=self._body(context,body,operation)
+        binding=self.binding(context,value,preconditions=preconditions,idempotency_key=idempotency_key,operation=operation)
+        def current():return self.reauthentication.current(context,access_token=access_token)
+        return self.repository.write(context,value,operation=operation,preconditions=preconditions,binding=binding,
+            current=current,consume=lambda:self.reauthentication.consume(context,binding,access_token=access_token,proof=proof),verify_consumed=lambda:self.reauthentication.verify_consumed(context,binding,access_token=access_token,proof=proof))
+    def issue_budget(self,**request):return self._write('routing_budget.issue',**request)
+    def revoke_budget(self,**request):return self._write('routing_budget.revoke',**request)
+    def get_budget(self,context,period_id,*,access_token):
+        self.reauthentication.current(context,access_token=access_token)
+        return self.repository.get(context,period_id)
