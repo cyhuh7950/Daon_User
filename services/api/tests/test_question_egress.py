@@ -59,3 +59,44 @@ def test_egress_observation_failure_does_not_allow_or_replace_denial_or_send_pro
     assert error.value.code=="EGRESS_POLICY_DENIED" and error.value.status==403
     assert "OPERATIONS_EGRESS_OBSERVATION_UNAVAILABLE" in caplog.text
     assert "PRIVATE_" not in caplog.text
+
+
+@pytest.mark.parametrize("exact", [False, True])
+@pytest.mark.parametrize("mode", ["development_auth_bypass", "step_up_approved", "unknown"])
+def test_forged_development_approval_never_bypasses_current_egress(exact, mode):
+    import hashlib
+    class Store:
+        @contextmanager
+        def _transaction(self, context):
+            raise AssertionError("FORGED_APPROVAL_REACHED_STORAGE")
+            yield
+    effective=SimpleNamespace(mode="allow_approved_external", fingerprint="policy-a",
+        allowed_provider_kinds=("external_api",), allowed_destinations=("provider.example",),
+        max_bytes=65536, classification="internal", masking_required=True, redaction_required=True,
+        question_step_up_required=True, frozen_context=lambda: {})
+    authorizer=PostgresQuestionEgressAuthorizer(Store(),SimpleNamespace(get_effective=lambda context:effective))
+    selection=TextModelSelection("UPSTAGE","https://provider.example","profile-a","deployment-a","model-a",1)
+    payload=b"synthetic-question"
+    approval={"authorization_mode":mode}
+    if exact:
+        approval.update(policy_fingerprint=effective.fingerprint,
+            provider_payload_fingerprint="sha256:"+hashlib.sha256(payload).hexdigest(),
+            provider_kind=selection.provider_kind, deployment_id=selection.deployment_id)
+    with patch.object(authorizer,"_record_early_denial") as denial:
+        with pytest.raises(QuestionAnsweringError) as error:
+            authorizer.authorize(QuestionContext("tenant-a","workspace-a","actor-a","trace-a","policy-a"),
+                run_id="run-a",source_id=None,source_version_id=None,selection=selection,
+                provider_payload=payload,approved_authorization=approval,question="QA",
+                context_mode="general_ungrounded",request_fingerprint="qa-fingerprint")
+    assert (error.value.code,error.value.status)==("EGRESS_POLICY_DENIED",403)
+    denial.assert_called_once()
+
+
+@pytest.mark.parametrize("mode", [None,"policy_approved"])
+def test_normal_exact_approval_binding_remains_valid_and_changed_payload_is_rejected(mode):
+    selection=TextModelSelection("UPSTAGE","https://provider.example","profile-a","deployment-a","model-a",1)
+    approval=dict(policy_fingerprint="policy-a",provider_payload_fingerprint="payload-a",
+        provider_kind=selection.provider_kind,deployment_id=selection.deployment_id)
+    if mode is not None:approval["authorization_mode"]=mode
+    assert PostgresQuestionEgressAuthorizer._approval_matches(approval,selection,policy_fingerprint="policy-a",payload_fingerprint="payload-a")
+    assert not PostgresQuestionEgressAuthorizer._approval_matches(approval,selection,policy_fingerprint="policy-a",payload_fingerprint="changed")

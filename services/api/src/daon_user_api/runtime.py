@@ -610,6 +610,8 @@ class RuntimeSettings:
     document_readiness_settings: ReadinessDispatcherSettings = field(default_factory=ReadinessDispatcherSettings)
 
     def __post_init__(self) -> None:
+        if self.dev_auth_bypass is not False:
+            raise ValueError("AUTH_BYPASS_UNSUPPORTED")
         from .operations_run_cost import parse_run_cost_settings
         if type(self.operations_host_capacity_enabled) is not bool:
             raise ValueError('HOST_CAPACITY_ENABLED_INVALID')
@@ -668,7 +670,7 @@ class RuntimeSettings:
                 loopback = ipaddress.ip_address(self.bind_host).is_loopback
             except ValueError:
                 loopback = self.bind_host == "localhost"
-            if not loopback and not (self.profile == "development" and self.dev_auth_bypass):
+            if not loopback:
                 raise ValueError("PLAINTEXT_BIND_MUST_BE_LOOPBACK")
         else:
             if self.cloud_database_dsn is None:
@@ -713,6 +715,8 @@ class RuntimeSettings:
 
     @classmethod
     def from_env(cls) -> "RuntimeSettings":
+        if os.environ.get("DAON_DEV_AUTH_BYPASS", "false").lower() != "false":
+            raise ValueError("AUTH_BYPASS_UNSUPPORTED")
         profile = os.environ.get("DAON_RUNTIME_PROFILE", "development")
         host_flag=os.environ.get('DAON_OPERATIONS_HOST_CAPACITY_ENABLED','false')
         if host_flag not in {'true','false'}:raise ValueError('HOST_CAPACITY_ENABLED_INVALID')
@@ -807,7 +811,7 @@ class RuntimeSettings:
             source_upload_max_bytes=int(
                 os.environ.get("DAON_SOURCE_UPLOAD_MAX_BYTES", str(25 * 1024 * 1024))
             ),
-            dev_auth_bypass=os.environ.get("DAON_DEV_AUTH_BYPASS", "false").lower() == "true",
+            dev_auth_bypass=False,
             development_stage=(
                 None
                 if os.environ.get("DAON_DEVELOPMENT_STAGE") is None
@@ -1250,8 +1254,7 @@ class QuestionAuthorizationBody(BaseModel):
     source_version_id: str | None = None
     knowledge_context: QuestionKnowledgeContextBody | None = None
     question: str
-    # Development auth bypass does not require a password.  Production still
-    # enforces re-authentication immediately before issuing step-up below.
+    # A password is checked immediately before issuing a real step-up grant.
     password: str | None = None
 
     @model_validator(mode="after")
@@ -2049,20 +2052,6 @@ def _ensure_personal_workspace(
     return workspace_id
 
 
-def _ensure_development_cloud_scope(
-    dependencies: RuntimeDependencies, *, principal: IdentityPrincipal, workspace_id: str,
-) -> None:
-    if dependencies.cloud_store is not None:
-        seed_scope = getattr(
-            dependencies.cloud_store,
-            "seed_development_scope",
-            dependencies.cloud_store.seed_scope,
-        )
-        seed_scope(
-            CloudAccessContext(
-                principal.tenant_id, workspace_id, principal.user_id, "workspace.bootstrap",
-            )
-        )
 
 
 def _sync_expected_version(value: str, operation_id: str | None = None) -> int | str:
@@ -2226,26 +2215,6 @@ def _license_context(
 
 
 def _principal(request: Request, dependencies: RuntimeDependencies) -> IdentityPrincipal:
-    if dependencies.settings.dev_auth_bypass and dependencies.settings.profile in {"test", "development"}:
-        principal = IdentityPrincipal(
-            user_id="dev-user", session_id="dev-session", device_id="dev-device", tenant_id="dev-tenant",
-        )
-        workspace_match = re.search(r"/workspaces/([A-Za-z0-9][A-Za-z0-9._:-]{0,127})", request.url.path)
-        if workspace_match:
-            dependencies.authorization_repository.bootstrap_workspace(
-                tenant_id=principal.tenant_id,
-                workspace_id=workspace_match.group(1),
-                owner_user_id=principal.user_id,
-                owner_role=Role.PERSONAL_OWNER,
-                workspace_kind="personal",
-                data_area="cloud_sync",
-                cost_limit_cents=1000,
-                now=datetime.now(timezone.utc),
-            )
-            _ensure_development_cloud_scope(
-                dependencies, principal=principal, workspace_id=workspace_match.group(1),
-            )
-        return principal
     token, expected_kind = _credential(request)
     view = dependencies.identity_service.describe_access(
         token,
@@ -2576,11 +2545,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             else PostgresNotebookRepository(
                 dependencies.cloud_store,
                 creation_enforcer=(
-                    (
-                        (lambda *_args: None)
-                        if dependencies.settings.dev_auth_bypass
-                        else enforce_license_creation
-                    )
+                    enforce_license_creation
                     if license_enforcement_enabled
                     else None
                 ),
@@ -2627,10 +2592,6 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             PostgresQuestionEgressAuthorizer(
                 dependencies.cloud_store,
                 cast(EgressPolicyService, egress_policy_service),
-                development_auth_bypass=(
-                    dependencies.settings.dev_auth_bypass
-                    and dependencies.settings.profile in {"test", "development"}
-                ),
             ),
             adapter_registry=QuestionAdapterRegistry(),
             qa_structured_ollama_workspace_id=dependencies.settings.qa_structured_ollama_workspace_id,
@@ -4900,24 +4861,16 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             prepared=prepared, policy_fingerprint=effective.fingerprint,
             idempotency_key=idempotency_key,
         )
-        development_auth_bypass = (
-            dependencies.settings.dev_auth_bypass
-            and dependencies.settings.profile in {"test", "development"}
+        if not body.password:
+            raise IdentityError("REAUTHENTICATION_REQUIRED", 401)
+        access_token, _ = _credential(request)
+        step_up = dependencies.identity_service.issue_step_up_after_reauthentication(
+            access_token=access_token, password=body.password,
+            action_group="external_transfer", target_id=run_id,
+            policy_version=request_fingerprint, trace_id=request.state.trace_id,
         )
-        if development_auth_bypass:
-            step_up_authorization_id = f"dev-bypass:{run_id}"
-            expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
-        else:
-            if not body.password:
-                raise IdentityError("REAUTHENTICATION_REQUIRED", 401)
-            access_token, _ = _credential(request)
-            step_up = dependencies.identity_service.issue_step_up_after_reauthentication(
-                access_token=access_token, password=body.password,
-                action_group="external_transfer", target_id=run_id,
-                policy_version=request_fingerprint, trace_id=request.state.trace_id,
-            )
-            step_up_authorization_id = step_up.authorization
-            expires_at = step_up.expires_at
+        step_up_authorization_id = step_up.authorization
+        expires_at = step_up.expires_at
         response = JSONResponse({"data": {
             "step_up_authorization_id": step_up_authorization_id,
             "expires_at": expires_at.isoformat(), "run_id": run_id,
@@ -5035,10 +4988,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                     prepared=prepared, policy_fingerprint=effective.fingerprint,
                     idempotency_key=idempotency_key,
                 )
-                if getattr(effective, "question_step_up_required", True) is not False and not (
-                    dependencies.settings.dev_auth_bypass
-                    and dependencies.settings.profile in {"test", "development"}
-                ):
+                if getattr(effective, "question_step_up_required", True) is not False:
                     access_token, _ = _credential(request)
                     dependencies.identity_service.consume_step_up(
                         step_up_authorization=body.step_up_authorization_id,
@@ -5061,12 +5011,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                     "default_version": str(cast(Any, prepared).selection.binding_version),
                     "catalog_version": str(cast(Any, prepared).selection.catalog_version),
                 }
-                if (
-                    dependencies.settings.dev_auth_bypass
-                    and dependencies.settings.profile in {"test", "development"}
-                ):
-                    approved_authorization["authorization_mode"] = "development_auth_bypass"
-                elif getattr(effective, "question_step_up_required", True) is False:
+                if getattr(effective, "question_step_up_required", True) is False:
                     approved_authorization["authorization_mode"] = "policy_approved"
         answer = await asyncio.to_thread(
             question_answering_service.ask,
@@ -5673,36 +5618,6 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
 
     @app.get("/api/v1/session")
     async def session(request: Request) -> dict[str, object]:
-        if dependencies.settings.dev_auth_bypass and dependencies.settings.profile in {"test", "development"}:
-            principal = IdentityPrincipal(
-                user_id="dev-user", session_id="dev-session", device_id="dev-device", tenant_id="dev-tenant",
-            )
-            workspace_id = dependencies.authorization_repository.primary_workspace_id(principal.tenant_id) or "dev-workspace"
-            dependencies.authorization_repository.bootstrap_workspace(
-                tenant_id=principal.tenant_id,
-                workspace_id=workspace_id,
-                owner_user_id=principal.user_id,
-                owner_role=Role.PERSONAL_OWNER,
-                workspace_kind="personal",
-                data_area="cloud_sync",
-                cost_limit_cents=1000,
-                now=datetime.now(timezone.utc),
-            )
-            _ensure_development_cloud_scope(
-                dependencies, principal=principal, workspace_id=workspace_id,
-            )
-            return {
-                "data": {
-                    "user_id": principal.user_id, "tenant_id": principal.tenant_id,
-                    "login_id": principal.user_id,
-                    "workspace_id": workspace_id, "session_id": principal.session_id,
-                    "device_id": principal.device_id, "client_kind": ClientKind.WEB.value,
-                    "delivery": "same_origin_secure_cookie", "expires_at": "2099-01-01T00:00:00Z",
-                    "recovery_operations": [], "password_change_required": False,
-                    "is_system_admin": principal.user_id in dependencies.settings.system_admin_user_ids,
-                },
-                "meta": {"trace_id": request.state.trace_id},
-            }
         token, expected_kind = _credential(request)
         view = dependencies.identity_service.describe_access(
             token, trace_id=request.state.trace_id,
