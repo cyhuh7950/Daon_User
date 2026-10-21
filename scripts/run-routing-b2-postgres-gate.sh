@@ -118,7 +118,7 @@ COPY pyproject.toml uv.lock /qa/
 COPY services/local-service/pyproject.toml /qa/services/local-service/pyproject.toml
 COPY services/api /qa/services/api
 COPY scripts/tests/routing-b2-postgres-gate.py /qa/scripts/tests/routing-b2-postgres-gate.py
-RUN pip install --no-cache-dir uv==0.11.2 && cd /qa && uv sync --frozen --package daon-user-api --no-dev --no-install-project
+RUN chmod -R a+rX /qa && pip install --no-cache-dir uv==0.11.2 && cd /qa && uv sync --frozen --package daon-user-api --no-dev --no-install-project && chmod -R a+rX /qa
 ENV PATH="/qa/.venv/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" PYTHONPATH=/qa/services/api/src PYTHONDONTWRITEBYTECODE=1
 CMD ["sleep","infinity"]
 EOF

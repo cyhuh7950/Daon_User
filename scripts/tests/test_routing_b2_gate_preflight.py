@@ -70,3 +70,20 @@ def test_only_exact_domain_denial_is_accepted():
  def denied():raise DomainDenial('EXPECTED',403)
  assert gate.expect_denial(denied,DomainDenial,'EXPECTED',403) is None
  with pytest.raises(ValueError,match='B2_EXPECTED_DENIAL_MISSING'):gate.expect_denial(lambda:None,DomainDenial,'EXPECTED',403)
+
+
+def test_restrictive_source_umask_does_not_prevent_rootless_image_code_read():
+ shell=P.parent.parent.joinpath('run-routing-b2-postgres-gate.sh').read_text(encoding='utf-8')
+ dockerfile=shell.split('cat > "$STATE/context/Dockerfile" <<EOF',1)[1].split('\nEOF',1)[0]
+ copy_end=dockerfile.rindex('COPY ')
+ install=dockerfile.index('uv sync --frozen')
+ before=dockerfile.index('chmod -R a+rX /qa')
+ after=dockerfile.rindex('chmod -R a+rX /qa')
+ assert copy_end<before<install<after
+ assert '--user 65534:65534' in shell
+ # 이미지의 a+rX는 쓰기 권한을 늘리지 않고 각 source mode의 읽기/탐색만 보장한다.
+ for mask in (0o077,0o027,0o022):
+  file_mode=0o666 & ~mask;directory_mode=0o777 & ~mask
+  assert ((file_mode|0o444)&0o004)==0o004
+  assert ((directory_mode|0o555)&0o005)==0o005
+ assert 'chmod -R a+rX "$ROOT"' not in shell and 'chmod -R a+rX "$STATE"' not in shell
