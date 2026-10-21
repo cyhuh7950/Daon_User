@@ -7380,7 +7380,10 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
 
     @app.get("/api/v1/workspaces/{id}/routing-policy")
     async def get_routing_policy(id: str, request: Request) -> JSONResponse:
-        _require_query_keys(request, frozenset())
+        _require_query_keys(request, frozenset({"include_permissions"}))
+        include_permissions = request.query_params.getlist("include_permissions")
+        if include_permissions and include_permissions != ["1"]:
+            raise HTTPException(status_code=400)
         principal = _principal(request, dependencies)
         dependencies.authorization_service.authorize_action(
             principal=principal, workspace_id=id, action=Action.VIEW,
@@ -7390,8 +7393,20 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         context = WorkspaceModelDefaultsContext(principal.tenant_id, id, principal.user_id,
             request.state.trace_id, dependencies.settings.policy_version)
         result = await asyncio.to_thread(routing_policy_service.get, context)
+        meta = {"trace_id": request.state.trace_id, "workspace_id": id}
+        if include_permissions:
+            try:
+                dependencies.authorization_service.authorize_action(
+                    principal=principal, workspace_id=id, action=Action.POLICY_MANAGE,
+                    trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version)
+                can_manage = True
+            except AuthorizationError as error:
+                if error.code != "ACTION_DENIED" or error.http_status != 403:
+                    raise
+                can_manage = False
+            meta["permissions"] = {"policy_manage": can_manage}
         response = JSONResponse({"data": {k: v for k, v in result.items() if k != "etag"},
-            "meta": {"trace_id": request.state.trace_id, "workspace_id": id}})
+            "meta": meta})
         response.headers["ETag"] = result["etag"]
         return response
 

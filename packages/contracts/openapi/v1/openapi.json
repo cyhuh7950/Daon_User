@@ -62,59 +62,87 @@
   "paths": {
   "/api/v1/workspaces/{id}/routing-policy": {
     "get": {
-      "tags": [
-        "Model"
-      ],
-      "x-implementation-owner": "R3-B1",
-      "responses": {
-        "400": {
-          "$ref": "#/components/responses/BadRequest"
+  "tags": [
+    "Model"
+  ],
+  "x-implementation-owner": "R3-B1",
+  "responses": {
+    "400": {
+      "$ref": "#/components/responses/BadRequest"
+    },
+    "401": {
+      "$ref": "#/components/responses/Unauthorized"
+    },
+    "403": {
+      "$ref": "#/components/responses/Forbidden"
+    },
+    "404": {
+      "$ref": "#/components/responses/NotFound"
+    },
+    "409": {
+      "$ref": "#/components/responses/Conflict"
+    },
+    "422": {
+      "$ref": "#/components/responses/BadRequest"
+    },
+    "412": {
+      "$ref": "#/components/responses/PreconditionFailed"
+    },
+    "500": {
+      "$ref": "#/components/responses/SafeFailure"
+    },
+    "503": {
+      "$ref": "#/components/responses/SafeFailure"
+    },
+    "200": {
+      "description": "B1 후보 정책 안전 조회/저장. 자동 호출은 비활성.",
+      "headers": {
+        "X-Trace-Id": {
+          "$ref": "#/components/headers/XTraceId"
         },
-        "401": {
-          "$ref": "#/components/responses/Unauthorized"
+        "ETag": {
+          "$ref": "#/components/headers/ETag"
         },
-        "403": {
-          "$ref": "#/components/responses/Forbidden"
-        },
-        "404": {
-          "$ref": "#/components/responses/NotFound"
-        },
-        "409": {
-          "$ref": "#/components/responses/Conflict"
-        },
-        "422": {
-          "$ref": "#/components/responses/BadRequest"
-        },
-        "412": {"$ref":"#/components/responses/PreconditionFailed"},
-          "500": {"$ref":"#/components/responses/SafeFailure"},
-          "503": {
-          "$ref": "#/components/responses/SafeFailure"
-        },
-        "200": {
-          "description": "B1 후보 정책 안전 조회/저장. 자동 호출은 비활성.",
-          "headers": {
-            "X-Trace-Id": {"$ref":"#/components/headers/XTraceId"},
-            "ETag": {
-              "$ref": "#/components/headers/ETag"
-            }
-          },
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RoutingPolicyEnvelope"
-              }
-            }
+        "Cache-Control": {
+          "schema": {
+            "type": "string",
+            "const": "no-store"
           }
         }
       },
-      "parameters": [
-        {
-          "$ref": "#/components/parameters/ResourceId"
+      "content": {
+        "application/json": {
+          "schema": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RoutingPolicyEnvelope"
+              },
+              {
+                "$ref": "#/components/schemas/RoutingPolicyPermissionsEnvelope"
+              }
+            ]
+          }
         }
-      ],
-      "operationId": "getWorkspaceRoutingPolicy",
-      "summary": "후보 정책 조회 (VIEW)"
+      }
+    }
+  },
+  "parameters": [
+    {
+      "$ref": "#/components/parameters/ResourceId"
     },
+    {
+      "name": "include_permissions",
+      "in": "query",
+      "required": false,
+      "schema": {
+        "type": "string",
+        "const": "1"
+      }
+    }
+  ],
+  "operationId": "getWorkspaceRoutingPolicy",
+  "summary": "후보 정책 조회 (VIEW)"
+},
     "put": {
       "tags": [
         "Model"
@@ -10619,6 +10647,96 @@
         "type": "object", "additionalProperties": false, "required": ["data", "meta"],
         "properties": { "data": {}, "meta": { "type": "object", "additionalProperties": true } }
       }
+    ,
+"RoutingPolicyPermissionsEnvelope": {
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "data",
+    "meta"
+  ],
+  "properties": {
+    "data": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "policy_version_id",
+        "digest_sha256",
+        "body",
+        "execution_enabled",
+        "readiness"
+      ],
+      "properties": {
+        "version": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "policy_version_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "digest_sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "body": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/RoutingPolicyRequest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "execution_enabled": {
+          "const": false
+        },
+        "readiness": {
+          "enum": [
+            "policy_absent",
+            "disabled",
+            "observations_unavailable"
+          ]
+        }
+      }
+    },
+    "meta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trace_id",
+        "workspace_id",
+        "permissions"
+      ],
+      "properties": {
+        "trace_id": {
+          "type": "string"
+        },
+        "workspace_id": {
+          "type": "string"
+        },
+        "permissions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "policy_manage"
+          ],
+          "properties": {
+            "policy_manage": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
     }
+  }
+}
+}
   }
 }

@@ -959,7 +959,7 @@ test("ordinary user sees public connection without personal key actions", async 
     const container = dom.document.createElement("div"); dom.document.body.appendChild(container);
     reactRoot = createRoot(container);
     await act(async () => { reactRoot.render(createElement(ProviderSettingsWorkspace, { workspaceId: "workspace-001", embedded: true })); await Promise.resolve(); await Promise.resolve(); });
-    assert.deepEqual(requests, ["/bff/api/workspaces/workspace-001/routing-policy", "/bff/api/session", "/bff/api/admin/provider-connections", "/bff/api/provider-credentials", "/bff/api/workspaces/workspace-001/model-defaults"]);
+    assert.deepEqual(requests, ["/bff/api/workspaces/workspace-001/routing-policy?include_permissions=1", "/bff/api/session", "/bff/api/admin/provider-connections", "/bff/api/provider-credentials", "/bff/api/workspaces/workspace-001/model-defaults"]);
     assert.equal(findElements(container, (node) => node.tagName === "INPUT" && (node.type === "password" || node.getAttribute("type") === "password")).length, 0);
     assert.match(container.textContent, /공용|qwen3/u);
     assert.doesNotMatch(container.textContent, /내 계정 키 저장|내 계정 키 삭제|연결 저장|연결 삭제|모델 조회/u);
@@ -1091,7 +1091,7 @@ test("system admin can re-enter their own legacy personal Key without replacing 
     await act(async () => { reactRoot.render(createElement(ProviderSettingsWorkspace, { workspaceId: "workspace-001", embedded: true })); await Promise.resolve(); await Promise.resolve(); });
 
     assert.deepEqual(fixture.requests.map(({ path, method }) => [path, method]), [
-      ["/bff/api/workspaces/workspace-001/routing-policy", "GET"],
+      ["/bff/api/workspaces/workspace-001/routing-policy?include_permissions=1", "GET"],
       ["/bff/api/session", "GET"],
       ["/bff/api/admin/provider-connections", "GET"],
       ["/bff/api/provider-credentials", "GET"],
@@ -1142,14 +1142,81 @@ test("provider view helpers expose safe status and connection-name model choices
 
 test('B3 policy settings show actual safe candidates but no inferred POLICY_MANAGE editing',async()=>{
  const fixture=adminFixture(),oldFetch=fixture.fetch;
- fixture.fetch=async(url,options={})=>String(url).endsWith('/routing-policy')?Response.json({data:{version:2,policy_version_id:'policy-real',digest_sha256:'a'.repeat(64),
+ fixture.fetch=async(url,options={})=>String(url).endsWith('/routing-policy?include_permissions=1')?Response.json({data:{version:2,policy_version_id:'policy-real',digest_sha256:'a'.repeat(64),
    body:{schema_version:1,expected_version:1,enabled:false,capability:'text_generation',candidates:[{model_id:'real-catalog-model',connection_id:'connection-safe',credential_source:'workspace',connection_version:1,catalog_version:1,endpoint_version:1,credential_version:4}],ranking_profile:{version:'v1',evaluation_set:'eval',minimum_quality:0,observation_window:'window',input_class:'short',minimum_samples:1,max_age_seconds:60,tier_mapping_version:'v1',locality_mapping_version:'v1'},fallback_policy:{mode:'transient_only'},budget:{currency:'USD',run_limit:'1.00',max_attempts:1}},execution_enabled:false,readiness:'disabled'},
-   meta:{workspace_id:'workspace-001',trace_id:'trace-policy'}},{headers:{etag:'"routing-policy-real"'}}):oldFetch(url,options);
+   meta:{workspace_id:'workspace-001',trace_id:'trace-policy',permissions:{policy_manage:false}}},{headers:{etag:'"routing-policy-real"'}}):oldFetch(url,options);
  const w=await mountAdminFixture(fixture,'b3-policy-readonly');
  try{await w.act(async()=>{await Promise.resolve();await Promise.resolve();});
   assert.match(w.container.textContent,/자동 선택 후보 정책/u);assert.match(w.container.textContent,/real-catalog-model/u);
-  assert.match(w.container.textContent,/정책 관리 권한 확인.*미구현/u);assert.match(w.container.textContent,/관측·가격·상위 예산/u);
+  assert.match(w.container.textContent,/정책 관리 권한이 없어 읽기 전용/u);assert.match(w.container.textContent,/관측·가격·상위 예산/u);
   assert.equal(findElements(w.container,n=>n.tagName==='BUTTON' && /후보 정책 저장|자동 선택 활성화/u.test(n.textContent)).length,0);
   assert.equal(fixture.requests.filter(r=>r.method==='PUT' && r.path.endsWith('/routing-policy')).length,0);
  }finally{await w.cleanup();}
+});
+
+
+function capPolicyFixture({permission=true,failCode=null,delay=false}={}) {
+ const fixture=adminFixture(),original=fixture.fetch,pending=[];
+ const body={schema_version:1,expected_version:1,enabled:true,capability:'text_generation',candidates:[{model_id:'known-model',connection_id:'known-connection',credential_source:'workspace',connection_version:2,catalog_version:3,endpoint_version:4,credential_version:5}],ranking_profile:{version:'quality-v1',evaluation_set:'eval-v1',minimum_quality:100,observation_window:'window-v1',input_class:'short',minimum_samples:1,max_age_seconds:60,tier_mapping_version:'tier-v1',locality_mapping_version:'locality-v1'},fallback_policy:{mode:'transient_only'},budget:{currency:'USD',run_limit:'1.00',max_attempts:1}};
+ let current=structuredClone(body),version=2;
+ const response=()=>Response.json({data:{version,policy_version_id:'policy-real',digest_sha256:'a'.repeat(64),body:current,execution_enabled:false,readiness:current.enabled?'observations_unavailable':'disabled'},meta:{workspace_id:'workspace-001',trace_id:'trace-policy',permissions:{policy_manage:permission}}},{headers:{etag:'"policy-'+version+'"'}});
+ fixture.fetch=async(url,options={})=>{
+  if(String(url).startsWith('/bff/api/workspaces/workspace-001/routing-policy')){
+   const method=options.method??'GET';fixture.requests.push({path:String(url),method,body:options.body?JSON.parse(options.body):null,headers:options.headers});
+   if(method==='GET')return response();
+   const finish=()=>{if(failCode)return Response.json({error:{code:failCode}},{status:failCode==='FORBIDDEN'?403:failCode==='VERSION_CONFLICT'?409:503});current=JSON.parse(options.body);version++;const result=response();return result;};
+   if(delay)return new Promise(resolve=>pending.push(()=>resolve(finish())));
+   return finish();
+  }
+  return original(url,options);
+ };
+ return {fixture,body,pending};
+}
+
+test('B3 capability true safely disables exact stored policy with one PUT and current precondition',async()=>{
+ const {fixture,body,pending}=capPolicyFixture({delay:true}),w=await mountAdminFixture(fixture,'cap-disable');
+ try{
+  const button=buttonByText(w.container,'현재 정책 비활성화');assert.ok(button);
+  await click(w.act,button);await click(w.act,button);
+  const writes=fixture.requests.filter(x=>x.method==='PUT');assert.equal(writes.length,1);
+  assert.deepEqual(writes[0].body,{...body,enabled:false,expected_version:2});
+  assert.equal(writes[0].headers['If-Match'],'"policy-2"');assert.match(writes[0].headers['Idempotency-Key'],/^routing-policy-/u);
+  await w.act(async()=>pending.shift()());assert.match(w.container.textContent,/정책을 저장했습니다/u);
+ }finally{await w.cleanup();}
+});
+
+test('B3 capability false never opens editing or policy writes',async()=>{
+ const {fixture}=capPolicyFixture({permission:false}),w=await mountAdminFixture(fixture,'cap-false');
+ try{assert.match(w.container.textContent,/정책 관리 권한이 없어 읽기 전용/u);assert.equal(buttonByText(w.container,'현재 정책 비활성화'),undefined);assert.equal(buttonByText(w.container,'후보 정책 저장'),undefined);assert.equal(fixture.requests.filter(x=>x.method==='PUT').length,0);}
+ finally{await w.cleanup();}
+});
+
+
+for(const [code,message] of [['FORBIDDEN',/정책 관리 권한이 없어 저장/u],['VERSION_CONFLICT',/정책이 변경되어 저장/u],['ROUTING_BUDGET_UNVERIFIED',/상위 예산 출처가 준비되지 않아/u]]){
+ test(`B3 policy save ${code} clears stale editing and reports safe cause`,async()=>{
+  const {fixture}=capPolicyFixture({failCode:code}),w=await mountAdminFixture(fixture,'cap-'+code.toLowerCase());
+  try{await click(w.act,buttonByText(w.container,'현재 정책 비활성화'));assert.match(w.container.textContent,message);assert.equal(buttonByText(w.container,'후보 정책 저장'),undefined);assert.equal(fixture.requests.filter(x=>x.method==='PUT').length,1);}
+  finally{await w.cleanup();}
+ });
+}
+
+test('B3 policy late save cannot update another Workspace or retry automatically',async()=>{
+ const {fixture,pending}=capPolicyFixture({delay:true}),w=await mountAdminFixture(fixture,'cap-late');
+ try{await click(w.act,buttonByText(w.container,'현재 정책 비활성화'));await w.render({workspaceId:'workspace-other'});await w.act(async()=>pending.shift()());assert.doesNotMatch(w.container.textContent,/정책을 저장했습니다/u);assert.equal(buttonByText(w.container,'후보 정책 저장'),undefined);assert.equal(fixture.requests.filter(x=>x.method==='PUT').length,1);}
+ finally{await w.cleanup();}
+});
+
+test('B3 existing policy editing preserves all server references and changes only chosen budget',async()=>{
+ const {fixture,body}=capPolicyFixture(),w=await mountAdminFixture(fixture,'cap-existing-edit');
+ try{await fill(w.act,controlFor(w.container,'질문별 예산 상한'),'0.50');await click(w.act,buttonByText(w.container,'후보 정책 저장'));
+  const write=fixture.requests.find(x=>x.method==='PUT');assert.deepEqual(write.body,{...body,expected_version:2,budget:{...body.budget,run_limit:'0.50'}});assert.match(w.container.textContent,/정책을 저장했습니다/u);}
+ finally{await w.cleanup();}
+});
+
+test('B3 missing policy capability stays read-only despite system-admin session',async()=>{
+ const {fixture}=capPolicyFixture(),original=fixture.fetch;
+ fixture.fetch=async(...args)=>{const response=await original(...args);if(String(args[0]).includes('/routing-policy') && (!args[1]?.method || args[1].method==='GET')){const payload=await response.json();delete payload.meta.permissions;return Response.json(payload,{headers:{etag:'"policy-2"'}});}return response;};
+ const w=await mountAdminFixture(fixture,'cap-missing');
+ try{assert.match(w.container.textContent,/권한을 확인하지 못해 읽기 전용/u);assert.equal(buttonByText(w.container,'현재 정책 비활성화'),undefined);assert.equal(fixture.requests.filter(x=>x.method==='PUT').length,0);}
+ finally{await w.cleanup();}
 });

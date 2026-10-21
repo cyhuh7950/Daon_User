@@ -318,12 +318,13 @@ function isRoutingRead(value,runId) {
   && value.attempts.some(x=>x.attempt_id===final.attempt_id && x.candidate_order===final.candidate_order && x.state==='succeeded')
   && value.candidates[final.candidate_order-1]?.model_id===final.model_id;
 }
-async function routingResponse(response,workspaceId,signal) {
+async function routingResponse(response,workspaceId,signal,validateMeta) {
  signal?.throwIfAborted();let payload;
  try{payload=await response.json();}catch{throw new Error('ROUTING_RESPONSE_INVALID');}
  signal?.throwIfAborted();
  if(!response.ok)throw new Error(/^[A-Z][A-Z0-9_]{2,63}$/u.test(payload?.error?.code??'')?payload.error.code:'ROUTING_EXECUTION_UNAVAILABLE');
  if(!hasExactKeys(payload,['data','meta']) || !isRecord(payload.meta) || payload.meta.workspace_id!==workspaceId || !isSafeId(payload.meta.trace_id))throw new Error('ROUTING_RESPONSE_INVALID');
+ if(validateMeta)validateMeta(payload.meta);
  return payload.data;
 }
 export async function getRunRoutingDecision(workspaceId,runId,{fetchImpl=fetch,signal}={}) {
@@ -354,12 +355,26 @@ function isRoutingPolicyBody(body) {
   && typeof body.budget.run_limit==='string'&&/^(0|[1-9][0-9]{0,11})(\.[0-9]{1,6})?$/u.test(body.budget.run_limit)
   && positive(body.budget.max_attempts,body.candidates.length);
 }
-export async function getRoutingPolicy(workspaceId,{fetchImpl=fetch,signal}={}) {
+export async function getRoutingPolicy(workspaceId,{fetchImpl=fetch,signal,includePermissions=false}={}) {
  requiredId(workspaceId);signal?.throwIfAborted();
- const response=await fetchImpl(`/bff/api/workspaces/${encodeURIComponent(workspaceId)}/routing-policy`,{credentials:'same-origin',cache:'no-store',signal});
- const data=await routingResponse(response,workspaceId,signal),etag=response.headers?.get?.('etag');
+ const response=await fetchImpl(`/bff/api/workspaces/${encodeURIComponent(workspaceId)}/routing-policy${includePermissions?'?include_permissions=1':''}`,{credentials:'same-origin',cache:'no-store',signal});
+ let permissions;
+ const data=await routingResponse(response,workspaceId,signal,includePermissions?meta=>{
+  if(!hasExactKeys(meta,['trace_id','workspace_id','permissions']) || !hasExactKeys(meta.permissions,['policy_manage']) || typeof meta.permissions.policy_manage!=='boolean')throw new Error('ROUTING_RESPONSE_INVALID');
+  permissions={policy_manage:meta.permissions.policy_manage};
+ }:undefined),etag=response.headers?.get?.('etag');
  if(!hasExactKeys(data,['version','policy_version_id','digest_sha256','body','execution_enabled','readiness']) || !Number.isSafeInteger(data.version)||data.version<0
    || data.execution_enabled!==false || !['policy_absent','disabled','observations_unavailable'].includes(data.readiness)||!etag
    || (data.version===0 ? data.policy_version_id!==null||data.digest_sha256!==null||data.body!==null : !isSafeId(data.policy_version_id)||!HEX.test(data.digest_sha256)||!isRoutingPolicyBody(data.body)))throw new Error('ROUTING_RESPONSE_INVALID');
- return {...data,etag};
+ return {...data,etag,...(includePermissions?{permissions}:{})};
+}
+
+export async function saveRoutingPolicy(workspaceId,body,{etag,idempotencyKey,fetchImpl=fetch,signal}={}) {
+ requiredId(workspaceId);signal?.throwIfAborted();
+ if(!isRoutingPolicyBody(body) || typeof etag!=='string' || !etag || !isSafeId(idempotencyKey))throw new Error('ROUTING_INPUT_INVALID');
+ const response=await fetchImpl(`/bff/api/workspaces/${encodeURIComponent(workspaceId)}/routing-policy`,{method:'PUT',credentials:'same-origin',cache:'no-store',signal,
+  headers:{'Content-Type':'application/json','If-Match':etag,'Idempotency-Key':idempotencyKey},body:JSON.stringify(body)});
+ const data=await routingResponse(response,workspaceId,signal),nextEtag=response.headers?.get?.('etag');
+ if(!hasExactKeys(data,['version','policy_version_id','digest_sha256','body','execution_enabled','readiness']) || data.version!==body.expected_version+1 || !isSafeId(data.policy_version_id)||!HEX.test(data.digest_sha256)||!isRoutingPolicyBody(data.body)||!nextEtag || data.execution_enabled!==false || !['disabled','observations_unavailable'].includes(data.readiness))throw new Error('ROUTING_RESPONSE_INVALID');
+ return {...data,etag:nextEtag};
 }

@@ -1473,7 +1473,23 @@ function validateRoutingReadContract(document) {
   require(same(document.components.schemas.GroundedQuestionAuthorizationEnvelope.properties.data.oneOf[1].properties.routing_preview,{$ref:"#/components/schemas/RoutingPreview"}));
 }
 
+function validateRoutingPolicyPermissionsContract(document) {
+ const failIf=value=>{if(!value)fail("B3 policy permissions contract mismatch");};
+ const same=(a,b)=>canonicalizeDocument(a)===canonicalizeDocument(b);
+ const path=document.paths?.['/api/v1/workspaces/{id}/routing-policy'];
+ failIf(same(path?.get?.parameters,[{$ref:'#/components/parameters/ResourceId'},{name:'include_permissions',in:'query',required:false,schema:{type:'string',const:'1'}}]));
+ failIf(!path?.put?.parameters?.some(p=>p.in==='query'));
+ failIf(same(path.get.responses['200'].content['application/json'].schema,{oneOf:[{$ref:'#/components/schemas/RoutingPolicyEnvelope'},{$ref:'#/components/schemas/RoutingPolicyPermissionsEnvelope'}]}));
+ failIf(same(path.get.responses['200'].headers['Cache-Control'],{schema:{type:'string',const:'no-store'}}));
+ const original=document.components?.schemas?.RoutingPolicyEnvelope;
+ failIf(same(original?.properties?.meta,{type:'object',additionalProperties:false,required:['trace_id','workspace_id'],properties:{trace_id:{type:'string'},workspace_id:{type:'string'},replayed:{type:'boolean'}}}));
+ const expected=structuredClone(original);
+ expected.properties.meta={type:'object',additionalProperties:false,required:['trace_id','workspace_id','permissions'],properties:{trace_id:{type:'string'},workspace_id:{type:'string'},permissions:{type:'object',additionalProperties:false,required:['policy_manage'],properties:{policy_manage:{type:'boolean'}}}}};
+ failIf(same(document.components.schemas.RoutingPolicyPermissionsEnvelope,expected));
+}
+
 export function validateOpenApiDocument(document) {
+  validateRoutingPolicyPermissionsContract(document);
   validateRoutingReadContract(document);
   validateQuestionAutoContract(document);
   validateAccountSettings(document);

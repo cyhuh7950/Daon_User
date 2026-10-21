@@ -208,15 +208,42 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
   const [routingPolicy,setRoutingPolicy]=useState(null);
   const [routingPolicyError,setRoutingPolicyError]=useState(false);
   const [routingPolicyRevision,setRoutingPolicyRevision]=useState(0);
+  const [routingDraft,setRoutingDraft]=useState(null);
+  const [routingSaveStatus,setRoutingSaveStatus]=useState('');
+  const [routingSaving,setRoutingSaving]=useState(false);
+  const routingSaveRef=useRef(null);
+  const routingScopeRef=useRef(resolvedWorkspaceId);
+  const routingLoadedScopeRef=useRef(null);
+  routingScopeRef.current=resolvedWorkspaceId;
   useEffect(()=>{
-    setRoutingPolicy(null);setRoutingPolicyError(false);
+    routingSaveRef.current?.controller.abort();routingSaveRef.current=null;
+    if(routingLoadedScopeRef.current!==resolvedWorkspaceId)setRoutingSaveStatus('');
+    routingLoadedScopeRef.current=null;
+    setRoutingPolicy(null);setRoutingDraft(null);setRoutingPolicyError(false);setRoutingSaving(false);
     if(!resolvedWorkspaceId)return undefined;
     const controller=new AbortController();
     providerSettingsApi.getRoutingPolicy(resolvedWorkspaceId,{signal:controller.signal}).then(result=>{
-      if(!controller.signal.aborted)setRoutingPolicy(result);
+      if(!controller.signal.aborted){routingLoadedScopeRef.current=resolvedWorkspaceId;setRoutingPolicy(result);setRoutingDraft(result.body?structuredClone(result.body):null);}
     }).catch(()=>{if(!controller.signal.aborted)setRoutingPolicyError(true);});
-    return()=>controller.abort();
+    return()=>{controller.abort();routingSaveRef.current?.controller.abort();};
   },[resolvedWorkspaceId,routingPolicyRevision]);
+  async function saveCandidatePolicy(disableOnly=false) {
+    if(routingLoadedScopeRef.current!==resolvedWorkspaceId || routingSaveRef.current || routingPolicy?.permissions?.policy_manage!==true || !routingPolicy.body || !routingDraft)return;
+    const scope=resolvedWorkspaceId,controller=new AbortController();
+    const key=globalThis.crypto?.randomUUID?.();
+    if(!key){setRoutingSaveStatus('안전한 요청 식별자를 만들 수 없어 저장하지 않았습니다.');return;}
+    const operation={controller,scope};routingSaveRef.current=operation;setRoutingSaving(true);setRoutingSaveStatus('');
+    const current=()=>routingSaveRef.current===operation && routingScopeRef.current===scope && !controller.signal.aborted;
+    try {
+      const body={...(disableOnly?routingPolicy.body:routingDraft),expected_version:routingPolicy.version,...(disableOnly?{enabled:false}:{})};
+      await providerSettingsApi.saveRoutingPolicy(scope,body,{etag:routingPolicy.etag,idempotencyKey:`routing-policy-${key}`,signal:controller.signal});
+      if(current()){setRoutingSaveStatus('정책을 저장했습니다. 현재 권한과 정책을 다시 확인합니다.');setRoutingPolicyRevision(x=>x+1);}
+    }catch(error){if(current()){
+      const messages={FORBIDDEN:'정책 관리 권한이 없어 저장하지 못했습니다. 현재 권한을 다시 확인해 주세요.',VERSION_CONFLICT:'정책이 변경되어 저장하지 못했습니다. 새로고침 후 다시 편집해 주세요.',IDEMPOTENCY_CONFLICT:'저장 요청이 충돌했습니다. 새로고침 후 다시 편집해 주세요.',ROUTING_BUDGET_UNVERIFIED:'상위 예산 출처가 준비되지 않아 저장하지 못했습니다.',ROUTING_OBSERVATIONS_UNAVAILABLE:'관측 정보가 준비되지 않아 저장하지 못했습니다.'};
+      setRoutingSaveStatus(messages[error.message]??'정책을 저장하지 못했습니다. 정책 저장소·관측·가격·상위 예산의 준비 상태를 확인해 주세요.');
+      setRoutingPolicy(null);setRoutingDraft(null);setRoutingPolicyError(true);
+    }}finally{if(routingSaveRef.current===operation){routingSaveRef.current=null;if(routingScopeRef.current===scope)setRoutingSaving(false);}}
+  }
   const [textModelChoice, setTextModelChoice] = useState("");
   const [asrModelChoice, setAsrModelChoice] = useState("");
   const [defaultStatus, setDefaultStatus] = useState("");
@@ -710,14 +737,29 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
 
       <section className="workspace-model-defaults" aria-labelledby="routing-policy-title">
         <h2 id="routing-policy-title">자동 선택 후보 정책</h2>
-        <p>관측·가격·상위 예산 producer 연결은 미구현입니다. 정책이 있어도 자동 실행 준비 완료를 의미하지 않습니다.</p>
-        <p>정책 관리 권한 확인 API는 미구현이므로 현재 읽기 전용입니다. 시스템 관리자 표시로 편집 권한을 추정하지 않습니다.</p>
+        <p>관측·가격·상위 예산 정보 연결은 미구현입니다. 정책이 있어도 자동 실행 준비 완료를 의미하지 않습니다.</p>
+        <p>{routingPolicy?.permissions?.policy_manage===true?'현재 정책 관리 권한을 확인했습니다. 저장할 때 권한과 정책 버전을 다시 검사합니다.':routingPolicy?.permissions?.policy_manage===false?'정책 관리 권한이 없어 읽기 전용입니다.':'정책 관리 권한을 확인하지 못해 읽기 전용입니다.'}</p>
         <button type="button" className="secondary-button" onClick={()=>setRoutingPolicyRevision(x=>x+1)}>후보 정책 새로고침</button>
         {routingPolicyError?<p role="alert">현재 후보 정책을 조회할 수 없습니다. Workspace 접근 권한과 저장소 준비 상태를 확인해 주세요.</p>:routingPolicy?<div>
           <p>정책 버전 · {routingPolicy.version} · {routingPolicy.body?.enabled?'활성 정책 · 실행 준비 미완료':routingPolicy.body?'비활성':'정책 없음'}</p>
           <ul>{routingPolicy.body?.candidates?.map((candidate,index)=><li key={`${candidate.connection_id}:${candidate.model_id}`}>등록 후보 {index+1} · {candidate.model_id} · Catalog v{candidate.catalog_version}</li>)}</ul>
           <p>등록 목록은 실행 시 동결된 정렬 순서가 아닙니다.</p>
+          {routingPolicy.permissions?.policy_manage===true && routingDraft?<fieldset disabled={routingSaving}>
+            <legend>기존 후보 정책 편집</legend>
+            <p>저장된 후보 참조·버전만 재사용합니다. 신규 후보 등록은 필요한 서버 참조 정보가 없어 지원하지 않습니다. 후보 변경·활성화는 서버의 상위 예산·관측·가격 검사를 통과해야 합니다.</p>
+            <label>정책 활성 상태<select value={routingDraft.enabled?'enabled':'disabled'} onChange={event=>setRoutingDraft({...routingDraft,enabled:event.target.value==='enabled'})}><option value="disabled">비활성</option><option value="enabled">활성화 요청</option></select></label>
+            <ol>{routingDraft.candidates.map((candidate,index)=><li key={`${candidate.connection_id}:${candidate.model_id}`}>
+              {candidate.model_id}
+              <button type="button" disabled={routingSaving || index===0} onClick={()=>setRoutingDraft({...routingDraft,candidates:routingDraft.candidates.map((c,i)=>i===index-1?routingDraft.candidates[index]:i===index?routingDraft.candidates[index-1]:c)})}>후보 {index+1} 위로</button>
+              <button type="button" disabled={routingSaving || routingDraft.candidates.length<=1 || routingDraft.budget.max_attempts>=routingDraft.candidates.length} onClick={()=>setRoutingDraft({...routingDraft,candidates:routingDraft.candidates.filter((_,i)=>i!==index)})}>후보 {index+1} 제외</button>
+            </li>)}</ol>
+            <label>질문별 예산 상한 ({routingDraft.budget.currency})<input value={routingDraft.budget.run_limit} onChange={event=>setRoutingDraft({...routingDraft,budget:{...routingDraft.budget,run_limit:event.target.value}})} /></label>
+            <label>최대 시도 횟수<select value={String(routingDraft.budget.max_attempts)} onChange={event=>setRoutingDraft({...routingDraft,budget:{...routingDraft.budget,max_attempts:Number(event.target.value)}})}>{routingDraft.candidates.map((_,index)=><option key={index+1} value={String(index+1)}>{index+1}</option>)}</select></label>
+            <button type="button" onClick={()=>saveCandidatePolicy(false)} disabled={routingSaving}>후보 정책 저장</button>
+            {routingPolicy.body.enabled?<button type="button" onClick={()=>saveCandidatePolicy(true)} disabled={routingSaving}>현재 정책 비활성화</button>:null}
+          </fieldset>:routingPolicy.permissions?.policy_manage===true?<p>기존 정책과 상위 예산·관측·가격 출처가 준비되지 않아 신규 정책을 작성할 수 없습니다.</p>:null}
         </div>:<p role="status">후보 정책을 확인하고 있습니다.</p>}
+        {routingSaveStatus?<p role="status">{routingSaveStatus}</p>:null}
       </section>
       <section className="workspace-model-defaults" aria-labelledby="provider-models-title">
         <div className="studio-section-heading"><div><span className="section-kicker">MODEL CATALOG</span><h2 id="provider-models-title">사용 허용 모델</h2><small>{isSystemAdmin ? "조회된 카탈로그와 사용 허용 목록을 구분해 관리합니다." : "시스템 관리자가 허용한 모델만 표시합니다."}</small></div></div>

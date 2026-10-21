@@ -297,3 +297,29 @@ test('B3 routing policy rejects nested credential endpoint extras before UI proj
  const bad=structuredClone(value);bad.body.candidates[0].credential='secret-not-for-ui';
  await assert.rejects(read(bad),/ROUTING_RESPONSE_INVALID/);
 });
+
+
+test('B3 settings-only policy capability is strict and leaves default question GET unchanged',async()=>{
+ const {providerSettingsApi}=await import('../../apps/web/lib/provider-settings-api.js');
+ const data={version:0,policy_version_id:null,digest_sha256:null,body:null,execution_enabled:false,readiness:'policy_absent'};
+ const calls=[],fetchImpl=async(url,init)=>{calls.push({url,init});return Response.json({data,meta:{workspace_id:'workspace-1',trace_id:'trace-1',permissions:{policy_manage:true}}},{headers:{etag:'"policy-0"'}});};
+ const settings=await providerSettingsApi.getRoutingPolicy('workspace-1',{fetchImpl});
+ assert.equal(settings.permissions.policy_manage,true);assert.equal(calls[0].url,'/bff/api/workspaces/workspace-1/routing-policy?include_permissions=1');
+ const ordinary=await getRoutingPolicy('workspace-1',{fetchImpl});assert.equal(calls[1].url,'/bff/api/workspaces/workspace-1/routing-policy');assert.equal('permissions' in ordinary,false);
+ for(const permissions of [undefined,{policy_manage:'true'},{policy_manage:true,role:'admin'}]){
+  await assert.rejects(providerSettingsApi.getRoutingPolicy('workspace-1',{fetchImpl:async()=>Response.json({data,meta:{workspace_id:'workspace-1',trace_id:'trace-1',...(permissions===undefined?{}:{permissions})}},{headers:{etag:'"policy-0"'}})}),/ROUTING_RESPONSE_INVALID/);
+ }
+});
+
+
+test('B3 policy save uses exact current ETag and rejects nested input or wrong-scope response',async()=>{
+ const {saveRoutingPolicy}=await import('../../apps/web/lib/question-answering-api.js');
+ const body={schema_version:1,expected_version:2,enabled:false,capability:'text_generation',candidates:[{connection_id:'connection-1',model_id:'model-1',credential_source:'workspace',connection_version:1,catalog_version:2,credential_version:3,endpoint_version:4}],ranking_profile:{version:'v1',evaluation_set:'eval',minimum_quality:1,observation_window:'window',input_class:'short',minimum_samples:1,max_age_seconds:60,tier_mapping_version:'v1',locality_mapping_version:'v1'},fallback_policy:{mode:'transient_only'},budget:{currency:'USD',run_limit:'1.00',max_attempts:1}};
+ const calls=[],data={version:3,policy_version_id:'policy-3',digest_sha256:'b'.repeat(64),body,execution_enabled:false,readiness:'disabled'};
+ const options={etag:'"policy-2"',idempotencyKey:'routing-policy-qa',fetchImpl:async(url,init)=>{calls.push({url,init});return Response.json({data,meta:{workspace_id:'workspace-1',trace_id:'trace-1',replayed:false}},{headers:{etag:'"policy-3"'}});}};
+ assert.equal((await saveRoutingPolicy('workspace-1',body,options)).version,3);
+ assert.equal(calls[0].url,'/bff/api/workspaces/workspace-1/routing-policy');assert.equal(calls[0].init.headers['If-Match'],'"policy-2"');assert.deepEqual(JSON.parse(calls[0].init.body),body);
+ const bad=structuredClone(body);bad.candidates[0].endpoint='private';await assert.rejects(saveRoutingPolicy('workspace-1',bad,options),/ROUTING_INPUT_INVALID/);assert.equal(calls.length,1);
+ await assert.rejects(saveRoutingPolicy('workspace-1',body,{...options,fetchImpl:async()=>Response.json({data,meta:{workspace_id:'other',trace_id:'trace-1'}},{headers:{etag:'"policy-3"'}})}),/ROUTING_RESPONSE_INVALID/);
+ for(const [status,code] of [[403,'FORBIDDEN'],[409,'VERSION_CONFLICT'],[503,'ROUTING_BUDGET_UNVERIFIED']])await assert.rejects(saveRoutingPolicy('workspace-1',body,{...options,fetchImpl:async()=>Response.json({error:{code}},{status})}),{message:code});
+});

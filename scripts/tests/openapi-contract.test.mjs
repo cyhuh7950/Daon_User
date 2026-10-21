@@ -872,3 +872,19 @@ test("B3 routing read and preview have closed scoped safe projections",async()=>
     d=>d.components.schemas.RoutingPreview.required.pop(),
   ]){const mutant=structuredClone(doc);change(mutant);assert.throws(()=>validateOpenApiDocument(mutant),/B3 routing read/);}
 });
+
+
+test("B3 policy permissions are opt-in closed current-state hints",async()=>{
+ const doc=await loadContract(),op=doc.paths['/api/v1/workspaces/{id}/routing-policy'].get;
+ assert.deepEqual(op.parameters[1],{name:'include_permissions',in:'query',required:false,schema:{type:'string',const:'1'}});
+ assert.equal(doc.components.schemas.RoutingPolicyPermissionsEnvelope.properties.meta.properties.permissions.properties.policy_manage.type,'boolean');
+ assert.doesNotThrow(()=>validateOpenApiDocument(doc));
+ for(const change of [
+  d=>d.paths['/api/v1/workspaces/{id}/routing-policy'].get.parameters[1].schema.const='true',
+  d=>d.paths['/api/v1/workspaces/{id}/routing-policy'].get.responses['200'].content['application/json'].schema={$ref:'#/components/schemas/RoutingPolicyPermissionsEnvelope'},
+  d=>d.components.schemas.RoutingPolicyEnvelope.properties.meta.properties.permissions={type:'object'},
+  d=>d.components.schemas.RoutingPolicyPermissionsEnvelope.properties.meta.properties.permissions.additionalProperties=true,
+  d=>d.components.schemas.RoutingPolicyPermissionsEnvelope.properties.meta.properties.permissions.properties.policy_manage.type='string',
+  d=>d.paths['/api/v1/workspaces/{id}/routing-policy'].put.parameters.push({name:'include_permissions',in:'query',schema:{type:'string'}}),
+ ]){const mutant=structuredClone(doc);change(mutant);assert.throws(()=>validateOpenApiDocument(mutant),/B3 policy permissions/);}
+});
