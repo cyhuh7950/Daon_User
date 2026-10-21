@@ -1138,7 +1138,14 @@ test("질문 실제 React 이벤트는 정책 차단 원인·수동 재질문·�
     await submit();
     assert.equal(writes, 2);
     assert.match(workspace.container.textContent, /확인된 자료의 답변/u);
-    assert.doesNotMatch(workspace.container.textContent, /EGRESS_POLICY_DENIED/u);
+    const currentAlerts=findElements(workspace.container,node=>node.getAttribute?.("role")==="alert");
+    assert.equal(currentAlerts.some(node=>node.textContent.includes("EGRESS_POLICY_DENIED")),false,"현재 실행 배너의 이전 오류는 해제한다");
+    const turns=findElements(workspace.container,node=>node.getAttribute?.("data-conversation-turn")!==null);
+    assert.equal(turns.length,2,"서로 다른 명시 요청의 두 질문을 보존한다");
+    assert.match(turns[0].textContent,/EGRESS_POLICY_DENIED/u,"이전 실패는 대화 이력에 남긴다");
+    assert.match(turns[1].textContent,/확인된 자료의 답변/u);
+    const users=findElements(workspace.container,node=>node.getAttribute?.("class")==="user-message");
+    assert.equal(users.filter(node=>node.textContent.includes("자료를 요약해 주세요")).length,2);
     await workspace.cleanup(); workspace = null;
     const before = reads;
     workspace = await mountSourceRetryWorkspace(effectAdapter, "policy-question-reentry");
@@ -2281,4 +2288,116 @@ test("저장된 공통 Studio DTO 1건으로 재진입해도 신규 Pane과 기�
   } finally {
     await rm(output, { recursive: true, force: true });
   }
+});
+
+const bTurn = (id,question,text,client=null,state='completed') => ({turn_id:id,question,response:text?{kind:state==='completed'?'answer':'system',text,insufficient:state!=='completed',next_actions:[],citations:[]}:null,state,submitted_at:'2026-10-21T00:00:00.123456Z',model:null,client_request_id:client});
+
+test('B 두 질문 누적·즉시 user 표시·응답 유실 뒤 GET exact key 병합은 재실행하지 않는다',async()=>{
+  const pending=deferred();let submission,key,posts=0,reads=0;
+  let page=[bTurn('turn-old','이전 질문','이전 답변','request-old')];
+  const workspace=await mountS17ReconnectWorkspace(s18Adapter({
+    listConversationTurns:async()=>{reads++;return {items:page,next_cursor:null};},
+    askQuestion:async(input,options)=>{posts++;key=options.idempotencyKey;return pending.promise;},
+  }));
+  try {
+    assert.match(workspace.container.textContent,/이전 질문/u);
+    await s18Type(workspace,'응답 유실 질문');await workspace.act(async()=>{submission=s18Submit(workspace);});
+    assert.match(workspace.container.textContent,/응답 유실 질문/u);assert.match(workspace.container.textContent,/이전 답변/u);
+    page=[bTurn('turn-new','응답 유실 질문','처리 결과를 확인해 주세요.',key,'uncertain'),...page];
+    await workspace.act(async()=>{pending.reject(new Error('UPSTREAM_FAILURE'));await submission;await Promise.resolve();});
+    const bubbles=findElements(workspace.container,node=>node.getAttribute?.('data-conversation-turn')!==null);
+    assert.equal(bubbles.length,2);assert.equal(posts,1);assert(reads>=2);
+    assert.match(workspace.container.textContent,/처리 결과를 확인/u);assert.match(workspace.container.textContent,/이전 답변/u);
+  } finally {pending.resolve(s18Answer());if(submission)await submission;await workspace.cleanup();}
+});
+
+test('B 질문 실패는 마지막 완료 답변을 Studio용으로 보존한다',async()=>{
+  const {projectQuestionFailureState}=await import('../../packages/ui/src/product-workspace-model.js');
+  const answer={answer:'완료 답변',citations:[]};
+  const projected=projectQuestionFailureState({answer,answerIntent:'work_support_source_backed'},new Error('QUESTION_FAILED'));
+  assert.equal(projected.answer,answer);assert.equal(projected.answerIntent,'work_support_source_backed');
+});
+
+test('B 실제 두 답변 누적·이전 페이지·Source 선택 보존과 재진입 복원은 GET만 사용한다',async()=>{
+  let posts=0;const reads=[];
+  const old=bTurn('turn-older','가장 이전 질문','가장 이전 답변','request-older');
+  let page=[bTurn('turn-saved','저장 질문','저장 답변','request-saved')];
+  const list=async(options)=>{reads.push(options);return options.before?{items:[old],next_cursor:null}:{items:page,next_cursor:'b2xk'};};
+  const active=s18Adapter({listConversationTurns:list,askQuestion:async(input,options)=>{
+    posts++;page=[bTurn('turn-'+posts,input.question,posts===1?'첫 답변':'둘째 답변',options.idempotencyKey),...page];
+    return s18Answer(posts===1?'첫 답변':'둘째 답변');
+  }});
+  const workspace=await mountS17ReconnectWorkspace(active);
+  try {
+    const more=findElements(workspace.container,n=>n.tagName==='BUTTON'&&n.textContent==='이전 대화 더 보기')[0];
+    assert(more);await workspace.act(async()=>more.dispatchEvent(new MinimalEvent('click')));
+    assert.equal(reads[1].before,'b2xk');assert.match(workspace.container.textContent,/가장 이전 질문/u);
+    await s18Type(workspace,'첫 질문');await workspace.act(async()=>s18Submit(workspace));
+    await s18Type(workspace,'둘째 질문');await workspace.act(async()=>s18Submit(workspace));
+    for(const text of ['첫 질문','첫 답변','둘째 질문','둘째 답변'])assert(workspace.container.textContent.includes(text));
+    const source=findElements(workspace.container,n=>n.tagName==='BUTTON'&&n.textContent.includes('other.pdf'))[0];
+    await workspace.act(async()=>source.dispatchEvent(new MinimalEvent('click')));
+    assert.match(workspace.container.textContent,/첫 질문/u);assert.match(workspace.container.textContent,/둘째 답변/u);
+    await workspace.render(s18Adapter({listConversationTurns:list,askQuestion:async()=>{throw new Error('MUST_NOT_REEXECUTE');}}));
+    assert.match(workspace.container.textContent,/첫 질문/u);assert.match(workspace.container.textContent,/둘째 답변/u);assert.equal(posts,2);
+  }finally{await workspace.cleanup();}
+});
+
+test('B 이전 페이지를 조회한 후 새로고침은 철회된 옛 답변을 보유하지 않는다',async()=>{
+  let refreshed=false;
+  const workspace=await mountS17ReconnectWorkspace(s18Adapter({listConversationTurns:async({before})=>before
+    ?{items:[bTurn('turn-old-access','옛 질문','철회될 답변','request-old')],next_cursor:null}
+    :{items:[bTurn('turn-current','현재 질문',refreshed?'답변에 현재 접근할 수 없습니다.':'현재 답변','request-current',refreshed?'unavailable':'completed')],next_cursor:refreshed?null:'b2xk'}}));
+  try{
+    await workspace.act(async()=>findElements(workspace.container,n=>n.tagName==='BUTTON'&&n.textContent==='이전 대화 더 보기')[0].dispatchEvent(new MinimalEvent('click')));
+    assert.match(workspace.container.textContent,/철회될 답변/u);refreshed=true;
+    await workspace.act(async()=>findElements(workspace.container,n=>n.tagName==='BUTTON'&&n.textContent==='대화 새로고침')[0].dispatchEvent(new MinimalEvent('click')));
+    assert.doesNotMatch(workspace.container.textContent,/철회될 답변|현재 답변/u);
+    assert.match(workspace.container.textContent,/현재 질문|답변에 현재 접근/u);
+  }finally{await workspace.cleanup();}
+});
+
+test('B Notebook 전환 후 늦은 이전 이력은 표시하지 않는다',async()=>{
+  const history=deferred();let posts=0;
+  const workspace=await mountS17ReconnectWorkspace(s18Adapter({listConversationTurns:async()=>history.promise}));
+  try{
+    await workspace.render(s18Adapter({notebookContext:{notebook_id:'notebook-new',sources:[]},
+      listConversationTurns:async()=>({items:[bTurn('turn-new-nb','새 Notebook 질문','새 Notebook 답변','request-new')],next_cursor:null}),
+      askQuestion:async()=>{posts++;return s18Answer();}}));
+    await workspace.act(async()=>{history.resolve({items:[bTurn('turn-old-nb','이전 Notebook 비공개 질문','이전 Notebook 비공개 답변','request-old')],next_cursor:null});await Promise.resolve();});
+    assert.match(workspace.container.textContent,/새 Notebook 질문/u);assert.doesNotMatch(workspace.container.textContent,/이전 Notebook 비공개/u);assert.equal(posts,0);
+  }finally{history.resolve({items:[],next_cursor:null});await workspace.cleanup();}
+});
+
+test('B Source 전환 취소 뒤 같은 요청의 저장 이력은 GET으로 병합하고 늦은 실행 응답을 무시한다',async()=>{
+  const pending=deferred();let key,submission,posts=0,cancelled=false;
+  const workspace=await mountS17ReconnectWorkspace(s18Adapter({
+    listConversationTurns:async()=>({items:cancelled?[bTurn('turn-cancel','취소 확인 질문',null,key,'pending')]:[],next_cursor:null}),
+    askQuestion:async(input,options)=>{key=options.idempotencyKey;posts++;return pending.promise;},
+  }));
+  try{
+    await s18Type(workspace,'취소 확인 질문');await workspace.act(async()=>{submission=s18Submit(workspace);});
+    await workspace.act(async()=>findElements(workspace.container,n=>n.tagName==='BUTTON'&&n.textContent.includes('other.pdf'))[0].dispatchEvent(new MinimalEvent('click')));
+    assert.match(workspace.container.textContent,/서버 처리를 중단했음을 보장하지 않습니다/u);cancelled=true;
+    await workspace.act(async()=>findElements(workspace.container,n=>n.tagName==='BUTTON'&&n.textContent==='대화 새로고침')[0].dispatchEvent(new MinimalEvent('click')));
+    assert.equal(findElements(workspace.container,n=>n.getAttribute?.('data-conversation-turn')!==null).length,1);
+    await workspace.act(async()=>{pending.resolve(s18Answer('늦은 취소 답변'));await submission;});
+    assert.doesNotMatch(workspace.container.textContent,/늦은 취소 답변/u);assert.equal(posts,1);
+  }finally{pending.resolve(s18Answer());if(submission)await submission;await workspace.cleanup();}
+});
+
+test('B 순수 병합은 상태 위조·중복 요청ID·모호한 turn 결합을 거부하고 시각을 추측 ID로 쓰지 않는다',async()=>{
+  const {mergeNotebookConversationTurns}=await import('../../packages/ui/src/product-workspace-model.js');
+  const one=bTurn('turn-1','같은 질문','답변1','request-1');
+  const two=bTurn('turn-2','같은 질문','답변2','request-2');
+  assert.equal(mergeNotebookConversationTurns([], [one,two]).length,2);
+  const actions=count=>({...one,response:{...one.response,next_actions:Array.from({length:count},(_,i)=>`행동 ${i+1}`)}});
+  assert.equal(mergeNotebookConversationTurns([],[actions(8)])[0].response.next_actions.length,8);
+  assert.throws(()=>mergeNotebookConversationTurns([],[actions(9)]),/NOTEBOOK_CONVERSATION_INVALID/u);
+  for(const bad of [{...one,state:'failed'},{...one,state:'pending'}, {...one,response:{...one.response,text:''}},
+    {...one,model:{api_key:'private'}},{...one,submitted_at:'yesterday'}]){
+    assert.throws(()=>mergeNotebookConversationTurns([],[bad]),/NOTEBOOK_CONVERSATION_INVALID/u);
+  }
+  assert.throws(()=>mergeNotebookConversationTurns([one],[{...two,client_request_id:'request-1'}]),/NOTEBOOK_CONVERSATION_INVALID/u);
+  assert.throws(()=>mergeNotebookConversationTurns([],[one,one]),/NOTEBOOK_CONVERSATION_INVALID/u);
 });

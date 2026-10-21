@@ -211,9 +211,9 @@ class S18QuestionAuthorizationTests(unittest.IsolatedAsyncioTestCase):
                 if changed == "model": self.service.selection = replace(self.service.selection, binding_version=5)
                 if changed == "payload": self.service.payload_suffix = "changed"
                 response = await self.post(body=body, token=token)
-                self.assertEqual(response.status_code, 403, response.text)
-                # Existing public error mapping intentionally hides binding details.
-                self.assertEqual(response.json()["error"]["code"], "INVALID_REQUEST")
+                self.assertEqual(response.status_code, 409 if changed == "question" else 403, response.text)
+                # Admission now rejects changed logical input before token consumption.
+                self.assertEqual(response.json()["error"]["code"], "NOTEBOOK_TURN_CONFLICT" if changed == "question" else "INVALID_REQUEST")
                 self.assertEqual((self.service.calls, self.consumption_count()), (0, 0))
                 self.effective.fingerprint = "policy-s18-v1"
                 self.service.selection = replace(self.service.selection, binding_version=4)
@@ -266,7 +266,8 @@ class S18QuestionAuthorizationTests(unittest.IsolatedAsyncioTestCase):
         grant = await self.grant(source_id="source-s18", source_version_id="version-s18")
         response = await self.post(body={**BODY, "source_id": "source-s18", "source_version_id": "version-other",
                                          "step_up_authorization_id": grant["step_up_authorization_id"]})
-        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["error"]["code"], "NOTEBOOK_TURN_CONFLICT")
         self.assertEqual((self.service.calls, self.consumption_count()), (0, 0))
 
     async def test_s18_question_changed_input_same_completed_key_is_not_replayed(self):

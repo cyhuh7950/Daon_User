@@ -386,6 +386,24 @@ class NotebookService:
                 run_id=run_id, studio_job_id=studio_job_id)
         return self._repository.read_selected_context(context, notebook)
 
+    def _conversation_method(self, name):
+        method = getattr(self._repository, name, None)
+        if not callable(method):
+            raise NotebookError("NOTEBOOK_CONVERSATION_UNAVAILABLE", 503)
+        return method
+
+    def admit_question_turn(self, context, notebook_id, **values):
+        notebook = _binding(notebook_id, field="NOTEBOOK_ID")
+        return self._conversation_method("admit_question_turn")(context, notebook, now=self._clock(), **values)
+
+    def append_question_turn_event(self, context, notebook_id, **values):
+        notebook = _binding(notebook_id, field="NOTEBOOK_ID")
+        return self._conversation_method("append_question_turn_event")(context, notebook, now=self._clock(), **values)
+
+    def list_conversation_turns(self, context, notebook_id, *, limit=50, before=None):
+        notebook = _binding(notebook_id, field="NOTEBOOK_ID")
+        return self._conversation_method("list_conversation_turns")(context, notebook, limit=limit, before=before)
+
     def unbind_source(
         self, context: NotebookContext, notebook_id: object, *, source_id: object,
         source_version_id: object, expected_etag: object, idempotency_key: object,

@@ -4,7 +4,7 @@ import { parsePptxBlock, isPptxBlockContent, pptxBlockLabel } from "./shared-ppt
 
 import { useEffect, useRef, useState } from "react";
 import "@daon-user/design-tokens/tokens.css";
-import { canCreateGroundedReport, createProductWorkspaceState, normalizeProductWorkspaceState, projectQuestionFailureState, questionFailureMessage, parseImageRegion, parseSheetCell, isSheetCellContent } from "./product-workspace-model.js";
+import { canCreateGroundedReport, createProductWorkspaceState, normalizeProductWorkspaceState, mergeNotebookConversationTurns, projectQuestionFailureState, questionFailureMessage, parseImageRegion, parseSheetCell, isSheetCellContent } from "./product-workspace-model.js";
 import { createProductStudioState } from "./product-studio-model.js";
 import { ProductStudioPane } from "./product-studio-pane.jsx";
 import { StudioApprovalPolicySettings } from "./studio-approval-policy-settings.jsx";
@@ -742,6 +742,76 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
   const [processing, setProcessing] = useState(null);
   const [question, setQuestion] = useState("");
   const [questionPending, setQuestionPending] = useState(false);
+  const [conversationTurns,setConversationTurns]=useState([]);
+  const conversationTurnsRef=useRef([]);
+  const conversationOwnerRef=useRef({adapter,workspaceId});
+  const commitConversationTurns=update=>{
+    const next=typeof update==="function"?update(conversationTurnsRef.current):update;
+    conversationTurnsRef.current=next;setConversationTurns(next);
+  };
+  const visibleConversationTurns=conversationOwnerRef.current.adapter===adapter&&conversationOwnerRef.current.workspaceId===workspaceId?conversationTurns:[];
+  const [conversationCursor,setConversationCursor]=useState(null);
+  const [conversationHistoryError,setConversationHistoryError]=useState(null);
+  const [conversationHistoryPending,setConversationHistoryPending]=useState(false);
+  const conversationScopeRef=useRef(null);
+  const conversationReadRef=useRef(null);
+  const conversationGenerationRef=useRef(0);
+  conversationScopeRef.current={adapter,workspaceId};
+  const readConversationTurns=async ({before,append=false}={})=>{
+    if(typeof adapter?.listConversationTurns!=="function") return;
+    conversationReadRef.current?.abort();
+    const controller=new AbortController();conversationReadRef.current=controller;
+    const generation=conversationGenerationRef.current;
+    const current=()=>!controller.signal.aborted&&conversationGenerationRef.current===generation
+      &&conversationScopeRef.current.adapter===adapter&&conversationScopeRef.current.workspaceId===workspaceId;
+    setConversationHistoryPending(true);
+    try {
+      const page=await adapter.listConversationTurns({before,limit:50,signal:controller.signal});
+      if(!current())return;
+      if(!hasExactKeys(page,["items","next_cursor"])||!Array.isArray(page.items)||page.items.length>50
+        ||!(page.next_cursor===null||typeof page.next_cursor==='string'&&/^[A-Za-z0-9_-]{1,2048}$/u.test(page.next_cursor)))throw new Error('NOTEBOOK_CONVERSATION_INVALID');
+      const projected=mergeNotebookConversationTurns([],page.items);
+      commitConversationTurns(previous=>mergeNotebookConversationTurns(append?previous:
+        previous.filter(turn=>turn.turn_id.startsWith("pending-")&&turn.state!=="completed"),projected));
+      if(append||before===undefined)setConversationCursor(page.next_cursor);
+      setConversationHistoryError(null);
+    }catch(error){if(current()){
+      commitConversationTurns([]);
+      setConversationCursor(null);
+      setConversationHistoryError(safeErrorCode(error,'NOTEBOOK_CONVERSATION_UNAVAILABLE'));
+      setViewState(previous=>({...previous,answer:null,answerIntent:null}));
+    }}
+    finally{if(current())setConversationHistoryPending(false);}
+  };
+  useEffect(()=>{
+    conversationGenerationRef.current++;
+    conversationOwnerRef.current={adapter,workspaceId};
+    commitConversationTurns([]);setConversationCursor(null);setConversationHistoryError(null);setConversationHistoryPending(false);
+    void readConversationTurns();
+    return()=>{conversationGenerationRef.current++;conversationReadRef.current?.abort();};
+  },[adapter,workspaceId]);
+  const historyCitationHref=citation=>{
+    if(typeof adapter?.citationUrl!=="function")return null;
+    try{
+      const href=adapter.citationUrl(citation);
+      const prefix=`/bff/api/workspaces/${encodeURIComponent(workspaceId)}/citations/${encodeURIComponent(citation.citation_id)}/content?notebook_id=`;
+      if(typeof href!=="string")return null;
+      if(href===`#/citations/${encodeURIComponent(citation.citation_id)}?page=${citation.page}`)return href;
+      if(!href.startsWith(prefix))return null;
+      const tail=href.slice(prefix.length).split("#");
+      if(tail.length>2||!isSafeDtoId(tail[0])||(tail[1]!==undefined&&tail[1]!==`page=${citation.page}`))return null;
+      if(adapter.notebookContext?.notebook_id&&tail[0]!==adapter.notebookContext.notebook_id)return null;
+      return href;
+    }catch{return null;}
+  };
+  const updateConversationRequest=(token,values)=>{
+    if(!token.clientRequestId)return;
+    commitConversationTurns(previous=>previous.map(turn=>{
+      if(turn.client_request_id!==token.clientRequestId)return turn;
+      if(!turn.turn_id.startsWith("pending-")&&["completed","failed","unavailable"].includes(turn.state))return turn;
+      return {...turn,...values,model:values.state==="completed"?turn.model:null};
+    }));
+  };
   const [questionAuthPending, setQuestionAuthPending] = useState(false);
   const [questionAuthError, setQuestionAuthError] = useState(null);
   const [reportTitle, setReportTitle] = useState("");
@@ -751,6 +821,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
   const [modalView, setModalView] = useState(null);
   const [providerCloseGuard,setProviderCloseGuard]=useState(false);
   const [loadRevision, setLoadRevision] = useState(0);
+  useEffect(()=>{if(loadRevision>0)void readConversationTurns();},[loadRevision]);
   const [knowledgePackages, setKnowledgePackages] = useState([]);
   const [connectors, setConnectors] = useState([]);
   const [lawSourcesOnly,setLawSourcesOnly]=useState(false);
@@ -854,6 +925,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
     questionEpochRef.current += 1;
     const request = questionRequestRef.current;
     questionRequestRef.current = null;
+    if(request)updateConversationRequest(request,{state:"uncertain",response:{kind:"system",text:"처리 결과를 확인해 주세요. 요청 취소가 서버 처리를 중단했음을 보장하지 않습니다.",insufficient:true,next_actions:[],citations:[]}});
     request?.controller.abort();
     request?.resolveAuthorization?.(null);
     if (questionPasswordRef.current) questionPasswordRef.current.value = "";
@@ -1432,12 +1504,16 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
     const signal = token.controller.signal;
     questionRequestRef.current = token;
     setQuestionPending(true);
-    setViewState(current => ({ ...current, answer: null, answerIntent: null, conversationSafeError: null }));
+    setViewState(current => ({ ...current, conversationSafeError: null }));
     const current = () => !signal.aborted && workspaceMountedRef.current
       && questionEpoch === questionEpochRef.current && questionRequestRef.current === token;
     token.isCurrent = current;
     try {
       const idempotencyKey = secureUuid();
+      token.clientRequestId=idempotencyKey;
+      const localTurn={turn_id:`pending-${idempotencyKey}`,question:question.trim(),response:null,state:"pending",
+        submitted_at:new Date().toISOString(),model:null,client_request_id:idempotencyKey};
+      commitConversationTurns(previous=>mergeNotebookConversationTurns(previous,[localTurn]));
       const knowledgeContext = viewState.selectedSource || selectedKnowledgeId
         ? buildQuestionKnowledgeContext(viewState.selectedSource, selectedKnowledgeId)
         : null;
@@ -1450,6 +1526,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
         answer = await adapter.askQuestion(input, token.options);
       } catch (error) {
         if (!current() || error?.message !== "STEP_UP_REQUIRED" || typeof adapter.authorizeQuestion !== "function") throw error;
+        updateConversationRequest(token,{state:"awaiting_authorization",response:{kind:"system",text:"추가 인증을 기다리고 있습니다.",insufficient:true,next_actions:[],citations:[]}});
         const authorization = await new Promise(resolve => {
           token.resolveAuthorization = resolve;
           setQuestionAuthError(null);
@@ -1471,9 +1548,12 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
           ? (viewState.selectedSource || selectedKnowledgeId ? "work_support_source_backed" : "work_support_ungrounded")
           : conversationMode,
       }));
+      updateConversationRequest(token,{state:"completed",response:{kind:"answer",text:safeAnswer.answer,insufficient:safeAnswer.insufficient,next_actions:safeAnswer.next_actions??[],
+        citations:safeAnswer.citations.map(({content_url,...citation})=>citation)}});
       reportIdempotencyRef.current = null;
     } catch (error) {
       if (!current()) return;
+      updateConversationRequest(token,{state:"uncertain",response:{kind:"system",text:questionFailureMessage(safeErrorCode(error,"QUESTION_FAILED")),insufficient:true,next_actions:[],citations:[]}});
       setViewState((current) => projectQuestionFailureState(
         current,
         new Error(safeErrorCode(error, "QUESTION_FAILED")),
@@ -1482,6 +1562,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
       if (questionRequestRef.current === token) {
         questionRequestRef.current = null;
         setQuestionPending(false);
+        void readConversationTurns();
       }
     }
   };
@@ -2051,10 +2132,22 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
           </section> : null}
         </SafePane>
         <SafePane id="product-pane-conversation" title="대화·실행" description="ready Source 선택 후 실제 질문과 Citation을 사용합니다.">
-          {desktopEditor ? desktopEditor : <div className="conversation-workspace"><div className="conversation-transcript" aria-live="polite">
+          {desktopEditor ? desktopEditor : <div className="conversation-workspace"><div className="conversation-transcript" role="log" aria-label="질문과 답변 이력" aria-live="polite">
           <div className="context-selection-status" role="status">질문 컨텍스트 · {selectedKnowledgeId ? "Daon 승인 지식" : ""}{selectedKnowledgeId && viewState.selectedSource ? " + " : ""}{viewState.selectedSource ? "Raw Source" : !selectedKnowledgeId ? "일반 상담" : ""}</div>
           {questionPending ? <div className="context-selection-status" role="status">답변을 기다리고 있습니다.</div> : null}
-          {viewState.answer ? <article className="assistant-message"><div className="assistant-avatar" aria-hidden="true">D</div><div><span className="message-author">Daon</span><p>{viewState.answer.answer}</p></div></article> : <div className="conversation-empty"><span className="conversation-orbit" aria-hidden="true">✦</span><h3>{viewState.selectedSource || selectedKnowledgeId ? "Source에 대해 무엇이든 물어보세요." : "무엇이든 물어보세요."}</h3><p>{viewState.selectedSource || selectedKnowledgeId ? "선택한 Source의 근거와 Citation을 사용해 답합니다." : "작업 상담, 구현 방법 등 일반 질문에 답합니다."}</p></div>}
+          {typeof adapter?.listConversationTurns!=="function"?<p className="context-selection-status">이 환경에서는 저장된 전체 대화 조회를 지원하지 않습니다.</p>:null}
+          {conversationHistoryPending ? <p role="status">저장된 대화를 확인하고 있습니다.</p> : null}
+          {conversationHistoryError ? <p role="alert">대화 이력을 확인할 수 없습니다. ({conversationHistoryError})</p> : null}
+          {typeof adapter?.listConversationTurns==="function" ? <div className="conversation-history-actions"><button type="button" disabled={conversationHistoryPending} onClick={()=>void readConversationTurns()}>대화 새로고침</button>{conversationCursor ? <button type="button" disabled={conversationHistoryPending} onClick={()=>void readConversationTurns({before:conversationCursor,append:true})}>이전 대화 더 보기</button>:null}</div>:null}
+          {visibleConversationTurns.map((turn,index)=><section key={turn.turn_id} data-conversation-turn={turn.turn_id} className="conversation-turn">
+            <article className="user-message"><span className="message-author">나</span><p>{turn.question}</p></article>
+            {turn.response?<article className={turn.response.kind==="answer"?"assistant-message":"system-message"}><span className="message-author">{turn.response.kind==="answer"?"Daon":"안내"}</span><p>{turn.response.text}</p>
+              {turn.response.next_actions.length?<ul>{turn.response.next_actions.map((action,i)=><li key={i}>{action}</li>)}</ul>:null}
+              {!(index===visibleConversationTurns.length-1&&viewState.answer)&&turn.response.citations.length?<div className="citation-row">{turn.response.citations.map(citation=>{const href=historyCitationHref(citation);return href?<a key={citation.citation_id} href={href}>Citation · {citation.page}쪽</a>:<span key={citation.citation_id}>인용 원문 접근 확인 필요</span>;})}</div>:null}
+            </article>:<p role="status">{turn.state==="pending"?"질문이 접수되었습니다. 처리 결과를 확인 중입니다.":"처리 결과를 확인해 주세요."}</p>}
+            <small>{turn.turn_id.startsWith("pending-")?"서버 저장 확인 전":new Date(turn.submitted_at).toLocaleString("ko-KR")}{turn.model?` · ${turn.model.provider_code} / ${turn.model.model_id}`:""}</small>
+          </section>)}
+          {visibleConversationTurns.length || conversationHistoryError ? null : viewState.answer ? <article className="assistant-message"><div className="assistant-avatar" aria-hidden="true">D</div><div><span className="message-author">Daon</span><p>{viewState.answer.answer}</p></div></article> : <div className="conversation-empty"><span className="conversation-orbit" aria-hidden="true">✦</span><h3>{viewState.selectedSource || selectedKnowledgeId ? "Source에 대해 무엇이든 물어보세요." : "무엇이든 물어보세요."}</h3><p>{viewState.selectedSource || selectedKnowledgeId ? "선택한 Source의 근거와 Citation을 사용해 답합니다." : "작업 상담, 구현 방법 등 일반 질문에 답합니다."}</p></div>}
           {viewState.answerIntent === "general_ungrounded" || viewState.answerIntent === "work_support_ungrounded"
             ? <div className="context-selection-status" role="status">작업 상담 · 근거 미사용</div> : null}
           {viewState.answerIntent === "work_support_source_backed"

@@ -18,10 +18,19 @@ from daon_user_api.runtime import WEB_SESSION_COOKIE, RuntimeDependencies, Runti
 from test_identity_support import POLICY_VERSION, create_service, identity_session_view
 
 
-class NotebookBoundary:
+from notebook_conversation_test_support import ConversationTestLedger
+
+
+class NotebookBoundary(ConversationTestLedger):
     def __init__(self) -> None:
+        super().__init__()
         self.calls = 0
         self.error: NotebookError | None = None
+
+    def admit_question_turn(self, *args, **kwargs):
+        if self.error is not None:
+            raise self.error
+        return super().admit_question_turn(*args, **kwargs)
 
     def require_selected_bindings(self, *_args, **_kwargs) -> None:  # type: ignore[no-untyped-def]
         self.calls += 1
@@ -90,7 +99,8 @@ class EffectivePolicyBoundary:
     def get_effective(self, _context):  # type: ignore[no-untyped-def]
         self.calls += 1
         return SimpleNamespace(
-            mode=self.mode, required_approver="organization_admin",
+            # This fixture explicitly represents a no-step-up policy.
+            mode=self.mode, question_step_up_required=False, required_approver="organization_admin",
             fingerprint="sha256:" + "a" * 64,
             allowed_provider_kinds=self.allowed_provider_kinds,
             allowed_destinations=self.allowed_destinations,

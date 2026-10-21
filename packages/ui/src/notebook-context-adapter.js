@@ -257,6 +257,8 @@ export function createNotebookContextWorkspaceAdapter(baseAdapter, inputContext)
       : undefined,
     listKnowledgePackages,
     loadNotebookConversation,
+    listConversationTurns: typeof baseAdapter.listConversationTurns === "function"
+      ? (options) => baseAdapter.listConversationTurns({ ...options, notebookId:context.notebook_id }) : undefined,
     listStudioOutputs,
     listProductStudioOutputs: typeof baseAdapter.listProductStudioOutputs === "function"
       ? listProductStudioOutputs

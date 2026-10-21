@@ -74,12 +74,11 @@ class FakeQuestionService:
         )
 
 
-class FakeNotebookService:
-    def __init__(self) -> None:
-        self.required = []
+from notebook_conversation_test_support import ConversationTestLedger
 
-    def require_selected_bindings(self, context, notebook_id, *, required):  # type: ignore[no-untyped-def]
-        self.required.append((context, notebook_id, required))
+
+class FakeNotebookService(ConversationTestLedger):
+    pass
 
 
 class FakeKnowledgePackages:
@@ -137,6 +136,53 @@ class FakeCitationContent:
 
 
 class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
+    async def test_question_admitted_before_model_failure_and_history_is_authenticated(self):
+        from daon_user_api.question_answering_service import QuestionAnsweringError
+        with self._authenticated(), patch.object(self.service,"ask",side_effect=QuestionAnsweringError("QUESTION_PROVIDER_UNAVAILABLE",status=503,retryable=True)):
+            response=await self.client.post("/api/v1/workspaces/workspace-001/questions",
+                cookies={WEB_SESSION_COOKIE:"opaque-session"},headers={"Idempotency-Key":"question-history-failure"},
+                json={"notebook_id":"notebook-cp3","question":"저장되어야 할 원문"})
+            history=await self.client.get("/api/v1/workspaces/workspace-001/notebooks/notebook-cp3/conversation-turns",cookies={WEB_SESSION_COOKIE:"opaque-session"})
+        self.assertEqual(response.status_code,503,response.text)
+        self.assertEqual(len(self.notebooks.turns),1)
+        self.assertEqual(self.notebooks.events[-1][2]["event_kind"],"uncertain")
+        self.assertEqual(history.status_code,200,history.text)
+        self.assertEqual(history.json()["data"]["items"][0]["question"],"저장되어야 할 원문")
+        self.assertEqual(history.json()["data"]["items"][0]["client_request_id"],"question-history-failure")
+        self.assertEqual(history.headers["Cache-Control"],"no-store")
+        self.assertRegex(history.headers["ETag"],r'^"projection-[0-9a-f]{24}"$')
+        denied=await self.client.get("/api/v1/workspaces/workspace-001/notebooks/notebook-cp3/conversation-turns")
+        self.assertEqual(denied.status_code,401)
+
+    async def test_conversation_query_strict_and_no_auth_no_admission(self):
+        base="/api/v1/workspaces/workspace-001/notebooks/notebook-cp3/conversation-turns"
+        with self._authenticated():
+            for query in ("?limit=0","?limit=101","?limit=1&limit=2","?unknown=x"):
+                response=await self.client.get(base+query,cookies={WEB_SESSION_COOKIE:"opaque-session"})
+                self.assertEqual(response.status_code,400,response.text)
+                self.assertEqual(response.json()["error"]["code"],"NOTEBOOK_PAGE_INVALID")
+        self.assertEqual(self.notebooks.turns,{})
+        response=await self.client.post("/api/v1/workspaces/workspace-001/questions",
+            headers={"Idempotency-Key":"question-unauthorized"},json={"notebook_id":"notebook-cp3","question":"질문"})
+        self.assertEqual(response.status_code,401)
+        self.assertEqual(self.notebooks.turns,{})
+
+    async def test_failure_event_storage_error_preserves_original_auth_policy_error(self):
+        from daon_user_api.identity import IdentityError
+        from daon_user_api.egress_policy import EgressPolicyError
+        from daon_user_api.notebook import NotebookError
+        for original,secondary,status,code in (
+            (IdentityError("REAUTHENTICATION_REQUIRED",401),NotebookError("NOTEBOOK_UNAVAILABLE",503),401,"AUTHENTICATION_REQUIRED"),
+            (EgressPolicyError("EGRESS_POLICY_DENIED",403),NotebookError("NOTEBOOK_NOT_FOUND",404),403,"EGRESS_POLICY_DENIED"),
+        ):
+            with self.subTest(code=code),self._authenticated(),patch.object(self.service,"ask",side_effect=original),patch.object(self.notebooks,"append_question_turn_event",side_effect=secondary),self.assertLogs("daon_user_api.runtime",level="WARNING") as logged:
+                response=await self.client.post("/api/v1/workspaces/workspace-001/questions",
+                    cookies={WEB_SESSION_COOKIE:"opaque-session"},headers={"Idempotency-Key":"event-failure-"+code},
+                    json={"notebook_id":"notebook-cp3","question":"질문"})
+            self.assertEqual(response.status_code,status,response.text)
+            self.assertEqual(response.json()["error"]["code"],code)
+            self.assertTrue(any("question_turn_event_unavailable" in line and secondary.code in line for line in logged.output))
+
     async def test_runtime_passes_exact_qa_target_to_existing_question_service(self) -> None:
         from daon_user_api.question_answering_service import QuestionAnsweringService
 

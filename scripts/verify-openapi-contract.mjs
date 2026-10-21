@@ -22,6 +22,7 @@ export const REQUIRED_PATHS = Object.freeze([
   "/api/v1/workspaces/{id}/notebooks",
   "/api/v1/workspaces/{id}/notebooks/{notebook_id}",
   "/api/v1/workspaces/{id}/notebooks/{notebook_id}/context",
+  "/api/v1/workspaces/{id}/notebooks/{notebook_id}/conversation-turns",
   "/api/v1/workspaces/{id}/notebooks/{notebook_id}/source-unbindings",
   "/api/v1/organizations/{id}/license",
   "/api/v1/session",
@@ -219,6 +220,42 @@ function validateResponse(document, response, operationId, status) {
   if (!isObject(resolved.headers) || !("X-Trace-Id" in resolved.headers)) {
     fail(`${operationId} response ${status} missing X-Trace-Id`);
   }
+}
+
+function validateNotebookConversationContract(document) {
+  const same=(a,b)=>JSON.stringify(canonicalizeDocument(a))===JSON.stringify(canonicalizeDocument(b));
+  const check=(ok)=>{if(!ok)fail("Notebook conversation contract mismatch");};
+  const ref=name=>({$ref:`#/components/schemas/${name}`});
+  const object=properties=>({type:"object",additionalProperties:false,required:Object.keys(properties),properties});
+  const nullable=value=>({oneOf:[{type:"null"},value]});
+  const id={type:"string",minLength:1,maxLength:128,pattern:"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"};
+  const cursor={type:"string",minLength:1,maxLength:2048,pattern:"^[A-Za-z0-9_-]+$"};
+  const modelValue={type:"string",minLength:1,maxLength:255,pattern:"^[^\\x00-\\x20\\x7f]+$"};
+  const response=object({kind:{type:"string",enum:["answer","system"]},text:{type:"string",minLength:1,maxLength:8000},
+    insufficient:{type:"boolean"},next_actions:{type:"array",maxItems:8,items:{type:"string",maxLength:255}},
+    citations:{type:"array",maxItems:10,items:ref("GroundedCitation")}});
+  const turn=object({turn_id:id,question:{type:"string",minLength:1,maxLength:32768},response:nullable(ref("NotebookConversationResponse")),
+    state:{type:"string",enum:["pending","awaiting_authorization","completed","failed","uncertain","unavailable"]},
+    submitted_at:{type:"string",format:"date-time"},model:nullable(object({provider_code:modelValue,model_id:modelValue})),
+    client_request_id:nullable({type:"string",minLength:8,maxLength:128,pattern:"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$"})});
+  turn.allOf=[
+    {if:{properties:{state:{const:"completed"}}},then:{properties:{response:{allOf:[ref("NotebookConversationResponse"),{properties:{kind:{const:"answer"}}}]}}}},
+    {if:{properties:{state:{const:"pending"}}},then:{properties:{response:{type:"null"},model:{type:"null"}}}},
+    {if:{properties:{state:{enum:["awaiting_authorization","failed","uncertain","unavailable"]}}},then:{properties:{model:{type:"null"},response:{allOf:[ref("NotebookConversationResponse"),{properties:{kind:{const:"system"},insufficient:{const:true},citations:{maxItems:0}}}]}}}}
+  ];
+  const expected={NotebookConversationResponse:response,NotebookConversationTurn:turn,
+    NotebookConversationPage:object({items:{type:"array",maxItems:100,items:ref("NotebookConversationTurn")},next_cursor:nullable(cursor)}),
+    NotebookConversationEnvelope:object({data:ref("NotebookConversationPage"),meta:object({trace_id:id,workspace_id:id,notebook_id:id})})};
+  for(const [name,schema]of Object.entries(expected))check(same(document.components?.schemas?.[name],schema));
+  const route=document.paths?.["/api/v1/workspaces/{id}/notebooks/{notebook_id}/conversation-turns"];
+  check(route&&same(Object.keys(route),["get"]));
+  check(same(route.get.parameters,[{$ref:"#/components/parameters/ResourceId"},
+    {name:"notebook_id",in:"path",required:true,schema:ref("OpaqueId")},
+    {name:"limit",in:"query",required:false,schema:{type:"integer",minimum:1,maximum:100,default:50}},
+    {name:"before",in:"query",required:false,schema:cursor}]));
+  check(route.get.requestBody===undefined&&same(route.get.responses?.["200"]?.content?.["application/json"]?.schema,ref("NotebookConversationEnvelope")));
+  check(same(route.get.responses["200"].headers["Cache-Control"],{schema:{type:"string",enum:["no-store"]}}));
+  check(same(route.get.responses["200"].headers.ETag,{$ref:"#/components/headers/ETag"}));
 }
 
 function validateSourceDeletionContract(document) {
@@ -1115,12 +1152,14 @@ export function validateOpenApiDocument(document) {
     ["/api/v1/workspaces/{id}/notebooks", ["get", "post"]],
     ["/api/v1/workspaces/{id}/notebooks/{notebook_id}", ["get", "patch"]],
     ["/api/v1/workspaces/{id}/notebooks/{notebook_id}/context", ["get"]],
+    ["/api/v1/workspaces/{id}/notebooks/{notebook_id}/conversation-turns", ["get"]],
     ["/api/v1/workspaces/{id}/notebooks/{notebook_id}/source-unbindings", ["post"]],
   ]);
   for (const [apiPath, expectedMethods] of notebookMethods) {
     const actualMethods = Object.keys(document.paths[apiPath]).filter((method) => HTTP_METHODS.has(method)).sort();
     if (JSON.stringify(actualMethods) !== JSON.stringify(expectedMethods)) fail(`Notebook method mismatch ${apiPath}`);
   }
+  validateNotebookConversationContract(document);
   const syncItem = document.components?.schemas?.SyncItemInput;
   if (
     JSON.stringify(syncItem?.properties?.item_kind?.enum) !== JSON.stringify(["source_version", "output_version"])

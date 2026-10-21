@@ -102,7 +102,9 @@ def test_s18_selected_context_current_raw_binding(sources, citations, restore):
         assert selected.conversation.answer == "과거 원문 답변"
         assert len(selected.conversation.citations) == len(citations)
     assert store.responses == before, "stored result/citations/bindings must remain unchanged"
-    assert store.calls[:3] == [("tenant-s18", "workspace-s18", "notebook-s18")] * 3
+    assert store.calls[:3] == [("tenant-s18", "workspace-s18", "notebook-s18"),
+        ("tenant-s18", "workspace-s18", "notebook-s18", "actor-s18"),
+        ("tenant-s18", "workspace-s18", "notebook-s18", "actor-s18")]
     assert len(store.calls) == 6
     assert (store.scopes[0].tenant_id, store.scopes[0].workspace_id, store.scopes[0].actor_id) == (
         "tenant-s18", "workspace-s18", "actor-s18")

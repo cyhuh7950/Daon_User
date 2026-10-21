@@ -838,3 +838,18 @@ test("Question Citation 계약은 원본 페이지와 Daon 지식 구간을 같�
     assert.ok(document.components.schemas[name].allOf.some((condition) => condition.if?.properties?.kind?.const === "image_region" && condition.then?.properties?.value?.pattern));
   }
 });
+
+test('B conversation 공개계약은 상태 교차조건·현재범위·요청ID·상한 변조를 거부한다',async()=>{
+  const document=await loadContract();
+  assert.doesNotThrow(()=>validateOpenApiDocument(document));
+  for(const mutate of [
+    d=>{d.components.schemas.NotebookConversationResponse.properties.text.minLength=0;},
+    d=>{d.components.schemas.NotebookConversationResponse.properties.citations.maxItems=20;},
+    d=>{d.components.schemas.NotebookConversationTurn.allOf=[];},
+    d=>{d.components.schemas.NotebookConversationTurn.required=d.components.schemas.NotebookConversationTurn.required.filter(key=>key!=='client_request_id');},
+    d=>{d.paths['/api/v1/workspaces/{id}/notebooks/{notebook_id}/conversation-turns'].post={};},
+  ]) {
+    const bad=structuredClone(document);mutate(bad);
+    assert.throws(()=>validateOpenApiDocument(bad),/Notebook conversation|Notebook method/u);
+  }
+});

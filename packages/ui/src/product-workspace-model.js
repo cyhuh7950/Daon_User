@@ -1,3 +1,6 @@
+import { parseDocxBlock as validateConversationDocx } from "./shared-docx-block.js";
+import { parsePptxBlock as validateConversationPptx } from "./shared-pptx-block.js";
+import { parseAudioSegment as validateConversationAudio } from "./shared-audio-segment.js";
 export { parseDocxBlock, isDocxBlockContent } from "./shared-docx-block.js";
 export { parsePptxBlock, isPptxBlockContent } from "./shared-pptx-block.js";
 export { parseAudioSegment, isAudioSegmentContent } from "./shared-audio-segment.js";
@@ -60,8 +63,6 @@ export function projectQuestionFailureState(current, error) {
     ...current,
     safeError: null,
     conversationSafeError: code,
-    answer: null,
-    answerIntent: null,
   };
 }
 
@@ -165,4 +166,53 @@ export function isSheetCellContent(value, locatorValue, sourceVersionId) {
     const bounds = cellBounds(range);
     return bounds && bounds[0] <= endX && bounds[2] >= x && bounds[1] <= endY && bounds[3] >= y;
   });
+}
+
+// Merge only exact, server-bound request IDs. Text/time never identify a turn.
+export function mergeNotebookConversationTurns(current, incoming) {
+  const keys=['turn_id','question','response','state','submitted_at','model','client_request_id'];
+  const safeId=value=>typeof value==='string'&&/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value);
+  const exact=(value,names)=>value&&typeof value==='object'&&!Array.isArray(value)
+    && Object.keys(value).length===names.length&&names.every(key=>Object.hasOwn(value,key));
+  const valid=turn=>exact(turn,keys)&&safeId(turn.turn_id)&&typeof turn.question==='string'&&turn.question.length>=1&&turn.question.length<=32768
+    && ['pending','awaiting_authorization','completed','failed','uncertain','unavailable'].includes(turn.state)
+    && typeof turn.submitted_at==='string'&&/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/u.test(turn.submitted_at)&&!Number.isNaN(Date.parse(turn.submitted_at))
+    && (turn.client_request_id===null||(safeId(turn.client_request_id)&&turn.client_request_id.length>=8))
+    && (turn.model===null||(exact(turn.model,['provider_code','model_id'])&&Object.values(turn.model).every(v=>typeof v==='string'&&v.length>=1&&v.length<=255&&!/[\x00-\x20\x7f]/u.test(v))))
+    && (turn.response===null||exact(turn.response,['kind','text','insufficient','next_actions','citations'])
+      && ['answer','system'].includes(turn.response.kind)&&typeof turn.response.text==='string'&&turn.response.text.length>=1&&turn.response.text.length<=8000
+      && typeof turn.response.insufficient==='boolean'&&Array.isArray(turn.response.next_actions)&&turn.response.next_actions.length<=8&&turn.response.next_actions.every(v=>typeof v==='string'&&v.length<=255)
+      && Array.isArray(turn.response.citations)&&turn.response.citations.length<=10
+      && turn.response.citations.every(c=>exact(c,['citation_id','source_id','source_version_id','evidence_span_id','page','origin','context_item_id','locator'])
+        && ['citation_id','source_id','source_version_id','evidence_span_id','context_item_id'].every(k=>safeId(c[k]))
+        && Number.isSafeInteger(c.page)&&c.page>=1&&['raw_source','daon_knowledge'].includes(c.origin)
+        && exact(c.locator,['kind','value'])&&['page','section','image_region','sheet_cell','docx_block','pptx_block','audio_segment'].includes(c.locator.kind)
+        && typeof c.locator.value==='string'&&c.locator.value.length>=1&&c.locator.value.length<=255
+        && (c.locator.kind!=='page'||c.locator.value===String(c.page))
+        && (c.locator.kind!=='image_region'||parseImageRegion(c.locator.value)!==null)
+        && (c.locator.kind!=='sheet_cell'||parseSheetCell(c.locator.value)!==null)
+        && (c.locator.kind!=='docx_block'||validateConversationDocx(c.locator.value)!==null)
+        && (c.locator.kind!=='pptx_block'||validateConversationPptx(c.locator.value)!==null)
+        && (c.locator.kind!=='audio_segment'||validateConversationAudio(c.locator.value)!==null)))
+    && (turn.state==='completed'?turn.response?.kind==='answer'
+      :turn.state==='pending'?turn.response===null
+      :turn.response?.kind==='system'&&turn.response.insufficient===true&&turn.response.citations.length===0)
+    && (turn.state==='completed'||turn.model===null);
+  if (!Array.isArray(current)||!Array.isArray(incoming)||!current.every(valid)||!incoming.every(valid)) throw new Error('NOTEBOOK_CONVERSATION_INVALID');
+  for(const page of [current,incoming]){
+    const requests=page.map(turn=>turn.client_request_id).filter(id=>id!==null);
+    if(new Set(page.map(turn=>turn.turn_id)).size!==page.length||new Set(requests).size!==requests.length)throw new Error('NOTEBOOK_CONVERSATION_INVALID');
+  }
+  const merged=new Map();
+  const owners=new Map();
+  for(const turn of [...current,...incoming]) {
+    const id=turn.client_request_id===null?`turn:${turn.turn_id}`:`request:${turn.client_request_id}`;
+    if(owners.has(turn.turn_id)&&owners.get(turn.turn_id)!==id)throw new Error("NOTEBOOK_CONVERSATION_INVALID");
+    owners.set(turn.turn_id,id);
+    const previous=merged.get(id);
+    if(previous&&previous.turn_id!==turn.turn_id&&!previous.turn_id.startsWith('pending-')) throw new Error('NOTEBOOK_CONVERSATION_INVALID');
+    merged.set(id,turn);
+  }
+  const micros=value=>Date.parse(value)*1000+Number((/\.(\d+)Z$/u.exec(value)?.[1]??'').padEnd(6,'0').slice(3,6)||0);
+  return [...merged.values()].sort((a,b)=>micros(a.submitted_at)-micros(b.submitted_at)||(a.turn_id<b.turn_id?-1:a.turn_id>b.turn_id?1:0));
 }

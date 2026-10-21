@@ -642,6 +642,104 @@
         }
       }
     },
+    "/api/v1/workspaces/{id}/notebooks/{notebook_id}/conversation-turns": {
+      "get": {
+        "operationId": "listNotebookConversationTurns",
+        "tags": [
+          "Workspace"
+        ],
+        "summary": "현재 접근 권한으로 본인 Notebook 질문·답변 이력 조회",
+        "x-implementation-owner": "R1-M8-10",
+        "description": "현재 본인의 Notebook 질문을 최신순 페이지로 조회한다. 현재 Notebook·Source 접근을 재검사하며 답변 접근 철회 시 질문과 안전 안내만 제공한다. client_request_id는 기존 요청 멱등 ID이며 legacy는 null이다. cursor는 권한 근거가 아니다.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          },
+          {
+            "name": "notebook_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/OpaqueId"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048,
+              "pattern": "^[A-Za-z0-9_-]+$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "본인 질문·답변 페이지. legacy 요청ID와 미실행 모델은 null이다.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                }
+              },
+              "X-Trace-Id": {
+                "$ref": "#/components/headers/XTraceId"
+              },
+              "ETag": {
+                "$ref": "#/components/headers/ETag"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotebookConversationEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
     "/api/v1/workspaces/{id}/notebooks/{notebook_id}/context": {
       "get": {
         "operationId": "getWorkspaceNotebookContext", "tags": ["Workspace"],
@@ -7473,6 +7571,12 @@
         "type": "string",
         "enum": [
           "QUESTION_FAILED",
+          "NOTEBOOK_TURN_CONFLICT",
+          "NOTEBOOK_TURN_INVALID",
+          "NOTEBOOK_CURSOR_INVALID",
+          "NOTEBOOK_PAGE_INVALID",
+          "NOTEBOOK_CONVERSATION_UNAVAILABLE",
+
           "AUTHENTICATION_REQUIRED",
           "FORBIDDEN",
           "RESOURCE_UNAVAILABLE",
@@ -9255,6 +9359,303 @@
                 "answer": { "$ref": "#/components/schemas/GroundedAnswer" }
               } }
             ]
+          }
+        }
+      },
+      "NotebookConversationResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "text",
+          "insufficient",
+          "next_actions",
+          "citations"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "answer",
+              "system"
+            ]
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8000
+          },
+          "insufficient": {
+            "type": "boolean"
+          },
+          "next_actions": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "type": "string",
+              "maxLength": 255
+            }
+          },
+          "citations": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "$ref": "#/components/schemas/GroundedCitation"
+            }
+          }
+        }
+      },
+      "NotebookConversationTurn": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "turn_id",
+          "question",
+          "response",
+          "state",
+          "submitted_at",
+          "model",
+          "client_request_id"
+        ],
+        "properties": {
+          "turn_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+          },
+          "question": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32768
+          },
+          "response": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/NotebookConversationResponse"
+              }
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "awaiting_authorization",
+              "completed",
+              "failed",
+              "uncertain",
+              "unavailable"
+            ]
+          },
+          "submitted_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "model": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "provider_code",
+                  "model_id"
+                ],
+                "properties": {
+                  "provider_code": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 255,
+                    "pattern": "^[^\\x00-\\x20\\x7f]+$"
+                  },
+                  "model_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 255,
+                    "pattern": "^[^\\x00-\\x20\\x7f]+$"
+                  }
+                }
+              }
+            ]
+          },
+          "client_request_id": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "minLength": 8,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$"
+              }
+            ]
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "state": {
+                  "const": "completed"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "response": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/NotebookConversationResponse"
+                    },
+                    {
+                      "properties": {
+                        "kind": {
+                          "const": "answer"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "state": {
+                  "const": "pending"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "response": {
+                  "type": "null"
+                },
+                "model": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "state": {
+                  "enum": [
+                    "awaiting_authorization",
+                    "failed",
+                    "uncertain",
+                    "unavailable"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "model": {
+                  "type": "null"
+                },
+                "response": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/NotebookConversationResponse"
+                    },
+                    {
+                      "properties": {
+                        "kind": {
+                          "const": "system"
+                        },
+                        "insufficient": {
+                          "const": true
+                        },
+                        "citations": {
+                          "maxItems": 0
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "NotebookConversationPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/NotebookConversationTurn"
+            }
+          },
+          "next_cursor": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2048,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            ]
+          }
+        }
+      },
+      "NotebookConversationEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data",
+          "meta"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/NotebookConversationPage"
+          },
+          "meta": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "trace_id",
+              "workspace_id",
+              "notebook_id"
+            ],
+            "properties": {
+              "trace_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "workspace_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "notebook_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              }
+            }
           }
         }
       },

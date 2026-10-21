@@ -270,6 +270,19 @@ class PostgresNotebookRepository:
         except CloudDatabaseError as error:
             raise NotebookError("NOTEBOOK_UNAVAILABLE", 503) from error
 
+    def _conversation_repository(self):
+        from .notebook_conversation_postgres import PostgresNotebookConversationRepository
+        return PostgresNotebookConversationRepository(self)
+
+    def admit_question_turn(self, context, notebook_id, **values):
+        return self._conversation_repository().admit_question_turn(context, notebook_id, **values)
+
+    def append_question_turn_event(self, context, notebook_id, **values):
+        return self._conversation_repository().append_question_turn_event(context, notebook_id, **values)
+
+    def list_conversation_turns(self, context, notebook_id, **values):
+        return self._conversation_repository().list_conversation_turns(context, notebook_id, **values)
+
     def _read_exact_context(self, context, notebook_id, *, run_id=None, studio_job_id=None):
         """새 선택 경로만 실제 원장에 결속한다. 기본 조회와 공유 Job GET 정책은 유지한다."""
         from types import SimpleNamespace
