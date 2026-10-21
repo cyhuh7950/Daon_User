@@ -1958,3 +1958,19 @@ test("BFF exposes screen preference as same-origin exact GET PUT only", async ()
     { url: "https://api.example.com/api/v1/preferences/screen", method: "PUT", contentType: "application/json" },
   ]);
 });
+
+
+test('B3 routing read requires one Workspace and policy precondition is exact-path only',async()=>{
+ const calls=[],proxy=createBffProxy({baseUrl:new URL('https://api.example.com'),fetchImpl:async(url,init)=>{calls.push({url:String(url),headers:init.headers});return Response.json({data:{}});}});
+ const parts=['runs','run-a','routing-decision'],root='https://app.example.com/bff/api/'+parts.join('/');
+ assert.equal((await proxy(new Request(root+'?workspace_id=workspace-a'),parts)).status,200);
+ assert.equal(calls.at(-1).url,'https://api.example.com/api/v1/runs/run-a/routing-decision?workspace_id=workspace-a');
+ const before=calls.length;
+ for(const query of ['', 'workspace_id=','workspace_id=a&workspace_id=b','workspace_id=a&actor_id=other'])assert.equal((await proxy(new Request(root+'?'+query),parts)).status,400);
+ assert.equal(calls.length,before);
+ const policy=['workspaces','workspace-a','routing-policy'];
+ assert.equal((await proxy(new Request('https://app.example.com/bff/api/'+policy.join('/'),{method:'PUT',headers:{origin:'https://app.example.com','content-type':'application/json','if-none-match':'*','idempotency-key':'policy-create'},body:'{}'}),policy)).status,200);
+ assert.equal(calls.at(-1).headers.get('if-none-match'),'*');
+ await proxy(new Request('https://app.example.com/bff/api/workspaces/workspace-a/questions',{method:'POST',headers:{origin:'https://app.example.com','content-type':'application/json','if-none-match':'*'},body:'{}'}),['workspaces','workspace-a','questions']);
+ assert.equal(calls.at(-1).headers.get('if-none-match'),null);
+});

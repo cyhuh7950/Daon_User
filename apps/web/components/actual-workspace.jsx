@@ -4,7 +4,7 @@ import { createProductWorkspaceState } from "@daon-user/ui/product-workspace-mod
 import { ProductWorkspaceShell } from "@daon-user/ui/product-workspace-shell";
 import { ProviderSettingsWorkspace } from "./provider-settings-workspace.jsx";
 import { getDocumentProcessingStatus, reprocessSource, uploadSource } from "../lib/source-upload-api.js";
-import { askGroundedQuestion, authorizeGroundedQuestion, citationContentUrl } from "../lib/question-answering-api.js";
+import { askGroundedQuestion, authorizeGroundedQuestion, citationContentUrl, getRoutingPolicy, getRunRoutingDecision } from "../lib/question-answering-api.js";
 import { createGroundedReport, createStudioGeneration, getStudioGenerationJob, createStudioVersion, createStudioAction, downloadStudioExport, getWorkspaceOperationsStatus, getWorkspaceOutputVersionSettings, issueStudioStepUp, listProductStudioOutputs, listStudioOutputs, listStudioVersions, listWorkspaceConnectors, listWorkspaceKnowledgePackages, listWorkspaceSources, reconnectWorkspaceConnector, registerWorkspaceConnector, unregisterWorkspaceConnector, saveWorkspaceOutputVersionSettings, unbindWorkspaceSource } from "../lib/product-workspace-api.js";
 import { issueStudioExportStepUp } from "../lib/product-workspace-api.js";
 import { getStudioApprovalPolicy, saveStudioApprovalPolicy, issueStudioApprovalPolicyStepUp, withdrawStudioApprovalRequest, listStudioApprovalNotices, markStudioApprovalNoticeRead } from "../lib/product-workspace-api.js";
@@ -60,6 +60,9 @@ export function createWebProductWorkspaceAdapter(workspaceId, notebookId) {
     uploadPdf: (file, options) => uploadSource(workspaceId, file, notebookOptions(options)),
     reprocessSource: (source, options) => reprocessSource(workspaceId, source, notebookOptions(options)),
     getProcessingStatus: (processingRunId, options) => getDocumentProcessingStatus(workspaceId, processingRunId, notebookOptions(options)),
+    routingNotebookId: notebookId,
+    getRoutingPolicy: options => getRoutingPolicy(workspaceId, options),
+    getRunRoutingDecision: (runId, options) => getRunRoutingDecision(workspaceId, runId, options),
     askQuestion: (input, options) => askGroundedQuestion(workspaceId, notebookInput(input), options),
     authorizeQuestion: (input, options) => authorizeGroundedQuestion(workspaceId, notebookInput(input), options),
     citationUrl: (citation, options) => citationContentUrl(workspaceId, citation, notebookOptions(options)),

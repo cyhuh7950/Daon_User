@@ -959,7 +959,7 @@ test("ordinary user sees public connection without personal key actions", async 
     const container = dom.document.createElement("div"); dom.document.body.appendChild(container);
     reactRoot = createRoot(container);
     await act(async () => { reactRoot.render(createElement(ProviderSettingsWorkspace, { workspaceId: "workspace-001", embedded: true })); await Promise.resolve(); await Promise.resolve(); });
-    assert.deepEqual(requests, ["/bff/api/session", "/bff/api/admin/provider-connections", "/bff/api/provider-credentials", "/bff/api/workspaces/workspace-001/model-defaults"]);
+    assert.deepEqual(requests, ["/bff/api/workspaces/workspace-001/routing-policy", "/bff/api/session", "/bff/api/admin/provider-connections", "/bff/api/provider-credentials", "/bff/api/workspaces/workspace-001/model-defaults"]);
     assert.equal(findElements(container, (node) => node.tagName === "INPUT" && (node.type === "password" || node.getAttribute("type") === "password")).length, 0);
     assert.match(container.textContent, /공용|qwen3/u);
     assert.doesNotMatch(container.textContent, /내 계정 키 저장|내 계정 키 삭제|연결 저장|연결 삭제|모델 조회/u);
@@ -1091,6 +1091,7 @@ test("system admin can re-enter their own legacy personal Key without replacing 
     await act(async () => { reactRoot.render(createElement(ProviderSettingsWorkspace, { workspaceId: "workspace-001", embedded: true })); await Promise.resolve(); await Promise.resolve(); });
 
     assert.deepEqual(fixture.requests.map(({ path, method }) => [path, method]), [
+      ["/bff/api/workspaces/workspace-001/routing-policy", "GET"],
       ["/bff/api/session", "GET"],
       ["/bff/api/admin/provider-connections", "GET"],
       ["/bff/api/provider-credentials", "GET"],
@@ -1136,4 +1137,19 @@ test("provider view helpers expose safe status and connection-name model choices
   } finally {
     await rm(output, { recursive: true, force: true });
   }
+});
+
+
+test('B3 policy settings show actual safe candidates but no inferred POLICY_MANAGE editing',async()=>{
+ const fixture=adminFixture(),oldFetch=fixture.fetch;
+ fixture.fetch=async(url,options={})=>String(url).endsWith('/routing-policy')?Response.json({data:{version:2,policy_version_id:'policy-real',digest_sha256:'a'.repeat(64),
+   body:{schema_version:1,expected_version:1,enabled:false,capability:'text_generation',candidates:[{model_id:'real-catalog-model',connection_id:'connection-safe',credential_source:'workspace',connection_version:1,catalog_version:1,endpoint_version:1,credential_version:4}],ranking_profile:{version:'v1',evaluation_set:'eval',minimum_quality:0,observation_window:'window',input_class:'short',minimum_samples:1,max_age_seconds:60,tier_mapping_version:'v1',locality_mapping_version:'v1'},fallback_policy:{mode:'transient_only'},budget:{currency:'USD',run_limit:'1.00',max_attempts:1}},execution_enabled:false,readiness:'disabled'},
+   meta:{workspace_id:'workspace-001',trace_id:'trace-policy'}},{headers:{etag:'"routing-policy-real"'}}):oldFetch(url,options);
+ const w=await mountAdminFixture(fixture,'b3-policy-readonly');
+ try{await w.act(async()=>{await Promise.resolve();await Promise.resolve();});
+  assert.match(w.container.textContent,/자동 선택 후보 정책/u);assert.match(w.container.textContent,/real-catalog-model/u);
+  assert.match(w.container.textContent,/정책 관리 권한 확인.*미구현/u);assert.match(w.container.textContent,/관측·가격·상위 예산/u);
+  assert.equal(findElements(w.container,n=>n.tagName==='BUTTON' && /후보 정책 저장|자동 선택 활성화/u.test(n.textContent)).length,0);
+  assert.equal(fixture.requests.filter(r=>r.method==='PUT' && r.path.endsWith('/routing-policy')).length,0);
+ }finally{await w.cleanup();}
 });

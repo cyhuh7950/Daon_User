@@ -205,6 +205,18 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
   const [healthIntervalDraft, setHealthIntervalDraft] = useState(60);
   const [status, setStatus] = useState({ kind: "loading", message: "Provider 설정을 불러오는 중입니다." });
   const [modelDefaults, setModelDefaults] = useState(null);
+  const [routingPolicy,setRoutingPolicy]=useState(null);
+  const [routingPolicyError,setRoutingPolicyError]=useState(false);
+  const [routingPolicyRevision,setRoutingPolicyRevision]=useState(0);
+  useEffect(()=>{
+    setRoutingPolicy(null);setRoutingPolicyError(false);
+    if(!resolvedWorkspaceId)return undefined;
+    const controller=new AbortController();
+    providerSettingsApi.getRoutingPolicy(resolvedWorkspaceId,{signal:controller.signal}).then(result=>{
+      if(!controller.signal.aborted)setRoutingPolicy(result);
+    }).catch(()=>{if(!controller.signal.aborted)setRoutingPolicyError(true);});
+    return()=>controller.abort();
+  },[resolvedWorkspaceId,routingPolicyRevision]);
   const [textModelChoice, setTextModelChoice] = useState("");
   const [asrModelChoice, setAsrModelChoice] = useState("");
   const [defaultStatus, setDefaultStatus] = useState("");
@@ -696,6 +708,17 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
         </div>
       </section> : null}
 
+      <section className="workspace-model-defaults" aria-labelledby="routing-policy-title">
+        <h2 id="routing-policy-title">자동 선택 후보 정책</h2>
+        <p>관측·가격·상위 예산 producer 연결은 미구현입니다. 정책이 있어도 자동 실행 준비 완료를 의미하지 않습니다.</p>
+        <p>정책 관리 권한 확인 API는 미구현이므로 현재 읽기 전용입니다. 시스템 관리자 표시로 편집 권한을 추정하지 않습니다.</p>
+        <button type="button" className="secondary-button" onClick={()=>setRoutingPolicyRevision(x=>x+1)}>후보 정책 새로고침</button>
+        {routingPolicyError?<p role="alert">현재 후보 정책을 조회할 수 없습니다. Workspace 접근 권한과 저장소 준비 상태를 확인해 주세요.</p>:routingPolicy?<div>
+          <p>정책 버전 · {routingPolicy.version} · {routingPolicy.body?.enabled?'활성 정책 · 실행 준비 미완료':routingPolicy.body?'비활성':'정책 없음'}</p>
+          <ul>{routingPolicy.body?.candidates?.map((candidate,index)=><li key={`${candidate.connection_id}:${candidate.model_id}`}>등록 후보 {index+1} · {candidate.model_id} · Catalog v{candidate.catalog_version}</li>)}</ul>
+          <p>등록 목록은 실행 시 동결된 정렬 순서가 아닙니다.</p>
+        </div>:<p role="status">후보 정책을 확인하고 있습니다.</p>}
+      </section>
       <section className="workspace-model-defaults" aria-labelledby="provider-models-title">
         <div className="studio-section-heading"><div><span className="section-kicker">MODEL CATALOG</span><h2 id="provider-models-title">사용 허용 모델</h2><small>{isSystemAdmin ? "조회된 카탈로그와 사용 허용 목록을 구분해 관리합니다." : "시스템 관리자가 허용한 모델만 표시합니다."}</small></div></div>
         <div className="workspace-default-controls">

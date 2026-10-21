@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { askGroundedQuestion, authorizeGroundedQuestion, citationContentUrl } from "../../apps/web/lib/question-answering-api.js";
+import { askGroundedQuestion, authorizeGroundedQuestion, citationContentUrl, getRunRoutingDecision, getRoutingPolicy } from "../../apps/web/lib/question-answering-api.js";
 
 const citation = Object.freeze({
   citation_id: "citation-1",
@@ -261,3 +261,39 @@ for (const [name, payload] of [
     await assert.rejects(request(payload), { message: "QUESTION_RESPONSE_INVALID" });
   });
 }
+
+
+const routingPreview=()=>({schema_version:1,routing_policy_version_id:'policy-1',plan_digest:'a'.repeat(64),
+  candidates:[{candidate_order:1,model_id:'model-a',deployment_id:'deployment-a',provider_kind:'server_internal'}],exclusions:[]});
+test('B3 auto prepares without unconditional password and executes exact Plan permit',async()=>{
+  const calls=[],grant={routing_plan_id:'plan-1',routing_plan_authorization:'one-use-permit',expires_at:new Date(Date.now()+60000).toISOString(),
+    run_id:'run-1',plan_digest:'a'.repeat(64),requires_step_up:false,routing_preview:routingPreview()};
+  const input={notebookId:'notebook-1',question:'QA',routingMode:'auto',routingPolicyVersionId:'policy-1'};
+  const options={idempotencyKey:'auto-question',fetchImpl:async(url,init)=>{calls.push({url,body:JSON.parse(init.body)});return Response.json({data:grant,meta:{trace_id:'trace-1'}});}};
+  const prepared=await authorizeGroundedQuestion('workspace-1',input,options);assert.deepEqual(prepared,grant);
+  assert.deepEqual(calls[0].body,{notebook_id:'notebook-1',question:'QA',routing_mode:'auto',routing_policy_version_id:'policy-1'});
+  await askGroundedQuestion('workspace-1',input,{...options,routingPlanId:prepared.routing_plan_id,routingPlanAuthorization:prepared.routing_plan_authorization,
+    fetchImpl:async(_url,init)=>{assert.deepEqual(JSON.parse(init.body),{notebook_id:'notebook-1',question:'QA',routing_mode:'auto',routing_policy_version_id:'policy-1',routing_plan_id:'plan-1',routing_plan_authorization:'one-use-permit'});return Response.json(envelope());}});
+  await assert.rejects(askGroundedQuestion('workspace-1',input,{...options,stepUpAuthorizationId:'legacy'}));
+});
+
+
+const b3ReadData=()=>({schema_version:1,run_id:'run-1',routing_mode:'auto',routing_policy_version_id:'policy-1',routing_plan_id:'plan-1',plan_digest:'a'.repeat(64),run_state:'failed',candidates:routingPreview().candidates,exclusions:[],attempts:[],final_selection:null});
+test('B3 safe routing read binds Run Workspace and rejects secret extras or invented cost',async()=>{
+ const data=b3ReadData(),calls=[];
+ const read=(value=data,meta={workspace_id:'workspace-1',trace_id:'trace-1'})=>getRunRoutingDecision('workspace-1','run-1',{fetchImpl:async(url,init)=>{calls.push({url,init});return Response.json({data:value,meta});}});
+ assert.deepEqual(await read(),data);assert.equal(calls[0].url,'/bff/api/runs/run-1/routing-decision?workspace_id=workspace-1');assert.equal(calls[0].init.cache,'no-store');
+ for(const mutate of [v=>v.candidates[0].endpoint='private',v=>v.run_id='other',v=>v.final_selection={candidate_order:1,model_id:'model-a',attempt_id:'untried'},
+  v=>v.attempts=[{attempt_id:'attempt-a',candidate_order:1,state:'uncertain',started_at:'2026-10-21T00:00:00Z',finished_at:null,failure_code:null,cost_state:'unknown',cost_amount:'0',currency:'USD'}]]){
+  const changed=structuredClone(data);mutate(changed);await assert.rejects(read(changed),/ROUTING_RESPONSE_INVALID/);
+ }
+ await assert.rejects(read(data,{workspace_id:'other',trace_id:'trace-1'}),/ROUTING_RESPONSE_INVALID/);
+});
+test('B3 routing policy rejects nested credential endpoint extras before UI projection',async()=>{
+ const body={schema_version:1,expected_version:0,enabled:false,capability:'text_generation',candidates:[{connection_id:'connection-1',model_id:'model-a',credential_source:'workspace',connection_version:1,catalog_version:1,credential_version:0,endpoint_version:1}],ranking_profile:{version:'v1',evaluation_set:'eval',minimum_quality:0,observation_window:'window',input_class:'short',minimum_samples:1,max_age_seconds:60,tier_mapping_version:'v1',locality_mapping_version:'v1'},fallback_policy:{mode:'transient_only'},budget:{currency:'USD',run_limit:'1.00',max_attempts:1}};
+ const value={version:1,policy_version_id:'policy-1',digest_sha256:'a'.repeat(64),body,execution_enabled:false,readiness:'disabled'};
+ const read=data=>getRoutingPolicy('workspace-1',{fetchImpl:async()=>Response.json({data,meta:{trace_id:'trace-1',workspace_id:'workspace-1'}},{headers:{ETag:'"routing-policy-a"'}})});
+ assert.equal((await read(value)).body.candidates[0].model_id,'model-a');
+ const bad=structuredClone(value);bad.body.candidates[0].credential='secret-not-for-ui';
+ await assert.rejects(read(bad),/ROUTING_RESPONSE_INVALID/);
+});

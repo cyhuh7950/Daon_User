@@ -4,7 +4,7 @@ import { parsePptxBlock, isPptxBlockContent, pptxBlockLabel } from "./shared-ppt
 
 import { useEffect, useRef, useState } from "react";
 import "@daon-user/design-tokens/tokens.css";
-import { canCreateGroundedReport, createProductWorkspaceState, normalizeProductWorkspaceState, projectQuestionFailureState, questionFailureMessage, parseImageRegion, parseSheetCell, isSheetCellContent } from "./product-workspace-model.js";
+import { canCreateGroundedReport, createProductWorkspaceState, normalizeProductWorkspaceState, projectQuestionFailureState, questionFailureMessage, parseRoutingSelection, routingSelectionFragment, parseImageRegion, parseSheetCell, isSheetCellContent } from "./product-workspace-model.js";
 import { createProductStudioState } from "./product-studio-model.js";
 import { ProductStudioPane } from "./product-studio-pane.jsx";
 import { StudioApprovalPolicySettings } from "./studio-approval-policy-settings.jsx";
@@ -742,6 +742,16 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
   const [processing, setProcessing] = useState(null);
   const [question, setQuestion] = useState("");
   const [questionPending, setQuestionPending] = useState(false);
+  const [routingMode,setRoutingMode]=useState('pinned');
+  const [questionPreview,setQuestionPreview]=useState(null);
+  const [routingRunId,setRoutingRunId]=useState(null);
+  const [routingDetailSnapshot,setRoutingDetails]=useState(null);
+  const [routingDetailError,setRoutingDetailError]=useState(null);
+  const [routingRevision,setRoutingRevision]=useState(0);
+  const [routingSelectionNotice,setRoutingSelectionNotice]=useState(null);
+  const routingScopeRef=useRef(null);
+  const routingNotebookId=adapter?.routingNotebookId ?? adapter?.notebookContext?.notebook_id;
+
   const [questionAuthPending, setQuestionAuthPending] = useState(false);
   const [questionAuthError, setQuestionAuthError] = useState(null);
   const [reportTitle, setReportTitle] = useState("");
@@ -849,14 +859,17 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
   const licenseFileRef = useRef(null);
   const licensePasswordRef = useRef(null);
 
-  const cancelQuestionRequest = () => {
+  const cancelQuestionRequest = (clearSelection = false) => {
+    if(clearSelection){replaceRoutingSelection(null,workspaceId,routingNotebookId);setRoutingRunId(null);setRoutingDetails(null);}
     questionEpochRef.current += 1;
     const request = questionRequestRef.current;
     questionRequestRef.current = null;
     request?.controller.abort();
     request?.resolveAuthorization?.(null);
+    request?.resolvePreview?.(null);
+    setQuestionPreview(null);
     if (questionPasswordRef.current) questionPasswordRef.current.value = "";
-    setModalView(current => current === "question-step-up" ? null : current);
+    setModalView(current => ["question-step-up","question-auto-preview"].includes(current) ? null : current);
     setQuestionAuthPending(false);
     setQuestionAuthError(null);
     setQuestionPending(false);
@@ -1070,6 +1083,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
       questionEpochRef.current += 1;
       questionRequestRef.current?.controller.abort();
       questionRequestRef.current?.resolveAuthorization?.(null);
+      questionRequestRef.current?.resolvePreview?.(null);
       if (questionPasswordRef.current) questionPasswordRef.current.value = "";
       questionRequestRef.current = null;
       outputRequestRef.current?.controller.abort();
@@ -1422,6 +1436,42 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
     }
   };
 
+  useEffect(()=>{
+    if(!questionPreview)return undefined;
+    const timeout=setTimeout(()=>{cancelQuestionRequest();setViewState(current=>projectQuestionFailureState(current,new Error('ROUTING_AUTHORIZATION_EXPIRED')));},Math.max(0,Date.parse(questionPreview.expires_at)-Date.now()));
+    return()=>clearTimeout(timeout);
+  },[questionPreview]);
+
+  useEffect(()=>{
+    const prior=routingScopeRef.current;
+    if(prior && (prior.workspaceId!==workspaceId || prior.notebookId!==routingNotebookId))replaceRoutingSelection(null,prior.workspaceId,prior.notebookId);
+    routingScopeRef.current={workspaceId,notebookId:routingNotebookId};
+    setRoutingRunId(null);setRoutingDetails(null);setRoutingDetailError(null);setRoutingMode('pinned');setRoutingSelectionNotice(null);
+    if(typeof window!=='undefined' && window.location?.hash){
+      try{setRoutingRunId(parseRoutingSelection(window.location.hash,workspaceId,routingNotebookId));}
+      catch{setRoutingSelectionNotice('이 주소의 실행 선택 정보를 현재 Workspace와 Notebook에서 사용할 수 없습니다.');}
+    }
+  },[workspaceId,adapter,routingNotebookId]);
+  const detailRunId=routingRunId ?? viewState.answer?.run_id;
+  const routingDetails=routingDetailSnapshot?.adapter===adapter && routingDetailSnapshot.workspaceId===workspaceId
+    && routingDetailSnapshot.notebookId===routingNotebookId && routingDetailSnapshot.runId===detailRunId?routingDetailSnapshot.data:null;
+  useEffect(()=>{
+    setRoutingDetails(null);setRoutingDetailError(null);
+    if(!detailRunId || typeof adapter?.getRunRoutingDecision!=='function')return undefined;
+    const controller=new AbortController();
+    adapter.getRunRoutingDecision(detailRunId,{signal:controller.signal}).then(data=>{
+      if(!controller.signal.aborted)setRoutingDetails({data,adapter,workspaceId,notebookId:routingNotebookId,runId:detailRunId});
+    }).catch(error=>{if(!controller.signal.aborted)setRoutingDetailError(safeErrorCode(error,'ROUTING_EXECUTION_UNAVAILABLE'));});
+    return()=>controller.abort();
+  },[adapter,workspaceId,routingNotebookId,detailRunId,routingRevision]);
+
+  const confirmAutoQuestion=()=>{
+    const token=questionRequestRef.current;
+    if(!token?.isCurrent() || !token.resolvePreview)return;
+    const resolve=token.resolvePreview;token.resolvePreview=null;
+    setQuestionPreview(null);setModalView(null);resolve(true);
+  };
+
   const askQuestion = async (event) => {
     event.preventDefault();
     if (!adapter || !question.trim() || questionRequestRef.current || !workspaceMountedRef.current) return;
@@ -1431,6 +1481,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
     const signal = token.controller.signal;
     questionRequestRef.current = token;
     setQuestionPending(true);
+    setRoutingRunId(null);setRoutingDetails(null);
     setViewState(current => ({ ...current, answer: null, answerIntent: null, conversationSafeError: null }));
     const current = () => !signal.aborted && workspaceMountedRef.current
       && questionEpoch === questionEpochRef.current && questionRequestRef.current === token;
@@ -1445,7 +1496,32 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
       token.input = input;
       token.options = { signal, idempotencyKey };
       let answer;
-      try {
+      if(routingMode==='auto') {
+        if(typeof adapter.getRoutingPolicy!=='function' || typeof adapter.authorizeQuestion!=='function')throw new Error('ROUTING_EXECUTION_UNAVAILABLE');
+        const policy=await adapter.getRoutingPolicy({signal});
+        if(!current())return;
+        if(!policy.body?.enabled || !policy.policy_version_id)throw new Error('ROUTING_POLICY_DISABLED');
+        input.routingMode='auto';input.routingPolicyVersionId=policy.policy_version_id;
+        let grant;
+        try{grant=await adapter.authorizeQuestion(input,token.options);}
+        catch(error){
+          if(!current() || !['REAUTHENTICATION_REQUIRED','ROUTING_AUTHORIZATION_REQUIRED'].includes(error?.message))throw error;
+          grant=await new Promise(resolve=>{token.resolveAuthorization=resolve;setQuestionAuthError(null);modalOpenerRef.current=document.activeElement;setModalView('question-step-up');});
+          token.resolveAuthorization=null;
+        }
+        if(!current() || !grant)return;
+        token.autoGrant=grant;
+        const confirmed=await new Promise(resolve=>{token.resolvePreview=resolve;setQuestionPreview({routing_preview:grant.routing_preview,expires_at:grant.expires_at});modalOpenerRef.current=document.activeElement;setModalView('question-auto-preview');});
+        token.resolvePreview=null;
+        if(!current() || !confirmed)return;
+        if(Date.parse(grant.expires_at)<=Date.now())throw new Error('ROUTING_AUTHORIZATION_EXPIRED');
+        const latest=await adapter.getRoutingPolicy({signal});
+        if(!current())return;
+        if(latest.policy_version_id!==policy.policy_version_id || !latest.body?.enabled)throw new Error('ROUTING_POLICY_CHANGED');
+        setRoutingRunId(grant.run_id);
+        if(!replaceRoutingSelection(grant.run_id,workspaceId,routingNotebookId))setRoutingSelectionNotice('현재 실행 상세는 조회할 수 있으나 이 환경 또는 기존 주소 표시에서는 새로고침 복원을 지원하지 않습니다.');
+        answer=await adapter.askQuestion(input,{...token.options,routingPlanId:grant.routing_plan_id,routingPlanAuthorization:grant.routing_plan_authorization});
+      } else try {
         answer = await adapter.askQuestion(input, token.options);
       } catch (error) {
         if (!current() || error?.message !== "STEP_UP_REQUIRED" || typeof adapter.authorizeQuestion !== "function") throw error;
@@ -1471,8 +1547,10 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
           : conversationMode,
       }));
       reportIdempotencyRef.current = null;
+      if(input.routingMode==='auto'){token.autoGrant=null;setRoutingRevision(x=>x+1);}
     } catch (error) {
       if (!current()) return;
+      if(token.autoGrant?.run_id){setRoutingRunId(token.autoGrant.run_id);setRoutingRevision(x=>x+1);}
       setViewState((current) => projectQuestionFailureState(
         current,
         new Error(safeErrorCode(error, "QUESTION_FAILED")),
@@ -1497,6 +1575,10 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
     try {
       const grant = await adapter.authorizeQuestion({ ...token.input, password }, token.options);
       if (!token.isCurrent()) return;
+      if(token.input.routingMode==='auto') {
+        if(!grant?.routing_preview || !grant.routing_plan_authorization)throw new Error('QUESTION_AUTHORIZATION_RESPONSE_INVALID');
+        setModalView(null);token.resolveAuthorization(grant);return;
+      }
       if (typeof grant?.step_up_authorization_id !== "string" || !grant.step_up_authorization_id) {
         throw new Error("QUESTION_AUTHORIZATION_RESPONSE_INVALID");
       }
@@ -1512,7 +1594,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
 
   const selectSource = (source) => {
     if (!source.ready) return;
-    cancelQuestionRequest();
+    cancelQuestionRequest(true);
     reportIdempotencyRef.current = null;
     setViewState((current) => ({
       ...current,
@@ -1850,7 +1932,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
   };
   const closeModal = (force = false) => {
     if (modalView === "output-version" && outputRequestRef.current?.kind === "save") return;
-    if (modalView === "question-step-up") cancelQuestionRequest();
+    if (["question-step-up","question-auto-preview"].includes(modalView)) cancelQuestionRequest(true);
     if (!force && modalView === "output-version" && outputSettingsDirty) {
       setOutputCloseGuard(true);
       return;
@@ -1891,7 +1973,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
               <button type="button" role="menuitem" onClick={() => openModal("organization-policy", settingsButtonRef.current)}><span className="menu-icon icon-policy" aria-hidden="true" /><span><strong>조직 정책</strong><small>읽기 전용</small></span></button>
               <button type="button" role="menuitem" onClick={() => openModal("license", settingsButtonRef.current)}><span className="menu-icon icon-license" aria-hidden="true" /><span><strong>라이선스</strong><small>Edition과 사용 한도</small></span></button>
               <button type="button" role="menuitem" onClick={() => openModal("manual", settingsButtonRef.current)}><span className="menu-icon icon-manual" aria-hidden="true" /><span><strong>사용자 설명서</strong><small>가이드 검색·읽기·다운로드</small></span></button>
-              <button type="button" role="menuitem" onClick={() => { setSettingsMenuOpen(false); onLogout?.(); }}><span className="menu-icon" aria-hidden="true" /><span><strong>로그아웃</strong><small>현재 세션만 종료</small></span></button>
+              <button type="button" role="menuitem" onClick={() => { setSettingsMenuOpen(false); cancelQuestionRequest(true); onLogout?.(); }}><span className="menu-icon" aria-hidden="true" /><span><strong>로그아웃</strong><small>현재 세션만 종료</small></span></button>
             </div> : null}
           </div>
         </div>
@@ -1929,7 +2011,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
             <ul className="source-list knowledge-list" aria-label="Daon 승인 지식 목록">
               {knowledgePackages.map((item) => (
                 <li className="source-list-row knowledge-list-row" key={item.packageId}>
-                  <button type="button" aria-pressed={selectedKnowledgeId === item.packageId} onClick={() => { cancelQuestionRequest(); reportIdempotencyRef.current = null; setViewState((current) => ({ ...current, answer: null, answerIntent: null })); setSelectedKnowledgeId((current) => current === item.packageId ? null : item.packageId); }}>
+                  <button type="button" aria-pressed={selectedKnowledgeId === item.packageId} onClick={() => { cancelQuestionRequest(true); reportIdempotencyRef.current = null; setViewState((current) => ({ ...current, answer: null, answerIntent: null })); setSelectedKnowledgeId((current) => current === item.packageId ? null : item.packageId); }}>
                     <span className="source-file-icon knowledge-icon" aria-hidden="true">K</span><span className="source-row-copy"><strong>{item.producerLabel} · {item.producerVersion}</strong><small>{item.authorityLabel} · {item.registrationLabel}</small></span><span className={`source-ready-dot ${selectedKnowledgeId === item.packageId ? "is-ready" : ""}`} aria-hidden="true" />
                   </button>
                 </li>
@@ -2049,6 +2131,8 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
         <SafePane id="product-pane-conversation" title="대화·실행" description="ready Source 선택 후 실제 질문과 Citation을 사용합니다.">
           {desktopEditor ? desktopEditor : <div className="conversation-workspace"><div className="conversation-transcript" aria-live="polite">
           <div className="context-selection-status" role="status">질문 컨텍스트 · {selectedKnowledgeId ? "Daon 승인 지식" : ""}{selectedKnowledgeId && viewState.selectedSource ? " + " : ""}{viewState.selectedSource ? "Raw Source" : !selectedKnowledgeId ? "일반 상담" : ""}</div>
+          {typeof adapter?.getRoutingPolicy==='function' ? <label className="context-selection-status">모델 선택 방식 <select aria-label="질문 모델 선택 방식" value={routingMode} disabled={questionPending} onChange={event=>{cancelQuestionRequest(true);setRoutingMode(event.currentTarget.value);}}><option value="pinned">직접 선택 · 기존 기본 모델</option><option value="auto">자동 선택 · 승인 후보 준비</option></select></label> : null}
+          {routingMode==='auto'?<div role="status">관측·가격·상위 예산 연결이 준비되어야 실행할 수 있습니다. 서버에서 실제 준비 상태를 확인합니다.</div>:null}
           {questionPending ? <div className="context-selection-status" role="status">답변을 기다리고 있습니다.</div> : null}
           {viewState.answer ? <article className="assistant-message"><div className="assistant-avatar" aria-hidden="true">D</div><div><span className="message-author">Daon</span><p>{viewState.answer.answer}</p></div></article> : <div className="conversation-empty"><span className="conversation-orbit" aria-hidden="true">✦</span><h3>{viewState.selectedSource || selectedKnowledgeId ? "Source에 대해 무엇이든 물어보세요." : "무엇이든 물어보세요."}</h3><p>{viewState.selectedSource || selectedKnowledgeId ? "선택한 Source의 근거와 Citation을 사용해 답합니다." : "작업 상담, 구현 방법 등 일반 질문에 답합니다."}</p></div>}
           {viewState.answerIntent === "general_ungrounded" || viewState.answerIntent === "work_support_ungrounded"
@@ -2057,6 +2141,15 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
             ? <div className="context-selection-status" role="status">작업 상담 · Source 사용</div> : null}
           {viewState.answer?.insufficient ? <div className="context-selection-status" role="status"><strong>근거 부족</strong>{viewState.answer.next_actions?.length ? <ul>{viewState.answer.next_actions.map((action, index) => <li key={index}>{action}</li>)}</ul> : null}</div> : null}
           {viewState.conversationSafeError ? <div className="inline-alert compact" role="alert">{questionFailureMessage(viewState.conversationSafeError)}</div> : null}
+          {routingSelectionNotice?<p role="status">{routingSelectionNotice}</p>:null}
+          {detailRunId && typeof adapter?.getRunRoutingDecision==='function'?<section aria-label="질문 실행 상세">
+            <h3>질문 실행 상세</h3><button type="button" onClick={()=>setRoutingRevision(x=>x+1)}>실행 상세 새로고침</button>
+            {routingDetailError?<p role="alert">{routingDetailError==='RESOURCE_UNAVAILABLE'?'현재 Notebook·자료 접근 권한으로 이 실행 상세를 읽을 수 없습니다.':questionFailureMessage(routingDetailError)}</p>:null}
+            {routingDetails?<div><p>실행 상태 · {routingDetails.run_state}</p><ol>{routingDetails.candidates.map(c=><li key={c.candidate_order}>{c.candidate_order}. {c.model_id}</li>)}</ol>
+              {routingDetails.exclusions.length?<ul>{routingDetails.exclusions.map(c=><li key={c.deployment_id}>{c.deployment_id} · 제외 · {c.reason}</li>)}</ul>:<p>기록된 제외 정보 없음</p>}
+              {routingDetails.attempts.length?<ul>{routingDetails.attempts.map(a=><li key={a.attempt_id}>후보 {a.candidate_order} · {a.state} · {a.cost_state==='known'?`확인 비용 ${a.cost_amount} ${a.currency}`:a.cost_state==='uncertain'?'비용 불확정 · 추가 실행 전 확인':'비용 미확인'}{a.failure_code?` · ${a.failure_code}`:''}<time>{a.started_at}</time>{a.finished_at?<time>{a.finished_at}</time>:null}</li>)}</ul>:<p>기록된 실제 시도 없음</p>}
+              <p>{routingDetails.final_selection?`최종 모델 · ${routingDetails.final_selection.model_id}`:'최종 선택 결과 없음'}</p></div>:null}
+          </section>:null}
           <div className="citation-row">{viewState.answer?.citations?.map((citation) => (
             <a key={citation.citation_id} href={citation.content_url} onClick={(event) => {
               if(citation.origin==='raw_source' && citation.locator.kind==='section' && /^law-source-[0-9a-f]{32}$/u.test(citation.source_id)){
@@ -2170,7 +2263,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
               {imageCitationLoaded ? <span className="citation-image-region" aria-label="근거 영역" style={{ left: `${imageCitation.region.x / imageCitation.region.imageWidth * 100}%`, top: `${imageCitation.region.y / imageCitation.region.imageHeight * 100}%`, width: `${imageCitation.region.width / imageCitation.region.imageWidth * 100}%`, height: `${imageCitation.region.height / imageCitation.region.imageHeight * 100}%` }} /> : null}
             </div>}
           </section> : null}</div><form className="conversation-composer" onSubmit={askQuestion}>
-            <label><span className="sr-only">질문</span><textarea rows="2" disabled={questionPending} placeholder={viewState.selectedSource || selectedKnowledgeId ? "선택한 지식과 작업에 대해 질문하세요" : "작업 내용이나 궁금한 점을 질문하세요"} value={question} onChange={(event) => setQuestion(event.currentTarget.value)} /></label>
+            <label><span className="sr-only">질문</span><textarea rows="2" disabled={questionPending} placeholder={viewState.selectedSource || selectedKnowledgeId ? "선택한 지식과 작업에 대해 질문하세요" : "작업 내용이나 궁금한 점을 질문하세요"} value={question} onChange={(event) => {cancelQuestionRequest(true);setQuestion(event.currentTarget.value);}} /></label>
             <button className="composer-submit" type="submit" aria-label="질문 실행" disabled={questionPending || !question.trim()}>↑</button>
           </form></div>}
         </SafePane>
@@ -2224,8 +2317,12 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
       </div>
       {modalView ? <div className="workspace-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeModal(); }}>
         <section ref={modalRef} className={`workspace-modal workspace-modal-${modalView}`} role="dialog" aria-modal="true" aria-labelledby="workspace-modal-title" onKeyDown={(event) => trapDialogFocus(event, closeModal)}>
-          <header className="workspace-modal-header"><div><span className="section-kicker">WORKSPACE SETTINGS</span><h2 id="workspace-modal-title">{modalView === "question-step-up" ? "외부 질문 추가 인증" : modalView === "llm" ? "LLM 설정" : modalView === "output-version" ? "출력·버전" : modalView === "sync" ? "동기화·승인" : modalView === "approval-policy" ? "승인 정책" : modalView === "organization-policy" ? "조직 정책" : modalView === "license" ? "라이선스" : modalView === "manual" ? "사용자 설명서" : "운영상태"}</h2></div><button className="modal-close" type="button" disabled={modalView === "output-version" && outputRequestRef.current?.kind === "save"} onClick={() => closeModal()} aria-label="닫기">×</button></header>
-          {modalView === "question-step-up" ? <div className="workspace-modal-content">
+          <header className="workspace-modal-header"><div><span className="section-kicker">WORKSPACE SETTINGS</span><h2 id="workspace-modal-title">{modalView === "question-auto-preview" ? "실행 후보 확인" : modalView === "question-step-up" ? "외부 질문 추가 인증" : modalView === "llm" ? "LLM 설정" : modalView === "output-version" ? "출력·버전" : modalView === "sync" ? "동기화·승인" : modalView === "approval-policy" ? "승인 정책" : modalView === "organization-policy" ? "조직 정책" : modalView === "license" ? "라이선스" : modalView === "manual" ? "사용자 설명서" : "운영상태"}</h2></div><button className="modal-close" type="button" disabled={modalView === "output-version" && outputRequestRef.current?.kind === "save"} onClick={() => closeModal()} aria-label="닫기">×</button></header>
+          {modalView === 'question-auto-preview' ? <div className="workspace-modal-content"><p>서버가 동결한 후보 순서입니다. 확인 후 실행하세요.</p>
+            <ol>{questionPreview?.routing_preview?.candidates.map(c=><li key={c.candidate_order}>{c.candidate_order}. {c.model_id} · {c.provider_kind}</li>)}</ol>
+            {questionPreview?.routing_preview?.exclusions.length?<ul>{questionPreview.routing_preview.exclusions.map(c=><li key={c.deployment_id}>{c.deployment_id} · {c.reason}</li>)}</ul>:<p>기록된 제외 정보 없음</p>}
+            <button type="button" onClick={confirmAutoQuestion}>확인한 후보로 실행</button><button type="button" onClick={()=>closeModal()}>자동 질문 취소</button>
+          </div> : modalView === "question-step-up" ? <div className="workspace-modal-content">
             <p>현재 선택한 자료와 질문의 외부 전송에 추가 인증이 필요합니다.</p>
             <label>현재 비밀번호<input ref={questionPasswordRef} type="password" autoComplete="off" aria-label="외부 질문 추가 인증 비밀번호" disabled={questionAuthPending} /></label>
             {questionAuthError ? <div role="alert">{questionAuthError}</div> : null}
@@ -2336,7 +2433,25 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
   );
 }
 
+function replaceRoutingSelection(runId,workspaceId,notebookId) {
+  if(typeof window==='undefined' || !window.location?.href || typeof window.history?.replaceState!=='function' || !notebookId)return false;
+  try{
+    const url=new URL(window.location.href),prior=parseRoutingSelection(url.hash,workspaceId,notebookId);
+    if(url.hash && !prior)return false;
+    url.hash=runId?routingSelectionFragment(runId,workspaceId,notebookId):'';
+    window.history.replaceState(window.history.state,'',url.href);return true;
+  }catch{return false;}
+}
+
 export function ProductWorkspaceShell(props) {
+  const navigationScope=useRef(null);
+  const notebookId=props.adapter?.routingNotebookId ?? props.adapter?.notebookContext?.notebook_id;
+  useEffect(()=>{
+    const prior=navigationScope.current;
+    if(prior && (prior.workspaceId!==props.workspaceId || prior.notebookId!==notebookId))replaceRoutingSelection(null,prior.workspaceId,prior.notebookId);
+    navigationScope.current={workspaceId:props.workspaceId,notebookId};
+    // No unmount cleanup: refresh and StrictMode must preserve the safe selection.
+  },[props.workspaceId,notebookId]);
   const identity = JSON.stringify([
     props.workspaceId ?? null,
     props.adapter?.notebookContext?.notebook_id ?? null,

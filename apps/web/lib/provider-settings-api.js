@@ -1,3 +1,4 @@
+import {getRoutingPolicy} from "./question-answering-api.js";
 const JSON_HEADERS = Object.freeze({ "Content-Type": "application/json" });
 
 async function request(path, { method = "GET", body, headers = {} } = {}) {
@@ -20,6 +21,7 @@ async function request(path, { method = "GET", body, headers = {} } = {}) {
 }
 
 export const providerSettingsApi = Object.freeze({
+  getRoutingPolicy(workspaceId,options) { return getRoutingPolicy(workspaceId,options); },
   getSession() {
     return request("/bff/api/session");
   },
