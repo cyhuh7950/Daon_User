@@ -26,6 +26,14 @@ class BridgeSQL(SQLDouble):
         if sql.startswith('SELECT data_area FROM identity_auth_workspaces'):
             return SimpleNamespace(fetchone=lambda:('cloud_sync',))
         if sql.startswith('INSERT INTO notebook_bindings'):
+            # 0020의 NOT NULL/no default 계약을 대역에서도 그대로 확인한다.
+            from datetime import datetime,timezone
+            from psycopg.errors import NotNullViolation
+            columns=sql.split('(',1)[1].split(')',1)[0].split(',')
+            if 'created_at' not in columns:raise NotNullViolation('created_at is required')
+            timestamp=params[-1]
+            assert isinstance(timestamp,datetime) and timestamp.tzinfo is not None and timestamp.utcoffset()==timezone.utc.utcoffset(timestamp)
+            self.binding_timestamps=getattr(self,'binding_timestamps',[])+[timestamp]
             return SimpleNamespace(fetchone=lambda:None)
         if sql.startswith('INSERT INTO ') and ' RETURNING canonical_text,' in sql:
             table=sql.split()[2];columns=sql.split('(',1)[1].split(')',1)[0].split(',')
@@ -111,6 +119,12 @@ class AutoRuntimeTests(unittest.IsolatedAsyncioTestCase):
         proof=response.json()['data'];self.assertFalse(proof['requires_step_up'])
         self.assertEqual(set(proof),{'routing_plan_id','routing_plan_authorization','expires_at','run_id','plan_digest','requires_step_up'})
         return {**self.body,**{k:proof[k] for k in ('routing_plan_id','routing_plan_authorization')}}
+    async def test_successful_auto_binding_records_explicit_server_utc_creation_time(self):
+        body=await self.prepare();response=await self.request('',body,'question-auto-api-0001')
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(self.store.db.binding_timestamps,[self.now])
+        self.assertEqual(len(self.calls),1)
+
     async def test_real_service_bridge_executes_and_exact_replay_never_sends_twice(self):
         body=await self.prepare();response=await self.request('',body,'question-auto-api-0001')
         self.assertEqual(response.status_code,200,response.text)

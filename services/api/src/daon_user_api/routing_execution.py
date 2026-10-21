@@ -622,9 +622,9 @@ class _ScopedQuestionPort:
                 extra_columns=('run_result_id','source_version_id','evidence_span_id'),
                 extra_values=(r['run_result_id'],item.source_version_id,item.evidence_span_id))
         Q._transition(conn,ctx,p['run_id'],version,'completed')
-        conn.execute('INSERT INTO notebook_bindings(tenant_id,workspace_id,notebook_id,binding_kind,record_id,version_id,created_by) '
-            "VALUES(%s,%s,%s,'conversation_thread',%s,NULL,%s) ON CONFLICT DO NOTHING",
-            (ctx.tenant_id,ctx.workspace_id,ctx.notebook_id,r['conversation_id'],ctx.actor_id))
+        conn.execute('INSERT INTO notebook_bindings(tenant_id,workspace_id,notebook_id,binding_kind,record_id,version_id,created_by,created_at) '
+            "VALUES(%s,%s,%s,'conversation_thread',%s,NULL,%s,%s) ON CONFLICT DO NOTHING",
+            (ctx.tenant_id,ctx.workspace_id,ctx.notebook_id,r['conversation_id'],ctx.actor_id,self.owner.clock()))
         entry=p['candidates'][order-1]
         provider_kind='local_runtime' if entry['provider_kind']=='local' else entry['provider_kind']
         return StoredQuestionAnswer(p['run_id'],r['run_result_id'],result.answer,result.insufficient,tuple(citations),provider_kind,
