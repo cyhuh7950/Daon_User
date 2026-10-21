@@ -381,6 +381,10 @@ function routeFor(method, segments) {
       : { methodRejected: true };
   }
   if (segments.length === 5 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1])
+      && segments[2] === "notebooks" && SAFE_SEGMENT.test(segments[3]) && segments[4] === "model-settings") {
+    return ["GET","PATCH"].includes(method) ? {path:`/api/v1/workspaces/${encodeURIComponent(segments[1])}/notebooks/${encodeURIComponent(segments[3])}/model-settings`,query:new Set(),strictQuery:true} : {methodRejected:true};
+  }
+  if (segments.length === 5 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1])
       && segments[2] === "notebooks" && SAFE_SEGMENT.test(segments[3]) && segments[4] === "conversation-turns") {
     return method === "GET" ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/notebooks/${encodeURIComponent(segments[3])}/conversation-turns`,
       query:new Set(["limit","before"]),strictQuery:true,notebookConversation:true } : { methodRejected:true };

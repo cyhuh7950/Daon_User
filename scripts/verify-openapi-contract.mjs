@@ -23,6 +23,7 @@ export const REQUIRED_PATHS = Object.freeze([
   "/api/v1/workspaces/{id}/notebooks/{notebook_id}",
   "/api/v1/workspaces/{id}/notebooks/{notebook_id}/context",
   "/api/v1/workspaces/{id}/notebooks/{notebook_id}/conversation-turns",
+  "/api/v1/workspaces/{id}/notebooks/{notebook_id}/model-settings",
   "/api/v1/workspaces/{id}/notebooks/{notebook_id}/source-unbindings",
   "/api/v1/organizations/{id}/license",
   "/api/v1/session",
@@ -141,6 +142,7 @@ const ANDROID_BROWSER_AUTH_POST_PATHS = new Set([
 ]);
 const COMMON_ERROR_STATUSES = ["400", "401", "403", "404", "409", "412", "500"];
 const BODY_VERSIONED_MUTATIONS = new Set([
+  "PATCH /api/v1/workspaces/{id}/notebooks/{notebook_id}/model-settings",
   "PATCH /api/v1/organization/tenants/{tenant_id}/members/{user_id}/role",
   "PATCH /api/v1/organization/tenants/{tenant_id}/members/{user_id}/state",
   "PATCH /api/v1/account/profile",
@@ -262,6 +264,47 @@ function validateQuestionGroundingContract(document) {
   check(same(operation.responses["200"].headers?.ETag,{$ref:"#/components/headers/ETag"}));
   check(same(operation.responses["200"].headers?.["Cache-Control"],{schema:{type:"string",enum:["no-store"]}}));
   check(same(operation.responses?.["201"]?.content?.["application/json"]?.schema,ref("GroundedQuestionAuthorizationEnvelope")));
+}
+
+function validateNotebookModelSettingsContract(document) {
+  const check=condition=>{if(!condition)fail("Notebook model settings contract invalid");};
+  const same=(a,b)=>JSON.stringify(canonicalizeDocument(a))===JSON.stringify(canonicalizeDocument(b));
+  const ref=name=>({$ref:`#/components/schemas/${name}`});
+  const closed=(value,keys)=>value?.type==="object"&&value.additionalProperties===false
+    &&same(value.required,keys)&&same(Object.keys(value.properties??{}).sort(),[...keys].sort());
+  const schemas=document.components?.schemas??{};
+  for(const code of ["NOTEBOOK_MODEL_SETTINGS_INVALID","NOTEBOOK_MODEL_SETTINGS_UNAVAILABLE","NOTEBOOK_MODEL_SETTINGS_CONFLICT","NOTEBOOK_MODEL_SETTINGS_CHANGED","NOTEBOOK_MODEL_UNAVAILABLE"])
+    check(schemas.SafeErrorCode?.enum?.includes(code));
+  const route=document.paths?.["/api/v1/workspaces/{id}/notebooks/{notebook_id}/model-settings"];
+  check(same(Object.keys(route??{}),["get","patch"]));
+  const version={type:"integer",minimum:1};
+  for(const name of ["GroundedQuestionRequest","GroundedQuestionAuthorizationRequest","StudioGenerationRequest"])
+    check(same(schemas[name]?.properties?.model_settings_version,version)&&!schemas[name].required.includes("model_settings_version"));
+  const props={connection_id:ref("OpaqueId"),model_id:{type:"string",minLength:1,maxLength:255,pattern:"^[^\\x00-\\x20\\x7f]+$"},
+    reasoning_effort:{type:["string","null"],enum:[null,"none","low","medium","high"]}};
+  check(closed(schemas.NotebookModelSelection,Object.keys(props))&&same(schemas.NotebookModelSelection.properties,props));
+  check(closed(schemas.NotebookModelSettingsPatch,[...Object.keys(props),"expected_version"])
+    &&same(schemas.NotebookModelSettingsPatch.properties,{...props,expected_version:{type:"integer",minimum:0}}));
+  check(closed(schemas.NotebookModelSettingsCandidate,["connection_id","provider_code","display_name","model_id","connection_version","catalog_version","reasoning"]));
+  check(same(schemas.NotebookModelSettingsCandidate.properties,{connection_id:ref("OpaqueId"),provider_code:{type:"string",enum:["OLLAMA","GROQ","MISTRAL","UPSTAGE","OPENROUTER","OMNIROUTE","EOUL_GATEWAY","CUSTOM"]},
+    display_name:{type:"string",minLength:1,maxLength:255},model_id:props.model_id,connection_version:version,catalog_version:version,reasoning:ref("NotebookModelReasoning")}));
+  check(closed(schemas.NotebookModelSettings,["notebook_id","version","selection","effective_selection","available_models"]));
+  check(closed(schemas.NotebookModelSettingsSaved,["notebook_id","version","selection","replayed"]));
+  check(closed(schemas.NotebookModelReasoning,["status","values","profile_version"])
+    &&same(schemas.NotebookModelReasoning.properties.status,{type:"string",enum:["supported","unsupported","unknown"]})
+    &&schemas.NotebookModelReasoning.properties.values.maxItems===4);
+  for(const [method,id,envelope] of [["get","getNotebookModelSettings","NotebookModelSettingsEnvelope"],["patch","saveNotebookModelSettings","NotebookModelSettingsSavedEnvelope"]]){
+    const operation=route?.[method];check(operation?.operationId===id);
+    check(same(operation.parameters,[{$ref:"#/components/parameters/ResourceId"},{name:"notebook_id",in:"path",required:true,schema:ref("OpaqueId")},
+      ...(method==="patch"?[{$ref:"#/components/parameters/IdempotencyKey"}]:[])]));
+    check(same(operation.responses?.["200"]?.content?.["application/json"]?.schema,ref(envelope)));
+    check(same(operation.responses?.["200"]?.headers?.ETag,{$ref:"#/components/headers/ETag"}));
+    check(same(operation.responses?.["200"]?.headers?.["Cache-Control"],{schema:{type:"string",enum:["no-store"]}}));
+    check(closed(schemas[envelope],["data","meta"])&&closed(schemas[envelope].properties.meta,["trace_id"]));
+    for(const code of [401,403,404,409,412,422,503])check(operation.responses?.[code]);
+    if(method==="patch")check(same(operation.requestBody,{required:true,content:{"application/json":{schema:ref("NotebookModelSettingsPatch")}}}));
+    else check(operation.requestBody===undefined);
+  }
 }
 
 function validateNotebookConversationContract(document) {
@@ -1196,6 +1239,7 @@ export function validateOpenApiDocument(document) {
     ["/api/v1/workspaces/{id}/notebooks/{notebook_id}", ["get", "patch"]],
     ["/api/v1/workspaces/{id}/notebooks/{notebook_id}/context", ["get"]],
     ["/api/v1/workspaces/{id}/notebooks/{notebook_id}/conversation-turns", ["get"]],
+    ["/api/v1/workspaces/{id}/notebooks/{notebook_id}/model-settings", ["get","patch"]],
     ["/api/v1/workspaces/{id}/notebooks/{notebook_id}/source-unbindings", ["post"]],
   ]);
   for (const [apiPath, expectedMethods] of notebookMethods) {
@@ -1203,6 +1247,7 @@ export function validateOpenApiDocument(document) {
     if (JSON.stringify(actualMethods) !== JSON.stringify(expectedMethods)) fail(`Notebook method mismatch ${apiPath}`);
   }
   validateNotebookConversationContract(document);
+  validateNotebookModelSettingsContract(document);
   validateQuestionGroundingContract(document);
   const syncItem = document.components?.schemas?.SyncItemInput;
   if (

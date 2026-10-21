@@ -196,6 +196,8 @@ from .user_provider_credentials import (
     PostgresUserProviderCredentialService,
     UserProviderCredentialError,
 )
+from .notebook_model_settings import NotebookModelSettingsError
+from .notebook_model_settings_postgres import PostgresNotebookModelSettingsService
 from .workspace_model_defaults import (
     PostgresWorkspaceModelDefaultsService, PostgresWorkspaceModelResolver,
     WorkspaceModelDefaultsContext, WorkspaceModelDefaultsError,
@@ -958,6 +960,7 @@ class RuntimeDependencies:
     provider_settings_service: ProviderSettingsService | None = None
     provider_connection_service: Any | None = None
     provider_health_settings_service: PostgresProviderHealthCheckSettingsService | None = None
+    notebook_model_settings_service: Any | None = None
     workspace_model_defaults_service: Any | None = None
     operations_status_service: OperationsStatusService | None = None
     output_version_settings_service: OutputVersionSettingsService | None = None
@@ -1228,6 +1231,14 @@ class QuestionKnowledgeContextBody(BaseModel):
         return self
 
 
+class NotebookModelSettingsBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    connection_id: str = Field(min_length=1,max_length=128,pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+    model_id: str = Field(min_length=1,max_length=255,pattern=r"^[^\x00-\x20\x7f]+$")
+    reasoning_effort: str | None
+    expected_version: int = Field(strict=True,ge=0)
+
+
 class QuestionBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     notebook_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
@@ -1235,6 +1246,7 @@ class QuestionBody(BaseModel):
     source_version_id: str | None = None
     knowledge_context: QuestionKnowledgeContextBody | None = None
     question: str
+    model_settings_version: int | None = Field(default=None,strict=True,ge=1)
     step_up_authorization_id: str | None = Field(default=None, min_length=1, max_length=4096)
 
     @model_validator(mode="after")
@@ -1254,6 +1266,7 @@ class QuestionAuthorizationBody(BaseModel):
     source_version_id: str | None = None
     knowledge_context: QuestionKnowledgeContextBody | None = None
     question: str
+    model_settings_version: int | None = Field(default=None,strict=True,ge=1)
     # A password is checked immediately before issuing a real step-up grant.
     password: str | None = None
 
@@ -1301,6 +1314,7 @@ class StudioGenerationBody(BaseModel):
     run_id: str | None = None
     run_result_id: str | None = None
     source_only: bool = False
+    model_settings_version: int | None = Field(default=None,strict=True,ge=1)
     settings: StudioSettingsBody
 
 
@@ -2490,6 +2504,9 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         user_provider_credential_service = PostgresUserProviderCredentialService(
             dependencies.cloud_store, provider_cipher,
         )
+    notebook_model_settings_service = dependencies.notebook_model_settings_service
+    if notebook_model_settings_service is None and dependencies.cloud_store is not None:
+        notebook_model_settings_service = PostgresNotebookModelSettingsService(dependencies.cloud_store)
     workspace_model_defaults_service = dependencies.workspace_model_defaults_service
     if workspace_model_defaults_service is None and dependencies.cloud_store is not None:
         workspace_model_defaults_service = PostgresWorkspaceModelDefaultsService(dependencies.cloud_store)
@@ -2886,6 +2903,8 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, _error: RequestValidationError) -> JSONResponse:
+        if getattr(request.scope.get("route"),"path","")=="/api/v1/workspaces/{id}/notebooks/{notebook_id}/model-settings":
+            return _error_response(422,"NOTEBOOK_MODEL_SETTINGS_INVALID",request.state.trace_id)
         if request.url.path in {"/api/v1/account/profile", "/api/v1/account/devices", "/api/v1/account/sessions"}:
             return _error_response(422, "ACCOUNT_INPUT_INVALID", request.state.trace_id)
         organization_operation = (request.method, getattr(request.scope.get("route"), "path", ""))
@@ -3273,6 +3292,10 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             error.status, error.code if error.code in safe_codes else "INVALID_REQUEST",
             request.state.trace_id,
         )
+
+    @app.exception_handler(NotebookModelSettingsError)
+    async def notebook_model_settings_error(request: Request,error: NotebookModelSettingsError):
+        return _error_response(error.status,error.code,request.state.trace_id,retryable=error.retryable)
 
     @app.exception_handler(WorkspaceModelDefaultsError)
     async def workspace_model_defaults_error(
@@ -4703,6 +4726,10 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             "credential_version": getattr(selection, "credential_version", 0),
             "default_version": selection.binding_version,
             "catalog_version": getattr(selection, "catalog_version", 0),
+            **({"notebook_model_settings": {"version":body.model_settings_version,
+                "reasoning_effort":getattr(selection,"reasoning_effort",None),
+                "profile_version":getattr(selection,"reasoning_profile_version",None)}}
+                if body.model_settings_version is not None else {}),
             "effective_policy_fingerprint": policy_fingerprint,
             "idempotency_key": idempotency_key,
         })).hexdigest()
@@ -4844,6 +4871,13 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         response.headers["Cache-Control"]="no-store"
         return response
 
+    async def _bind_notebook_model(context,body):
+        if notebook_model_settings_service is None:
+            raise NotebookModelSettingsError("NOTEBOOK_MODEL_SETTINGS_UNAVAILABLE",503)
+        binding=await asyncio.to_thread(notebook_model_settings_service.require_execution,
+            context,body.notebook_id,body.model_settings_version)
+        return replace(context,model_settings=binding)
+
     async def _prepare_notebook_grounding(principal,workspace_id,body,request,context,source_id,source_version_id,context_mode,context_sources,run_id,fingerprint):
         await asyncio.to_thread(question_answering_service.preflight_grounding,context,
             source_id=source_id,source_version_id=source_version_id,question=body.question,
@@ -4914,6 +4948,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 raise QuestionGroundingNotice(prior_notice)
             await _prepare_notebook_grounding(principal,id,body,request,context,source_id,source_version_id,
                 context_mode,context_sources,admission_run_id,admission_fingerprint)
+            context = await _bind_notebook_model(context,body)
             if egress_policy_service is None:
                 raise EgressPolicyError("EGRESS_POLICY_UNAVAILABLE",503)
             grant = dependencies.authorization_service.authorize_action(
@@ -4970,7 +5005,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         except QuestionGroundingNotice as notice:
             return await _question_grounding_notice(principal,id,body,request,admission_run_id,
                 admission_fingerprint,admission_turn_id,notice)
-        except (QuestionAnsweringError, QuestionRepositoryError, EgressPolicyError, IdentityError, AuthorizationError, NotebookError, asyncio.CancelledError) as error:
+        except (QuestionAnsweringError, QuestionRepositoryError, EgressPolicyError, IdentityError, AuthorizationError, NotebookError, NotebookModelSettingsError, asyncio.CancelledError) as error:
             await _record_notebook_question_failure(principal,id,body,request,admission_run_id,admission_fingerprint,error)
             raise
 
@@ -5059,6 +5094,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 )
             await _prepare_notebook_grounding(principal,id,body,request,question_context,source_id,source_version_id,
                 context_mode,context_sources,admission_run_id,admission_fingerprint)
+            question_context = await _bind_notebook_model(question_context,body)
             approved_authorization = None
             if egress_policy_service is not None:
                 context = question_context
@@ -5119,11 +5155,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                         approved_authorization["authorization_mode"] = "policy_approved"
             answer = await asyncio.to_thread(
                 question_answering_service.ask,
-                QuestionContext(
-                    principal.tenant_id, id, principal.user_id,
-                    request.state.trace_id, dependencies.settings.policy_version,
-                    body.notebook_id,
-                ),
+                question_context,
                 source_id=source_id, source_version_id=source_version_id,
                 question=body.question, run_id=run_id,
                 approved_authorization=approved_authorization,
@@ -5139,7 +5171,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         except QuestionGroundingNotice as notice:
             return await _question_grounding_notice(principal,id,body,request,admission_run_id,
                 admission_fingerprint,admission_turn_id,notice)
-        except (QuestionAnsweringError, QuestionRepositoryError, EgressPolicyError, IdentityError, AuthorizationError, NotebookError, asyncio.CancelledError) as error:
+        except (QuestionAnsweringError, QuestionRepositoryError, EgressPolicyError, IdentityError, AuthorizationError, NotebookError, NotebookModelSettingsError, asyncio.CancelledError) as error:
             await _record_notebook_question_failure(principal,id,body,request,admission_run_id,admission_fingerprint,error)
             raise
 
@@ -5170,6 +5202,13 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             raise StudioError("STUDIO_INPUT_INVALID")
         if not body.source_only and (body.run_id is None or body.run_result_id is None):
             raise StudioError("STUDIO_INPUT_INVALID")
+        intended=None
+        if body.model_settings_version is not None:
+            if notebook_model_settings_service is None:
+                raise NotebookModelSettingsError("NOTEBOOK_MODEL_SETTINGS_UNAVAILABLE",503)
+            binding=await asyncio.to_thread(notebook_model_settings_service.require_execution,
+                notebook_context(principal,body.workspace_id,request),body.notebook_id,body.model_settings_version)
+            intended=binding.as_dict()
         output, replayed = await asyncio.to_thread(
             studio_workspace_service.enqueue,
             _product_studio_context(principal, body.workspace_id, request, dependencies, body.notebook_id),
@@ -5178,7 +5217,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 body.run_result_id, body.settings.purpose, body.settings.audience,
                 body.settings.ruleset_version_id, body.settings.length, body.settings.structure,
                 body.settings.output_format, body.settings.review_condition, body.settings.language,
-                body.source_only,
+                body.source_only, intended,
             ),
             idempotency_key,
         )
@@ -5871,6 +5910,37 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             "meta": {"trace_id": request.state.trace_id, "workspace_id": id},
         }
         return _json_with_etag(content, json.dumps(content["data"], sort_keys=True))
+
+    @app.get("/api/v1/workspaces/{id}/notebooks/{notebook_id}/model-settings")
+    async def get_notebook_model_settings(id: str,notebook_id: str,request: Request):
+        if request.query_params:
+            raise NotebookModelSettingsError("NOTEBOOK_MODEL_SETTINGS_INVALID",422)
+        principal=_principal(request,dependencies)
+        dependencies.authorization_service.authorize_action(principal=principal,workspace_id=id,action=Action.QUERY,
+            trace_id=request.state.trace_id,policy_version=dependencies.settings.policy_version)
+        if notebook_model_settings_service is None:
+            raise NotebookModelSettingsError("NOTEBOOK_MODEL_SETTINGS_UNAVAILABLE",503)
+        data=await asyncio.to_thread(notebook_model_settings_service.read,notebook_context(principal,id,request),notebook_id)
+        response=_json_with_etag({"data":data,"meta":{"trace_id":request.state.trace_id}},json.dumps(data,sort_keys=True))
+        response.headers["Cache-Control"]="no-store"
+        return response
+
+    @app.patch("/api/v1/workspaces/{id}/notebooks/{notebook_id}/model-settings")
+    async def patch_notebook_model_settings(id: str,notebook_id: str,body: NotebookModelSettingsBody,request: Request,
+        idempotency_key: str=Header(alias="Idempotency-Key")):
+        if request.query_params:
+            raise NotebookModelSettingsError("NOTEBOOK_MODEL_SETTINGS_INVALID",422)
+        _egress_idempotency_key(idempotency_key)
+        principal=_principal(request,dependencies)
+        dependencies.authorization_service.authorize_action(principal=principal,workspace_id=id,action=Action.QUERY,
+            trace_id=request.state.trace_id,policy_version=dependencies.settings.policy_version)
+        if notebook_model_settings_service is None:
+            raise NotebookModelSettingsError("NOTEBOOK_MODEL_SETTINGS_UNAVAILABLE",503)
+        data=await asyncio.to_thread(notebook_model_settings_service.save,notebook_context(principal,id,request),notebook_id,
+            **body.model_dump(),idempotency_key=idempotency_key)
+        response=_json_with_etag({"data":data,"meta":{"trace_id":request.state.trace_id}},json.dumps(data,sort_keys=True))
+        response.headers["Cache-Control"]="no-store"
+        return response
 
     @app.get("/api/v1/workspaces/{id}/notebooks/{notebook_id}/conversation-turns")
     async def list_notebook_conversation_turns(id: str,notebook_id: str,request: Request) -> JSONResponse:

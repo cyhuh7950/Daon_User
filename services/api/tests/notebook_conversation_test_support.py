@@ -40,3 +40,13 @@ class ConversationTestLedger:
                          'submitted_at':now.isoformat().replace('+00:00','Z'),'model':None,'client_request_id':payload.get('client_request_id')}
             for key,(payload,now) in self.turns.items() if payload['actor_id']==context.actor_id and payload['notebook_id']==notebook_id],
                 'next_cursor':None}
+
+
+class ExplicitNotebookModelSettings:
+    """각 HTTP 정상 실행 fixture의 명시 선택. version 변조를 허용하지 않는다."""
+    def __init__(self,version=1): self.version=version
+    def require_execution(self,context,notebook_id,version):
+        from daon_user_api.notebook_model_settings import NotebookModelExecution,NotebookModelSelection,NotebookModelSettingsError
+        if type(version) is not int or version!=self.version or version<1:
+            raise NotebookModelSettingsError("NOTEBOOK_MODEL_SETTINGS_CHANGED",409)
+        return NotebookModelExecution(NotebookModelSelection("connection-s18","solar-pro4",None),version,"upstage-solar-pro4-safe-wire-v1")

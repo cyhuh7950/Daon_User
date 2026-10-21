@@ -257,6 +257,8 @@ export function createNotebookContextWorkspaceAdapter(baseAdapter, inputContext)
       : undefined,
     listKnowledgePackages,
     loadNotebookConversation,
+    getModelSettings: typeof baseAdapter.getModelSettings === "function" ? options => baseAdapter.getModelSettings({...options,notebookId:context.notebook_id}) : undefined,
+    saveModelSettings: typeof baseAdapter.saveModelSettings === "function" ? (input,options) => baseAdapter.saveModelSettings(input,{...options,notebookId:context.notebook_id}) : undefined,
     listConversationTurns: typeof baseAdapter.listConversationTurns === "function"
       ? (options) => baseAdapter.listConversationTurns({ ...options, notebookId:context.notebook_id }) : undefined,
     listStudioOutputs,

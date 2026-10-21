@@ -1,4 +1,5 @@
 "use client";
+import { isNotebookModelSettings, isNotebookModelSelection } from "@daon-user/ui/product-workspace-model";
 import { parseImageRegion } from "@daon-user/ui/product-workspace-model";
 import { parseSheetCell } from "./sheet-cell-locator.js";
 import { parseDocxBlock } from "./docx-block-locator.js";
@@ -284,4 +285,30 @@ export async function listNotebookConversationTurns(workspaceId, notebookId, { f
     throw new Error('NOTEBOOK_CONVERSATION_INVALID');
   }
   return payload.data;
+}
+
+
+async function decodeModelSettings(response,notebookId,saved,signal){
+  let body;try{body=await response.json();}catch{throw new Error("MODEL_SETTINGS_RESPONSE_INVALID");}
+  signal?.throwIfAborted();
+  if(!response.ok)throw new Error(typeof body?.error?.code==="string"?body.error.code:"NOTEBOOK_MODEL_SETTINGS_UNAVAILABLE");
+  if(!exact(body,["data","meta"])||!exact(body.meta,["trace_id"])||!safeId(body.meta.trace_id)
+    ||!isNotebookModelSettings(body.data,{saved})||body.data.notebook_id!==notebookId)throw new Error("MODEL_SETTINGS_RESPONSE_INVALID");
+  return body.data;
+}
+export async function getNotebookModelSettings(workspaceId,notebookId,{fetchImpl=fetch,signal}={}){
+  if(!safeId(notebookId))throw new Error("NOTEBOOK_MODEL_SETTINGS_INVALID");
+  signal?.throwIfAborted();
+  const response=await fetchImpl(`${basePath(workspaceId)}/${encodeURIComponent(notebookId)}/model-settings`,
+    {method:"GET",credentials:"same-origin",cache:"no-store",signal});
+  return decodeModelSettings(response,notebookId,false,signal);
+}
+export async function saveNotebookModelSettings(workspaceId,notebookId,input,{fetchImpl=fetch,signal,idempotencyKey}={}){
+  if(!safeId(notebookId)||!safeId(idempotencyKey)||!exact(input,["connection_id","model_id","reasoning_effort","expected_version"])
+    ||!isNotebookModelSelection({connection_id:input.connection_id,model_id:input.model_id,reasoning_effort:input.reasoning_effort})
+    ||!Number.isSafeInteger(input.expected_version)||input.expected_version<0)throw new Error("NOTEBOOK_MODEL_SETTINGS_INVALID");
+  signal?.throwIfAborted();
+  const response=await fetchImpl(`${basePath(workspaceId)}/${encodeURIComponent(notebookId)}/model-settings`,
+    {method:"PATCH",credentials:"same-origin",cache:"no-store",signal,headers:{"Content-Type":"application/json","Idempotency-Key":idempotencyKey},body:JSON.stringify(input)});
+  return decodeModelSettings(response,notebookId,true,signal);
 }

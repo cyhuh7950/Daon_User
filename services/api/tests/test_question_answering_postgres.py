@@ -157,7 +157,10 @@ class PostgresQuestionAnsweringRepositoryTests(unittest.TestCase):
         ledger=Ledger();ctx=QuestionContext(ledger.context.tenant_id,ledger.context.workspace_id,ledger.context.actor_id,
             ledger.context.trace_id,ledger.context.policy_version,'notebook-a')
         selection=TextModelSelection('OLLAMA','https://models.example','profile','deployment','model',1,connection_id='connection-a')
-        run='run-failed-cost';payload={'question':'합성 질문','context_mode':'general_ungrounded'}
+        run='run-failed-cost';payload={'question':'합성 질문','context_mode':'general_ungrounded','model_settings_version':1}
+        from daon_user_api.notebook_model_settings import NotebookModelExecution,NotebookModelSelection
+        from dataclasses import replace
+        ctx=replace(ctx,model_settings=NotebookModelExecution(NotebookModelSelection('connection-a','model',None),1,None))
         fingerprint=question_request_fingerprint(ctx,run_id=run,idempotency_key=run,request_payload=payload)
         frozen={'fingerprint':'sha256:'+'a'*64,'payload_fingerprint':'sha256:'+'b'*64}
         ids=self.repository._opaque_id
@@ -202,6 +205,7 @@ class PostgresQuestionAnsweringRepositoryTests(unittest.TestCase):
         args=dict(run_id=run,request_fingerprint=fingerprint,context_sources=(),selection=selection,
             egress_authorization=authorization,request_payload=payload,idempotency_key=run)
         repository.persist_failed(ctx,**args)
+        self.assertEqual(pending['run_snapshots'][0]['notebook_model_settings']['model_settings_version'],1)
         self.assertEqual(len(receipts),1);self.assertEqual((receipts[0][6],receipts[0][8:10],receipts[0][12]),(None,(None,None),'uncertain'))
         self.assertFalse(any(sql.startswith('INSERT INTO model_attempts') for sql in queries))
         fail[0]=True

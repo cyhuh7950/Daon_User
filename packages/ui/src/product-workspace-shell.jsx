@@ -2,13 +2,13 @@
 import { egressPolicyModeLabel } from "./egress-policy-model.js";
 import { parsePptxBlock, isPptxBlockContent, pptxBlockLabel } from "./shared-pptx-block.js";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import "@daon-user/design-tokens/tokens.css";
-import { isQuestionSystemNotice, isQuestionGroundingMetadata, canCreateGroundedReport, createProductWorkspaceState, normalizeProductWorkspaceState, mergeNotebookConversationTurns, projectQuestionFailureState, questionFailureMessage, parseImageRegion, parseSheetCell, isSheetCellContent } from "./product-workspace-model.js";
+import { isNotebookModelSettings, isQuestionSystemNotice, isQuestionGroundingMetadata, canCreateGroundedReport, createProductWorkspaceState, normalizeProductWorkspaceState, mergeNotebookConversationTurns, projectQuestionFailureState, questionFailureMessage, parseImageRegion, parseSheetCell, isSheetCellContent } from "./product-workspace-model.js";
 import { createProductStudioState } from "./product-studio-model.js";
 import { ProductStudioPane } from "./product-studio-pane.jsx";
 import { StudioApprovalPolicySettings } from "./studio-approval-policy-settings.jsx";
-import { classifyConversationIntent } from "./conversation-intent.js";
+import { isGeneralConversationIntent, classifyConversationIntent } from "./conversation-intent.js";
 import { secureUuid } from "./secure-uuid.js";
 import "./workspace.css";
 import { parseDocxBlock, isDocxBlockContent } from "./shared-docx-block.js";
@@ -744,6 +744,58 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
   const [processing, setProcessing] = useState(null);
   const [question, setQuestion] = useState("");
   const [questionPending, setQuestionPending] = useState(false);
+  const [notebookModel,setNotebookModel]=useState({status:"loading",view:null});
+  const modelScope=useRef({adapter,workspaceId});modelScope.current={adapter,workspaceId};
+  const modelLoadedScope=useRef(null);
+  const modelRequest=useRef(null);const modelSaveRetry=useRef(null);
+  const sameModelScope=owner=>modelScope.current.adapter===owner.adapter&&modelScope.current.workspaceId===owner.workspaceId;
+  const loadNotebookModel=async()=>{
+    const owner={adapter,workspaceId};
+    modelRequest.current?.abort();const controller=new AbortController();modelRequest.current=controller;
+    setNotebookModel({status:"loading",view:null});
+    if(typeof adapter?.getModelSettings!=="function"){
+      setNotebookModel({status:"unsupported",view:null});return;
+    }
+    try{
+      const view=await adapter.getModelSettings({signal:controller.signal});
+      if(controller.signal.aborted||!sameModelScope(owner))return;
+      if(!isNotebookModelSettings(view))throw new Error("MODEL_SETTINGS_RESPONSE_INVALID");
+      modelLoadedScope.current=owner;
+      setNotebookModel({status:"ready",view});modelSaveRetry.current=null;
+    }catch(error){if(!controller.signal.aborted&&sameModelScope(owner))setNotebookModel({status:"error",view:null,code:error?.message});}
+  };
+  useEffect(()=>{modelSaveRetry.current=null;loadNotebookModel();return()=>modelRequest.current?.abort();},[adapter,workspaceId]);
+  const saveNotebookModel=async(selection,{retry=false}={})=>{
+    if(questionRequestRef.current||modelRequest.current?.saving)return;
+    const view=notebookModel.view;if(!view||typeof adapter?.saveModelSettings!=="function")return;
+    const owner={adapter,workspaceId};
+    const pending=retry?modelSaveRetry.current:{input:{...selection,expected_version:view.version},key:secureUuid()};
+    if(!pending)return;
+    modelSaveRetry.current=pending;
+    modelRequest.current?.abort();const controller=new AbortController();controller.saving=true;modelRequest.current=controller;
+    setNotebookModel({status:"saving",view,draft:selection});
+    try{
+      const receipt=await adapter.saveModelSettings(pending.input,{signal:controller.signal,idempotencyKey:pending.key});
+      if(controller.signal.aborted||!sameModelScope(owner))return;
+      if(!isNotebookModelSettings(receipt,{saved:true}))throw new Error("MODEL_SETTINGS_RESPONSE_INVALID");
+      // PATCH의 과거 멱등 결과를 최신 설정으로 표시하지 않고 현재 GET을 다시 확인한다.
+      const current=await adapter.getModelSettings({signal:controller.signal});
+      if(controller.signal.aborted||!sameModelScope(owner))return;
+      if(!isNotebookModelSettings(current)||current.notebook_id!==receipt.notebook_id||current.version!==receipt.version
+        ||["connection_id","model_id","reasoning_effort"].some(k=>current.selection?.[k]!==receipt.selection[k]))throw new Error("NOTEBOOK_MODEL_SETTINGS_CHANGED");
+      modelSaveRetry.current=null;setNotebookModel({status:"ready",view:current});
+    }catch(error){if(!controller.signal.aborted&&sameModelScope(owner))setNotebookModel({status:"error",view,draft:selection,code:error?.message});}
+    finally{controller.saving=false;}
+  };
+  const modelReady=modelLoadedScope.current?.adapter===adapter&&modelLoadedScope.current?.workspaceId===workspaceId&&notebookModel.status==="ready"&&notebookModel.view?.version>0&&notebookModel.view.effective_selection?.origin==="notebook";
+  const canSubmitQuestion=()=>modelReady||(modelLoadedScope.current?.adapter===adapter&&modelLoadedScope.current?.workspaceId===workspaceId
+    &&notebookModel.status==="ready"&&notebookModel.view?.version===0&&!viewState.selectedSource&&!selectedKnowledgeId&&!isGeneralConversationIntent(question));
+  const modelExecutionRef=useRef(null);modelExecutionRef.current=modelReady?notebookModel.view.version:null;
+  const studioModelAdapter=useMemo(()=>adapter?{...adapter,createGeneration:typeof adapter.createGeneration==="function"?async(input,options)=>{
+    const version=modelExecutionRef.current;
+    if(version===null)throw new Error("NOTEBOOK_MODEL_SETTINGS_CHANGED");
+    return adapter.createGeneration({...input,model_settings_version:version},options);
+  }:undefined}:null,[adapter]);
   const [conversationTurns,setConversationTurns]=useState([]);
   const conversationTurnsRef=useRef([]);
   const conversationOwnerRef=useRef({adapter,workspaceId});
@@ -1499,7 +1551,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
 
   const askQuestion = async (event) => {
     event.preventDefault();
-    if (!adapter || !question.trim() || questionRequestRef.current || !workspaceMountedRef.current) return;
+    if (!adapter || !question.trim() || questionRequestRef.current || !workspaceMountedRef.current || !canSubmitQuestion()) return;
     const conversationMode = classifyConversationIntent(question);
     const questionEpoch = ++questionEpochRef.current;
     const token = { controller: new AbortController() };
@@ -1520,7 +1572,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
         ? buildQuestionKnowledgeContext(viewState.selectedSource, selectedKnowledgeId)
         : null;
       if (!current()) return;
-      const input = { knowledgeContext, question: question.trim() };
+      const input = { knowledgeContext, question: question.trim(),...(modelReady?{modelSettingsVersion:notebookModel.view.version}:{}) };
       token.input = input;
       token.options = { signal, idempotencyKey };
       let answer;
@@ -1563,6 +1615,10 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
       reportIdempotencyRef.current = null;
     } catch (error) {
       if (!current()) return;
+      const failureCode=safeErrorCode(error,"QUESTION_FAILED");
+      if(["NOTEBOOK_MODEL_SETTINGS_CHANGED","NOTEBOOK_MODEL_SELECTION_REQUIRED","NOTEBOOK_MODEL_UNAVAILABLE","NOTEBOOK_MODEL_SETTINGS_UNAVAILABLE"].includes(failureCode)){
+        setNotebookModel(value=>({...value,status:"error",code:failureCode}));
+      }
       updateConversationRequest(token,{state:"uncertain",response:{kind:"system",text:questionFailureMessage(safeErrorCode(error,"QUESTION_FAILED")),insufficient:true,next_actions:[],citations:[]}});
       setViewState((current) => projectQuestionFailureState(
         current,
@@ -2284,13 +2340,33 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
             </div>}
           </section> : null}</div><form className="conversation-composer" onSubmit={askQuestion}>
             <label><span className="sr-only">질문</span><textarea rows="2" disabled={questionPending} placeholder={viewState.selectedSource || selectedKnowledgeId ? "선택한 지식과 작업에 대해 질문하세요" : "작업 내용이나 궁금한 점을 질문하세요"} value={question} onChange={(event) => setQuestion(event.currentTarget.value)} /></label>
-            <button className="composer-submit" type="submit" aria-label="질문 실행" disabled={questionPending || !question.trim()}>↑</button>
+            <div className="notebook-model-settings" aria-label="Notebook 모델 설정">
+              <label>Provider · 모델<select aria-label="Provider · 모델" disabled={questionPending||notebookModel.status!=="ready"}
+                value={notebookModel.view?.selection?JSON.stringify([notebookModel.view.selection.connection_id,notebookModel.view.selection.model_id]):""}
+                onChange={event=>{const row=notebookModel.view?.available_models.find(v=>JSON.stringify([v.connection_id,v.model_id])===event.target.value);
+                  if(row)return saveNotebookModel({connection_id:row.connection_id,model_id:row.model_id,reasoning_effort:null});}}>
+                <option value="">모델을 직접 선택해 주세요</option>
+                {(notebookModel.view?.available_models??[]).map(row=><option key={JSON.stringify([row.connection_id,row.model_id])} value={JSON.stringify([row.connection_id,row.model_id])}>{row.display_name} · {row.provider_code} / {row.model_id}</option>)}
+              </select></label>
+              {(()=>{const selection=notebookModel.view?.selection;const candidate=notebookModel.view?.available_models.find(r=>r.connection_id===selection?.connection_id&&r.model_id===selection?.model_id);
+                const supported=candidate?.reasoning.status==="supported";
+                return <label>추론 단계<select aria-label="추론 단계" value={selection?.reasoning_effort??""}
+                  disabled={questionPending||notebookModel.status!=="ready"||!supported}
+                  onChange={event=>saveNotebookModel({...selection,reasoning_effort:event.target.value||null})}>
+                  <option value="">{supported?"미지정":candidate?.reasoning.status==="unsupported"?"현재 실행 경로 미지원":"추론 설정 정보 없음"}</option>
+                  {(candidate?.reasoning.values??[]).map(v=><option key={v.value} value={v.value}>{v.label}</option>)}
+                </select></label>;})()}
+              <small role="status">{notebookModel.status==="saving"?"모델 설정 저장 중":notebookModel.status==="loading"?"모델 설정 조회 중":notebookModel.status==="unsupported"?"모델 설정 조회를 지원하지 않는 연결입니다":notebookModel.status==="error"?"모델 설정을 확인하지 못했습니다. 재조회 후 다시 선택해 주세요.":modelReady?"모델 설정 저장됨":notebookModel.view?.selection?"저장한 모델을 사용할 수 없습니다. 다시 선택해 주세요.":notebookModel.view?.effective_selection?"현재 Workspace 기본값을 확인하고 모델을 직접 선택해 주세요.":"사용 가능한 모델을 직접 선택해 주세요."}</small>
+              {notebookModel.status==="error"?<><button type="button" onClick={()=>loadNotebookModel()}>마지막 저장값 다시 조회</button>
+                {modelSaveRetry.current?<button type="button" onClick={()=>saveNotebookModel(notebookModel.draft,{retry:true})}>같은 저장 요청 재시도</button>:null}</>:null}
+            </div>
+            <button className="composer-submit" type="submit" aria-label="질문 실행" disabled={questionPending || !question.trim() || !canSubmitQuestion()}>↑</button>
           </form></div>}
         </SafePane>
         <SafePane id="product-pane-studio" title="업무 Studio" description="근거가 확인된 답변으로 보고서를 생성하고 저장 결과를 확인합니다.">
           {desktopStudio ? desktopStudio : <><ProductStudioPane
             key={`${viewState.answer?.run_id ?? "no-run"}:${viewState.selectedSource?.sourceVersionId ?? "no-source"}`}
-            adapter={adapter}
+            adapter={studioModelAdapter}
             initialOutput={notificationOutput}
             onKnowledgeRegistered={() => setLoadRevision((current) => current + 1)}
             state={createProductStudioState({

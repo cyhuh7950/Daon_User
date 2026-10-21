@@ -1958,3 +1958,18 @@ test("BFF exposes screen preference as same-origin exact GET PUT only", async ()
     { url: "https://api.example.com/api/v1/preferences/screen", method: "PUT", contentType: "application/json" },
   ]);
 });
+
+
+test("D 모델 설정 BFF는 정확 GET·PATCH와 빈 query만 허용한다",async()=>{
+  const calls=[];const proxy=createBffProxy({baseUrl:new URL("https://api.example.com"),fetchImpl:async(url,init)=>{
+    calls.push({url:String(url),key:init.headers.get("idempotency-key"),body:init.body?JSON.parse(Buffer.from(init.body).toString()):null});return Response.json({data:{}});
+  }});
+  const parts=["workspaces","workspace-d","notebooks","notebook-d","model-settings"],url="https://app.example.com/bff/api/"+parts.join("/");
+  assert.equal((await proxy(new Request(url),parts)).status,200);
+  const body={connection_id:"connection-d",model_id:"solar-pro4",reasoning_effort:"low",expected_version:1};
+  assert.equal((await proxy(new Request(url,{method:"PATCH",headers:{origin:"https://app.example.com","content-type":"application/json","idempotency-key":"d-model-write-001"},body:JSON.stringify(body)}),parts)).status,200);
+  assert.equal(calls[1].url,"https://api.example.com/api/v1/"+parts.join("/"));assert.equal(calls[1].key,"d-model-write-001");assert.deepEqual(calls[1].body,body);
+  assert.equal((await proxy(new Request(url+"?extra=1"),parts)).status,400);
+  assert.equal((await proxy(new Request(url,{method:"POST",headers:{origin:"https://app.example.com"}}),parts)).status,405);
+  assert.equal(calls.length,2);
+});

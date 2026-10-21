@@ -343,6 +343,9 @@ class ResolvedModel:
     _credential: bytearray | None = field(repr=False, compare=False)
     _released: bool = field(default=False, repr=False, compare=False)
     adapter_type: str = ""
+    reasoning_effort: str | None = None
+    model_settings_version: int | None = None
+    reasoning_profile_version: str | None = None
 
     @property
     def profile_id(self) -> str:
@@ -394,7 +397,7 @@ class PostgresWorkspaceModelResolver:
 
     @contextmanager
     def resolve(
-        self, context: WorkspaceModelContext, capability: str,
+        self, context: WorkspaceModelContext, capability: str, *, selected=None,
     ) -> Iterator[ResolvedModel]:
         native_asr = capability == "speech_to_text" and _qa_asr_enabled(context.workspace_id)
         providers = frozenset({"CUSTOM"}) if native_asr else _ACTIVE_PROVIDERS.get(capability)
@@ -402,18 +405,28 @@ class PostgresWorkspaceModelResolver:
             raise WorkspaceModelUnavailable("PROVIDER_EXECUTION_NOT_READY")
         try:
             with self._store._transaction(self._cloud(context)) as connection:
+                if selected is not None:
+                    from .notebook_model_settings import NotebookModelExecution
+                    if type(selected) is not NotebookModelExecution or capability != "text_generation":
+                        raise WorkspaceModelUnavailable("NOTEBOOK_MODEL_SETTINGS_INVALID")
+                    selected.__post_init__()
+                prefix = ("SELECT d.version,d.connection_id,d.model_id,c.provider_code,c.base_url," if selected is None else
+                          "SELECT c.version,c.connection_id,m.model_id,c.provider_code,c.base_url,")
+                source = ("FROM workspace_model_defaults d JOIN system_provider_connections c ON c.connection_id=d.connection_id "
+                    "JOIN system_provider_models m ON m.connection_id=d.connection_id AND m.model_id=d.model_id " if selected is None else
+                    "FROM system_provider_connections c JOIN system_provider_models m ON m.connection_id=c.connection_id ")
+                condition = ("WHERE d.tenant_id=%s AND d.workspace_id=%s AND d.capability=%s" if selected is None else
+                    "WHERE c.connection_id=%s AND m.model_id=%s")
+                parameters = ((context.tenant_id,context.workspace_id,capability) if selected is None else
+                    (selected.selection.connection_id,selected.selection.model_id))
                 row = connection.execute(
-                    "SELECT d.version,d.connection_id,d.model_id,c.provider_code,c.base_url,"
+                    prefix +
                     "c.encrypted_credential,c.credential_nonce,c.encryption_key_version,"
                     "c.credential_schema_version,c.credential_version,c.enabled,c.verification_status,"
                     "m.effective_capabilities,m.catalog_status,m.catalog_version,"
                     "c.access_mode,c.credential_requirement,c.adapter_type "
-                    "FROM workspace_model_defaults d "
-                    "JOIN system_provider_connections c ON c.connection_id=d.connection_id "
-                    "JOIN system_provider_models m ON m.connection_id=d.connection_id AND m.model_id=d.model_id "
-                    "JOIN system_provider_allowed_models a ON a.connection_id=m.connection_id AND a.model_id=m.model_id "
-                    "WHERE d.tenant_id=%s AND d.workspace_id=%s AND d.capability=%s",
-                    (context.tenant_id, context.workspace_id, capability),
+                    + source + "JOIN system_provider_allowed_models a ON a.connection_id=m.connection_id AND a.model_id=m.model_id "
+                    + condition, parameters,
                 ).fetchone()
         except CloudDatabaseError as error:
             raise WorkspaceModelUnavailable(
@@ -447,6 +460,13 @@ class PostgresWorkspaceModelResolver:
         except ProviderSettingsError:
             raise WorkspaceModelUnavailable("PROVIDER_CONNECTION_UNAVAILABLE") from None
 
+        if selected is not None:
+            if (connection_id,model_id)!=(selected.selection.connection_id,selected.selection.model_id):
+                raise WorkspaceModelUnavailable("NOTEBOOK_MODEL_SETTINGS_CHANGED")
+            from .notebook_model_settings import validate_effort
+            profile = validate_effort(provider_code,str(values[17]),model_id,selected.selection.reasoning_effort)
+            if profile != selected.profile_version:
+                raise WorkspaceModelUnavailable("NOTEBOOK_MODEL_SETTINGS_CHANGED")
         credential_version = int(values[9])
         credential: bytearray | None = None
         encrypted = values[5]
@@ -497,6 +517,9 @@ class PostgresWorkspaceModelResolver:
             daon_fallback_allowed=not native_asr and provider_code not in _ROUTING_GATEWAYS | {"SENTENCE_TRANSFORMERS"},
             _credential=credential,
             adapter_type=str(values[17]),
+            reasoning_effort=None if selected is None else selected.selection.reasoning_effort,
+            model_settings_version=None if selected is None else selected.version,
+            reasoning_profile_version=None if selected is None else selected.profile_version,
         )
         try:
             yield resolved

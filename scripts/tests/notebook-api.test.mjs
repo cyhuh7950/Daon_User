@@ -351,3 +351,22 @@ test('B 상태별 answer/system/null 교차 계약과 citation 상한은 위조�
     await assert.rejects(listNotebookConversationTurns('workspace-1','notebook-1',{fetchImpl:async()=>json({data:{items:[bad],next_cursor:null},meta:{...META,notebook_id:'notebook-1'}})}),/NOTEBOOK_CONVERSATION_INVALID/u);
   }
 });
+
+
+test("D 모델 설정 GET/PATCH는 same-origin exact DTO와 version을 보존한다",async()=>{
+  const api=await import("../../apps/web/lib/notebook-api.js");
+  const calls=[];
+  const selected={connection_id:"connection-a",model_id:"solar-pro4",reasoning_effort:null};
+  const view={notebook_id:"notebook-a",version:1,selection:selected,effective_selection:{...selected,origin:"notebook"},available_models:[
+    {connection_id:"connection-a",provider_code:"UPSTAGE",display_name:"이름",model_id:"solar-pro4",connection_version:2,catalog_version:3,
+     reasoning:{status:"supported",values:[{value:"none",label:"사용 안 함"},{value:"low",label:"낮음"}],profile_version:"upstage-solar-pro4-safe-wire-v1"}}]};
+  const fetchImpl=async(url,options)=>{calls.push({url,...options});return new Response(JSON.stringify({data:options.method==="GET"?view:
+    {notebook_id:"notebook-a",version:2,selection:{...selected,reasoning_effort:"low"},replayed:false},meta:{trace_id:"trace-a"}}),{status:200});};
+  assert.deepEqual(await api.getNotebookModelSettings("workspace-a","notebook-a",{fetchImpl}),view);
+  await api.saveNotebookModelSettings("workspace-a","notebook-a",{...selected,reasoning_effort:"low",expected_version:1},{fetchImpl,idempotencyKey:"request-model-0001"});
+  assert.equal(calls[0].url,"/bff/api/workspaces/workspace-a/notebooks/notebook-a/model-settings");
+  assert.deepEqual(JSON.parse(calls[1].body),{...selected,reasoning_effort:"low",expected_version:1});
+  assert.equal(calls[1].headers["Idempotency-Key"],"request-model-0001");
+  const malformed=structuredClone(view);malformed.available_models[0].endpoint="https://private.invalid";
+  await assert.rejects(()=>api.getNotebookModelSettings("workspace-a","notebook-a",{fetchImpl:async()=>new Response(JSON.stringify({data:malformed,meta:{trace_id:"trace-a"}}))}),/MODEL_SETTINGS_RESPONSE_INVALID/u);
+});

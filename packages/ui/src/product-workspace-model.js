@@ -46,6 +46,13 @@ export function normalizeProductWorkspaceState(state) {
 }
 
 export function questionFailureMessage(code) {
+  if (["NOTEBOOK_MODEL_SETTINGS_CHANGED","NOTEBOOK_MODEL_SETTINGS_CONFLICT"].includes(code)) {
+    return `Notebook 모델 설정이 변경되었습니다. 다시 조회하고 모델을 확인해 주세요. (${code})`;
+  }
+  if (["NOTEBOOK_MODEL_UNAVAILABLE","NOTEBOOK_MODEL_SELECTION_REQUIRED"].includes(code)) {
+    return `선택한 모델을 실행할 수 없습니다. 다른 허용 모델을 직접 선택해 주세요. (${code})`;
+  }
+  if (code==="NOTEBOOK_MODEL_SETTINGS_UNAVAILABLE") return `모델 설정을 확인할 수 없습니다. 다시 조회한 뒤 모델을 확인해 주세요. (${code})`;
   if (code === "EGRESS_POLICY_DENIED") {
     return `조직 또는 Workspace의 외부 전송 정책으로 차단되었습니다. 정책 설정을 확인해 주세요. (${code})`;
   }
@@ -240,4 +247,47 @@ export function mergeNotebookConversationTurns(current, incoming) {
   }
   const micros=value=>Date.parse(value)*1000+Number((/\.(\d+)Z$/u.exec(value)?.[1]??'').padEnd(6,'0').slice(3,6)||0);
   return [...merged.values()].sort((a,b)=>micros(a.submitted_at)-micros(b.submitted_at)||(a.turn_id<b.turn_id?-1:a.turn_id>b.turn_id?1:0));
+}
+
+
+export function isNotebookModelSelection(value) {
+  const exact=(v,keys)=>v&&typeof v==="object"&&!Array.isArray(v)&&Object.keys(v).length===keys.length&&keys.every(k=>Object.hasOwn(v,k));
+  return exact(value,["connection_id","model_id","reasoning_effort"])
+    && typeof value.connection_id==="string"&&/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value.connection_id)
+    && typeof value.model_id==="string"&&/^[^\x00-\x20\x7f]{1,255}$/u.test(value.model_id)
+    && (value.reasoning_effort===null||["none","low","medium","high"].includes(value.reasoning_effort));
+}
+
+export function isNotebookModelSettings(value,{saved=false}={}) {
+  const exact=(v,keys)=>v&&typeof v==="object"&&!Array.isArray(v)&&Object.keys(v).length===keys.length&&keys.every(k=>Object.hasOwn(v,k));
+  const id=v=>typeof v==="string"&&/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(v);
+  if(!exact(value,saved?["notebook_id","version","selection","replayed"]:["notebook_id","version","selection","effective_selection","available_models"])
+    ||!id(value.notebook_id)||!Number.isSafeInteger(value.version)||value.version<0)return false;
+  if(saved)return value.version>0&&isNotebookModelSelection(value.selection)&&typeof value.replayed==="boolean";
+  if((value.version===0?value.selection!==null:!isNotebookModelSelection(value.selection))||!Array.isArray(value.available_models))return false;
+  const seen=new Set();
+  for(const row of value.available_models){
+    if(!exact(row,["connection_id","provider_code","display_name","model_id","connection_version","catalog_version","reasoning"])
+      ||!isNotebookModelSelection({connection_id:row.connection_id,model_id:row.model_id,reasoning_effort:null})
+      ||!["OLLAMA","GROQ","MISTRAL","UPSTAGE","OPENROUTER","OMNIROUTE","EOUL_GATEWAY","CUSTOM"].includes(row.provider_code)
+      ||typeof row.display_name!=="string"||!row.display_name.length||row.display_name.length>255
+      ||![row.connection_version,row.catalog_version].every(v=>Number.isSafeInteger(v)&&v>0)
+      ||!exact(row.reasoning,["status","values","profile_version"])||!["supported","unsupported","unknown"].includes(row.reasoning.status)
+      ||!Array.isArray(row.reasoning.values)||row.reasoning.values.length>4)return false;
+    const profile=row.reasoning;
+    if(profile.status==="supported"?(!id(profile.profile_version)||!profile.values.length):(profile.profile_version!==null||profile.values.length!==0))return false;
+    const values=new Set();
+    for(const option of profile.values){if(!exact(option,["value","label"])||!["none","low","medium","high"].includes(option.value)
+      ||values.has(option.value)||typeof option.label!=="string"||!option.label.length||option.label.length>120)return false;values.add(option.value);}
+    const key=JSON.stringify([row.connection_id,row.model_id]);if(seen.has(key))return false;seen.add(key);
+  }
+  if(value.effective_selection!==null){
+    const v=value.effective_selection;
+    if(!exact(v,["connection_id","model_id","reasoning_effort","origin"])||!["notebook","workspace_default"].includes(v.origin)
+      ||!isNotebookModelSelection({connection_id:v.connection_id,model_id:v.model_id,reasoning_effort:v.reasoning_effort}))return false;
+    if(v.origin==="notebook"?(value.version===0||["connection_id","model_id","reasoning_effort"].some(k=>value.selection?.[k]!==v[k])):value.version!==0)return false;
+    const candidate=value.available_models.find(r=>r.connection_id===v.connection_id&&r.model_id===v.model_id);
+    if(!candidate||(v.reasoning_effort!==null&&!candidate.reasoning.values.some(o=>o.value===v.reasoning_effort)))return false;
+  }
+  return true;
 }

@@ -287,3 +287,17 @@ for (const [name, payload] of [
     await assert.rejects(request(payload), { message: "QUESTION_RESPONSE_INVALID" });
   });
 }
+
+
+test("D 질문·추가인증은 동일 명시 설정 version을 전달하고 0·bool은 전송하지 않는다",async()=>{
+  const calls=[];const input={notebookId:"notebook-1",question:"안녕하세요",password:"fixture-only",modelSettingsVersion:7};
+  const fetchImpl=async(url,init)=>{calls.push({url,body:JSON.parse(init.body)});return Response.json(url.endsWith("/authorization")?{data:{step_up_authorization_id:"grant-d"}}:envelope());};
+  await authorizeGroundedQuestion("workspace-1",input,{idempotencyKey:"d-version-request",fetchImpl});
+  await askGroundedQuestion("workspace-1",input,{idempotencyKey:"d-version-request",fetchImpl});
+  assert.deepEqual(calls.map(v=>v.body.model_settings_version),[7,7]);
+  for(const modelSettingsVersion of [0,true,-1,1.5]){
+    await assert.rejects(askGroundedQuestion("workspace-1",{...input,modelSettingsVersion},{idempotencyKey:"d-version-request",fetchImpl}));
+    await assert.rejects(authorizeGroundedQuestion("workspace-1",{...input,modelSettingsVersion},{idempotencyKey:"d-version-request",fetchImpl}));
+  }
+  assert.equal(calls.length,2);
+});

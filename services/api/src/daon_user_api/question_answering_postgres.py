@@ -49,6 +49,7 @@ class QuestionContext:
     trace_id: str
     policy_version: str
     notebook_id: str | None = None
+    model_settings: object | None = None
 
     def __post_init__(self) -> None:
         if any(not isinstance(value, str) or not _SAFE_ID.fullmatch(value) for value in (
@@ -1252,8 +1253,11 @@ class PostgresQuestionAnsweringRepository:
             or not isinstance(egress_authorization,Mapping) or context.notebook_id is None):
             raise QuestionRepositoryError('QUESTION_RESULT_INVALID')
         payload=dict(request_payload)
-        if (set(payload)-{'question','source_id','source_version_id','context_mode','notebook_id','knowledge_context'}
+        if (set(payload)-{'question','source_id','source_version_id','context_mode','notebook_id','knowledge_context','model_settings_version'}
             or not isinstance(payload.get('question'),str) or not payload['question'].strip()):
+            raise QuestionRepositoryError('QUESTION_RESULT_INVALID')
+        if 'model_settings_version' in payload and (type(payload['model_settings_version']) is not int
+            or context.model_settings is None or payload['model_settings_version']!=context.model_settings.version):
             raise QuestionRepositoryError('QUESTION_RESULT_INVALID')
         actual_question=payload['question'] if question is None else question
         # legacy 지문의 strip만 허용한다. 역방향 정규화/다른 질문은 원 선택으로 취급하지 않는다.
@@ -1445,6 +1449,7 @@ class PostgresQuestionAnsweringRepository:
                     'data_area':'workspace','data_classification':'workspace_private','egress_decision_id':egress_id,
                     'egress_policy_fingerprint':authorization['policy_fingerprint'],'frozen_routing_context':dict(frozen),
                     'user_policy_version':context.policy_version,'organization_policy_version':context.policy_version,
+                    **({'notebook_model_settings':context.model_settings.as_dict()} if context.model_settings is not None else {}),
                     'cost_limit':0,'currency':'USD',
                     'prompt_version':'general-conversation-v1' if mode=='general_ungrounded' else 'cp3-grounded-question-v1',
                     'tool_version':'provider-chat-v1' if mode=='general_ungrounded' else 'document-index-v1'},
@@ -1698,6 +1703,8 @@ class PostgresQuestionAnsweringRepository:
                     "prompt_version": "general-conversation-v1" if general else "cp3-grounded-question-v1",
                     "tool_version": "provider-chat-v1" if general else "document-index-v1",
                 }
+                if context.model_settings is not None:
+                    run_snapshot_payload["notebook_model_settings"] = context.model_settings.as_dict()
                 self._insert_canon(connection, context, "run_snapshots", run_snapshot_id,
                     run_snapshot_payload,
                     extra_columns=("run_id", "scope_snapshot_id", "routing_policy_version_id"),
@@ -1715,6 +1722,7 @@ class PostgresQuestionAnsweringRepository:
                         "run_id": run_id, "deployment_id": deployment_id,
                         "model_artifact_id": artifact_id, "outcome": "succeeded",
                         "usage": dict(result.usage),
+                        **({"notebook_model_settings":context.model_settings.as_dict()} if context.model_settings is not None else {}),
                     }, extra_columns=(
                         "routing_decision_id", "model_deployment_id", "model_artifact_id",
                         "candidate_order", "started_at", "finished_at", "usage_json",

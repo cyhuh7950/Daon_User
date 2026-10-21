@@ -15,6 +15,7 @@ from daon_user_api.notebook import NotebookError
 from daon_user_api.question_answering import TextModelSelection
 from daon_user_api.question_answering_postgres import StoredQuestionAnswer
 from daon_user_api.runtime import WEB_SESSION_COOKIE, RuntimeDependencies, RuntimeSettings, create_app
+from notebook_conversation_test_support import ExplicitNotebookModelSettings
 from test_identity_support import POLICY_VERSION, create_service, identity_session_view
 
 
@@ -130,6 +131,7 @@ def _bootstrap_dependencies(
     )
     question = QuestionBoundary(provider_kind)
     dependencies = RuntimeDependencies(
+            notebook_model_settings_service=ExplicitNotebookModelSettings(),
         settings=RuntimeSettings.for_test(database_path=db_path, policy_version=POLICY_VERSION),
         identity_service=identity,
         authorization_service=AuthorizationService(
@@ -146,7 +148,7 @@ def _bootstrap_dependencies(
 
 
 def _question_payload(*, grounded: bool = False) -> dict[str, object]:
-    payload: dict[str, object] = {
+    payload: dict[str, object] = {"model_settings_version":1,
         "notebook_id": "notebook-session-auth",
         "question": "선택 Source를 근거로 답해줘" if grounded else "안녕하세요",
     }

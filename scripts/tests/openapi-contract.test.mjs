@@ -877,3 +877,18 @@ test('B conversation 공개계약은 상태 교차조건·현재범위·요청ID
     assert.throws(()=>validateOpenApiDocument(bad),/Notebook conversation|Notebook method/u);
   }
 });
+
+
+test("D Notebook 모델 설정은 닫힌 GET/PATCH와 질문 version 결속을 선언한다",async()=>{
+  const d=await loadContract(),route=d.paths["/api/v1/workspaces/{id}/notebooks/{notebook_id}/model-settings"];
+  assert.deepEqual(Object.keys(route),["get","patch"]);
+  assert.equal(d.components.schemas.GroundedQuestionRequest.properties.model_settings_version.minimum,1);
+  assert.doesNotThrow(()=>validateOpenApiDocument(d));
+  for(const mutate of [
+    b=>{b.paths["/api/v1/workspaces/{id}/notebooks/{notebook_id}/model-settings"].post={};},
+    b=>{b.components.schemas.NotebookModelSettingsPatch.additionalProperties=true;},
+    b=>{b.components.schemas.NotebookModelSettingsPatch.properties.expected_version.minimum=-1;},
+    b=>{delete b.components.schemas.GroundedQuestionAuthorizationRequest.properties.model_settings_version;},
+    b=>{b.components.schemas.NotebookModelSettingsCandidate.properties.endpoint={type:"string"};},
+  ]){const b=structuredClone(d);mutate(b);assert.throws(()=>validateOpenApiDocument(b),/Notebook model settings|Notebook method mismatch.*model-settings/u);}
+});

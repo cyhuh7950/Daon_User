@@ -160,8 +160,18 @@ class StudioGenerationRequest:
     review_condition: str
     language: str = "ko"
     source_only: bool = False
+    intended_model_selection: dict[str, object] | None = None
 
     def __post_init__(self) -> None:
+        if self.intended_model_selection is not None:
+            from .notebook_model_settings import NotebookModelExecution,NotebookModelSelection,NotebookModelSettingsError
+            value=self.intended_model_selection
+            try:
+                if type(value) is not dict or set(value)!={"connection_id","model_id","reasoning_effort","model_settings_version","reasoning_profile_version"}:
+                    raise ValueError
+                NotebookModelExecution(NotebookModelSelection(value["connection_id"],value["model_id"],value["reasoning_effort"]),value["model_settings_version"],value["reasoning_profile_version"])
+            except (ValueError,TypeError,KeyError,NotebookModelSettingsError):
+                raise StudioError("STUDIO_INPUT_INVALID") from None
         if self.output_type not in OUTPUT_TYPES or self.output_format not in FORMATS.get(self.output_type, ()):
             raise StudioError("STUDIO_INPUT_INVALID")
         for value in (*self.source_version_ids,):

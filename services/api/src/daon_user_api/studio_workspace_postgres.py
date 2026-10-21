@@ -344,6 +344,8 @@ class PostgresStudioWorkspaceRepository:
             "review_condition": request.review_condition, "language": request.language,
             "source_only": request.source_only,
         }
+        if request.intended_model_selection is not None:
+            request_payload["intended_model_selection"]=dict(request.intended_model_selection)
         fingerprint = hashlib.sha256(canonical_json_bytes(request_payload)).hexdigest()
         operation = "studio.generation.create"
         scope = (context.tenant_id, context.workspace_id, context.actor_id, operation, idempotency_key)
@@ -511,6 +513,8 @@ class PostgresStudioWorkspaceRepository:
             "output_format": request.output_format, "review_condition": request.review_condition, "language": request.language,
             "source_only": request.source_only,
         }
+        if request.intended_model_selection is not None:
+            payload["intended_model_selection"]=dict(request.intended_model_selection)
         job_id = self._opaque("studio-job", context.tenant_id, context.workspace_id, context.actor_id, idempotency_key)
         try:
             with self._cloud_store._transaction(self._cloud(context, "studio.create")) as connection:

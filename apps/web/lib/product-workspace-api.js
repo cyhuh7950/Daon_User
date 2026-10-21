@@ -799,7 +799,7 @@ function validGeneration(request, workspaceId) {
   const runValid = sourceOnly
     ? request.run_id == null && request.run_result_id == null
     : safeId(request?.run_id) && safeId(request?.run_result_id);
-  return record(request) && STUDIO_OUTPUT_TYPES.has(request.output_type) && (sourceOnly ? (request.source_id == null || safeId(request.source_id)) : safeId(request.source_id))
+  return record(request) && (request.model_settings_version===undefined||Number.isSafeInteger(request.model_settings_version)&&request.model_settings_version>0) && STUDIO_OUTPUT_TYPES.has(request.output_type) && (sourceOnly ? (request.source_id == null || safeId(request.source_id)) : safeId(request.source_id))
     && runValid
     && Array.isArray(request.source_version_ids) && request.source_version_ids.length > 0
     && request.source_version_ids.every(safeId) && record(request.settings)

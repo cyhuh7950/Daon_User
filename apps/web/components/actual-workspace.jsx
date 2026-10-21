@@ -1,5 +1,5 @@
 "use client";
-import { listNotebookConversationTurns } from "../lib/notebook-api.js";
+import { listNotebookConversationTurns, getNotebookModelSettings, saveNotebookModelSettings } from "../lib/notebook-api.js";
 
 import { useMemo, useState } from "react";
 
@@ -64,6 +64,8 @@ export function createWebProductWorkspaceAdapter(workspaceId, notebookId) {
     reprocessSource: (source, options) => reprocessSource(workspaceId, source, notebookOptions(options)),
     getProcessingStatus: (processingRunId, options) => getDocumentProcessingStatus(workspaceId, processingRunId, notebookOptions(options)),
     listConversationTurns: (options) => listNotebookConversationTurns(workspaceId, notebookId, options),
+    getModelSettings: options => getNotebookModelSettings(workspaceId,notebookId,options),
+    saveModelSettings: (input,options) => saveNotebookModelSettings(workspaceId,notebookId,input,options),
     askQuestion: (input, options) => askGroundedQuestion(workspaceId, notebookInput(input), options),
     authorizeQuestion: (input, options) => authorizeGroundedQuestion(workspaceId, notebookInput(input), options),
     citationUrl: (citation, options) => citationContentUrl(workspaceId, citation, notebookOptions(options)),

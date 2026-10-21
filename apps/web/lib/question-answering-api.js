@@ -178,11 +178,12 @@ async function responseData(response, signal, workspaceId) {
 
 export async function askGroundedQuestion(
   workspaceId,
-  { notebookId, sourceId, sourceVersionId, knowledgeContext, question },
+  { notebookId, sourceId, sourceVersionId, knowledgeContext, question, modelSettingsVersion },
   { fetchImpl = fetch, idempotencyKey = secureUuid(), stepUpAuthorizationId, signal } = {},
 ) {
   const workspace = requiredId(workspaceId);
   const notebook = requiredId(notebookId);
+  if(modelSettingsVersion!==undefined&&(!Number.isSafeInteger(modelSettingsVersion)||modelSettingsVersion<1))throw new Error("QUESTION_INPUT_INVALID");
   const sourceBody = questionSourceBody({ sourceId, sourceVersionId, knowledgeContext });
   if (
     typeof question !== "string" || !question.trim()
@@ -203,6 +204,7 @@ export async function askGroundedQuestion(
       },
       body: JSON.stringify({
         notebook_id: notebook, ...sourceBody, question: question.trim(),
+        ...(modelSettingsVersion===undefined?{}:{model_settings_version:modelSettingsVersion}),
         ...(stepUpAuthorizationId ? { step_up_authorization_id: stepUpAuthorizationId } : {}),
       }),
     },
@@ -211,11 +213,12 @@ export async function askGroundedQuestion(
 }
 
 export async function authorizeGroundedQuestion(
-  workspaceId, { notebookId, sourceId, sourceVersionId, knowledgeContext, question, password },
+  workspaceId, { notebookId, sourceId, sourceVersionId, knowledgeContext, question, password, modelSettingsVersion },
   { fetchImpl = fetch, idempotencyKey, signal } = {},
 ) {
   const workspace = requiredId(workspaceId);
   const notebook = requiredId(notebookId);
+  if(modelSettingsVersion!==undefined&&(!Number.isSafeInteger(modelSettingsVersion)||modelSettingsVersion<1))throw new Error("QUESTION_INPUT_INVALID");
   if (!SAFE_ID.test(idempotencyKey || "") || typeof password !== "string" || !password
     || typeof question !== "string" || !question.trim() || question.length > 2_000) {
     throw new Error("QUESTION_AUTHORIZATION_INPUT_INVALID");
@@ -229,6 +232,7 @@ export async function authorizeGroundedQuestion(
       notebook_id: notebook,
       ...questionSourceBody({ sourceId, sourceVersionId, knowledgeContext }),
       question: question.trim(), password,
+      ...(modelSettingsVersion===undefined?{}:{model_settings_version:modelSettingsVersion}),
     }) },
   );
   signal?.throwIfAborted();

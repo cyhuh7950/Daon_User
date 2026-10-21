@@ -101,6 +101,13 @@ class QuestionAdapterRegistry:
         adapter: object
         provider_payload: dict[str, object]
 
+        def __post_init__(self):
+            effort=getattr(self.selection,"reasoning_effort",None)
+            if effort is not None:
+                from .notebook_model_settings import validate_effort
+                validate_effort(self.selection.provider_code,getattr(self.selection,"adapter_type",""),self.selection.model_id,effort)
+                self.provider_payload["reasoning_effort"]=effort
+
     def prepare(
         self, selection: ResolvedModel, evidence, question: str, trace_id: str,  # type: ignore[no-untyped-def]
         transport: TextGenerationTransport,
@@ -756,6 +763,11 @@ class QuestionAnsweringService:
             raise QuestionGroundingNotice("no_relevant_evidence")
         return False, sources, evidence
 
+    def _resolve_question_model(self,context,model_context):
+        if context.model_settings is None:
+            return self._model_resolver.resolve(model_context,"text_generation")
+        return self._model_resolver.resolve(model_context,"text_generation",selected=context.model_settings)
+
     def prepare_authorization(
         self, context: QuestionContext, *, source_id: str | None,
         source_version_id: str | None, question: str,
@@ -770,7 +782,7 @@ class QuestionAnsweringService:
             context.tenant_id, context.workspace_id, context.actor_id,
         )
         try:
-            with self._model_resolver.resolve(model_context, "text_generation") as selection:
+            with self._resolve_question_model(context,model_context) as selection:
                 prepared = (
                     self._adapter_registry.prepare_general(
                         selection, question, context.trace_id, self._transport,
@@ -867,7 +879,7 @@ class QuestionAnsweringService:
             and callable(getattr(self._repository, "persist_failed", None))
         ) else None
         try:
-            with self._model_resolver.resolve(model_context, "text_generation") as selection:
+            with self._resolve_question_model(context,model_context) as selection:
                 try:
                     return self._ask_resolved(
                         context, selection=selection, sources=sources, general=general, evidence=evidence,
@@ -882,7 +894,7 @@ class QuestionAnsweringService:
                         context,selection,run_kind='question'):
                         # 명시 Run 비용 경로는 실패/불확정 뒤 자동 credential 재전송을 하지 않는다.
                         raise
-                    if not getattr(self._model_resolver, "supports_user_credential_fallback", False) or error.code not in {
+                    if context.model_settings is not None or not getattr(self._model_resolver, "supports_user_credential_fallback", False) or error.code not in {
                         "TEXT_PROVIDER_UNAVAILABLE", "TEXT_GENERATION_PROVIDER_UNAVAILABLE",
                         "TEXT_GENERATION_FAILED",
                     }:

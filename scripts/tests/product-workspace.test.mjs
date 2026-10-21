@@ -251,7 +251,7 @@ const deferred = () => {
 
 test("승인 정책 설정 메뉴는 전용 modal 안에서 조회하고 닫기·Workspace 전환의 늦은 인증을 폐기한다", async () => {
   const root = path.resolve(import.meta.dirname, "../..");
-  const output = await mkdtemp(path.join("D:/tmp", "daon-user-approval-policy-shell-"));
+  const output = await mkdtemp(path.join(tmpdir(), "daon-user-approval-policy-shell-"));
   const dom = installMinimalDom(); let reactRoot;
   try {
     const { build } = await import("vite"), { createElement, act } = await import("react"), { createRoot } = await import("react-dom/client");
@@ -293,7 +293,7 @@ test("승인 정책 설정 메뉴는 전용 modal 안에서 조회하고 닫기�
     assert.doesNotMatch(container.textContent,/late-closed-grant|late-old-workspace-grant/);
   } finally {
     if(reactRoot){const {act}=await import('react');await act(async()=>reactRoot.unmount());}
-    dom.restore();assert.equal(path.dirname(output),path.resolve('D:/tmp'));await rm(output,{recursive:true,force:true});
+    dom.restore();assert.equal(path.dirname(output),path.resolve(tmpdir()));await rm(output,{recursive:true,force:true});
   }
 });
 
@@ -427,8 +427,15 @@ const s18Sources = [
   { source_id: "source-1", source_version_id: "version-1", filename: "first.pdf", source_state: "ready", processing_state: "completed", job_state: "completed" },
   { source_id: "source-2", source_version_id: "version-2", filename: "other.pdf", source_state: "ready", processing_state: "completed", job_state: "completed" },
 ];
+function dModelView(version=1,effort=null) {
+  const selection={connection_id:"connection-d",model_id:"solar-pro4",reasoning_effort:effort};
+  return {notebook_id:"notebook-s18",version,selection:version?selection:null,effective_selection:version?{...selection,origin:"notebook"}:null,
+    available_models:[{connection_id:"connection-d",provider_code:"UPSTAGE",display_name:"승인 연결",model_id:"solar-pro4",connection_version:1,catalog_version:1,
+      reasoning:{status:"supported",values:[{value:"none",label:"사용 안 함"},{value:"low",label:"낮음"},{value:"medium",label:"보통"},{value:"high",label:"높음"}],profile_version:"upstage-solar-pro4-safe-wire-v1"}}]};
+}
 function s18Adapter(overrides = {}) {
   return { ...adapter, notebookContext: { notebook_id: "notebook-s18", sources: [] },
+    getModelSettings: async()=>dModelView(),
     listSources: async () => s18Sources, listConnectors: async () => [], listStudioOutputs: async () => [],
     listKnowledgePackages: async () => [{ package_id: "package-s18", producer: "daon3", producer_version: "3.0", authority: "approved", registration_state: "registered" }],
     ...overrides };
@@ -1107,12 +1114,14 @@ test("Image Citation 닫기는 원문 표시만 제거한다", async () => {
 test("질문 실제 React 이벤트는 정책 차단 원인·수동 재질문·저장 답변 재조회를 보존한다", async () => {
   let writes = 0, reads = 0, stored = null, workspace;
   const effectAdapter = { ...adapter,
+      getModelSettings:async()=>dModelView(),
     async listSources() { return [sourceRetryPayload]; },
     async listStudioOutputs() { return []; },
     async loadNotebookConversation() { reads++; return stored; },
     async askQuestion(input, options) {
       writes++;
       assert.equal(input.question, "자료를 요약해 주세요");
+      assert.equal(input.modelSettingsVersion,1);
       assert.ok(options.signal instanceof AbortSignal);
       assert.ok(options.idempotencyKey);
       if (writes === 1) throw new Error("EGRESS_POLICY_DENIED");
@@ -1166,6 +1175,7 @@ test("HTTP QA React 질문은 randomUUID 없이 실제 adapter와 secure idempot
     });
     workspace = await mountSourceRetryWorkspace({
       ...adapter,
+      getModelSettings:async()=>dModelView(),
       async listSources() { return []; },
       async listStudioOutputs() { return []; },
       async askQuestion(input, options) {
@@ -1182,6 +1192,7 @@ test("HTTP QA React 질문은 randomUUID 없이 실제 adapter와 secure idempot
     await workspace.act(async () => formProps.onSubmit({ preventDefault() {} }));
     assert.equal(calls.length, 1);
     assert.equal(calls[0].input.question, "다음 작업은?");
+    assert.equal(calls[0].input.modelSettingsVersion,1);
     assert.match(calls[0].options.idempotencyKey, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
   } finally {
     if (workspace) await workspace.cleanup();
@@ -1927,6 +1938,7 @@ test("빈 Notebook은 작업 상담을 실행하고 근거 미사용을 표시�
     let authorizeCalls = 0;
     const effectAdapter = {
       ...adapter,
+      getModelSettings:async()=>dModelView(),
       async authorizeQuestion() { authorizeCalls += 1; throw new Error("QUESTION_AUTHORIZATION_MUST_NOT_RUN"); },
       async listSources() { return []; },
       async listStudioOutputs() { return []; },
@@ -1950,7 +1962,7 @@ test("빈 Notebook은 작업 상담을 실행하고 근거 미사용을 표시�
     const form = findElements(container, (node) => node.tagName === "FORM" && node.getAttribute("class") === "conversation-composer")[0];
     const formProps = form[Object.keys(form).find((key) => key.startsWith("__reactProps$"))];
     await act(async () => formProps.onSubmit({ preventDefault() {} }));
-    assert.deepEqual(calls, [{ knowledgeContext: null, question: "다음 작업을 어떻게 진행할까?" }]);
+    assert.deepEqual(calls, [{ knowledgeContext: null, question: "다음 작업을 어떻게 진행할까?",modelSettingsVersion:1 }]);
     assert.equal(authorizeCalls, 0);
     assert.match(container.textContent, /작업 상담 · 근거 미사용/u);
 
@@ -1983,7 +1995,7 @@ test("빈 Notebook은 작업 상담을 실행하고 근거 미사용을 표시�
         mode: "raw_only",
         resources: [{ resourceKind: "source", resourceId: "source-1", versionId: "version-1" }],
       },
-      question: "선택 Source를 근거로 답해줘",
+      question: "선택 Source를 근거로 답해줘",modelSettingsVersion:1,
     }]);
     assert.doesNotMatch(groundedContainer.textContent, /일반 대화 · 근거 미사용/u);
 
@@ -2442,4 +2454,124 @@ test('B 순수 병합은 상태 위조·중복 요청ID·모호한 turn 결합�
   }
   assert.throws(()=>mergeNotebookConversationTurns([one],[{...two,client_request_id:'request-1'}]),/NOTEBOOK_CONVERSATION_INVALID/u);
   assert.throws(()=>mergeNotebookConversationTurns([],[one,one]),/NOTEBOOK_CONVERSATION_INVALID/u);
+});
+
+
+test("D 실제 DOM 모델 선택 자동저장 중 잠금·정확 version 질문·재진입 복원",async()=>{
+  let current=dModelView(0),saves=0,posts=0;const pending=deferred();const inputs=[];
+  const make=()=>s18Adapter({getModelSettings:async()=>structuredClone(current),
+    saveModelSettings:async(input)=>{saves++;await pending.promise;current=dModelView(1,input.reasoning_effort);return {notebook_id:"notebook-s18",version:1,selection:current.selection,replayed:false};},
+    askQuestion:async(input)=>{posts++;inputs.push(input);return s18Answer("확인된 답변");}});
+  const workspace=await mountS17ReconnectWorkspace(make(),{outputRoot:tmpdir()});
+  const select=()=>findElements(workspace.container,n=>n.tagName==="SELECT"&&n.getAttribute("aria-label")==="Provider · 모델")[0];
+  const submit=()=>findElements(workspace.container,n=>n.tagName==="BUTTON"&&n.getAttribute("aria-label")==="질문 실행")[0];
+  try{
+    await s18Type(workspace);assert.equal(submit().disabled,true);
+    let saving;await workspace.act(async()=>{saving=s18Props(select()).onChange({target:{value:JSON.stringify(["connection-d","solar-pro4"])}});});
+    assert.equal(saves,1);assert.equal(submit().disabled,true);assert.match(workspace.container.textContent,/모델 설정 저장 중/u);
+    await workspace.act(async()=>{pending.resolve();await saving;await Promise.resolve();await Promise.resolve();});
+    assert.match(workspace.container.textContent,/모델 설정 저장됨/u);
+    await workspace.act(async()=>{await s18Submit(workspace);});
+    assert.equal(posts,1);assert.equal(inputs[0].modelSettingsVersion,1);
+    await workspace.render(make());assert.match(workspace.container.textContent,/모델 설정 저장됨/u);
+    assert.equal(saves,1);assert.equal(posts,1);
+  }finally{await workspace.cleanup();}
+});
+
+
+test("D 질문 오류는 모델 설정 원인과 명시 재선택 조치를 안내한다",()=>{
+  assert.match(questionFailureMessage("NOTEBOOK_MODEL_SETTINGS_CHANGED"),/다시 조회.*모델/u);
+  assert.match(questionFailureMessage("NOTEBOOK_MODEL_SELECTION_REQUIRED"),/직접 선택/u);
+  assert.match(questionFailureMessage("NOTEBOOK_MODEL_UNAVAILABLE"),/다른 허용 모델.*직접 선택/u);
+  assert.doesNotMatch(questionFailureMessage("NOTEBOOK_MODEL_UNAVAILABLE"),/입력을 확인/u);
+});
+
+
+test("D 실제 StudioPane 생성은 Web POST에 의도한 선택 version만 전달한다",async()=>{
+  const {createStudioGeneration}=await import("../../apps/web/lib/product-workspace-api.js");
+  const calls=[];
+  const workspace=await mountS17ReconnectWorkspace(s18Adapter({loadNotebookConversation:async()=>({...s18Answer("근거 답변"),citations:[{citation_id:"citation-d",source_id:"source-1",source_version_id:"version-1",evidence_span_id:"span-d",page:1,origin:"raw_source",context_item_id:"source-1",origin_label:"원본 자료",authority_label:"Source",locator:{kind:"page",value:"1"}}]}),
+    createGeneration:(input,options)=>createStudioGeneration("workspace-1",input,{...options,notebookId:"notebook-s18",fetchImpl:async(url,options)=>{
+      calls.push({url,body:JSON.parse(options.body)});return Response.json({data:{job_id:"job-d",status:"queued"}},{status:201});}}),
+  }),{outputRoot:tmpdir()});
+  const button=text=>findElements(workspace.container,n=>n.tagName==="BUTTON"&&n.textContent.trim()===text)[0];
+  const field=label=>findElements(workspace.container,n=>n.tagName==="LABEL"&&n.textContent.startsWith(label))[0];
+  const set=async(label,value)=>{
+    const control=findElements(field(label),n=>n.tagName==="INPUT"||n.tagName==="SELECT")[0];
+    assert(control,`FIELD_${label}`);await workspace.act(async()=>s18Props(control).onChange({currentTarget:{value},target:{value}}));
+  };
+  try{
+    const type=findElements(workspace.container,n=>n.tagName==="BUTTON"&&n.textContent.includes("근거 기반 보고서"))[0];
+    await workspace.act(async()=>type.dispatchEvent(new MinimalEvent("click")));
+    await set("목적","근거 정리");await set("독자","검토자");await set("분량","short");await set("구성","summary-body-conclusion");
+    await set("출력 형식","pdf");await set("검토 조건","review_required");
+    await workspace.act(async()=>button("설정 확인").dispatchEvent(new MinimalEvent("click")));
+    const form=findElements(workspace.container,n=>n.tagName==="FORM"&&n.getAttribute("class")==="studio-config-form")[0];
+    await workspace.act(async()=>{s18Props(form).onSubmit({preventDefault(){}});await Promise.resolve();await Promise.resolve();});
+    assert.equal(calls.length,1);
+    assert.equal(calls[0].url,"/bff/api/studio-generation-requests");
+    assert.equal(calls[0].body.model_settings_version,1);
+    assert.equal(calls[0].body.run_id,"run-s18");
+    assert.equal(Object.hasOwn(calls[0].body,"intended_model_selection"),false);
+    assert.equal(Object.hasOwn(calls[0].body,"model_id"),false);
+  }finally{await workspace.cleanup();}
+});
+
+
+test("D version0 무Source 사실만 사전판정에 보내고 인사는 명시 모델 선택을 요구한다",async()=>{
+  let posts=0,studio=0,input;
+  const workspace=await mountS17ReconnectWorkspace(s18Adapter({getModelSettings:async()=>dModelView(0),listSources:async()=>[],listKnowledgePackages:async()=>[],
+    askQuestion:async(value)=>{posts++;input=value;return {kind:"system_notice",turn_id:"turn-notice-d",answer:"질문을 확인할 자료가 선택되지 않았습니다.",grounding_status:"no_knowledge",insufficient:true,citations:[],next_actions:["자료를 선택해 주세요."]};},
+    createGeneration:async()=>{studio++;}}),{outputRoot:tmpdir()});
+  try{
+    await s18Type(workspace,"안녕하세요");await workspace.act(async()=>{await s18Submit(workspace);});assert.equal(posts,0);
+    await s18Type(workspace,"안녕, 계약기간은 언제인가요?");await workspace.act(async()=>{await s18Submit(workspace);});
+    assert.equal(posts,1);assert.equal(Object.hasOwn(input,"modelSettingsVersion"),false);assert.equal(studio,0);
+    assert.match(workspace.container.textContent,/질문을 확인할 자료가 선택되지 않았습니다/u);
+  }finally{await workspace.cleanup();}
+});
+
+
+test("D 질문 설정 변경 오류 뒤 실행을 잠그고 명시 GET으로만 복구한다",async()=>{
+  let version=1,posts=0,reads=0;
+  const adapter=s18Adapter({getModelSettings:async()=>{reads++;return dModelView(version);},askQuestion:async()=>{posts++;throw new Error("NOTEBOOK_MODEL_SETTINGS_CHANGED");}});
+  const workspace=await mountS17ReconnectWorkspace(adapter,{outputRoot:tmpdir()});
+  try{
+    await s18Type(workspace);await workspace.act(async()=>{await s18Submit(workspace);});
+    const requery=()=>findElements(workspace.container,n=>n.tagName==="BUTTON"&&n.textContent==="마지막 저장값 다시 조회")[0];
+    assert(requery());await workspace.act(async()=>{await s18Submit(workspace);});assert.equal(posts,1);assert.equal(reads,1);
+    version=2;await workspace.act(async()=>{s18Props(requery()).onClick();await Promise.resolve();await Promise.resolve();});
+    assert.match(workspace.container.textContent,/모델 설정 저장됨/u);assert.equal(reads,2);assert.equal(posts,1);
+  }finally{await workspace.cleanup();}
+});
+
+
+test("D 저장 실패는 질문을 잠그고 같은 요청 재시도 또는 명시 조회만 허용한다",async()=>{
+  let saves=0,posts=0,reads=0;const keys=[];
+  const workspace=await mountS17ReconnectWorkspace(s18Adapter({getModelSettings:async()=>{reads++;return dModelView(1);},
+    saveModelSettings:async(input,options)=>{saves++;keys.push(options.idempotencyKey);throw new Error("NOTEBOOK_MODEL_SETTINGS_UNAVAILABLE");},
+    askQuestion:async()=>{posts++;return s18Answer("답변");}}),{outputRoot:tmpdir()});
+  const button=text=>findElements(workspace.container,n=>n.tagName==="BUTTON"&&n.textContent===text)[0];
+  try{
+    const select=findElements(workspace.container,n=>n.tagName==="SELECT"&&n.getAttribute("aria-label")==="추론 단계")[0];
+    await workspace.act(async()=>{await s18Props(select).onChange({target:{value:"low"}});});
+    await s18Type(workspace);await workspace.act(async()=>{await s18Submit(workspace);});assert.equal(posts,0);assert.equal(saves,1);
+    const retry=findElements(workspace.container,n=>n.tagName==="BUTTON"&&n.textContent.includes("같은 저장 요청"))[0];
+    assert(retry);await workspace.act(async()=>{await s18Props(retry).onClick();});assert.equal(saves,2);assert.equal(keys[0],keys[1]);
+    await workspace.act(async()=>{await s18Props(button("마지막 저장값 다시 조회")).onClick();await Promise.resolve();});
+    assert.equal(reads,2);assert.equal(posts,0);assert.match(workspace.container.textContent,/모델 설정 저장됨/u);
+  }finally{await workspace.cleanup();}
+});
+
+test("D Notebook 전환 뒤 늦은 모델 설정 조회는 현재 선택을 덮지 않는다",async()=>{
+  const old=deferred();let posts=0;
+  const workspace=await mountS17ReconnectWorkspace(s18Adapter({getModelSettings:()=>old.promise}),{outputRoot:tmpdir()});
+  try{
+    const current={...dModelView(2),notebook_id:"notebook-new"};
+    await workspace.render(s18Adapter({notebookContext:{notebook_id:"notebook-new",sources:[]},getModelSettings:async()=>current,
+      askQuestion:async(input)=>{posts++;assert.equal(input.modelSettingsVersion,2);return s18Answer("답변");}}));
+    await workspace.act(async()=>{old.resolve(dModelView(1));await Promise.resolve();await Promise.resolve();});
+    assert.match(workspace.container.textContent,/모델 설정 저장됨/u);
+    await s18Type(workspace);await workspace.act(async()=>{await s18Submit(workspace);});assert.equal(posts,1);
+  }finally{await workspace.cleanup();}
 });

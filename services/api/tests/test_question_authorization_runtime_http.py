@@ -17,12 +17,13 @@ from daon_user_api.question_answering import TextModelSelection
 from daon_user_api.question_answering_postgres import StoredQuestionAnswer
 from daon_user_api.question_answering_service import QuestionAnsweringError
 from daon_user_api.runtime import RuntimeDependencies, RuntimeSettings, WEB_SESSION_COOKIE, create_app
+from notebook_conversation_test_support import ExplicitNotebookModelSettings
 from test_identity_support import POLICY_VERSION, TRACE_ID, create_service
 from test_question_answering_runtime_http import FakeNotebookService
 
 
 PASSWORD = "S18 synthetic local reauthentication fixture"
-BODY = {"notebook_id": "notebook-s18", "question": "선택한 근거를 설명해 주세요."}
+BODY = {"model_settings_version":1,"notebook_id": "notebook-s18", "question": "선택한 근거를 설명해 주세요."}
 
 
 class QuestionBoundary:
@@ -99,6 +100,7 @@ class S18QuestionAuthorizationTests(unittest.IsolatedAsyncioTestCase):
             masking_required=True, redaction_required=True,
         )
         self.dependencies = RuntimeDependencies(
+            notebook_model_settings_service=ExplicitNotebookModelSettings(),
             settings=RuntimeSettings.for_test(database_path=path, policy_version=POLICY_VERSION),
             audit_store=audit, identity_service=self.identity, identity_repository=self.repo,
             authorization_service=AuthorizationService(repository=authorization_repository, audit_store=audit, clock=self.clock),
@@ -135,6 +137,14 @@ class S18QuestionAuthorizationTests(unittest.IsolatedAsyncioTestCase):
             return connection.execute("SELECT count(*) FROM step_up_consumptions").fetchone()[0]
         finally:
             connection.close()
+
+    async def test_d_changed_notebook_model_version_rejects_old_step_up_without_consumption(self):
+        approval=await self.grant()
+        self.dependencies.notebook_model_settings_service.version=2
+        response=await self.post(body={**BODY,"step_up_authorization_id":approval["step_up_authorization_id"]})
+        self.assertEqual(response.status_code,409,response.text)
+        self.assertEqual(response.json()["error"]["code"],"NOTEBOOK_MODEL_SETTINGS_CHANGED")
+        self.assertEqual((self.service.calls,self.consumption_count()),(0,0))
 
     async def test_s18_question_missing_token_is_step_up_required_before_provider(self):
         response = await self.post()
