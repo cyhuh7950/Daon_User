@@ -400,3 +400,38 @@ def test_no_second_dispatch_after_plan_expires_during_first_attempt():
         AttemptOutcome('succeeded',result=f.port.result)]
     with pytest.raises(RoutingExecutionError):execute(f)
     assert len(f.port.calls)==1
+
+
+def select_insert_only_execution_tables(db):
+    """실PG42501 재현용 ACL 대역. 행 잠금 외의 SQL 처리·원자성 대역은 유지한다."""
+    execute=db.execute
+    def restricted(sql,params=()):
+        if sql.startswith('SELECT ') and ' FOR SHARE' in sql and any(
+                ' FROM '+table+' ' in sql for table in ('routing_authorization_plans','routing_billing_receipts')):
+            from daon_user_api.cloud_storage import CloudDatabaseError
+            raise CloudDatabaseError('CURRENT_ACCESS_DENIED',retryable=False)
+        return execute(sql,params)
+    db.execute=restricted
+
+
+def test_plan_claim_with_select_insert_only_acl_keeps_exact_replay(execution):
+    f=execution;select_insert_only_execution_tables(f.store.db)
+    plan=f.repo.read(f.ctx,f.approval.plan_id)
+    options=dict(idempotency_key='qa-select-only-claim',request_digest='b'*64,recheck=f.port.recheck)
+    assert f.repo.claim(f.ctx,plan,**options) is True
+    assert f.repo.claim(f.ctx,plan,**options) is False
+    assert len(f.store.db.claims)==1
+
+
+def test_same_receipt_replay_with_select_insert_only_acl_does_not_need_update(execution):
+    from daon_user_api.routing_execution import AttemptOutcome
+    f=execution;plan=f.repo.read(f.ctx,f.approval.plan_id)
+    f.repo.claim(f.ctx,plan,idempotency_key='qa-receipt-claim',request_digest='b'*64,recheck=f.port.recheck)
+    attempt=f.repo.claim_attempt(f.ctx,plan,1,recheck=f.port.recheck)
+    outcome=AttemptOutcome('failed','AUTH_DENIED','known','0.12','USD','qa-select-only-receipt')
+    f.repo.finish(f.ctx,plan,1,attempt,outcome,final=True,write_result=None)
+    select_insert_only_execution_tables(f.store.db)
+    assert f.repo.reconcile(f.ctx,plan,1,outcome) is True
+    assert f.repo.reconcile(f.ctx,plan,1,outcome) is False
+    assert len(f.store.db.receipts)==1
+    assert sum(event[4]=='reconciled' for event in f.store.db.events)==1

@@ -37,8 +37,9 @@ class PostgresRoutingAttemptsRepository:
     def _stored(self,conn,ctx,plan):
         self._scope(plan,ctx)
         p=plan.as_dict()
+        # 불변 행은 SELECT로 대조한다. 호출자의 Run 잠금과 claim 고유키가 실행 경합을 제어한다.
         row=conn.execute('SELECT payload,content_digest FROM routing_authorization_plans '
-            'WHERE tenant_id=%s AND workspace_id=%s AND plan_id=%s AND actor_id=%s AND session_id=%s FOR SHARE',
+            'WHERE tenant_id=%s AND workspace_id=%s AND plan_id=%s AND actor_id=%s AND session_id=%s',
             (ctx.tenant_id,ctx.workspace_id,p['plan_id'],ctx.actor_id,ctx.session_id)).fetchone()
         if (row is None or row[1]!=plan.digest_sha256
                 or canonical_json_bytes(row[0]).decode()!=plan.canonical_text):
@@ -245,8 +246,9 @@ class PostgresRoutingAttemptsRepository:
             'RETURNING workspace_id,plan_id,attempt_id,content_digest',
             (*key,ctx.workspace_id,p['plan_id'],attempt,sha,Jsonb(payload))).fetchone()
         if row is None:
+            # 불변 receipt의 정확한 내용 대조에는 UPDATE 행 잠금 권한이 필요하지 않다.
             row=conn.execute('SELECT workspace_id,plan_id,attempt_id,content_digest FROM routing_billing_receipts '
-                'WHERE tenant_id=%s AND billing_scope_id=%s AND provider_code=%s AND account_reference=%s AND receipt_id=%s FOR SHARE',key).fetchone()
+                'WHERE tenant_id=%s AND billing_scope_id=%s AND provider_code=%s AND account_reference=%s AND receipt_id=%s',key).fetchone()
         if row!=(ctx.workspace_id,p['plan_id'],attempt,sha):
             raise RoutingExecutionError('ROUTING_RECEIPT_REUSED')
         return payload
