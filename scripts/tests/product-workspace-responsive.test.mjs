@@ -153,4 +153,3 @@ test("R4 넓은 화면의 pane 초점으로 자동 열린 Drawer도 현재 보�
     assert.equal(conversation.parentNode.hasAttribute("hidden"),true);
   }finally{await view.cleanup();}
 });
-
