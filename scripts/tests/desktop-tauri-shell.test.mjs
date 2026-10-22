@@ -8,6 +8,15 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+// 이 Web 동작 시험은 서버에 이미 저장된 본인 Notebook 선택을 명시한다.
+// 실제 Native 모델 설정 port의 구현 여부를 대신하는 fixture가 아니다.
+function savedNotebookModelFixture() {
+  const selection={connection_id:"connection-test",model_id:"registered-model",reasoning_effort:null};
+  return {notebook_id:"notebook-1",version:1,selection,effective_selection:{...selection,origin:"notebook"},
+    available_models:[{connection_id:selection.connection_id,provider_code:"CUSTOM",display_name:"시험에서 명시한 연결",
+      model_id:selection.model_id,connection_version:1,catalog_version:1,reasoning:{status:"unknown",values:[],profile_version:null}}]};
+}
+
 function mergeGateAuthSession() {
   return { user_id: "user-login-1", tenant_id: "tenant-login-1", workspace_id: "workspace-login-1",
     session_id: "session-login-1", device_id: "device-login-1", client_kind: "web", delivery: "same_origin_secure_cookie",
@@ -752,12 +761,14 @@ test("Web Processing은 queued→leased→processing→completed를 polling한 �
     let questionCalls = 0;
     const waits = [];
     const readyAdapter = {
+      getModelSettings: async () => savedNotebookModelFixture(),
       listSources: async () => [{ source_id: "source-1", source_version_id: "version-1", filename: "ready.pdf", source_state: "ready", processing_state: "completed", job_state: "completed" }],
       listKnowledgePackages: async () => [],
       listProductStudioOutputs: async () => ({ outputs: [], studioLocks: [] }),
       uploadPdf: async () => uploadResult,
       getProcessingStatus: async () => processingStatuses[statusCalls++],
-      askQuestion: async () => {
+      askQuestion: async (input) => {
+        assert.equal(input.modelSettingsVersion,1,"질문은 명시한 Notebook 설정 version을 전달해야 한다");
         questionCalls += 1;
         return {
           run_id: "run-answer", run_result_id: "result-answer", answer: "근거 답변", insufficient: false,
@@ -1181,12 +1192,16 @@ test("Web Question React는 Safe DTO만 state에 반영하고 malformed Citation
       dom.document.body.appendChild(container);
       root = createRoot(container);
       const adapter = {
+        getModelSettings: async () => savedNotebookModelFixture(),
         listSources: async () => [{ source_id: "source-1", source_version_id: "version-1", filename: "ready.pdf", source_state: "ready", processing_state: "completed", job_state: "completed" }],
         listKnowledgePackages: async () => [],
         listProductStudioOutputs: async () => ({ outputs: [], studioLocks: [] }),
         uploadPdf: async () => uploadResult,
         getProcessingStatus: async () => processingStatus,
-        askQuestion: async () => scenario.answer,
+        askQuestion: async (input) => {
+          assert.equal(input.modelSettingsVersion,1,"Citation 검사는 명시한 모델 선택 이후에 도달해야 한다");
+          return scenario.answer;
+        },
         citationUrl: () => scenario.url
       };
       await act(async () => { root.render(createElement(ActualWorkspace, { workspaceId: "workspace-1", adapter })); });
