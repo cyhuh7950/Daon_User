@@ -1,5 +1,11 @@
 const JSON_HEADERS = Object.freeze({ "Content-Type": "application/json" });
 
+function validateReasoningContract(input) {
+  if (Object.hasOwn(input,"reasoning_contract") && !["unknown","unsupported","router_effort_v1"].includes(input.reasoning_contract)) {
+    const error=new Error("PROVIDER_CONNECTION_INVALID");error.code="PROVIDER_CONNECTION_INVALID";error.status=422;throw error;
+  }
+}
+
 async function request(path, { method = "GET", body, headers = {} } = {}) {
   const response = await fetch(path, {
     method,
@@ -11,9 +17,12 @@ async function request(path, { method = "GET", body, headers = {} } = {}) {
     error: { code: "RESOURCE_UNAVAILABLE", trace_id: response.headers.get("x-trace-id") }
   }));
   if (!response.ok) {
-    const error = new Error(payload?.error?.code ?? "RESOURCE_UNAVAILABLE");
-    error.code = payload?.error?.code ?? "RESOURCE_UNAVAILABLE";
-    error.traceId = payload?.error?.trace_id ?? response.headers.get("x-trace-id");
+    const code = /^[A-Z][A-Z0-9_]{0,79}$/u.test(payload?.error?.code ?? "") ? payload.error.code : "RESOURCE_UNAVAILABLE";
+    const error = new Error(code);
+    error.code = code;
+    error.status = response.status;
+    const trace = payload?.error?.trace_id ?? response.headers.get("x-trace-id");
+    error.traceId = typeof trace === "string" && /^[A-Za-z0-9._:-]{1,128}$/u.test(trace) ? trace : null;
     throw error;
   }
   return { payload, etag: response.headers.get("etag") };
@@ -52,12 +61,14 @@ export const providerSettingsApi = Object.freeze({
       method: "DELETE", body: input,
     });
   },
-  createConnection(input, idempotencyKey) {
+  async createConnection(input, idempotencyKey) {
+    validateReasoningContract(input);
     return request("/bff/api/admin/provider-connections", {
       method: "POST", body: input, headers: { "Idempotency-Key": idempotencyKey }
     });
   },
-  updateConnection(connectionId, input, idempotencyKey) {
+  async updateConnection(connectionId, input, idempotencyKey) {
+    validateReasoningContract(input);
     return request(`/bff/api/admin/provider-connections/${encodeURIComponent(connectionId)}`, {
       method: "PUT", body: input, headers: { "Idempotency-Key": idempotencyKey }
     });

@@ -231,3 +231,12 @@ test("실제 ProductWorkspaceShell은 selected Notebook Adapter의 보존 Source
     dom.restore(); await rm(output, { recursive: true, force: true });
   }
 });
+
+test('B 전체 대화 adapter는 고정 Notebook과 cursor/signal만 전달하고 미지원 대체 이력을 만들지 않는다',async()=>{
+  const calls=[];const controller=new AbortController();
+  const base={listConversationTurns:async options=>{calls.push(options);return {items:[],next_cursor:null};}};
+  const adapter=createNotebookContextWorkspaceAdapter(base,EXISTING_CONTEXT);
+  assert.deepEqual(await adapter.listConversationTurns({notebookId:'notebook-wrong',before:'b2xk',limit:20,signal:controller.signal}),{items:[],next_cursor:null});
+  assert.equal(calls[0].notebookId,'notebook-existing');assert.equal(calls[0].signal,controller.signal);assert.equal(calls[0].before,'b2xk');
+  assert.equal(createNotebookContextWorkspaceAdapter({},EXISTING_CONTEXT).listConversationTurns,undefined);
+});

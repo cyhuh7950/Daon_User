@@ -6,7 +6,7 @@ import os
 import logging
 import signal
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass,field
 from pathlib import Path
 
 from .cloud_storage import PostgresCloudStore
@@ -27,6 +27,9 @@ class StudioWorkerSettings:
     lease_seconds: int
     poll_seconds: float
     notification_inbox_enabled: bool = False
+    provider_credential_key_file: Path | None = None
+    run_cost_policies_json: str = field(default="[]",repr=False)
+    run_cost_model_context_json: str = field(default="{}",repr=False)
 
     def __post_init__(self) -> None:
         if type(self.notification_inbox_enabled) is not bool:
@@ -45,12 +48,16 @@ class StudioWorkerSettings:
             int(os.environ.get("DAON_STUDIO_WORKER_LEASE_SECONDS", "600")),
             float(os.environ.get("DAON_STUDIO_WORKER_POLL_SECONDS", "0.5")),
             notification_inbox_enabled=notification_flag == "true",
+            provider_credential_key_file=Path(os.environ["DAON_PROVIDER_CREDENTIAL_KEY_FILE"]) if os.environ.get("DAON_PROVIDER_CREDENTIAL_KEY_FILE") else None,
+            run_cost_policies_json=os.environ.get("DAON_RUN_COST_POLICIES_JSON","[]"),
+            run_cost_model_context_json=os.environ.get("DAON_RUN_COST_MODEL_CONTEXT_JSON","{}"),
         )
 
 
 class StudioGenerationWorker:
     def __init__(self, queue, repository, *, worker_id: str, lease_seconds: int = 600,
-                 approval_repository=None, approval_sweep_seconds: float = 60.0, telemetry=None) -> None:  # type: ignore[no-untyped-def]
+                 approval_repository=None, approval_sweep_seconds: float = 60.0, telemetry=None,
+                 execution_service=None) -> None:  # type: ignore[no-untyped-def]
         if (isinstance(approval_sweep_seconds, bool) or not isinstance(approval_sweep_seconds, (int, float))
                 or not 0 < approval_sweep_seconds <= 60):
             raise ValueError("STUDIO_WORKER_APPROVAL_POLL_INVALID")
@@ -61,6 +68,7 @@ class StudioGenerationWorker:
         self._approval_repository = approval_repository
         self._approval_sweep_seconds = approval_sweep_seconds
         self._telemetry = telemetry
+        self._execution_service=execution_service
 
     def run_once(self) -> bool:
         with observe_poll(self._telemetry):
@@ -68,6 +76,24 @@ class StudioGenerationWorker:
             if job is None:
                 return False
             safe_hook(self._telemetry,"processing_started")
+            if "execution_plan_id" in job.request_json:
+                # New typed requests never enter the old template/retry branch.
+                try:
+                    self._queue.start(job)
+                    if self._execution_service is None:raise StudioError("STUDIO_GENERATION_UNAVAILABLE",503)
+                    self._execution_service.process(job)
+                except Exception as error:
+                    # Fixed safe recovery; neither exception text nor model content is logged.
+                    try:
+                        recovered=self._execution_service.recover_uncertain(job) if self._execution_service is not None else None
+                        if recovered is None:
+                            code=error.code if isinstance(error,StudioError) and error.code in {
+                                "RESOURCE_UNAVAILABLE","STUDIO_SOURCE_CHANGED","STUDIO_MODEL_CHANGED","STUDIO_POLICY_CHANGED",
+                                "STUDIO_AUTHORIZATION_EXPIRED","STUDIO_INPUT_CHANGED","STUDIO_GENERATION_UNAVAILABLE"} else "STUDIO_JOB_PROCESSING_FAILED"
+                            self._queue.finish(job,state="failed",error_code=code)
+                    except Exception:
+                        _LOGGER.warning("STUDIO_GENERATION_TERMINAL_UNCONFIRMED")
+                return True
             try:
                 start = getattr(self._queue, "start", None)
                 if callable(start):
@@ -134,6 +160,29 @@ class StudioGenerationWorker:
             safe_hook(self._telemetry,"stop")
 
 
+def _build_execution_service(settings,cloud_store,repository):
+    from datetime import datetime,timezone
+    from .studio_execution import build_studio_execution_service
+    from .provider_credentials import ProviderCredentialCipher
+    from .user_provider_credentials import PostgresUserProviderCredentialService
+    from .egress_policy import EgressPolicyService
+    from .egress_policy_postgres import PostgresEgressPolicyRepository
+    from .operations_run_cost import parse_run_cost_settings
+    from .operations_run_cost_postgres import RunCostSessionFactory
+    cipher=None
+    if settings.provider_credential_key_file is not None:
+        try:key=settings.provider_credential_key_file.read_bytes()
+        except OSError:raise ValueError("PROVIDER_CREDENTIAL_KEY_REFERENCE_UNAVAILABLE") from None
+        cipher=ProviderCredentialCipher(key,encryption_key_version=1)
+        del key
+    credentials=PostgresUserProviderCredentialService(cloud_store,cipher) if cipher is not None else None
+    policies,evidence=parse_run_cost_settings(settings.run_cost_policies_json,settings.run_cost_model_context_json)
+    # Only applies() is consumed. No question/document reservation repository or session is created.
+    limits=RunCostSessionFactory(None,policies=policies,evidence=evidence,clock=lambda:datetime.now(timezone.utc)) if policies else None
+    return build_studio_execution_service(cloud_store,cipher=cipher,user_credentials=credentials,identity=None,
+        policy_service=EgressPolicyService(PostgresEgressPolicyRepository(cloud_store)),cost_sessions=limits,workspace_repository=repository)
+
+
 def main() -> None:
     settings = StudioWorkerSettings.from_env()
     cloud_store = PostgresCloudStore(settings.database_dsn,
@@ -142,7 +191,8 @@ def main() -> None:
     repository = PostgresStudioWorkspaceRepository(cloud_store)
     worker = StudioGenerationWorker(queue, repository, worker_id=settings.worker_id, lease_seconds=settings.lease_seconds,
                                     approval_repository=StudioApprovalLifecycleRepository(cloud_store),
-                                    telemetry=worker_publisher(settings.database_dsn,worker_kind="studio",worker_id=settings.worker_id))
+                                    telemetry=worker_publisher(settings.database_dsn,worker_kind="studio",worker_id=settings.worker_id),
+                                    execution_service=_build_execution_service(settings,cloud_store,repository))
     stop = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_args: stop.set())
     signal.signal(signal.SIGINT, lambda *_args: stop.set())

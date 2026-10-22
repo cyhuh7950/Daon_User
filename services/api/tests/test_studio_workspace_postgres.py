@@ -368,6 +368,9 @@ class StudioWorkspacePostgresContractTests(unittest.TestCase):
         from dataclasses import asdict, replace
         request = self.request()
         payload = asdict(request)
+        # 옛 실제 queue JSON에는 미지정된 D 선택 필드가 없었다. None을 새로 백필하지 않는다.
+        if payload["intended_model_selection"] is None:
+            payload.pop("intended_model_selection")
         payload["source_version_ids"] = list(request.source_version_ids)
         payload["notebook_id"] = "notebook-1"
         class ExistingJobConnection(Connection):

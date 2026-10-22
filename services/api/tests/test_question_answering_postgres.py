@@ -125,6 +125,62 @@ class FakeObjectStorage:
 
 
 class PostgresQuestionAnsweringRepositoryTests(unittest.TestCase):
+    def test_studio_citation_requires_actual_output_attempt_lineage_and_current_source(self):
+        from dataclasses import replace
+        from unittest.mock import patch
+        context=replace(self.context,notebook_id="notebook-cp3")
+        self.cloud.connection.citation_row=("source-cp3","source-version-cp3","2","2",True)
+        with patch.object(self.repository,"_knowledge_selections",return_value=()) as current,patch.object(self.repository,"read_current_pdf",return_value="current-pdf"):
+            value,page=self.repository.read_citation_pdf(context,"citation-studio")
+        self.assertEqual((value,page),("current-pdf",2))
+        selected=current.call_args.args[2][0]
+        self.assertEqual((selected.origin,selected.source_id,selected.source_version_id),("raw_source","source-cp3","source-version-cp3"))
+        self.assertIs(current.call_args.kwargs["write"],False)
+        query=next(sql for sql in self.cloud.connection.queries if "FROM citations c" in sql)
+        for required in ("model_attempts ma","routing_decisions rd","output_versions ov","evidence_references er", "ov.created_by=scope.actor_id", "er.canonical_json->>'citation_id'=c.record_id", "r.canonical_json->>'notebook_id'=scope.notebook_id", "rr.canonical_json->>'notebook_id'=scope.notebook_id", "ov.canonical_json->'source_lineage'->>'notebook_id'=scope.notebook_id"):
+            self.assertIn(required,query)
+        with patch.object(self.repository,"_knowledge_selections",side_effect=QuestionRepositoryError("QUESTION_SOURCE_UNAVAILABLE",status=404)),patch.object(self.repository,"read_current_pdf") as content:
+            with self.assertRaises(QuestionRepositoryError):self.repository.read_citation_pdf(context,"citation-studio")
+            content.assert_not_called()
+        # 관계 대역: 다른 Notebook에 같은 산출물·Source를 재binding해도 원 Notebook 지문은 바뀌지 않는다.
+        original_execute=self.cloud.connection.execute
+        def rebound_query(sql,params=()):
+            if "FROM citations c" in sql and params[1]!="notebook-cp3":
+                for required in ("r.canonical_json->>'notebook_id'=scope.notebook_id","rr.canonical_json->>'notebook_id'=scope.notebook_id","ov.canonical_json->'source_lineage'->>'notebook_id'=scope.notebook_id"):
+                    self.assertIn(required,sql)
+                return Cursor()
+            return original_execute(sql,params)
+        with patch.object(self.cloud.connection,"execute",side_effect=rebound_query),patch.object(self.repository,"read_current_pdf") as content:
+            with self.assertRaises(QuestionRepositoryError):self.repository.read_citation_pdf(replace(context,notebook_id="rebound-notebook"),"citation-studio")
+            content.assert_not_called()
+        clause,params=self.repository._citation_notebook_scope(self.context)
+        self.assertIn("NOT EXISTS",clause);self.assertEqual(params,())
+
+    def test_c_new_metadata_read_rejects_invalid_answer_types_length_and_bool(self):
+        for answer,insufficient in (("x"*8001,False),(True,False),(1,False),("정상",0),("",False)):
+            with self.subTest(kind=type(answer).__name__,length=len(answer) if isinstance(answer,str) else None):
+                self.cloud.connection.completed_rows=[("result-c",{"answer":answer,"insufficient":insufficient,
+                    "grounding_status":"conversational","next_actions":[]},None,None,"local_runtime",None)]
+                with self.assertRaisesRegex(QuestionRepositoryError,"^QUESTION_RESULT_INVALID$"):
+                    self.repository.load_completed(self.context,"run-c")
+
+    def test_c_partial_metadata_is_rejected_before_any_storage(self):
+        result=GroundedTextResult("안녕하세요.",(),False,{},next_actions=("Source 추가",))
+        with self.assertRaisesRegex(QuestionRepositoryError,"^QUESTION_RESULT_INVALID$"):
+            self.repository.persist_completed(self.context,run_id="run-c-partial",source_id=None,source_version_id=None,
+                question="안녕",selection=TextModelSelection("UPSTAGE","https://api.upstage.ai/v1","profile-upstage","deployment-text","solar-pro4",5),
+                evidence=(),result=result,context_mode="general_ungrounded",context_sources=())
+        self.assertFalse(any(query.startswith("INSERT") for query in self.cloud.connection.queries))
+
+    def test_c_grounding_metadata_survives_current_completed_read(self):
+        payload = {"answer":"확인된 원문", "insufficient":False,
+            "grounding_status":"partial", "next_actions":["질문의 조건을 확인할 자료를 추가해 주세요."]}
+        self.cloud.connection.completed_rows = [("result-c",payload,"citation-c",{
+            "source_id":"source-cp3","source_version_id":"source-version-cp3","evidence_span_id":"span-page-2","page":2},"local_runtime",None)]
+        stored = self.repository.load_completed(self.context,"run-c")
+        self.assertEqual(getattr(stored,"grounding_status",None),"partial")
+        self.assertEqual(stored.next_actions,tuple(payload["next_actions"]))
+
     def test_cost_failed_run_records_uncertain_without_fabricated_attempt_and_rolls_back_on_error(self):
         from test_recovery_lineage import Ledger
         from daon_user_api.question_answering_service import question_request_fingerprint
@@ -132,7 +188,10 @@ class PostgresQuestionAnsweringRepositoryTests(unittest.TestCase):
         ledger=Ledger();ctx=QuestionContext(ledger.context.tenant_id,ledger.context.workspace_id,ledger.context.actor_id,
             ledger.context.trace_id,ledger.context.policy_version,'notebook-a')
         selection=TextModelSelection('OLLAMA','https://models.example','profile','deployment','model',1,connection_id='connection-a')
-        run='run-failed-cost';payload={'question':'합성 질문','context_mode':'general_ungrounded'}
+        run='run-failed-cost';payload={'question':'합성 질문','context_mode':'general_ungrounded','model_settings_version':1}
+        from daon_user_api.notebook_model_settings import NotebookModelExecution,NotebookModelSelection
+        from dataclasses import replace
+        ctx=replace(ctx,model_settings=NotebookModelExecution(NotebookModelSelection('connection-a','model',None),1,None))
         fingerprint=question_request_fingerprint(ctx,run_id=run,idempotency_key=run,request_payload=payload)
         frozen={'fingerprint':'sha256:'+'a'*64,'payload_fingerprint':'sha256:'+'b'*64}
         ids=self.repository._opaque_id
@@ -177,6 +236,7 @@ class PostgresQuestionAnsweringRepositoryTests(unittest.TestCase):
         args=dict(run_id=run,request_fingerprint=fingerprint,context_sources=(),selection=selection,
             egress_authorization=authorization,request_payload=payload,idempotency_key=run)
         repository.persist_failed(ctx,**args)
+        self.assertEqual(pending['run_snapshots'][0]['notebook_model_settings']['model_settings_version'],1)
         self.assertEqual(len(receipts),1);self.assertEqual((receipts[0][6],receipts[0][8:10],receipts[0][12]),(None,(None,None),'uncertain'))
         self.assertFalse(any(sql.startswith('INSERT INTO model_attempts') for sql in queries))
         fail[0]=True

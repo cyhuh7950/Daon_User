@@ -14,6 +14,7 @@ from daon_user_api.authorization import AuthorizationService, Role, SqliteAuthor
 from daon_user_api.identity import IdentityPrincipal
 from daon_user_api.question_answering_postgres import CitationContent, StoredCitation, StoredQuestionAnswer
 from daon_user_api.runtime import WEB_SESSION_COOKIE, RuntimeDependencies, RuntimeSettings, create_app
+from notebook_conversation_test_support import ExplicitNotebookModelSettings
 from test_identity_support import POLICY_VERSION, TRACE_ID, create_service, identity_session_view
 
 
@@ -50,6 +51,10 @@ class FakeQuestionService:
         self.replay_answer = None
         self.insufficient_source = False
 
+    def preflight_grounding(self,context,**values):
+        # This boundary fixture covers runtime delegation, not retrieval semantics.
+        return None
+
     def replay(self, context, *, run_id, request_fingerprint):  # type: ignore[no-untyped-def]
         self.replay_calls.append((context, run_id, request_fingerprint))
         return self.replay_answer
@@ -74,12 +79,11 @@ class FakeQuestionService:
         )
 
 
-class FakeNotebookService:
-    def __init__(self) -> None:
-        self.required = []
+from notebook_conversation_test_support import ConversationTestLedger
 
-    def require_selected_bindings(self, context, notebook_id, *, required):  # type: ignore[no-untyped-def]
-        self.required.append((context, notebook_id, required))
+
+class FakeNotebookService(ConversationTestLedger):
+    pass
 
 
 class FakeKnowledgePackages:
@@ -137,6 +141,102 @@ class FakeCitationContent:
 
 
 class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
+    async def test_c_terminal_notice_replays_before_newly_available_evidence_can_run(self):
+        from types import SimpleNamespace
+        from test_question_answering_service import (FakeRepository,FakeIndex,FakeCredential,
+            GeneralAnswerTransport,StaticWorkspaceModelResolver,FakeEgress)
+        from daon_user_api.document_index_postgres import IndexedEvidenceChunk
+        from daon_user_api.question_answering_service import QuestionAnsweringService
+        resolver,transport,index=StaticWorkspaceModelResolver(),GeneralAnswerTransport(),FakeIndex(())
+        service=QuestionAnsweringService(resolver,FakeRepository(),index,FakeCredential(),transport,FakeEgress())
+        dependencies=replace(self.dependencies,question_answering_service=service,
+            egress_policy_service=SimpleNamespace(get_effective=lambda _:self.fail("no egress")))
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(dependencies)),base_url="http://127.0.0.1") as client:
+            with self._authenticated():
+                args=dict(cookies={WEB_SESSION_COOKIE:"opaque-session"},headers={"Idempotency-Key":"c-notice-replay-request"},
+                    json={"model_settings_version":1,"notebook_id":"notebook-cp3","source_id":"source-cp3","source_version_id":"source-version-cp3","question":"계약 기간은 언제인가요?"})
+                first=await client.post("/api/v1/workspaces/workspace-001/questions",**args)
+                self.assertEqual(first.status_code,200,first.text)
+                index.evidence=(IndexedEvidenceChunk("chunk-c","source-cp3","source-version-cp3",1,"계약 기간 원문","span-c"),)
+                second=await client.post("/api/v1/workspaces/workspace-001/questions",**args)
+                self.assertEqual(second.json()["data"],first.json()["data"])
+                self.assertRegex(first.headers.get("ETag", ""), r'"projection-[0-9a-f]{24}"')
+                self.assertEqual(second.headers.get("ETag"),first.headers["ETag"])
+                self.assertEqual(second.headers["Cache-Control"],"no-store")
+        self.assertEqual((resolver.calls,transport.calls),([],0))
+
+    async def test_c_no_source_fact_is_saved_notice_before_model_or_step_up(self):
+        from types import SimpleNamespace
+        from test_question_answering_service import (FakeRepository, FakeIndex, FakeCredential,
+            GeneralAnswerTransport, StaticWorkspaceModelResolver, FakeEgress)
+        from daon_user_api.question_answering_service import QuestionAnsweringService
+        resolver, transport, repository = StaticWorkspaceModelResolver(), GeneralAnswerTransport(), FakeRepository()
+        service = QuestionAnsweringService(resolver, repository, FakeIndex(()), FakeCredential(), transport, FakeEgress())
+        dependencies = replace(self.dependencies, question_answering_service=service,
+            egress_policy_service=SimpleNamespace(get_effective=lambda _: self.fail("egress must not be read")))
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(dependencies)), base_url="http://127.0.0.1") as client:
+            with self._authenticated(), patch.object(self.identity, "issue_step_up_after_reauthentication", side_effect=AssertionError("step-up issue forbidden")), patch.object(self.identity, "consume_step_up", side_effect=AssertionError("step-up consume forbidden")):
+                for suffix in ("", "/authorization"):
+                    response = await client.post("/api/v1/workspaces/workspace-001/questions"+suffix,
+                        cookies={WEB_SESSION_COOKIE:"opaque-session"}, headers={"Idempotency-Key":"c-notice-request-"+str(len(suffix))},
+                        json={"model_settings_version":1,"notebook_id":"notebook-cp3", "question":"안녕, 계약기간은 언제까지인가요?"})
+                    self.assertEqual(response.status_code, 200, response.text)
+                    data=response.json()["data"]
+                    self.assertEqual(set(data), {"kind","turn_id","answer","grounding_status","insufficient","citations","next_actions"})
+                    self.assertEqual((data["kind"],data["grounding_status"],data["insufficient"]), ("system_notice","no_knowledge",True))
+                    self.assertIn(data["turn_id"], self.notebooks.turns)
+                    self.assertRegex(response.headers.get("ETag", ""), r'"projection-[0-9a-f]{24}"')
+                    self.assertEqual(response.headers["Cache-Control"], "no-store")
+        self.assertEqual((resolver.calls,transport.calls,repository.persisted), ([],0,None))
+        self.assertEqual([item[2]["event_kind"] for item in self.notebooks.events], ["no_knowledge","no_knowledge"])
+
+    async def test_question_admitted_before_model_failure_and_history_is_authenticated(self):
+        from daon_user_api.question_answering_service import QuestionAnsweringError
+        with self._authenticated(), patch.object(self.service,"ask",side_effect=QuestionAnsweringError("QUESTION_PROVIDER_UNAVAILABLE",status=503,retryable=True)):
+            response=await self.client.post("/api/v1/workspaces/workspace-001/questions",
+                cookies={WEB_SESSION_COOKIE:"opaque-session"},headers={"Idempotency-Key":"question-history-failure"},
+                json={"model_settings_version":1,"notebook_id":"notebook-cp3","question":"저장되어야 할 원문"})
+            history=await self.client.get("/api/v1/workspaces/workspace-001/notebooks/notebook-cp3/conversation-turns",cookies={WEB_SESSION_COOKIE:"opaque-session"})
+        self.assertEqual(response.status_code,503,response.text)
+        self.assertEqual(len(self.notebooks.turns),1)
+        self.assertEqual(self.notebooks.events[-1][2]["event_kind"],"uncertain")
+        self.assertEqual(history.status_code,200,history.text)
+        self.assertEqual(history.json()["data"]["items"][0]["question"],"저장되어야 할 원문")
+        self.assertEqual(history.json()["data"]["items"][0]["client_request_id"],"question-history-failure")
+        self.assertEqual(history.headers["Cache-Control"],"no-store")
+        self.assertRegex(history.headers["ETag"],r'^"projection-[0-9a-f]{24}"$')
+        denied=await self.client.get("/api/v1/workspaces/workspace-001/notebooks/notebook-cp3/conversation-turns")
+        self.assertEqual(denied.status_code,401)
+
+    async def test_conversation_query_strict_and_no_auth_no_admission(self):
+        base="/api/v1/workspaces/workspace-001/notebooks/notebook-cp3/conversation-turns"
+        with self._authenticated():
+            for query in ("?limit=0","?limit=101","?limit=1&limit=2","?unknown=x"):
+                response=await self.client.get(base+query,cookies={WEB_SESSION_COOKIE:"opaque-session"})
+                self.assertEqual(response.status_code,400,response.text)
+                self.assertEqual(response.json()["error"]["code"],"NOTEBOOK_PAGE_INVALID")
+        self.assertEqual(self.notebooks.turns,{})
+        response=await self.client.post("/api/v1/workspaces/workspace-001/questions",
+            headers={"Idempotency-Key":"question-unauthorized"},json={"model_settings_version":1,"notebook_id":"notebook-cp3","question":"질문"})
+        self.assertEqual(response.status_code,401)
+        self.assertEqual(self.notebooks.turns,{})
+
+    async def test_failure_event_storage_error_preserves_original_auth_policy_error(self):
+        from daon_user_api.identity import IdentityError
+        from daon_user_api.egress_policy import EgressPolicyError
+        from daon_user_api.notebook import NotebookError
+        for original,secondary,status,code in (
+            (IdentityError("REAUTHENTICATION_REQUIRED",401),NotebookError("NOTEBOOK_UNAVAILABLE",503),401,"AUTHENTICATION_REQUIRED"),
+            (EgressPolicyError("EGRESS_POLICY_DENIED",403),NotebookError("NOTEBOOK_NOT_FOUND",404),403,"EGRESS_POLICY_DENIED"),
+        ):
+            with self.subTest(code=code),self._authenticated(),patch.object(self.service,"ask",side_effect=original),patch.object(self.notebooks,"append_question_turn_event",side_effect=secondary),self.assertLogs("daon_user_api.runtime",level="WARNING") as logged:
+                response=await self.client.post("/api/v1/workspaces/workspace-001/questions",
+                    cookies={WEB_SESSION_COOKIE:"opaque-session"},headers={"Idempotency-Key":"event-failure-"+code},
+                    json={"model_settings_version":1,"notebook_id":"notebook-cp3","question":"질문"})
+            self.assertEqual(response.status_code,status,response.text)
+            self.assertEqual(response.json()["error"]["code"],code)
+            self.assertTrue(any("question_turn_event_unavailable" in line and secondary.code in line for line in logged.output))
+
     async def test_runtime_passes_exact_qa_target_to_existing_question_service(self) -> None:
         from daon_user_api.question_answering_service import QuestionAnsweringService
 
@@ -159,7 +259,7 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
                 "/api/v1/workspaces/workspace-001/questions",
                 cookies={WEB_SESSION_COOKIE: "opaque-session"},
                 headers={"Idempotency-Key": "question-any-general-0001"},
-                json={"notebook_id": "notebook-cp3", "question": "2026년 매출은?"},
+                json={"model_settings_version":1,"notebook_id": "notebook-cp3", "question": "2026년 매출은?"},
             )
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["data"]["citations"], [])
@@ -177,7 +277,7 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
                 "/api/v1/workspaces/workspace-001/questions",
                 cookies={WEB_SESSION_COOKIE: "opaque-session"},
                 headers={"Idempotency-Key": "question-general-0001"},
-                json={"notebook_id": "notebook-cp3", "question": "안녕하세요!"},
+                json={"model_settings_version":1,"notebook_id": "notebook-cp3", "question": "안녕하세요!"},
             )
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["data"]["citations"], [])
@@ -190,7 +290,7 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
                 "/api/v1/workspaces/workspace-001/questions",
                 cookies={WEB_SESSION_COOKIE: "opaque-session"},
                 headers={"Idempotency-Key": "question-general-0002"},
-                json={"notebook_id": "notebook-cp3", "question": "2026년 매출은?"},
+                json={"model_settings_version":1,"notebook_id": "notebook-cp3", "question": "2026년 매출은?"},
             )
         self.assertEqual(answer.status_code, 200, answer.text)
         self.assertEqual(answer.json()["data"]["citations"], [])
@@ -206,7 +306,7 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
                 "/api/v1/workspaces/workspace-001/questions",
                 cookies={WEB_SESSION_COOKIE: "opaque-session"},
                 headers={"Idempotency-Key": "question-mismatch-0001"},
-                json={
+                json={"model_settings_version":1,
                     "notebook_id": "notebook-cp3", "source_id": "source-cp3",
                     "source_version_id": "source-version-cp3",
                     "question": "선택한 문서에 없는 최신 시장 소식은?",
@@ -233,7 +333,7 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
                     "/api/v1/workspaces/workspace-001/questions",
                     cookies={WEB_SESSION_COOKIE: "opaque-session"},
                     headers={"Idempotency-Key": key},
-                    json={"notebook_id": "notebook-cp3", "question": question},
+                    json={"model_settings_version":1,"notebook_id": "notebook-cp3", "question": question},
                 )
             self.assertEqual(response.status_code, 200, response.text)
             data = response.json()["data"]
@@ -252,7 +352,7 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
                 "/api/v1/workspaces/workspace-001/questions",
                 cookies={WEB_SESSION_COOKIE: "opaque-session"},
                 headers={"Idempotency-Key": "question-grounded-metadata-0001"},
-                json={
+                json={"model_settings_version":1,
                     "notebook_id": "notebook-cp3", "source_id": "source-cp3",
                     "source_version_id": "source-version-cp3",
                     "question": "What is the verified answer?",
@@ -267,7 +367,7 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["next_actions"], [])
 
     async def test_completed_local_question_replay_revalidates_binding_before_domain_state(self) -> None:
-        body = {
+        body = {"model_settings_version":1,
             "notebook_id": "notebook-cp3",
             "source_id": "source-cp3", "source_version_id": "source-version-cp3",
             "question": "What is the verified answer?",
@@ -323,6 +423,7 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.notebooks = FakeNotebookService()
         self.knowledge = FakeKnowledgePackages()
         self.dependencies = RuntimeDependencies(
+            notebook_model_settings_service=ExplicitNotebookModelSettings(),
             settings=RuntimeSettings.for_test(database_path=db_path, policy_version=POLICY_VERSION),
             identity_service=identity, authorization_service=authorization,
             audit_store=audit, identity_repository=identity_repository,
@@ -375,7 +476,7 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_s42_raw_http_forwards_exact_fingerprint_body_and_key_without_step_up(self):
         """기존 ASGI/auth와 FakeQuestionService 포트 사이의 연결 시험이며 실제 Provider/PG 증거가 아니다."""
-        expected = {
+        expected = {"model_settings_version":1,
             "notebook_id": "notebook-cp3", "source_id": "source-cp3",
             "source_version_id": "source-version-cp3", "question": "선택한 원문 근거의 검증 문장은 무엇인가요?",
         }
@@ -416,7 +517,7 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
                 self.service.calls.clear()
                 self.service.replay_calls.clear()
                 self.notebooks.required.clear()
-                expected = {"notebook_id": "notebook-cp3", "question": "선택한 지식과 원문을 확인해줘",
+                expected = {"model_settings_version":1,"notebook_id": "notebook-cp3", "question": "선택한 지식과 원문을 확인해줘",
                     "knowledge_context": {"mode": mode, "resources": resources}}
                 # package version의 명시 null도 재귀 exclude_none 대상이며 원 resource ID/순서는 보존된다.
                 wire_resources = [{**resource, "version_id": resource.get("version_id")} for resource in resources]
@@ -426,7 +527,7 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
                     response = await self.client.post(
                         "/api/v1/workspaces/workspace-001/questions",
                         cookies={WEB_SESSION_COOKIE: "opaque-session"}, headers={"Idempotency-Key": key},
-                        json={"notebook_id": "notebook-cp3", "question": "선택한 지식과 원문을 확인해줘",
+                        json={"model_settings_version":1,"notebook_id": "notebook-cp3", "question": "선택한 지식과 원문을 확인해줘",
                             "source_id": None, "source_version_id": None, "step_up_authorization_id": canary,
                             "knowledge_context": {"mode": mode, "resources": wire_resources}},
                     )
@@ -448,7 +549,7 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         registration='s42-exact-registration-not-derived-from-package'
         resolved=SimpleNamespace(package_id='package-daon3',source_id='source-package-daon3',
             source_version_id='version-package-daon3',digest_sha256='a'*64,knowledge_registration_id=registration)
-        body={'notebook_id':'notebook-cp3','question':'선택한 지식의 원등록을 확인해줘',
+        body={"model_settings_version":1,'notebook_id':'notebook-cp3','question':'선택한 지식의 원등록을 확인해줘',
             'knowledge_context':{'mode':'mixed','resources':[
                 {'resource_kind':'knowledge_package','resource_id':'package-daon3'},
                 {'resource_kind':'source','resource_id':'source-raw','version_id':'version-raw'}]}}
@@ -522,7 +623,7 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
                 with self.subTest(mode=mode):
                     key='s42-auth-projection-'+mode
                     question=' S42 기존 인증지문 유지 '
-                    body={'notebook_id':'notebook-cp3','question':question,
+                    body={"model_settings_version":1,'notebook_id':'notebook-cp3','question':question,
                         'knowledge_context':{'mode':mode,'resources':resources},'password':'S42 synthetic not a real password'}
                     with self._authenticated(),patch('daon_user_api.runtime.QuestionInputSource',side_effect=metadata_source),patch.object(
                         self.identity,'issue_step_up_after_reauthentication',return_value=SimpleNamespace(
@@ -542,6 +643,7 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
                         'provider_payload_fingerprint':'sha256:'+hashlib.sha256(wire).hexdigest(),
                         'provider_kind':'external_api','deployment_id':'deployment-s42','connection_id':'connection-s42',
                         'credential_version':2,'default_version':4,'catalog_version':3,
+                        'notebook_model_settings':{'version':1,'reasoning_effort':None,'profile_version':None},
                         'effective_policy_fingerprint':'s42-policy-existing-five-fields','idempotency_key':key}
                     fingerprint='sha256:'+hashlib.sha256(json.dumps(expected,sort_keys=True,separators=(',',':'),
                         ensure_ascii=False,allow_nan=False).encode('utf-8')).hexdigest()
@@ -561,7 +663,7 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
                     "Content-Type": "application/json", "X-Trace-Id": TRACE_ID,
                     "Idempotency-Key": "question-cp3-0001",
                 },
-                json={
+                json={"model_settings_version":1,
                     "notebook_id": "notebook-cp3",
                     "source_id": "source-cp3", "source_version_id": "source-version-cp3",
                     "question": "What is the citation verification phrase?",
@@ -609,7 +711,7 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.service.calls, [])
 
     async def test_mixed_knowledge_context_resolves_packages_and_rejects_legacy_pair(self) -> None:
-        body = {
+        body = {"model_settings_version":1,
             "notebook_id": "notebook-cp3",
             "question": "승인 지식과 원문을 종합해줘",
             "knowledge_context": {

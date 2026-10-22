@@ -380,6 +380,15 @@ function routeFor(method, segments) {
       ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/studio/outputs`, query: new Set(["notebook_id"]) }
       : { methodRejected: true };
   }
+  if (segments.length === 5 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1])
+      && segments[2] === "notebooks" && SAFE_SEGMENT.test(segments[3]) && segments[4] === "model-settings") {
+    return ["GET","PATCH"].includes(method) ? {path:`/api/v1/workspaces/${encodeURIComponent(segments[1])}/notebooks/${encodeURIComponent(segments[3])}/model-settings`,query:new Set(),strictQuery:true} : {methodRejected:true};
+  }
+  if (segments.length === 5 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1])
+      && segments[2] === "notebooks" && SAFE_SEGMENT.test(segments[3]) && segments[4] === "conversation-turns") {
+    return method === "GET" ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/notebooks/${encodeURIComponent(segments[3])}/conversation-turns`,
+      query:new Set(["limit","before"]),strictQuery:true,notebookConversation:true } : { methodRejected:true };
+  }
   if (
     segments.length === 5 && segments[0] === "workspaces"
     && SAFE_SEGMENT.test(segments[1]) && segments[2] === "notebooks"
@@ -508,6 +517,9 @@ function routeFor(method, segments) {
     return method === "GET"
       ? { path: `/api/v1/studio-generation-jobs/${encodeURIComponent(segments[1])}`, query: STUDIO_QUERY, requiredQuery: STUDIO_QUERY }
       : { methodRejected: true };
+  }
+  if(segments.length===2&&segments[0]==="studio-generation-requests"&&segments[1]==="authorization"){
+    return method==="POST"?{path:"/api/v1/studio-generation-requests/authorization",query:null}:{methodRejected:true};
   }
   if (segments.length === 1 && new Set([
     "studio-generation-requests", "studio-outputs", "reviews", "approval-requests",
@@ -1211,6 +1223,13 @@ export function createBffProxy({
     }
     if (route.csrfProvenanceRequired && !csrfRefererIsSameOrigin(request, publicOrigin)) {
       return createBffSafeError(403, "CSRF_VALIDATION_FAILED", trace);
+    }
+    if (route.notebookConversation) {
+      const query=new URL(request.url).searchParams;
+      if ((query.has("limit") && (!/^[1-9][0-9]{0,2}$/u.test(query.get("limit")) || Number(query.get("limit"))>100))
+          || (query.has("before") && !/^[A-Za-z0-9_-]{1,2048}$/u.test(query.get("before")))) {
+        return createBffSafeError(400,"INVALID_REQUEST",trace);
+      }
     }
     if (route.notebookContextSelection) {
       const values = [...new URL(request.url).searchParams];

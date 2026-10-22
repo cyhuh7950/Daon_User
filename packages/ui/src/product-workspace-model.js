@@ -1,3 +1,6 @@
+import { parseDocxBlock as validateConversationDocx } from "./shared-docx-block.js";
+import { parsePptxBlock as validateConversationPptx } from "./shared-pptx-block.js";
+import { parseAudioSegment as validateConversationAudio } from "./shared-audio-segment.js";
 export { parseDocxBlock, isDocxBlockContent } from "./shared-docx-block.js";
 export { parsePptxBlock, isPptxBlockContent } from "./shared-pptx-block.js";
 export { parseAudioSegment, isAudioSegmentContent } from "./shared-audio-segment.js";
@@ -43,6 +46,13 @@ export function normalizeProductWorkspaceState(state) {
 }
 
 export function questionFailureMessage(code) {
+  if (["NOTEBOOK_MODEL_SETTINGS_CHANGED","NOTEBOOK_MODEL_SETTINGS_CONFLICT"].includes(code)) {
+    return `Notebook 모델 설정이 변경되었습니다. 다시 조회하고 모델을 확인해 주세요. (${code})`;
+  }
+  if (["NOTEBOOK_MODEL_UNAVAILABLE","NOTEBOOK_MODEL_SELECTION_REQUIRED"].includes(code)) {
+    return `선택한 모델을 실행할 수 없습니다. 다른 허용 모델을 직접 선택해 주세요. (${code})`;
+  }
+  if (code==="NOTEBOOK_MODEL_SETTINGS_UNAVAILABLE") return `모델 설정을 확인할 수 없습니다. 다시 조회한 뒤 모델을 확인해 주세요. (${code})`;
   if (code === "EGRESS_POLICY_DENIED") {
     return `조직 또는 Workspace의 외부 전송 정책으로 차단되었습니다. 정책 설정을 확인해 주세요. (${code})`;
   }
@@ -60,8 +70,6 @@ export function projectQuestionFailureState(current, error) {
     ...current,
     safeError: null,
     conversationSafeError: code,
-    answer: null,
-    answerIntent: null,
   };
 }
 
@@ -76,6 +84,28 @@ export function assertProductWorkspaceAdapter(adapter) {
     || PRODUCT_WORKSPACE_ADAPTER_METHODS.some((method) => typeof adapter[method] !== "function")
   ) throw new Error("WORKSPACE_ADAPTER_INVALID");
   return adapter;
+}
+
+export function isQuestionSystemNotice(value) {
+  const keys=["kind","turn_id","answer","grounding_status","insufficient","citations","next_actions"];
+  return value!==null&&typeof value==="object"&&!Array.isArray(value)
+    && Object.keys(value).length===keys.length&&keys.every(key=>Object.hasOwn(value,key))
+    && value.kind==="system_notice"&&typeof value.turn_id==="string"&&/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value.turn_id)
+    && typeof value.answer==="string"&&value.answer.trim().length>=1&&value.answer.length<=8000
+    && ["no_knowledge","no_relevant_evidence"].includes(value.grounding_status)&&value.insufficient===true
+    && Array.isArray(value.citations)&&value.citations.length===0
+    && Array.isArray(value.next_actions)&&value.next_actions.length>=1&&value.next_actions.length<=4
+    && value.next_actions.every(item=>typeof item==="string"&&item.trim().length>=1&&item.length<=120);
+}
+
+export function isQuestionGroundingMetadata(value) {
+  if (!Array.isArray(value?.citations)||!Array.isArray(value?.next_actions)) return false;
+  const count=value.citations.length, actions=value.next_actions;
+  if(actions.length>4||!actions.every(item=>typeof item==="string"&&item.trim().length>=1&&item.length<=120))return false;
+  return value.grounding_status==="sufficient"&&value.insufficient===false&&count>=1&&actions.length===0&&value.grounding==="source_backed"
+    ||value.grounding_status==="partial"&&value.insufficient===false&&count>=1&&actions.length>=1&&value.grounding==="source_backed"
+    ||value.grounding_status==="no_relevant_evidence"&&value.insufficient===true&&count===0&&actions.length>=1&&value.grounding==="source_evidence_unavailable"
+    ||value.grounding_status==="conversational"&&value.insufficient===false&&count===0&&actions.length===0&&value.grounding==="ungrounded";
 }
 
 export function canCreateGroundedReport(state) {
@@ -165,4 +195,99 @@ export function isSheetCellContent(value, locatorValue, sourceVersionId) {
     const bounds = cellBounds(range);
     return bounds && bounds[0] <= endX && bounds[2] >= x && bounds[1] <= endY && bounds[3] >= y;
   });
+}
+
+// Merge only exact, server-bound request IDs. Text/time never identify a turn.
+export function mergeNotebookConversationTurns(current, incoming) {
+  const keys=['turn_id','question','response','state','submitted_at','model','client_request_id'];
+  const safeId=value=>typeof value==='string'&&/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value);
+  const exact=(value,names)=>value&&typeof value==='object'&&!Array.isArray(value)
+    && Object.keys(value).length===names.length&&names.every(key=>Object.hasOwn(value,key));
+  const valid=turn=>exact(turn,keys)&&safeId(turn.turn_id)&&typeof turn.question==='string'&&turn.question.length>=1&&turn.question.length<=32768
+    && ['pending','awaiting_authorization','completed','failed','uncertain','unavailable','no_knowledge','no_relevant_evidence'].includes(turn.state)
+    && typeof turn.submitted_at==='string'&&/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/u.test(turn.submitted_at)&&!Number.isNaN(Date.parse(turn.submitted_at))
+    && (turn.client_request_id===null||(safeId(turn.client_request_id)&&turn.client_request_id.length>=8))
+    && (turn.model===null||(exact(turn.model,['provider_code','model_id'])&&Object.values(turn.model).every(v=>typeof v==='string'&&v.length>=1&&v.length<=255&&!/[\x00-\x20\x7f]/u.test(v))))
+    && (turn.response===null||exact(turn.response,['kind','text','insufficient','next_actions','citations'])
+      && ['answer','system'].includes(turn.response.kind)&&typeof turn.response.text==='string'&&turn.response.text.length>=1&&turn.response.text.length<=8000
+      && typeof turn.response.insufficient==='boolean'&&Array.isArray(turn.response.next_actions)&&turn.response.next_actions.length<=8&&turn.response.next_actions.every(v=>typeof v==='string'&&v.length<=255)
+      && Array.isArray(turn.response.citations)&&turn.response.citations.length<=10
+      && turn.response.citations.every(c=>exact(c,['citation_id','source_id','source_version_id','evidence_span_id','page','origin','context_item_id','locator'])
+        && ['citation_id','source_id','source_version_id','evidence_span_id','context_item_id'].every(k=>safeId(c[k]))
+        && Number.isSafeInteger(c.page)&&c.page>=1&&['raw_source','daon_knowledge'].includes(c.origin)
+        && exact(c.locator,['kind','value'])&&['page','section','image_region','sheet_cell','docx_block','pptx_block','audio_segment'].includes(c.locator.kind)
+        && typeof c.locator.value==='string'&&c.locator.value.length>=1&&c.locator.value.length<=255
+        && (c.locator.kind!=='page'||c.locator.value===String(c.page))
+        && (c.locator.kind!=='image_region'||parseImageRegion(c.locator.value)!==null)
+        && (c.locator.kind!=='sheet_cell'||parseSheetCell(c.locator.value)!==null)
+        && (c.locator.kind!=='docx_block'||validateConversationDocx(c.locator.value)!==null)
+        && (c.locator.kind!=='pptx_block'||validateConversationPptx(c.locator.value)!==null)
+        && (c.locator.kind!=='audio_segment'||validateConversationAudio(c.locator.value)!==null)))
+    && (!['no_knowledge','no_relevant_evidence'].includes(turn.state)
+      || turn.response?.next_actions.length>=1&&turn.response.next_actions.length<=4
+        &&turn.response.next_actions.every(item=>item.trim().length>=1&&item.length<=120))
+    && (turn.state==='completed'?turn.response?.kind==='answer'
+      :turn.state==='pending'?turn.response===null
+      :turn.response?.kind==='system'&&turn.response.insufficient===true&&turn.response.citations.length===0)
+    && (turn.state==='completed'||turn.model===null);
+  if (!Array.isArray(current)||!Array.isArray(incoming)||!current.every(valid)||!incoming.every(valid)) throw new Error('NOTEBOOK_CONVERSATION_INVALID');
+  for(const page of [current,incoming]){
+    const requests=page.map(turn=>turn.client_request_id).filter(id=>id!==null);
+    if(new Set(page.map(turn=>turn.turn_id)).size!==page.length||new Set(requests).size!==requests.length)throw new Error('NOTEBOOK_CONVERSATION_INVALID');
+  }
+  const merged=new Map();
+  const owners=new Map();
+  for(const turn of [...current,...incoming]) {
+    const id=turn.client_request_id===null?`turn:${turn.turn_id}`:`request:${turn.client_request_id}`;
+    if(owners.has(turn.turn_id)&&owners.get(turn.turn_id)!==id)throw new Error("NOTEBOOK_CONVERSATION_INVALID");
+    owners.set(turn.turn_id,id);
+    const previous=merged.get(id);
+    if(previous&&previous.turn_id!==turn.turn_id&&!previous.turn_id.startsWith('pending-')) throw new Error('NOTEBOOK_CONVERSATION_INVALID');
+    merged.set(id,turn);
+  }
+  const micros=value=>Date.parse(value)*1000+Number((/\.(\d+)Z$/u.exec(value)?.[1]??'').padEnd(6,'0').slice(3,6)||0);
+  return [...merged.values()].sort((a,b)=>micros(a.submitted_at)-micros(b.submitted_at)||(a.turn_id<b.turn_id?-1:a.turn_id>b.turn_id?1:0));
+}
+
+
+export function isNotebookModelSelection(value) {
+  const exact=(v,keys)=>v&&typeof v==="object"&&!Array.isArray(v)&&Object.keys(v).length===keys.length&&keys.every(k=>Object.hasOwn(v,k));
+  return exact(value,["connection_id","model_id","reasoning_effort"])
+    && typeof value.connection_id==="string"&&/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value.connection_id)
+    && typeof value.model_id==="string"&&/^[^\x00-\x20\x7f]{1,255}$/u.test(value.model_id)
+    && (value.reasoning_effort===null||["none","low","medium","high"].includes(value.reasoning_effort));
+}
+
+export function isNotebookModelSettings(value,{saved=false}={}) {
+  const exact=(v,keys)=>v&&typeof v==="object"&&!Array.isArray(v)&&Object.keys(v).length===keys.length&&keys.every(k=>Object.hasOwn(v,k));
+  const id=v=>typeof v==="string"&&/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(v);
+  if(!exact(value,saved?["notebook_id","version","selection","replayed"]:["notebook_id","version","selection","effective_selection","available_models"])
+    ||!id(value.notebook_id)||!Number.isSafeInteger(value.version)||value.version<0)return false;
+  if(saved)return value.version>0&&isNotebookModelSelection(value.selection)&&typeof value.replayed==="boolean";
+  if((value.version===0?value.selection!==null:!isNotebookModelSelection(value.selection))||!Array.isArray(value.available_models))return false;
+  const seen=new Set();
+  for(const row of value.available_models){
+    if(!exact(row,["connection_id","provider_code","display_name","model_id","connection_version","catalog_version","reasoning"])
+      ||!isNotebookModelSelection({connection_id:row.connection_id,model_id:row.model_id,reasoning_effort:null})
+      ||!["OLLAMA","GROQ","MISTRAL","UPSTAGE","OPENROUTER","OMNIROUTE","EOUL_GATEWAY","CUSTOM"].includes(row.provider_code)
+      ||typeof row.display_name!=="string"||!row.display_name.length||row.display_name.length>255
+      ||![row.connection_version,row.catalog_version].every(v=>Number.isSafeInteger(v)&&v>0)
+      ||!exact(row.reasoning,["status","values","profile_version"])||!["supported","unsupported","unknown"].includes(row.reasoning.status)
+      ||!Array.isArray(row.reasoning.values)||row.reasoning.values.length>4)return false;
+    const profile=row.reasoning;
+    if(profile.status==="supported"?(!id(profile.profile_version)||!profile.values.length):(profile.profile_version!==null||profile.values.length!==0))return false;
+    const values=new Set();
+    for(const option of profile.values){if(!exact(option,["value","label"])||!["none","low","medium","high"].includes(option.value)
+      ||values.has(option.value)||typeof option.label!=="string"||!option.label.length||option.label.length>120)return false;values.add(option.value);}
+    const key=JSON.stringify([row.connection_id,row.model_id]);if(seen.has(key))return false;seen.add(key);
+  }
+  if(value.effective_selection!==null){
+    const v=value.effective_selection;
+    if(!exact(v,["connection_id","model_id","reasoning_effort","origin"])||!["notebook","workspace_default"].includes(v.origin)
+      ||!isNotebookModelSelection({connection_id:v.connection_id,model_id:v.model_id,reasoning_effort:v.reasoning_effort}))return false;
+    if(v.origin==="notebook"?(value.version===0||["connection_id","model_id","reasoning_effort"].some(k=>value.selection?.[k]!==v[k])):value.version!==0)return false;
+    const candidate=value.available_models.find(r=>r.connection_id===v.connection_id&&r.model_id===v.model_id);
+    if(!candidate||(v.reasoning_effort!==null&&!candidate.reasoning.values.some(o=>o.value===v.reasoning_effort)))return false;
+  }
+  return true;
 }

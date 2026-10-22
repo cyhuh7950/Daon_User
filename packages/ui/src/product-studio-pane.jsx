@@ -60,12 +60,18 @@ function validStudioActionReceipt(result, request) {
 function safeStudioErrorMessage(code) {
   if (!code) return null;
   return ({
+    NOTEBOOK_MODEL_SELECTION_REQUIRED:"모델 설정에서 사용할 허용 모델을 직접 선택해 주세요.",
+    NOTEBOOK_MODEL_SETTINGS_CHANGED:"모델 설정이 변경되었습니다. 다시 조회하고 모델을 확인해 주세요.",
+    STUDIO_GENERATION_UNAVAILABLE:"생성 연결을 사용할 수 없습니다. 현재 모델과 접근 권한을 확인해 주세요.",
+    STUDIO_GENERATION_UNCERTAIN:"생성 처리 여부를 확인해야 합니다. 같은 작업을 새로 실행하지 마세요.",
+    STUDIO_EVIDENCE_INSUFFICIENT:"선택 자료만으로 이 산출물을 만들기 어렵습니다. 필요한 자료를 확인해 주세요.",
+    STUDIO_INPUT_CHANGED:"자료 또는 모델 설정이 변경되었습니다. 현재 자료와 선택을 다시 확인해 주세요.",
     STUDIO_CREATE_FAILED: "산출물을 생성하지 못했습니다. 설정과 연결 상태를 확인해 주세요.",
     STUDIO_LIST_FAILED: "저장된 산출물을 불러오지 못했습니다. 운영상태에서 연결을 확인해 주세요.",
     STUDIO_VERSION_FAILED: "새 버전을 저장하지 못했습니다. 잠시 후 다시 시도해 주세요.",
     STUDIO_ACTION_FAILED: "요청을 처리하지 못했습니다. 현재 상태를 확인해 주세요.",
     STUDIO_EXPORT_FAILED: "파일을 준비하지 못했습니다. 잠시 후 다시 시도해 주세요.",
-    STUDIO_OUTPUT_UNAVAILABLE: "현재 연결된 provider에서 이 산출물을 지원하지 않습니다.",
+    STUDIO_OUTPUT_UNAVAILABLE: "현재 자료나 실행 조건으로 산출물을 만들 수 없습니다. 필요한 자료와 설정을 확인해 주세요.",
     STUDIO_CREATE_TIMEOUT: "산출물 생성이 지연되고 있습니다. Library에서 상태를 다시 확인해 주세요.",
     STEP_UP_REQUIRED: "추가 인증을 완료하지 못했습니다. 비밀번호를 확인한 뒤 다시 시도해 주세요.",
     STUDIO_STEP_UP_UNAVAILABLE: "추가 인증 연결을 사용할 수 없습니다. 잠시 후 다시 시도해 주세요.",
@@ -118,9 +124,10 @@ function StudioOutputContent({ output }) {
   if (output.output_type === "compliance_checklist" && Array.isArray(content?.items)) {
     return <section className="studio-compliance-result" aria-label="제약·준수 점검 결과">
       <h4>제약·준수 점검 결과</h4>
-      <div className="studio-table-scroll"><table><thead><tr><th>항목</th><th>판정</th><th>근거</th><th>조치</th></tr></thead>
+      <div className="studio-table-scroll"><table><thead><tr><th>항목</th><th>점검 기준</th><th>확인 기록</th><th>판정</th><th>근거</th><th>조치</th></tr></thead>
         <tbody>{content.items.map((item, index) => <tr key={item?.item_id ?? `check-${index + 1}`}>
           <th scope="row">{item?.item_id ?? `check-${index + 1}`}</th>
+          <td>{item?.criterion??"—"}</td><td>{item?.observation??"—"}</td>
           <td><span className={`compliance-judgement judgement-${item?.judgement ?? "unknown"}`}>{complianceJudgementLabel(item?.judgement)}</span></td>
           <td>{item?.evidence || "근거 없음"}</td><td>{item?.action || "검토"}</td>
         </tr>)}</tbody>
@@ -145,13 +152,14 @@ function StudioOutputContent({ output }) {
     const labels = Object.fromEntries(content.nodes.map((node) => [node?.id, node?.label ?? node?.id]));
     return <section className="studio-knowledge-result" aria-label="지식 구조 결과">
       <h4>지식 구조 결과</h4>
+      {content.relation_mode==="quoted_context"?<p>인용 맥락 연결 · 방향 미확정: 원문에 함께 나타난 항목이며 인과나 전달 방향을 확정하지 않습니다.</p>:null}
       <div className="knowledge-node-grid">{content.nodes.map((node, index) => <article key={node?.id ?? `node-${index + 1}`} className="knowledge-node-card">
         <span className="knowledge-node-mark">{index + 1}</span><strong>{node?.label ?? node?.id ?? `지식 ${index + 1}`}</strong>
-        <span className={`knowledge-confidence confidence-${node?.confidence ?? "unknown"}`}>{knowledgeConfidenceLabel(node?.confidence)}</span>
+        <span className={`knowledge-confidence confidence-${node?.confidence ?? "unknown"}`}>{content.relation_mode==="quoted_context"&&node?.confidence==="verified"?"원문 확인":knowledgeConfidenceLabel(node?.confidence)}</span>
         <small>{node?.evidence || "근거 없음"}</small>
       </article>)}</div>
       {content.edges.length ? <ul className="knowledge-edge-list" aria-label="지식 관계">{content.edges.map((edge, index) => <li key={edge?.id ?? `edge-${index + 1}`}>
-        <strong>{labels[edge?.source] ?? edge?.source} → {labels[edge?.target] ?? edge?.target}</strong>
+        <strong>{labels[edge?.source] ?? edge?.source} {content.relation_mode==="quoted_context"?"—":"→"} {labels[edge?.target] ?? edge?.target}</strong>
         <span>{edge?.relation ?? edge?.condition ?? "관계"}</span>
       </li>)}</ul> : <p className="secondary">표시할 관계가 없습니다.</p>}
     </section>;
@@ -203,7 +211,7 @@ function StudioOutputContent({ output }) {
     return <section className="studio-document-result" aria-label="퀴즈 결과">
       <header><h4>{content.title || "퀴즈 결과"}</h4><span className="document-review-state">{outputStatusLabel(output.status)}</span></header>
       <div className="document-section-list">{content.questions.map((question, index) => <article key={question?.id ?? `quiz-${index + 1}`}>
-        <span className="document-section-number">{String(index + 1).padStart(2, "0")}</span><div><h5>{question?.question || `문제 ${index + 1}`}</h5><ol>{(Array.isArray(question?.options) ? question.options : []).map((option, optionIndex) => <li key={`${question?.id ?? index}-${optionIndex}`}>{option}</li>)}</ol><p>{question?.explanation || "해설 없음"}</p></div>
+        <span className="document-section-number">{String(index + 1).padStart(2, "0")}</span><div><h5>{question?.question || `문제 ${index + 1}`}</h5><ol>{(Array.isArray(question?.options) ? question.options : []).map((option, optionIndex) => <li key={`${question?.id ?? index}-${optionIndex}`}>{option}</li>)}</ol>{Number.isInteger(question?.answer_index)?<p>정답: {question.answer_index+1}번</p>:null}<p>{question?.explanation || "해설 없음"}</p></div>
       </article>)}</div>
     </section>;
   }
@@ -218,19 +226,31 @@ function initialOutputState(state, output) {
 export function ProductStudioPane({ state, adapter, onKnowledgeRegistered, initialOutput = null }) {
   const [view, setView] = useState(()=>initialOutputState(state, initialOutput));
   const [revisionContent, setRevisionContent] = useState("");
+  const [settingsRevisionTarget,setSettingsRevisionTarget]=useState(null);
   const [changeReason, setChangeReason] = useState("");
   const [knowledgeNotice, setKnowledgeNotice] = useState(null);
   const [savedRevision, setSavedRevision] = useState(null);
+  const [typedChallenge,setTypedChallenge]=useState(null);
+  const [typedPassword,setTypedPassword]=useState("");
+  const [typedStatus,setTypedStatus]=useState(null);
   const [stepUp, setStepUp] = useState(null);
   const [password, setPassword] = useState("");
   const [approvalInfo, setApprovalInfo] = useState({ items: [], unread_count: 0, error: false });
   const [approvalRefresh, setApprovalRefresh] = useState(0);
   const generationRequestRef = useRef(null);
+  const modelPreparationRef=useRef(null);
   const generationScopeRef = useRef(null);
   const detailRequestRef = useRef(null);
   const revisionRequestRef = useRef(null);
   const actionRequestRef = useRef(null);
   const detailSelectionRef = useRef(null);
+  const currentModelVersion=adapter?.getStudioModelSettingsVersion?.()??null;
+  const currentInputKey=JSON.stringify({selected:state.settings?.sourceVersionIds??[],grounded:state.grounded??null,
+    sources:(state.sources??[]).map(source=>[source.sourceId,source.sourceVersionId,source.ready]),locks:state.locks??[]});
+  const inputScopeRef=useRef({key:currentInputKey,modelVersion:currentModelVersion,epoch:0});
+  if(inputScopeRef.current.key!==currentInputKey){
+    inputScopeRef.current={key:currentInputKey,modelVersion:currentModelVersion,epoch:inputScopeRef.current.epoch+1};
+  }else inputScopeRef.current.modelVersion=currentModelVersion;
   generationScopeRef.current = { adapter, workspaceId: state.workspaceId };
   useEffect(() => {
     const controller = new AbortController();
@@ -244,6 +264,7 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered, initi
     return () => controller.abort();
   }, [adapter, state.workspaceId, approvalRefresh]);
   useEffect(() => {
+    setTypedChallenge(null);setTypedPassword("");setTypedStatus(null);setSettingsRevisionTarget(null);
     setView(initialOutputState(state, initialOutput));
     setRevisionContent(""); setChangeReason(""); setSavedRevision(null); setKnowledgeNotice(null);
     return () => {
@@ -257,6 +278,16 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered, initi
       actionRequestRef.current = null;
     };
   }, [adapter, state.workspaceId]);
+  const incomingLibraryErrorRef=useRef(state.safeError??null);
+  useEffect(()=>{
+    // Parent list results remain authoritative after Source/Run refresh. Updating
+    // the library must not discard an admitted request or its status receipt.
+    const previous=incomingLibraryErrorRef.current,next=state.safeError??null;
+    incomingLibraryErrorRef.current=next;
+    setView(current=>({...current,status:state.status,outputs:state.outputs,
+      selectedOutputId:state.outputs.some(output=>output.studio_output_id===current.selectedOutputId)?current.selectedOutputId:null,
+      safeError:next??(current.safeError===previous?null:current.safeError)}));
+  },[state.outputs,state.status,state.safeError]);
   const stepUpRef = useRef(null);
   const cancelStepUp = () => {
     if (actionRequestRef.current?.phase === "challenge" || actionRequestRef.current?.kind === "export") {
@@ -280,8 +311,8 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered, initi
   detailSelectionRef.current = { outputId: selectedOutput?.studio_output_id, versionId: selectedOutput?.output_version_id };
   const revisionSaved = savedRevision?.outputId === selectedOutput?.studio_output_id
     && savedRevision?.versionId === selectedOutput?.output_version_id && Boolean(savedRevision);
-  const generationState = view.pending ? "pending" : revisionSaved ? "completed" : view.safeError ? "failed" : selectedOutput ? "completed" : "idle";
-  const configurationBusy = view.pending || Boolean(revisionRequestRef.current) || Boolean(actionRequestRef.current);
+  const generationState = typedStatus&&!typedStatus.terminal ? "uncertain" : view.pending ? "pending" : revisionSaved ? "completed" : view.safeError ? "failed" : selectedOutput ? "completed" : "idle";
+  const configurationBusy = Boolean(generationRequestRef.current) || view.pending || Boolean(revisionRequestRef.current) || Boolean(actionRequestRef.current);
   const fieldDisabled = (field) => configurationBusy || view.locks.some((lock) => lock.field === field);
   const sameDetailScope = (request) => !request.controller.signal.aborted
     && generationScopeRef.current.adapter === request.adapter
@@ -321,51 +352,147 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered, initi
       request.pending = false;
     }
   };
-  const submit = async () => {
-    if (generationRequestRef.current || revisionRequestRef.current || actionRequestRef.current || !adapter?.createGeneration || !canSubmitGeneration(view)) return;
-    const request = { adapter, workspaceId: state.workspaceId, controller: new AbortController() };
-    generationRequestRef.current = request;
-    const currentRequest = () => generationRequestRef.current === request && !request.controller.signal.aborted
-      && generationScopeRef.current.adapter === request.adapter && generationScopeRef.current.workspaceId === request.workspaceId;
-    setView((current) => ({ ...current, pending: true, safeError: null }));
-    try {
-      const job = await adapter.createGeneration(createStudioGenerationInput(view), { signal: request.controller.signal });
-      if (!currentRequest()) return;
-      let output = job;
-      if (job?.status !== "completed") {
-        if (typeof adapter.getGenerationJob !== "function") throw new Error("STUDIO_ASYNC_UNAVAILABLE");
-        for (let attempt = 0; attempt < 120; attempt += 1) {
-          await new Promise((resolve) => setTimeout(resolve, 500));
-          if (!currentRequest()) return;
-          const currentJob = await adapter.getGenerationJob(job.job_id, { signal: request.controller.signal });
-          if (!currentRequest()) return;
-          if (["queued", "leased", "generating"].includes(currentJob.status)) continue;
-          if (currentJob.status === "unavailable") throw new Error(currentJob.error_code ?? "STUDIO_OUTPUT_UNAVAILABLE");
-          if (currentJob.status !== "completed" || !currentJob.output) throw new Error(currentJob.error_code ?? "STUDIO_CREATE_FAILED");
-          output = {
-            ...currentJob.output, output_type: currentJob.output_type, title: currentJob.title,
-            studio_output_id: currentJob.studio_output_id, output_version_id: currentJob.output_version_id,
-            source_version_ids: Array.isArray(currentJob.output.source_version_ids) && currentJob.output.source_version_ids.length
-              ? currentJob.output.source_version_ids
-              : Array.isArray(currentJob.lineage?.source_version_ids) && currentJob.lineage.source_version_ids.length
-                ? currentJob.lineage.source_version_ids
-                : [...new Set((currentJob.output.citations ?? []).map((citation) => citation.source_version_id).filter(Boolean))],
-          };
-          break;
-        }
-        if (output === job) throw new Error("STUDIO_CREATE_TIMEOUT");
-      }
-      if (currentRequest()) setView((current) => ({ ...current, outputs: [output, ...current.outputs], selectedOutputId: output.studio_output_id }));
-    } catch (error) {
-      if (currentRequest()) setView((current) => ({ ...current, safeError: /^[A-Z][A-Z0-9_]+$/u.test(error?.message) ? error.message : "STUDIO_CREATE_FAILED" }));
-    } finally {
-      if (currentRequest()) {
-        generationRequestRef.current = null;
-        setView((current) => ({ ...current, pending: false }));
-      }
+  const typedOwns=request=>generationRequestRef.current===request&&sameDetailScope(request);
+  const typedCurrent=request=>typedOwns(request)&&!request.invalidated&&request.inputEpoch===inputScopeRef.current.epoch
+    &&request.input.model_settings_version===request.adapter.getStudioModelSettingsVersion?.();
+  const invalidateTyped=request=>{
+    if(!typedOwns(request)||request.invalidated)return;
+    const dispatched=["write","read","uncertain"].includes(request.phase)||Boolean(request.jobId);
+    request.controller.abort();setTypedChallenge(null);setTypedPassword("");
+    if(dispatched){
+      request.controller=new AbortController();request.invalidated=true;request.phase="uncertain";
+      setTypedStatus({jobId:request.jobId??null,actions:[]});
+      setView(current=>({...current,pending:false,safeError:null}));
+    }else{
+      generationRequestRef.current=null;setTypedStatus(null);
+      setView(current=>({...current,pending:false,safeError:"STUDIO_INPUT_CHANGED"}));
     }
   };
+  const appliedInputScopeRef=useRef({...inputScopeRef.current});
+  useEffect(()=>{
+    const previous=appliedInputScopeRef.current;
+    if(previous.epoch===inputScopeRef.current.epoch&&previous.modelVersion===currentModelVersion)return;
+    appliedInputScopeRef.current={...inputScopeRef.current};
+    const request=generationRequestRef.current;
+    if(request&&!typedCurrent(request))invalidateTyped(request);
+    // 같은 사용자 명령의 기본값 확정은 현재 근거/이미 고정한 선택을 바꾸지 않는다.
+    if(previous.epoch===inputScopeRef.current.epoch&&((request&&typedCurrent(request))||modelPreparationRef.current))return;
+    setView(current=>({...current,sources:state.sources,grounded:state.grounded,locks:state.locks,
+      settings:{...current.settings,sourceVersionIds:state.settings?.sourceVersionIds??[]},settingsConfirmed:false,settingsSnapshot:null}));
+  },[currentInputKey,currentModelVersion]);
+  const finishTyped=request=>{
+    if(!typedCurrent(request))return;
+    generationRequestRef.current=null;setTypedChallenge(null);setTypedPassword("");setTypedStatus(null);setSettingsRevisionTarget(null);
+    setView(current=>({...current,pending:false}));
+  };
+  const readTypedJob=async(request,manual=false)=>{
+    request.phase="read";
+    setView(current=>({...current,pending:true,safeError:null}));
+    try{
+      for(let attempt=0;attempt<(manual?1:120);attempt++){
+        if(!manual&&attempt>0)await new Promise(resolve=>setTimeout(resolve,500));
+        if(!typedOwns(request))return;
+        const job=await request.adapter.getGenerationJob(request.jobId,{signal:request.controller.signal});
+        if(!typedOwns(request))return;
+        if(!typedCurrent(request)){
+          invalidateTyped(request);
+          if(!manual){setTypedStatus({jobId:request.jobId,actions:[]});return;}
+          if(!["queued","leased","generating"].includes(job.status)){
+            generationRequestRef.current=null;
+            setTypedStatus({terminal:true,actions:["설정이 변경되기 전 접수된 작업입니다. 저장된 산출물에서 현재 상태를 확인해 주세요."]});
+            setView(current=>({...current,pending:false}));return;
+          }
+        }
+        if(["queued","leased","generating"].includes(job.status))continue;
+        if(job.status!=="completed"||!job.output){
+          setView(current=>({...current,safeError:job.error_code??"STUDIO_OUTPUT_UNAVAILABLE"}));
+          setTypedStatus({terminal:true,actions:job.next_actions??[]});
+          generationRequestRef.current=null;
+          setView(current=>({...current,pending:false}));return;
+        }
+        const output={...job.output,output_type:job.output_type,title:job.title,
+          studio_output_id:job.studio_output_id,output_version_id:job.output_version_id,
+          source_version_ids:job.output.source_version_ids?.length?job.output.source_version_ids:job.lineage?.source_version_ids?.length?job.lineage.source_version_ids:[...new Set((job.output.citations??[]).map(item=>item.source_version_id).filter(Boolean))]};
+        setView(current=>({...current,outputs:[output,...current.outputs.filter(item=>item.studio_output_id!==output.studio_output_id)],selectedOutputId:request.kind==="regenerate"&&current.selectedOutputId!==request.outputId?current.selectedOutputId:output.studio_output_id,safeError:null}));
+        setRevisionContent("");setChangeReason("");finishTyped(request);return;
+      }
+      request.phase="uncertain";setTypedStatus({jobId:request.jobId,actions:[]});
+    }catch{
+      if(typedOwns(request)){request.phase="uncertain";setTypedStatus({jobId:request.jobId,actions:[]});}
+    }finally{if(typedOwns(request))setView(current=>({...current,pending:false}));}
+  };
+  const dispatchTyped=async(request,passwordValue)=>{
+    if(!typedCurrent(request)){invalidateTyped(request);return;}
+    if(request.authorizing)return;
+    request.authorizing=true;
+    setView(current=>({...current,pending:true,safeError:null}));
+    try{
+      request.phase="authorize";
+      const authorization=await request.adapter.authorizeGeneration({...request.auth,...(passwordValue?{password:passwordValue}:{})},
+        {signal:request.controller.signal,idempotencyKey:request.idempotencyKey});
+      if(!typedCurrent(request)){invalidateTyped(request);return;}
+      setTypedChallenge(null);setTypedPassword("");request.phase="write";
+      const input={...request.input,...(authorization.step_up_authorization_id?{step_up_authorization_id:authorization.step_up_authorization_id}:{})};
+      const job=request.kind==="generate"
+        ?await request.adapter.createGeneration(input,{signal:request.controller.signal,idempotencyKey:request.idempotencyKey})
+        :await request.adapter.createStudioVersion(request.outputId,input,{signal:request.controller.signal,idempotencyKey:request.idempotencyKey});
+      request.jobId=job.job_id;
+      if(!typedCurrent(request)){invalidateTyped(request);if(typedOwns(request))setTypedStatus({jobId:request.jobId,actions:[]});return;}
+      if(!request.jobId||typeof request.adapter.getGenerationJob!=="function")throw new Error("STUDIO_JOB_FAILED");
+      await readTypedJob(request);
+    }catch(error){
+      if(!typedCurrent(request))return;
+      if(request.phase==="authorize"&&error?.message==="STEP_UP_REQUIRED"){
+        setTypedChallenge(request);setTypedPassword("");setView(current=>({...current,pending:false}));return;
+      }
+      if(request.phase==="write"&&!(error.httpStatus>=400&&error.httpStatus<500)){
+        request.phase="uncertain";setTypedStatus({jobId:request.jobId??null,actions:[]});
+        setView(current=>({...current,pending:false,safeError:null}));return;
+      }
+      setView(current=>({...current,safeError:/^[A-Z][A-Z0-9_]+$/u.test(error?.message)?error.message:"STUDIO_CREATE_FAILED"}));
+      finishTyped(request);
+    }finally{request.authorizing=false;}
+  };
+  const beginTyped=async(kind,input,outputId=null)=>{
+    if(generationRequestRef.current||modelPreparationRef.current||revisionRequestRef.current||actionRequestRef.current||view.pending)return;
+    const preparation={adapter,workspaceId:state.workspaceId,inputKey:currentInputKey,inputEpoch:inputScopeRef.current.epoch};
+    modelPreparationRef.current=preparation;
+    try{
+      if(!adapter?.authorizeGeneration)throw new Error("STUDIO_GENERATION_UNAVAILABLE");
+      setView(current=>({...current,pending:true,safeError:null}));
+      const version=typeof adapter.ensureStudioModelSettingsVersion==="function"
+        ?await adapter.ensureStudioModelSettingsVersion():adapter.getStudioModelSettingsVersion?.();
+      if(generationScopeRef.current.adapter!==preparation.adapter||generationScopeRef.current.workspaceId!==preparation.workspaceId
+        ||inputScopeRef.current.key!==preparation.inputKey||inputScopeRef.current.epoch!==preparation.inputEpoch)throw new Error("STUDIO_INPUT_CHANGED");
+      if(!Number.isInteger(version)||version<1)throw new Error("NOTEBOOK_MODEL_SELECTION_REQUIRED");
+      const frozen={...input,model_settings_version:version};
+      const auth=kind==="generate"?{...frozen,operation:"generate"}:{workspace_id:state.workspaceId,operation:"regenerate",output_id:outputId,...frozen};
+      const request={kind,input:frozen,auth,outputId,adapter,workspaceId:state.workspaceId,
+        controller:new AbortController(),idempotencyKey:secureUuid(),phase:"authorize",inputEpoch:inputScopeRef.current.epoch};
+      generationRequestRef.current=request;modelPreparationRef.current=null;setTypedStatus(null);await dispatchTyped(request);
+    }catch(error){
+      if(generationScopeRef.current.adapter===preparation.adapter&&generationScopeRef.current.workspaceId===preparation.workspaceId)
+        setView(current=>({...current,pending:false,safeError:["NOTEBOOK_MODEL_SELECTION_REQUIRED","NOTEBOOK_MODEL_SETTINGS_CHANGED","STUDIO_INPUT_CHANGED"].includes(error.message)?error.message:"STUDIO_GENERATION_UNAVAILABLE"}));
+    }finally{if(modelPreparationRef.current===preparation)modelPreparationRef.current=null;}
+  };
+  const submit=async()=>{if(canSubmitGeneration(view))await beginTyped("generate",createStudioGenerationInput(view));};
+  const prepareSettingsRevision=()=>{
+    if(configurationBusy||!selectedOutput||!OUTPUT_TYPES.some(type=>type.id===selectedOutput.output_type&&!type.generationUnavailable))return;
+    setSettingsRevisionTarget({outputId:selectedOutput.studio_output_id,versionId:selectedOutput.output_version_id});
+    setView(current=>({...selectOutputType({...current,grounded:null,settings:{sourceVersionIds:state.settings?.sourceVersionIds??[]}},selectedOutput.output_type),selectedOutputId:selectedOutput.studio_output_id}));
+    setRevisionContent("");setChangeReason("");
+  };
   const revise = async (revisionType = "user_edit") => {
+    if(revisionType==="settings_change"&&(!settingsRevisionTarget||settingsRevisionTarget.outputId!==selectedOutput?.studio_output_id
+      ||settingsRevisionTarget.versionId!==selectedOutput?.output_version_id||!canSubmitGeneration(view)))return;
+    if(revisionType!=="user_edit"){
+      if(!selectedOutput||!changeReason.trim())return;
+      const input={previous_version_id:selectedOutput.output_version_id,revision_type:revisionType,change_reason:changeReason,
+        ...(revisionType==="settings_change"?{settings:{purpose:view.settings.purpose,audience:view.settings.audience,language:view.settings.language??"ko",
+          source_version_ids:view.settings.sourceVersionIds,ruleset_version_id:view.settings.rulesetVersionId??null,length:view.settings.length,
+          structure:view.settings.structure,output_format:view.settings.outputFormat,review_condition:view.settings.reviewCondition}}:{})};
+      await beginTyped("regenerate",input,selectedOutput.studio_output_id);return;
+    }
     if (revisionRequestRef.current || actionRequestRef.current || view.pending || !selectedOutput || !adapter?.createStudioVersion || !revisionContent.trim() || !changeReason.trim()) return;
     const outputId = selectedOutput.studio_output_id;
     if (detailRequestRef.current?.kind === "read") detailRequestRef.current.controller.abort();
@@ -593,6 +720,15 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered, initi
   };
   return (
     <div className="product-studio" data-studio-state={view.status}>
+      {typedChallenge?<section role="dialog" aria-label="Studio 생성 추가 인증"><p>이 생성 요청에 결속된 추가 인증이 필요합니다.</p>
+        <label>생성 인증 비밀번호<input type="password" autoComplete="current-password" maxLength={1024} value={typedPassword} disabled={view.pending} onChange={event=>setTypedPassword(event.currentTarget.value)}/></label>
+        <button type="button" disabled={view.pending||typedPassword.length<12} onClick={()=>{const value=typedPassword;setTypedPassword("");void dispatchTyped(typedChallenge,value);}}>생성 인증 확인</button>
+        <button type="button" disabled={view.pending} onClick={()=>{typedChallenge.controller.abort();generationRequestRef.current=null;setTypedChallenge(null);setTypedPassword("");setView(current=>({...current,pending:false}));}}>생성 인증 취소</button>
+      </section>:null}
+      {typedStatus?<section role="status"><p>{typedStatus.terminal?"요청을 완료하지 못했습니다. 필요한 자료와 현재 상태를 확인해 주세요.":"생성 처리 여부를 확인해야 합니다. 새 생성 요청은 잠겨 있습니다."}</p>
+        {typedStatus.actions?.length?<ul>{typedStatus.actions.map(action=><li key={action}>{action}</li>)}</ul>:null}
+        {typedStatus.jobId?<button type="button" disabled={view.pending} onClick={()=>{const request=generationRequestRef.current;if(request?.jobId)void readTypedJob(request,true);}}>처리 상태 확인</button>:typedStatus.terminal?null:<p>접수 식별자를 받지 못했습니다. 요청을 다시 실행하지 말고 저장된 산출물과 운영상태를 확인해 주세요.</p>}
+      </section>:null}
       {knowledgeNotice ? <p role="status">{knowledgeNotice}</p> : null}
       {approvalInfo.error ? <p role="alert">승인 알림을 불러오지 못했습니다. 현재 접근과 연결을 확인해 주세요.</p> : null}
       {adapter?.listStudioApprovalNotices ? <section aria-label="승인 알림">
@@ -623,14 +759,15 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered, initi
           {view.outputs.length ? <ul>{view.outputs.map((output) => <li className="studio-library-row" key={output.studio_output_id}><StudioOutputIcon outputType={output.output_type} className="library-type-icon" /><span className="library-row-copy"><small className="library-output-type">{outputTypeLabel(output.output_type)}</small><button type="button" onClick={() => void openOutput(output)}>{output.title}</button><small>Source {output.source_count ?? output.source_version_ids?.length ?? 1} · Version {output.content_version ?? output.output_version_id ?? "-"}</small></span><span className={`output-status status-${output.status ?? "saved"}`}>{outputStatusLabel(output.status)}</span></li>)}</ul> : <div className="studio-empty"><span className="empty-icon" aria-hidden="true">◇</span><strong>아직 저장된 산출물이 없습니다.</strong><small>위 유형을 선택하면 근거가 결속된 산출물을 만들 수 있습니다.</small></div>}
         </section>
       </div> : <section className="studio-config-view" data-studio-view="config" aria-labelledby="studio-config-title">
-        <header className="studio-config-header"><button className="studio-back" type="button" disabled={configurationBusy} onClick={() => { if (!generationRequestRef.current && !revisionRequestRef.current && !actionRequestRef.current) setView((current) => current.pending ? current : ({ ...current, selectedOutputType: null, settingsConfirmed: false, settingsSnapshot: null })); }}>뒤로</button><div><span className="section-kicker">CREATE</span><h3 id="studio-config-title">{selected?.label} 설정</h3></div></header>
+        <header className="studio-config-header"><button className="studio-back" type="button" disabled={configurationBusy} onClick={() => { if (!generationRequestRef.current && !revisionRequestRef.current && !actionRequestRef.current) {setSettingsRevisionTarget(null);setView((current) => current.pending ? current : ({ ...current, selectedOutputType: null, settingsConfirmed: false, settingsSnapshot: null }));} }}>뒤로</button><div><span className="section-kicker">CREATE</span><h3 id="studio-config-title">{selected?.label} 설정</h3></div></header>
         <div className={`generation-state generation-${generationState}`} data-generation-state={generationState} role={generationState === "failed" ? "alert" : "status"}>
           {generationState === "pending" ? <><span className="state-spinner" aria-hidden="true" /><span><strong>산출물을 생성하고 있습니다.</strong><small>현재 설정과 근거 Snapshot을 안전하게 결속하는 중입니다.</small></span></> : null}
           {generationState === "failed" ? <span><strong>생성을 완료하지 못했습니다.</strong><small>{safeStudioErrorMessage(view.safeError)}</small></span> : null}
           {generationState === "completed" ? <span><strong>산출물이 저장되었습니다.</strong><small>Library에서 상세와 Version 계보를 확인할 수 있습니다.</small></span> : null}
+          {generationState === "uncertain" ? <span><strong>생성 처리 상태를 확인해야 합니다.</strong><small>새 요청을 보내지 않고 접수된 작업의 상태를 확인해 주세요.</small></span> : null}
           {generationState === "idle" ? <span><strong>설정을 확인해 주세요.</strong><small>생성 전 목적과 검토 조건을 한 번 더 확인합니다.</small></span> : null}
         </div>
-        <form className="studio-config-form" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+        <form className="studio-config-form" onSubmit={(event) => { event.preventDefault(); void(settingsRevisionTarget?revise("settings_change"):submit()); }}>
           <fieldset className="studio-source-selection">
             <legend>사용 Source</legend>
             {view.sources?.length ? view.sources.map((source) => <label key={`${source.sourceId}:${source.sourceVersionId}`}>
@@ -657,10 +794,10 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered, initi
             <label>출력 형식<select disabled={fieldDisabled("outputFormat")} value={view.settings.outputFormat ?? ""} onChange={(event) => setField("outputFormat", event.currentTarget.value)}><option value="">선택</option>{selected?.formats.map((format) => <option key={format} value={format}>{format.toUpperCase()}</option>)}</select></label>
             <label>검토 조건<select disabled={fieldDisabled("reviewCondition")} value={view.settings.reviewCondition ?? ""} onChange={(event) => setField("reviewCondition", event.currentTarget.value)}><option value="">선택</option><option value="review_required">검토 필수</option><option value="approval_required">승인 필수</option></select></label>
           </div>
-          <div className="studio-setting-summary"><div><span>생성 방식</span><strong>{view.grounded ? "저장된 답변·근거 구조화" : "선택 Source 구조화"}</strong><small>추가 LLM 호출 없음</small></div><div><span>정책 요약</span><strong>{view.locks.length ? `조직 정책 ${view.locks.length}개 적용` : "Workspace 정책 적용"}</strong><small>정책은 생성 시점에 다시 확인되며 이 화면에서 해제할 수 없습니다.</small>
+          <div className="studio-setting-summary"><div><span>생성 방식</span><strong>명시 선택한 모델로 자료 기반 생성</strong><small>선택 Source만 근거로 사용하며 모델 호출이 발생합니다.</small></div><div><span>정책 요약</span><strong>{view.locks.length ? `조직 정책 ${view.locks.length}개 적용` : "Workspace 정책 적용"}</strong><small>정책은 생성 시점에 다시 확인되며 이 화면에서 해제할 수 없습니다.</small>
             {view.locks.length ? <ul>{view.locks.map((lock) => <li key={lock.field}>{({ reviewCondition: "검토 조건", rulesetVersionId: "RuleSet", dataArea: "데이터 영역", authorityPolicy: "권위 정책", weightProfile: "가중치", egressPolicy: "외부 전송 정책" })[lock.field] ?? lock.field}: {lock.value == null ? "미결속" : String(lock.value)} · {lock.reason}</li>)}</ul> : null}
           </div></div>
-          <div className="studio-config-actions"><button className="secondary-button" type="button" onClick={() => { if (!generationRequestRef.current && !revisionRequestRef.current && !actionRequestRef.current) setView((current) => canConfirmGenerationSettings(current) ? confirmGenerationSettings(current) : current); }} disabled={configurationBusy || !canConfirmGenerationSettings(view)}>설정 확인</button><button className="primary-button" type="submit" disabled={configurationBusy || !canSubmitGeneration(view)}>생성</button></div>
+          <div className="studio-config-actions"><button className="secondary-button" type="button" onClick={() => { if (!generationRequestRef.current && !revisionRequestRef.current && !actionRequestRef.current) setView((current) => canConfirmGenerationSettings(current) ? confirmGenerationSettings(current) : current); }} disabled={configurationBusy || !canConfirmGenerationSettings(view)}>설정 확인</button><button className="primary-button" type="submit" disabled={configurationBusy || !canSubmitGeneration(view)}>{settingsRevisionTarget?"설정 변경 생성":"생성"}</button></div>
         </form>
         <div className="studio-config-library"><span className="section-kicker">LIBRARY</span><h3>저장된 산출물</h3><small>{view.outputs.length ? `${view.outputs.length}개의 산출물이 저장되어 있습니다.` : "생성 완료 후 여기에 저장됩니다."}</small></div>
       </section>}
@@ -683,8 +820,9 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered, initi
         <label>변경 사유<input disabled={configurationBusy} value={changeReason} onChange={(event) => { if (!view.pending && !revisionRequestRef.current && !actionRequestRef.current) setChangeReason(event.currentTarget.value); }} /></label>
         <label>편집 내용<textarea disabled={configurationBusy} value={revisionContent} onChange={(event) => { if (!view.pending && !revisionRequestRef.current && !actionRequestRef.current) setRevisionContent(event.currentTarget.value); }} /></label>
         <button type="button" disabled={configurationBusy || !changeReason.trim() || !revisionContent.trim()} onClick={() => void revise("user_edit")}>편집 새 Version</button>
-        <button type="button" disabled={configurationBusy || !changeReason.trim() || !revisionContent.trim()} onClick={() => void revise("ai_regeneration")}>AI 재생성 새 Version</button>
-        <button type="button" disabled={configurationBusy || !changeReason.trim() || !revisionContent.trim()} onClick={() => void revise("settings_change")}>설정 변경 새 Version</button>
+        <button type="button" disabled={configurationBusy || !changeReason.trim()} onClick={() => void revise("ai_regeneration")}>AI 재생성 새 Version</button>
+        <button type="button" disabled={configurationBusy} onClick={prepareSettingsRevision}>설정 변경 준비</button>
+        <button type="button" disabled={configurationBusy || !changeReason.trim() || !settingsRevisionTarget || !canSubmitGeneration(view)} onClick={() => void revise("settings_change")}>설정 변경 새 Version</button>
         <button type="button" disabled={actionDisabled("reviews")} onClick={() => void act("reviews")}>검토 요청</button>
         <button type="button" disabled={actionDisabled("approval-requests")} onClick={() => void act("approval-requests", { review_request_id: selectedOutput.review_request_id })}>승인 요청</button>
         <button type="button" disabled={actionDisabled("approvals")} onClick={() => void act("approvals", { approval_request_id: selectedOutput.approval_request_id, decision: "approved" })}>승인</button>

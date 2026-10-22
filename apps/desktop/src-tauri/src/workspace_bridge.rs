@@ -185,6 +185,7 @@ pub struct WorkspaceAskQuestionInput {
     pub source_id: Option<String>,
     pub source_version_id: Option<String>,
     pub question: String,
+    pub model_settings_version: Option<u64>,
 }
 
 fn general_conversation_intent(value: &str) -> bool {
@@ -204,6 +205,7 @@ fn general_conversation_intent(value: &str) -> bool {
 
 pub fn valid_workspace_question_input_for_contract(input: &WorkspaceAskQuestionInput) -> bool {
     if !valid_id(&input.workspace_id) || !valid_id(&input.notebook_id)
+        || input.model_settings_version.is_some_and(|v|v==0 || v>9_007_199_254_740_991)
         || !safe_text(input.question.trim(), 2_000)
     {
         return false;
@@ -506,14 +508,27 @@ impl WorkspaceCitation {
     }
 }
 
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Serialize)]
 pub struct WorkspaceQuestionResult {
     pub run_id: String,
     pub run_result_id: String,
     pub answer: String,
     pub insufficient: bool,
     pub citations: Vec<WorkspaceCitation>,
+    #[serde(flatten)]
+    metadata: serde_json::Map<String,serde_json::Value>,
+}
+
+impl<'de> Deserialize<'de> for WorkspaceQuestionResult {
+    fn deserialize<D:serde::Deserializer<'de>>(deserializer:D)->Result<Self,D::Error> {
+        let value=serde_json::Value::deserialize(deserializer)?;
+        if !valid_completed_question(&value) {return Err(<D::Error as serde::de::Error>::custom("WORKSPACE_RESPONSE_REJECTED"));}
+        let mut metadata=value.as_object().cloned().ok_or_else(||<D::Error as serde::de::Error>::custom("WORKSPACE_RESPONSE_REJECTED"))?;
+        for key in ["run_id","run_result_id","answer","insufficient","citations"] {metadata.remove(key);}
+        Ok(Self {run_id:value["run_id"].as_str().unwrap().to_owned(),run_result_id:value["run_result_id"].as_str().unwrap().to_owned(),
+            answer:value["answer"].as_str().unwrap().to_owned(),insufficient:value["insufficient"].as_bool().unwrap(),
+            citations:serde_json::from_value(value["citations"].clone()).map_err(<D::Error as serde::de::Error>::custom)?,metadata})
+    }
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -867,17 +882,170 @@ pub async fn workspace_processing_status(
     Ok(data)
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceModelSettingsInput {
+    pub workspace_id: String,
+    pub notebook_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceSaveModelSettingsInput {
+    pub workspace_id: String,
+    pub notebook_id: String,
+    pub connection_id: String,
+    pub model_id: String,
+    pub reasoning_effort: Option<String>,
+    pub expected_version: u64,
+    pub request_idempotency_key: String,
+}
+
+fn exact_json(value:&serde_json::Value,keys:&[&str])->bool {
+    value.as_object().is_some_and(|v|v.len()==keys.len() && keys.iter().all(|k|v.contains_key(*k)))
+}
+fn json_text(value:&serde_json::Value,max:usize)->bool { value.as_str().is_some_and(|v|safe_text(v,max)) }
+fn json_id(value:&serde_json::Value)->bool {value.as_str().is_some_and(|v|valid_id(v) && v.len()<=128)}
+fn json_version(value:&serde_json::Value,minimum:u64)->bool {
+    value.as_u64().is_some_and(|v|v>=minimum && v<=9_007_199_254_740_991)
+}
+fn model_id_valid(value:&str)->bool {
+    (1..=255).contains(&value.chars().count()) && value.chars().all(|c|c>' ' && c!='\u{7f}')
+}
+fn model_selection_valid(value:&serde_json::Value)->bool {
+    exact_json(value,&["connection_id","model_id","reasoning_effort"])
+      && json_id(&value["connection_id"])
+      && value["model_id"].as_str().is_some_and(model_id_valid)
+      && (value["reasoning_effort"].is_null() || matches!(value["reasoning_effort"].as_str(),Some("none"|"low"|"medium"|"high")))
+}
+fn json_actions_valid(value:&serde_json::Value,minimum:usize)->bool {
+    value.as_array().is_some_and(|items|items.len()>=minimum && items.len()<=4 && items.iter().all(|v|json_text(v,120) && v.as_str().is_some_and(|s|!s.trim().is_empty())))
+}
+fn valid_completed_question(value:&serde_json::Value)->bool {
+    let base=["run_id","run_result_id","answer","insufficient","citations"];
+    let mut enriched=base.to_vec();enriched.extend(["mode","grounding","source_scope_summary","mismatch","next_actions"]);
+    let mut fresh=enriched.clone();fresh.push("grounding_status");
+    let has_metadata=exact_json(value,&enriched) || exact_json(value,&fresh);
+    if !(exact_json(value,&base) || has_metadata) || !value["run_id"].as_str().is_some_and(valid_id)
+        || !value["run_result_id"].as_str().is_some_and(valid_id) || !json_text(&value["answer"],8000) || !value["insufficient"].is_boolean() {return false;}
+    let Ok(citations)=serde_json::from_value::<Vec<WorkspaceCitation>>(value["citations"].clone()) else{return false;};
+    if citations.len()>10 || !citations.iter().all(WorkspaceCitation::valid) {return false;}
+    if !has_metadata {return true;}
+    if !matches!(value["mode"].as_str(),Some("work_support"|"explicit_source_lookup"|"source_backed_action"|"approved_web_research"))
+        || !matches!(value["grounding"].as_str(),Some("source_backed"|"ungrounded"|"source_evidence_unavailable"|"web_backed"))
+        || !(value["source_scope_summary"].is_null() || value["source_scope_summary"].as_str().is_some_and(|v|v.chars().count()<=1000 && !v.chars().any(char::is_control)))
+        || !(value["mismatch"].is_null() || exact_json(&value["mismatch"],&["code","detail"]) && value["mismatch"]["code"]=="SOURCE_SCOPE_MISMATCH" && json_text(&value["mismatch"]["detail"],1000))
+        || !json_actions_valid(&value["next_actions"],0) {return false;}
+    let count=citations.len();let actions=value["next_actions"].as_array().unwrap().len();
+    if exact_json(value,&fresh) {
+        match value["grounding_status"].as_str() {
+            Some("sufficient")=>value["insufficient"]==false && count>=1 && actions==0 && value["grounding"]=="source_backed",
+            Some("partial")=>value["insufficient"]==false && count>=1 && actions>=1 && value["grounding"]=="source_backed",
+            Some("no_relevant_evidence")=>value["insufficient"]==true && count==0 && actions>=1 && value["grounding"]=="source_evidence_unavailable",
+            Some("conversational")=>value["insufficient"]==false && count==0 && actions==0 && value["grounding"]=="ungrounded",
+            _=>false,
+        }
+    } else {value["grounding"]!="source_evidence_unavailable" || !value["mismatch"].is_null() && actions>0}
+}
+fn valid_question_response(value:&serde_json::Value)->bool {
+    if value.get("kind").is_none() {return valid_completed_question(value);}
+    exact_json(value,&["kind","turn_id","answer","grounding_status","insufficient","citations","next_actions"])
+        && value["kind"]=="system_notice" && json_id(&value["turn_id"]) && json_text(&value["answer"],8000)
+        && value["answer"].as_str().is_some_and(|s|!s.trim().is_empty())
+        && matches!(value["grounding_status"].as_str(),Some("no_knowledge"|"no_relevant_evidence"))
+        && value["insufficient"]==true && value["citations"].as_array().is_some_and(Vec::is_empty)
+        && json_actions_valid(&value["next_actions"],1)
+}
+
+fn reasoning_valid(value:&serde_json::Value)->bool {
+    if !exact_json(value,&["status","values","profile_version"]) {return false;}
+    let Some(values)=value["values"].as_array() else{return false;};
+    if values.len()>4 {return false;}
+    let mut seen=std::collections::HashSet::new();
+    if !values.iter().all(|v|exact_json(v,&["value","label"]) && matches!(v["value"].as_str(),Some("none"|"low"|"medium"|"high"))
+        && seen.insert(v["value"].as_str()) && json_text(&v["label"],120)) {return false;}
+    match value["status"].as_str() {
+        Some("supported")=>!values.is_empty() && json_id(&value["profile_version"]),
+        Some("unknown"|"unsupported")=>values.is_empty() && value["profile_version"].is_null(),
+        _=>false,
+    }
+}
+fn model_settings_valid(value:&serde_json::Value,notebook:&str,saved:bool)->bool {
+    let keys=if saved {vec!["notebook_id","version","selection","replayed"]}
+        else {vec!["notebook_id","version","selection","effective_selection","available_models"]};
+    if !exact_json(value,&keys) || value["notebook_id"].as_str()!=Some(notebook) || !json_id(&value["notebook_id"])
+        || !json_version(&value["version"],if saved {1}else{0}) {return false;}
+    if saved {return model_selection_valid(&value["selection"]) && value["replayed"].is_boolean();}
+    let version=value["version"].as_u64().unwrap_or(0);
+    if if version==0 {!value["selection"].is_null()}else{!model_selection_valid(&value["selection"])} {return false;}
+    let Some(candidates)=value["available_models"].as_array() else{return false;};
+    let mut seen=std::collections::HashSet::new();
+    if !candidates.iter().all(|v|exact_json(v,&["connection_id","provider_code","display_name","model_id","connection_version","catalog_version","reasoning"])
+      && json_id(&v["connection_id"]) && v["model_id"].as_str().is_some_and(model_id_valid)
+      && matches!(v["provider_code"].as_str(),Some("OLLAMA"|"GROQ"|"MISTRAL"|"UPSTAGE"|"OPENROUTER"|"OMNIROUTE"|"EOUL_GATEWAY"|"CUSTOM"))
+      && json_text(&v["display_name"],255) && json_version(&v["connection_version"],1) && json_version(&v["catalog_version"],1)
+      && reasoning_valid(&v["reasoning"]) && seen.insert((v["connection_id"].as_str(),v["model_id"].as_str()))) {return false;}
+    let effective=&value["effective_selection"];
+    if effective.is_null(){return true;}
+    if !exact_json(effective,&["connection_id","model_id","reasoning_effort","origin"]) {return false;}
+    let mut selection=effective.clone();selection.as_object_mut().unwrap().remove("origin");
+    if !model_selection_valid(&selection) {return false;}
+    match effective["origin"].as_str() {
+        Some("workspace_default")=>version==0,
+        Some("notebook")=>version>0 && selection==value["selection"],
+        _=>false,
+    }
+}
+fn parse_model_settings(response:NativeWorkspaceResponse,notebook:&str,saved:bool)->Result<serde_json::Value,WorkspaceError> {
+    let valid_etag=response.etag.as_deref().is_some_and(|v| {
+        let opaque=v.strip_prefix("W/").unwrap_or(v);
+        (2..=512).contains(&opaque.len()) && opaque.starts_with('"') && opaque.ends_with('"') && !opaque.chars().any(char::is_control)
+    });
+    if response.status!=200 || !valid_etag || response.content_type.as_deref().unwrap_or("").split(';').next()!=Some("application/json") {
+        return Err(map_error("WORKSPACE_RESPONSE_REJECTED"));
+    }
+    let value:serde_json::Value=serde_json::from_slice(&response.body).map_err(|_|map_error("WORKSPACE_RESPONSE_REJECTED"))?;
+    if !exact_json(&value,&["data","meta"]) || !exact_json(&value["meta"],&["trace_id"]) || !json_id(&value["meta"]["trace_id"])
+        || !model_settings_valid(&value["data"],notebook,saved) {return Err(map_error("WORKSPACE_RESPONSE_REJECTED"));}
+    Ok(value["data"].clone())
+}
+
+#[tauri::command]
+pub async fn workspace_get_model_settings(input:WorkspaceModelSettingsInput,session:tauri::State<'_,NativeSessionRuntime>)->Result<serde_json::Value,WorkspaceError> {
+    if !valid_id(&input.workspace_id) || !valid_id(&input.notebook_id) {return Err(map_error("INVALID_REQUEST"));}
+    let notebook=input.notebook_id.clone();
+    let response=execute(&session,NativeWorkspaceOperation::GetNotebookModelSettings {workspace_id:input.workspace_id,notebook_id:input.notebook_id}).await?;
+    parse_model_settings(response,&notebook,false)
+}
+
+#[tauri::command]
+pub async fn workspace_save_model_settings(input:WorkspaceSaveModelSettingsInput,session:tauri::State<'_,NativeSessionRuntime>)->Result<serde_json::Value,WorkspaceError> {
+    let selected=serde_json::json!({"connection_id":input.connection_id,"model_id":input.model_id,"reasoning_effort":input.reasoning_effort});
+    if !valid_id(&input.workspace_id) || !valid_id(&input.notebook_id) || !model_selection_valid(&selected)
+        || input.expected_version>=9_007_199_254_740_991 || !valid_idempotency_fingerprint(&input.request_idempotency_key) {
+        return Err(map_error("INVALID_REQUEST"));
+    }
+    let mut body=selected.clone();body["expected_version"]=input.expected_version.into();
+    let notebook=input.notebook_id.clone();
+    let response=execute(&session,NativeWorkspaceOperation::SaveNotebookModelSettings {workspace_id:input.workspace_id,notebook_id:input.notebook_id,
+        body:Zeroizing::new(serde_json::to_vec(&body).map_err(|_|map_error("INVALID_REQUEST"))?),idempotency_key:Zeroizing::new(input.request_idempotency_key)}).await?;
+    let result=parse_model_settings(response,&notebook,true)?;
+    if result["selection"]!=selected || result["version"].as_u64()!=Some(input.expected_version+1) {return Err(map_error("WORKSPACE_RESPONSE_REJECTED"));}
+    Ok(result)
+}
+
 #[tauri::command]
 pub async fn workspace_ask_question(
     input: WorkspaceAskQuestionInput,
     session: tauri::State<'_, NativeSessionRuntime>,
-) -> Result<WorkspaceQuestionResult, WorkspaceError> {
+) -> Result<serde_json::Value, WorkspaceError> {
     if !valid_workspace_question_input_for_contract(&input) {
         return Err(map_error("INVALID_REQUEST"));
     }
     let workspace_id = input.workspace_id.clone();
     let notebook_id = input.notebook_id.clone();
     let mut body_value = serde_json::json!({"notebook_id": notebook_id, "question": input.question.trim()});
+    if let Some(version)=input.model_settings_version { body_value["model_settings_version"]=version.into(); }
     if let (Some(source_id), Some(source_version_id)) = (input.source_id, input.source_version_id) {
         body_value["source_id"] = serde_json::Value::String(source_id);
         body_value["source_version_id"] = serde_json::Value::String(source_version_id);
@@ -885,7 +1053,7 @@ pub async fn workspace_ask_question(
     let body = serde_json::to_vec(&body_value).map_err(|_| map_error("INVALID_REQUEST"))?;
     let key =
         workspace_idempotency_key(&format!("question:{workspace_id}"), &body).map_err(map_error)?;
-    let data: WorkspaceQuestionResult = parse_json(
+    let data: serde_json::Value = parse_json(
         execute(
             &session,
             NativeWorkspaceOperation::AskQuestion {
@@ -899,14 +1067,7 @@ pub async fn workspace_ask_question(
         &workspace_id,
         false,
     )?;
-    if !valid_id(&data.run_id)
-        || !valid_id(&data.run_result_id)
-        || !safe_text(&data.answer, 8_000)
-        || data.citations.len() > 10
-        || !data.citations.iter().all(WorkspaceCitation::valid)
-    {
-        return Err(map_error("WORKSPACE_RESPONSE_REJECTED"));
-    }
+    if !valid_question_response(&data) {return Err(map_error("WORKSPACE_RESPONSE_REJECTED"));}
     Ok(data)
 }
 
@@ -1098,6 +1259,51 @@ pub async fn workspace_apply_license(
 #[cfg(all(test, feature = "contract-test"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_settings_projection_is_closed_scoped_and_versioned() {
+        let mut data=serde_json::json!({"notebook_id":"notebook-1","version":0,"selection":null,"effective_selection":null,"available_models":[]});
+        assert!(model_settings_valid(&data,"notebook-1",false));
+        assert!(!model_settings_valid(&data,"notebook-2",false));
+        data["version"]=serde_json::json!(true);
+        assert!(!model_settings_valid(&data,"notebook-1",false));
+        data["version"]=serde_json::json!(0);
+        data["unexpected"]=serde_json::json!(true);
+        assert!(!model_settings_valid(&data,"notebook-1",false));
+        let saved=serde_json::json!({"notebook_id":"notebook-1","version":1,"selection":{"connection_id":"connection-1","model_id":"registered/model","reasoning_effort":null},"replayed":false});
+        assert!(model_settings_valid(&saved,"notebook-1",true));
+        let envelope=serde_json::json!({"data":saved,"meta":{"trace_id":"trace-1"}});
+        let response=|etag:Option<&str>|NativeWorkspaceResponse {status:200,content_type:Some("application/json".into()),citation_page:None,etag:etag.map(str::to_owned),body:Zeroizing::new(serde_json::to_vec(&envelope).unwrap())};
+        assert!(parse_model_settings(response(Some("\"model-1\"")),"notebook-1",true).is_ok());
+        assert!(parse_model_settings(response(None),"notebook-1",true).is_err());
+        assert!(parse_model_settings(response(Some("unquoted")),"notebook-1",true).is_err());
+        assert!(parse_model_settings(response(Some("\"model-1\"")),"notebook-2",true).is_err());
+        let mut changed=saved.clone();changed["selection"]["reasoning_effort"]=serde_json::json!("invented");
+        assert!(!model_settings_valid(&changed,"notebook-1",true));
+        changed=saved.clone();changed["selection"]["origin"]=serde_json::json!("workspace_default");
+        assert!(!model_settings_valid(&changed,"notebook-1",true));
+    }
+
+    #[test]
+    fn question_projection_preserves_legacy_and_closed_current_variants() {
+        let legacy=serde_json::json!({"run_id":"run-1","run_result_id":"result-1","answer":"응답","insufficient":false,"citations":[]});
+        assert!(valid_question_response(&legacy));
+        let mut current=legacy.clone();
+        for (key,value) in [("mode",serde_json::json!("work_support")),("grounding",serde_json::json!("ungrounded")),("source_scope_summary",serde_json::Value::Null),("mismatch",serde_json::Value::Null),("next_actions",serde_json::json!([])),("grounding_status",serde_json::json!("conversational"))] { current[key]=value; }
+        assert!(valid_question_response(&current));
+        let stored:WorkspaceQuestionResult=serde_json::from_value(current.clone()).expect("current result");
+        assert_eq!(serde_json::to_value(stored).unwrap(),current);
+        for invalid in [serde_json::json!({}),serde_json::json!([]),serde_json::json!("partial")] {
+            let mut changed=current.clone();changed["grounding_status"]=invalid;
+            assert!(!valid_question_response(&changed));
+        }
+        let notice=serde_json::json!({"kind":"system_notice","turn_id":"turn-1","answer":"자료를 선택해 주세요.","grounding_status":"no_knowledge","insufficient":true,"citations":[],"next_actions":["자료를 선택해 주세요."]});
+        assert!(valid_question_response(&notice));
+        let mut changed=notice.clone();changed["run_id"]=serde_json::json!("fake-run");
+        assert!(!valid_question_response(&changed));
+        changed=notice;changed["insufficient"]=serde_json::json!(false);
+        assert!(!valid_question_response(&changed));
+    }
     use crate::native_session::{
         NativeIdentityClient, NativeSessionCredentials, NativeSessionError,
         NativeSessionProjection, NativeSessionVaultPort, NativeWorkspaceTransport,
@@ -1170,6 +1376,8 @@ mod tests {
                     NativeWorkspaceOperation::CreateNotebook { .. } => "create_notebook",
                     NativeWorkspaceOperation::GetNotebook { .. } => "get_notebook",
                     NativeWorkspaceOperation::GetNotebookContext { .. } => "get_notebook_context",
+                    NativeWorkspaceOperation::GetNotebookModelSettings { .. } => "get_model_settings",
+                    NativeWorkspaceOperation::SaveNotebookModelSettings { .. } => "save_model_settings",
                     NativeWorkspaceOperation::ListSources { .. } => "list_sources",
                     NativeWorkspaceOperation::UploadPdf { .. } => "upload_pdf",
                     NativeWorkspaceOperation::ProcessingStatus { .. } => "processing_status",
@@ -1183,7 +1391,7 @@ mod tests {
                 };
                 self.calls.fetch_add(1, Ordering::SeqCst);
                 self.kinds.lock().expect("contract kinds").push(kind);
-                Ok(NativeWorkspaceResponse { status: 200, content_type: Some("application/json".into()), citation_page: None, body: Zeroizing::new(br#"{"data":{"sources":[]},"meta":{"trace_id":"trace-1","workspace_id":"workspace-1"}}"#.to_vec()) })
+                Ok(NativeWorkspaceResponse { status: 200, content_type: Some("application/json".into()), citation_page: None, etag: None, body: Zeroizing::new(br#"{"data":{"sources":[]},"meta":{"trace_id":"trace-1","workspace_id":"workspace-1"}}"#.to_vec()) })
             })
         }
     }
@@ -1257,7 +1465,7 @@ mod tests {
             br#"{"data":{"sources":[],"unknown":true},"meta":{"trace_id":"trace-1","workspace_id":"workspace-1"}}"#.as_slice(),
             br#"{"data":{"sources":[]},"meta":{"trace_id":"trace-1","workspace_id":"workspace-1"},"access_credential":"secret"}"#.as_slice(),
         ] {
-            let response = NativeWorkspaceResponse { status: 200, content_type: Some("application/json".into()), citation_page: None, body: Zeroizing::new(body.to_vec()) };
+            let response = NativeWorkspaceResponse { status: 200, content_type: Some("application/json".into()), citation_page: None, etag: None, body: Zeroizing::new(body.to_vec()) };
             assert!(parse_json::<SourceListData>(response, "workspace-1", false).is_err());
         }
     }
@@ -1322,6 +1530,7 @@ mod tests {
                 status,
                 content_type: Some("application/json".into()),
                 citation_page: None,
+                etag: None,
                 body: Zeroizing::new(body(replayed).into_bytes()),
             };
             assert_eq!(

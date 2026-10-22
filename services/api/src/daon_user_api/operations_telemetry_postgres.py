@@ -293,18 +293,27 @@ class PostgresOperationsTelemetryRepository:
         from .notification_events import _NotificationTupleReadConnection
         reader=_NotificationTupleReadConnection(connection)
         rows=reader.execute("SELECT /* operations-cost:run */ DISTINCT r.record_id,r.created_by,n.notebook_id,"
-            "rs.canonical_json->'source_version_ids' FROM public.runs r JOIN public.run_snapshots rs ON "
+            "rs.canonical_json->'source_version_ids',r.canonical_json->>'kind'='studio_execution' FROM public.runs r JOIN public.run_snapshots rs ON "
             "(rs.tenant_id,rs.workspace_id,rs.run_id)=(r.tenant_id,r.workspace_id,r.record_id) "
-            "JOIN public.notebook_bindings b ON (b.tenant_id,b.workspace_id,b.record_id)="
+            "LEFT JOIN public.notebook_bindings b ON (b.tenant_id,b.workspace_id,b.record_id)="
             "(r.tenant_id,r.workspace_id,r.conversation_id) AND b.binding_kind='conversation_thread' "
-            "JOIN public.notebooks n ON (n.tenant_id,n.workspace_id,n.notebook_id)=(b.tenant_id,b.workspace_id,b.notebook_id) "
+            "JOIN public.notebooks n ON (n.tenant_id,n.workspace_id)=(r.tenant_id,r.workspace_id) AND n.notebook_id=CASE "
+            "WHEN r.canonical_json->>'kind'='studio_execution' AND rs.canonical_json->>'kind'='studio_execution' "
+            "AND r.conversation_id IS NULL AND EXISTS(SELECT 1 FROM public.generation_settings_snapshots p "
+            "WHERE (p.tenant_id,p.workspace_id,p.record_id)=(rs.tenant_id,rs.workspace_id,rs.generation_settings_snapshot_id) "
+            "AND p.created_by=r.created_by AND p.canonical_json->>'kind'='studio_execution_plan' "
+            "AND p.canonical_json->'scope'->>'actor_id'=r.created_by "
+            "AND p.canonical_json->'scope'->>'notebook_id'=r.canonical_json->>'notebook_id' "
+            "AND p.canonical_json->'request'->'source_version_ids'=rs.canonical_json->'source_version_ids' "
+            "AND p.canonical_json->>'fingerprint'=r.canonical_json->>'plan_fingerprint') "
+            "THEN r.canonical_json->>'notebook_id' ELSE b.notebook_id END "
             "WHERE r.tenant_id=%s AND r.workspace_id=%s AND r.record_id=ANY(%s) "
             "AND NOT EXISTS(SELECT 1 FROM public.notebook_deletion_requests d WHERE "
             "(d.tenant_id,d.workspace_id,d.notebook_id)=(n.tenant_id,n.workspace_id,n.notebook_id) "
             "AND d.state IN ('accepted','deleting','completed'))",
             (context.tenant_id,context.workspace_id,list(run_ids))).fetchall()
         found=set();witness=[]
-        for run,actor,notebook,versions in rows:
+        for run,actor,notebook,versions,studio in rows:
             if run not in run_ids or scope=='self' and actor!=context.actor_id:
                 raise AuthorizationError('ACTION_DENIED',403)
             if type(versions) is not list or any(type(v) is not str for v in versions) or len(versions)!=len(set(versions)):
@@ -328,7 +337,7 @@ class PostgresOperationsTelemetryRepository:
                     (context.tenant_id,context.workspace_id,notebook,version)).fetchone()
                 if bound is None or not _source_access_allowed(reader,scoped,version) or not _special_source_access_allowed(reader,scoped,version):
                     raise AuthorizationError('ACTION_DENIED',403)
-            found.add(run);witness.append((run,actor,notebook,tuple(versions)))
+            found.add(run);witness.append((run,actor,notebook,tuple(versions),studio is True))
         if found!=set(run_ids):raise AuthorizationError('ACTION_DENIED',403)
         return tuple(sorted(witness))
 
@@ -343,7 +352,7 @@ class PostgresOperationsTelemetryRepository:
             before=self._cost_runs(connection,context,run_ids,scope)
             rows=connection.execute('SELECT * FROM public.read_operations_cost_receipts(%s,%s)',(list(run_ids),scope)).fetchall()
             names={'run_id','actor_id','model_attempt_id','state','amount','currency','observed_at','received_at'}
-            owners={run:actor for run,actor,_,_ in before}
+            owners={run:actor for run,actor,_,_,_ in before}
             seen=set()
             for row in rows:
                 if (type(row) is not dict or set(row)!=names or row['run_id'] not in owners
@@ -361,7 +370,10 @@ class PostgresOperationsTelemetryRepository:
             if self._cost_authorize(connection,context)!=scope or self._cost_runs(connection,context,run_ids,scope)!=before:
                 from .authorization import AuthorizationError
                 raise AuthorizationError('ACTION_DENIED',403)
-        return tuple(dict(row) for row in rows)
+        # 실제 관측이 도착한 Studio Run은 시작만 확인된 불확정 이력을 중복 집계하지 않는다.
+        studio_runs={run for run,_,_,_,studio in before if studio}
+        observed={row["run_id"] for row in rows if row["run_id"] in studio_runs and row["model_attempt_id"] is not None}
+        return tuple(dict(row) for row in rows if not (row["run_id"] in observed and row["model_attempt_id"] is None and row["state"]=="uncertain"))
 
     def record_cost_receipt(self,context,run_id,receipt,model_attempt_id=None):
         with self._transaction() as connection:

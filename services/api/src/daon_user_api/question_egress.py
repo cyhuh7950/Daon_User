@@ -114,10 +114,13 @@ class PostgresQuestionEgressAuthorizer:
             or context.notebook_id is None
             or request_payload.get("notebook_id") != context.notebook_id
             or set(request_payload) - {
-                "notebook_id", "question", "source_id", "source_version_id", "knowledge_context",
+                "notebook_id", "question", "source_id", "source_version_id", "knowledge_context", "model_settings_version",
             }
         ):
             raise QuestionAnsweringError("QUESTION_CONTEXT_INVALID", status=400)
+        if "model_settings_version" in request_payload and (type(request_payload["model_settings_version"]) is not int
+            or context.model_settings is None or request_payload["model_settings_version"]!=context.model_settings.version):
+            raise QuestionAnsweringError("NOTEBOOK_MODEL_SETTINGS_CHANGED",status=409)
         logical_question = request_payload.get("question")
         if (
             not isinstance(logical_question, str)
@@ -390,6 +393,19 @@ class PostgresQuestionEgressAuthorizer:
                     "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",
                     ("question-egress|" + context.tenant_id + "|" + context.workspace_id + "|" + run_id,),
                 )
+                if context.model_settings is not None:
+                    from .notebook_model_settings_postgres import assert_execution_current
+                    assert_execution_current(connection,context)
+                if context.notebook_id is not None:
+                    from .notebook_conversation_postgres import question_grounding_disposition
+                    from .notebook import NotebookError
+                    try:
+                        disposition=question_grounding_disposition(connection,context,context.notebook_id,
+                            run_id=run_id,request_fingerprint=request_fingerprint)
+                    except NotebookError:
+                        raise QuestionAnsweringError("QUESTION_PREPARATION_REQUIRED",status=409) from None
+                    if disposition!="execution_prepared":
+                        raise QuestionAnsweringError("QUESTION_PREPARATION_REQUIRED",status=409)
                 existing = connection.execute(
                     "SELECT canonical_json FROM runs WHERE record_id=%s",
                     (run_id,),

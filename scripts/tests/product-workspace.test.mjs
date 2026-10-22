@@ -19,6 +19,36 @@ import * as sourceRetryApi from "../../apps/web/lib/source-upload-api.js";
 import { citationContentUrl } from "../../apps/web/lib/question-answering-api.js";
 import { unbindWorkspaceSource } from "../../apps/web/lib/product-workspace-api.js";
 
+test('SIX-A Provider popup requires discard confirmation for X and Escape and blocks close during save',async()=>{
+  const root=path.resolve(import.meta.dirname,'../..'),output=await mkdtemp(path.join(tmpdir(),'.six-a-shell-'));
+  const dom=installMinimalDom();let reactRoot;
+  try{
+    const {createElement,act}=await import('react'),{createRoot}=await import('react-dom/client'),{build}=await import('vite');
+    await build({configFile:false,logLevel:'silent',root,build:{outDir:output,emptyOutDir:false,lib:{entry:path.join(root,'packages/ui/src/product-workspace-shell.jsx'),formats:['es'],fileName:'six-a-shell'},rollupOptions:{external:['react','react-dom','react-dom/client'],output:{paths:Object.fromEntries(['react','react-dom','react-dom/client'].map(n=>[n,import.meta.resolve(n)]))}}}});
+    const entry=(await readdir(output)).find(n=>/\.m?js$/u.test(n));
+    const {ProductWorkspaceShell}=await import(pathToFileURL(path.join(output,entry)).href);
+    const container=dom.document.createElement('div');dom.document.body.appendChild(container);reactRoot=createRoot(container);
+    const current=s17Adapter();
+    const render=(dirty,saving)=>act(async()=>reactRoot.render(createElement(ProductWorkspaceShell,{workspaceId:'workspace-1',adapter:current,providerSettings:createElement('div',{key:'provider-settings'},'QA Provider settings'),providerSettingsDirty:dirty,providerSettingsSaving:saving})));
+    const button=t=>findElements(container,n=>n.tagName==='BUTTON'&&n.textContent.trim()===t)[0];
+    const click=n=>act(async()=>{assert.ok(n);n.dispatchEvent(new MinimalEvent('click'));});
+    const dialog=()=>findElements(container,n=>n.getAttribute?.('role')==='dialog')[0];
+    const props=n=>n[Object.keys(n).find(k=>k.startsWith('__reactProps'))];
+    await render(true,false);await click(button('설정'));await click(findElements(container,n=>n.getAttribute?.('role')==='menuitem'&&n.textContent.includes('LLM'))[0]);
+    await click(findElements(container,n=>n.getAttribute?.('aria-label')==='닫기')[0]);
+    assert.ok(button('계속 편집'));assert.match(container.textContent,/QA Provider settings/);
+    const disclosure=findElements(container,n=>n.getAttribute?.('aria-label')==='저장하지 않은 Provider 변경')[0];
+    assert.equal(disclosure.getAttribute('role'),'group');assert.equal(disclosure.getAttribute('aria-modal'),null);
+    await click(button('계속 편집'));
+    await act(async()=>props(dialog()).onKeyDown({key:'Escape',preventDefault(){},stopPropagation(){}}));
+    assert.ok(button('변경 버리고 닫기'));await click(button('변경 버리고 닫기'));assert.equal(dialog(),undefined);
+    await render(true,true);await click(button('설정'));await click(findElements(container,n=>n.getAttribute?.('role')==='menuitem'&&n.textContent.includes('LLM'))[0]);
+    await act(async()=>props(dialog()).onKeyDown({key:'Escape',preventDefault(){},stopPropagation(){}}));
+    assert.ok(dialog());assert.equal(findElements(container,n=>n.getAttribute?.('aria-label')==='닫기')[0].disabled,true);
+    await render(false,false);await click(findElements(container,n=>n.getAttribute?.('aria-label')==='닫기')[0]);assert.equal(dialog(),undefined);
+  }finally{if(reactRoot){const {act}=await import('react');await act(async()=>reactRoot.unmount());}dom.restore();await rm(output,{recursive:true,force:true});}
+});
+
 test("질문 정책 차단 안내는 입력 수정 대신 조직·Workspace 정책 원인을 표시한다", () => {
   assert.equal(questionFailureMessage("EGRESS_POLICY_DENIED"),
     "조직 또는 Workspace의 외부 전송 정책으로 차단되었습니다. 정책 설정을 확인해 주세요. (EGRESS_POLICY_DENIED)");
@@ -221,7 +251,7 @@ const deferred = () => {
 
 test("승인 정책 설정 메뉴는 전용 modal 안에서 조회하고 닫기·Workspace 전환의 늦은 인증을 폐기한다", async () => {
   const root = path.resolve(import.meta.dirname, "../..");
-  const output = await mkdtemp(path.join("D:/tmp", "daon-user-approval-policy-shell-"));
+  const output = await mkdtemp(path.join(tmpdir(), "daon-user-approval-policy-shell-"));
   const dom = installMinimalDom(); let reactRoot;
   try {
     const { build } = await import("vite"), { createElement, act } = await import("react"), { createRoot } = await import("react-dom/client");
@@ -263,7 +293,7 @@ test("승인 정책 설정 메뉴는 전용 modal 안에서 조회하고 닫기�
     assert.doesNotMatch(container.textContent,/late-closed-grant|late-old-workspace-grant/);
   } finally {
     if(reactRoot){const {act}=await import('react');await act(async()=>reactRoot.unmount());}
-    dom.restore();assert.equal(path.dirname(output),path.resolve('D:/tmp'));await rm(output,{recursive:true,force:true});
+    dom.restore();assert.equal(path.dirname(output),path.resolve(tmpdir()));await rm(output,{recursive:true,force:true});
   }
 });
 
@@ -275,9 +305,9 @@ function s17Adapter(overrides = {}) {
     listSources: async () => [], listKnowledgePackages: async () => [], listStudioOutputs: async () => [],
     listConnectors: async () => [{ ...s17Connector }], ...overrides };
 }
-async function mountS17ReconnectWorkspace(initialAdapter) {
+async function mountS17ReconnectWorkspace(initialAdapter, options = {}) {
   const root = path.resolve(import.meta.dirname, "../..");
-  const output = await mkdtemp(path.join(root, ".workspace-s17-reconnect-"));
+  const output = await mkdtemp(path.join(options.outputRoot ?? root, ".workspace-s17-reconnect-"));
   const dom = installMinimalDom();
   let reactRoot;
   try {
@@ -397,12 +427,57 @@ const s18Sources = [
   { source_id: "source-1", source_version_id: "version-1", filename: "first.pdf", source_state: "ready", processing_state: "completed", job_state: "completed" },
   { source_id: "source-2", source_version_id: "version-2", filename: "other.pdf", source_state: "ready", processing_state: "completed", job_state: "completed" },
 ];
+function dModelView(version=1,effort=null) {
+  const selection={connection_id:"connection-d",model_id:"solar-pro4",reasoning_effort:effort};
+  return {notebook_id:"notebook-s18",version,selection:version?selection:null,effective_selection:version?{...selection,origin:"notebook"}:null,
+    available_models:[{connection_id:"connection-d",provider_code:"UPSTAGE",display_name:"승인 연결",model_id:"solar-pro4",connection_version:1,catalog_version:1,
+      reasoning:{status:"supported",values:[{value:"none",label:"사용 안 함"},{value:"low",label:"낮음"},{value:"medium",label:"보통"},{value:"high",label:"높음"}],profile_version:"upstage-solar-pro4-safe-wire-v1"}}]};
+}
 function s18Adapter(overrides = {}) {
   return { ...adapter, notebookContext: { notebook_id: "notebook-s18", sources: [] },
+    getModelSettings: async()=>dModelView(),
     listSources: async () => s18Sources, listConnectors: async () => [], listStudioOutputs: async () => [],
     listKnowledgePackages: async () => [{ package_id: "package-s18", producer: "daon3", producer_version: "3.0", authority: "approved", registration_state: "registered" }],
     ...overrides };
 }
+
+test("HC2 미지원 추론은 숨기고 미확인은 비활성 상태로 미지정 질문을 실행한다",async()=>{
+  for(const status of ["unsupported","unknown"]){
+    const calls=[];const view=dModelView();view.available_models[0].reasoning={status,values:[],profile_version:null};
+    const workspace=await mountS17ReconnectWorkspace(s18Adapter({getModelSettings:async()=>view,askQuestion:async(input)=>{calls.push(input);return s18Answer();}}));
+    try{
+      const controls=findElements(workspace.container,node=>node.getAttribute?.("aria-label")==="추론 단계");
+      assert.equal(controls.length,status==="unsupported"?0:1);if(controls[0])assert.equal(controls[0].disabled,true);
+      await s18Type(workspace,"안녕하세요");await workspace.act(async()=>s18Submit(workspace));
+      assert.equal(calls.length,1);assert.equal(calls[0].modelSettingsVersion,1);
+    }finally{await workspace.cleanup();}
+  }
+});
+
+test("HC2 Workspace 기본값과 명시 선택의 추론 변경은 허용 선택 필드만 저장하고 재조회한다",async()=>{
+  for(const version of [0,1]){
+    let current=dModelView(version);const saves=[];
+    if(version===0)current.effective_selection={connection_id:"connection-d",model_id:"solar-pro4",reasoning_effort:null,origin:"workspace_default"};
+    const workspace=await mountS17ReconnectWorkspace(s18Adapter({getModelSettings:async()=>current,
+      saveModelSettings:async(input)=>{
+        saves.push(structuredClone(input));
+        assert.deepEqual(Object.keys(input).sort(),["connection_id","expected_version","model_id","reasoning_effort"]);
+        current=dModelView(input.expected_version+1,input.reasoning_effort);
+        return {notebook_id:current.notebook_id,version:current.version,selection:current.selection,replayed:false};
+      }}));
+    try{
+      assert.equal(saves.length,0);
+      const reasoning=()=>findElements(workspace.container,node=>node.getAttribute?.("aria-label")==="추론 단계")[0];
+      await workspace.act(async()=>{await s18Props(reasoning()).onChange({target:{value:"medium"}});});
+      assert.deepEqual(saves[0],{connection_id:"connection-d",model_id:"solar-pro4",reasoning_effort:"medium",expected_version:version});
+      assert.match(workspace.container.textContent,/모델 설정 저장됨/u);
+      assert.equal(s18Props(reasoning()).value,"medium");
+      await workspace.act(async()=>{await s18Props(reasoning()).onChange({target:{value:""}});});
+      assert.deepEqual(saves[1],{connection_id:"connection-d",model_id:"solar-pro4",reasoning_effort:null,expected_version:version+1});
+      assert.equal(s18Props(reasoning()).value,"");
+    }finally{await workspace.cleanup();}
+  }
+});
 const s18Composer = workspace => findElements(workspace.container, node => node.tagName === "FORM" && node.getAttribute("class") === "conversation-composer")[0];
 const s18Props = node => node[Object.keys(node).find(key => key.startsWith("__reactProps$"))];
 const s18Submit = workspace => s18Props(s18Composer(workspace)).onSubmit({ preventDefault() {} });
@@ -1077,12 +1152,14 @@ test("Image Citation 닫기는 원문 표시만 제거한다", async () => {
 test("질문 실제 React 이벤트는 정책 차단 원인·수동 재질문·저장 답변 재조회를 보존한다", async () => {
   let writes = 0, reads = 0, stored = null, workspace;
   const effectAdapter = { ...adapter,
+      getModelSettings:async()=>dModelView(),
     async listSources() { return [sourceRetryPayload]; },
     async listStudioOutputs() { return []; },
     async loadNotebookConversation() { reads++; return stored; },
     async askQuestion(input, options) {
       writes++;
       assert.equal(input.question, "자료를 요약해 주세요");
+      assert.equal(input.modelSettingsVersion,1);
       assert.ok(options.signal instanceof AbortSignal);
       assert.ok(options.idempotencyKey);
       if (writes === 1) throw new Error("EGRESS_POLICY_DENIED");
@@ -1108,7 +1185,14 @@ test("질문 실제 React 이벤트는 정책 차단 원인·수동 재질문·�
     await submit();
     assert.equal(writes, 2);
     assert.match(workspace.container.textContent, /확인된 자료의 답변/u);
-    assert.doesNotMatch(workspace.container.textContent, /EGRESS_POLICY_DENIED/u);
+    const currentAlerts=findElements(workspace.container,node=>node.getAttribute?.("role")==="alert");
+    assert.equal(currentAlerts.some(node=>node.textContent.includes("EGRESS_POLICY_DENIED")),false,"현재 실행 배너의 이전 오류는 해제한다");
+    const turns=findElements(workspace.container,node=>node.getAttribute?.("data-conversation-turn")!==null);
+    assert.equal(turns.length,2,"서로 다른 명시 요청의 두 질문을 보존한다");
+    assert.match(turns[0].textContent,/EGRESS_POLICY_DENIED/u,"이전 실패는 대화 이력에 남긴다");
+    assert.match(turns[1].textContent,/확인된 자료의 답변/u);
+    const users=findElements(workspace.container,node=>node.getAttribute?.("class")==="user-message");
+    assert.equal(users.filter(node=>node.textContent.includes("자료를 요약해 주세요")).length,2);
     await workspace.cleanup(); workspace = null;
     const before = reads;
     workspace = await mountSourceRetryWorkspace(effectAdapter, "policy-question-reentry");
@@ -1129,6 +1213,7 @@ test("HTTP QA React 질문은 randomUUID 없이 실제 adapter와 secure idempot
     });
     workspace = await mountSourceRetryWorkspace({
       ...adapter,
+      getModelSettings:async()=>dModelView(),
       async listSources() { return []; },
       async listStudioOutputs() { return []; },
       async askQuestion(input, options) {
@@ -1145,6 +1230,7 @@ test("HTTP QA React 질문은 randomUUID 없이 실제 adapter와 secure idempot
     await workspace.act(async () => formProps.onSubmit({ preventDefault() {} }));
     assert.equal(calls.length, 1);
     assert.equal(calls[0].input.question, "다음 작업은?");
+    assert.equal(calls[0].input.modelSettingsVersion,1);
     assert.match(calls[0].options.idempotencyKey, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
   } finally {
     if (workspace) await workspace.cleanup();
@@ -1890,6 +1976,7 @@ test("빈 Notebook은 작업 상담을 실행하고 근거 미사용을 표시�
     let authorizeCalls = 0;
     const effectAdapter = {
       ...adapter,
+      getModelSettings:async()=>dModelView(),
       async authorizeQuestion() { authorizeCalls += 1; throw new Error("QUESTION_AUTHORIZATION_MUST_NOT_RUN"); },
       async listSources() { return []; },
       async listStudioOutputs() { return []; },
@@ -1913,7 +2000,7 @@ test("빈 Notebook은 작업 상담을 실행하고 근거 미사용을 표시�
     const form = findElements(container, (node) => node.tagName === "FORM" && node.getAttribute("class") === "conversation-composer")[0];
     const formProps = form[Object.keys(form).find((key) => key.startsWith("__reactProps$"))];
     await act(async () => formProps.onSubmit({ preventDefault() {} }));
-    assert.deepEqual(calls, [{ knowledgeContext: null, question: "다음 작업을 어떻게 진행할까?" }]);
+    assert.deepEqual(calls, [{ knowledgeContext: null, question: "다음 작업을 어떻게 진행할까?",modelSettingsVersion:1 }]);
     assert.equal(authorizeCalls, 0);
     assert.match(container.textContent, /작업 상담 · 근거 미사용/u);
 
@@ -1946,7 +2033,7 @@ test("빈 Notebook은 작업 상담을 실행하고 근거 미사용을 표시�
         mode: "raw_only",
         resources: [{ resourceKind: "source", resourceId: "source-1", versionId: "version-1" }],
       },
-      question: "선택 Source를 근거로 답해줘",
+      question: "선택 Source를 근거로 답해줘",modelSettingsVersion:1,
     }]);
     assert.doesNotMatch(groundedContainer.textContent, /일반 대화 · 근거 미사용/u);
 
@@ -2251,4 +2338,408 @@ test("저장된 공통 Studio DTO 1건으로 재진입해도 신규 Pane과 기�
   } finally {
     await rm(output, { recursive: true, force: true });
   }
+});
+
+const bTurn = (id,question,text,client=null,state='completed') => ({turn_id:id,question,response:text?{kind:state==='completed'?'answer':'system',text,insufficient:state!=='completed',next_actions:[],citations:[]}:null,state,submitted_at:'2026-10-21T00:00:00.123456Z',model:null,client_request_id:client});
+
+test('C 순수 이력 병합은 Run 없는 두 근거 안내 상태와 엄격 system 조합만 보존한다',async()=>{
+  const {mergeNotebookConversationTurns}=await import('../../packages/ui/src/product-workspace-model.js');
+  for(const state of ['no_knowledge','no_relevant_evidence']) {
+    const turn=bTurn('turn-c','계약기간은?','질문을 확인할 자료를 선택해 주세요.','request-c',state);
+    turn.response.next_actions=['질문의 기간을 확인할 자료를 선택해 주세요.'];
+    assert.deepEqual(mergeNotebookConversationTurns([], [turn]),[turn]);
+    for(const value of [{...turn,model:{provider_code:'forged',model_id:'unexecuted'}},
+        {...turn,response:{...turn.response,kind:'answer'}},{...turn,response:null},
+        {...turn,response:{...turn.response,next_actions:[]}}]) {
+      assert.throws(()=>mergeNotebookConversationTurns([],[value]),/NOTEBOOK_CONVERSATION_INVALID/);
+    }
+  }
+});
+
+test('C 실제 DOM 근거 안내는 실패 배너·가짜 Run 없이 누적하고 재진입 GET만 복원하며 Studio를 실행하지 않는다',async()=>{
+  let posts=0,studio=0,reads=0;
+  let page=[bTurn('turn-old-c','이전 완료 질문','이전 완료 답변','request-old-c')];
+  const notice={kind:'system_notice',turn_id:'turn-c',answer:'질문을 확인할 자료가 선택되지 않았습니다.',
+    grounding_status:'no_knowledge',insufficient:true,citations:[],next_actions:['질문의 기간을 확인할 자료를 선택해 주세요.']};
+  const list=async()=>{reads++;return {items:page,next_cursor:null};};
+  const nextAdapter=()=>s18Adapter({loadNotebookConversation:async()=>s18Answer('이전 완료 답변'),listConversationTurns:list,
+    askQuestion:async(input,options)=>{
+      posts++;
+      page=[{...bTurn('turn-c',input.question,notice.answer,options.idempotencyKey,'no_knowledge'),
+        response:{kind:'system',text:notice.answer,insufficient:true,citations:[],next_actions:notice.next_actions}},...page];
+      return notice;
+    },createGeneration:async()=>{studio++;},createReport:async()=>{studio++;}});
+  const workspace=await mountS17ReconnectWorkspace(nextAdapter(),{outputRoot:tmpdir()});
+  try {
+    await s18Type(workspace,'안녕, 계약기간은 언제까지인가요?');
+    await workspace.act(async()=>{await s18Submit(workspace);await Promise.resolve();});
+    assert.match(workspace.container.textContent,/질문을 확인할 자료가 선택되지 않았습니다/u);
+    assert.match(workspace.container.textContent,/이전 완료 답변/u);
+    assert.doesNotMatch(workspace.container.textContent,/QUESTION_RESPONSE_INVALID|질문 실행에 실패/u);
+    assert.equal(findElements(workspace.container,node=>node.getAttribute?.('data-conversation-turn')!==null).length,2);
+    assert.equal(posts,1);assert.equal(studio,0);assert(reads>=2);
+    await workspace.render(nextAdapter());
+    assert.match(workspace.container.textContent,/질문을 확인할 자료가 선택되지 않았습니다/u);
+    assert.equal(posts,1);assert.equal(studio,0);
+  }finally{await workspace.cleanup();}
+});
+
+test('B 두 질문 누적·즉시 user 표시·응답 유실 뒤 GET exact key 병합은 재실행하지 않는다',async()=>{
+  const pending=deferred();let submission,key,posts=0,reads=0;
+  let page=[bTurn('turn-old','이전 질문','이전 답변','request-old')];
+  const workspace=await mountS17ReconnectWorkspace(s18Adapter({
+    listConversationTurns:async()=>{reads++;return {items:page,next_cursor:null};},
+    askQuestion:async(input,options)=>{posts++;key=options.idempotencyKey;return pending.promise;},
+  }));
+  try {
+    assert.match(workspace.container.textContent,/이전 질문/u);
+    await s18Type(workspace,'응답 유실 질문');await workspace.act(async()=>{submission=s18Submit(workspace);});
+    assert.match(workspace.container.textContent,/응답 유실 질문/u);assert.match(workspace.container.textContent,/이전 답변/u);
+    page=[bTurn('turn-new','응답 유실 질문','처리 결과를 확인해 주세요.',key,'uncertain'),...page];
+    await workspace.act(async()=>{pending.reject(new Error('UPSTREAM_FAILURE'));await submission;await Promise.resolve();});
+    const bubbles=findElements(workspace.container,node=>node.getAttribute?.('data-conversation-turn')!==null);
+    assert.equal(bubbles.length,2);assert.equal(posts,1);assert(reads>=2);
+    assert.match(workspace.container.textContent,/처리 결과를 확인/u);assert.match(workspace.container.textContent,/이전 답변/u);
+  } finally {pending.resolve(s18Answer());if(submission)await submission;await workspace.cleanup();}
+});
+
+test('B 질문 실패는 마지막 완료 답변을 Studio용으로 보존한다',async()=>{
+  const {projectQuestionFailureState}=await import('../../packages/ui/src/product-workspace-model.js');
+  const answer={answer:'완료 답변',citations:[]};
+  const projected=projectQuestionFailureState({answer,answerIntent:'work_support_source_backed'},new Error('QUESTION_FAILED'));
+  assert.equal(projected.answer,answer);assert.equal(projected.answerIntent,'work_support_source_backed');
+});
+
+test('B 실제 두 답변 누적·이전 페이지·Source 선택 보존과 재진입 복원은 GET만 사용한다',async()=>{
+  let posts=0;const reads=[];
+  const old=bTurn('turn-older','가장 이전 질문','가장 이전 답변','request-older');
+  let page=[bTurn('turn-saved','저장 질문','저장 답변','request-saved')];
+  const list=async(options)=>{reads.push(options);return options.before?{items:[old],next_cursor:null}:{items:page,next_cursor:'b2xk'};};
+  const active=s18Adapter({listConversationTurns:list,askQuestion:async(input,options)=>{
+    posts++;page=[bTurn('turn-'+posts,input.question,posts===1?'첫 답변':'둘째 답변',options.idempotencyKey),...page];
+    return s18Answer(posts===1?'첫 답변':'둘째 답변');
+  }});
+  const workspace=await mountS17ReconnectWorkspace(active);
+  try {
+    const more=findElements(workspace.container,n=>n.tagName==='BUTTON'&&n.textContent==='이전 대화 더 보기')[0];
+    assert(more);await workspace.act(async()=>more.dispatchEvent(new MinimalEvent('click')));
+    assert.equal(reads[1].before,'b2xk');assert.match(workspace.container.textContent,/가장 이전 질문/u);
+    await s18Type(workspace,'첫 질문');await workspace.act(async()=>s18Submit(workspace));
+    await s18Type(workspace,'둘째 질문');await workspace.act(async()=>s18Submit(workspace));
+    for(const text of ['첫 질문','첫 답변','둘째 질문','둘째 답변'])assert(workspace.container.textContent.includes(text));
+    const source=findElements(workspace.container,n=>n.tagName==='BUTTON'&&n.textContent.includes('other.pdf'))[0];
+    await workspace.act(async()=>source.dispatchEvent(new MinimalEvent('click')));
+    assert.match(workspace.container.textContent,/첫 질문/u);assert.match(workspace.container.textContent,/둘째 답변/u);
+    await workspace.render(s18Adapter({listConversationTurns:list,askQuestion:async()=>{throw new Error('MUST_NOT_REEXECUTE');}}));
+    assert.match(workspace.container.textContent,/첫 질문/u);assert.match(workspace.container.textContent,/둘째 답변/u);assert.equal(posts,2);
+  }finally{await workspace.cleanup();}
+});
+
+test('B 이전 페이지를 조회한 후 새로고침은 철회된 옛 답변을 보유하지 않는다',async()=>{
+  let refreshed=false;
+  const workspace=await mountS17ReconnectWorkspace(s18Adapter({listConversationTurns:async({before})=>before
+    ?{items:[bTurn('turn-old-access','옛 질문','철회될 답변','request-old')],next_cursor:null}
+    :{items:[bTurn('turn-current','현재 질문',refreshed?'답변에 현재 접근할 수 없습니다.':'현재 답변','request-current',refreshed?'unavailable':'completed')],next_cursor:refreshed?null:'b2xk'}}));
+  try{
+    await workspace.act(async()=>findElements(workspace.container,n=>n.tagName==='BUTTON'&&n.textContent==='이전 대화 더 보기')[0].dispatchEvent(new MinimalEvent('click')));
+    assert.match(workspace.container.textContent,/철회될 답변/u);refreshed=true;
+    await workspace.act(async()=>findElements(workspace.container,n=>n.tagName==='BUTTON'&&n.textContent==='대화 새로고침')[0].dispatchEvent(new MinimalEvent('click')));
+    assert.doesNotMatch(workspace.container.textContent,/철회될 답변|현재 답변/u);
+    assert.match(workspace.container.textContent,/현재 질문|답변에 현재 접근/u);
+  }finally{await workspace.cleanup();}
+});
+
+test('B Notebook 전환 후 늦은 이전 이력은 표시하지 않는다',async()=>{
+  const history=deferred();let posts=0;
+  const workspace=await mountS17ReconnectWorkspace(s18Adapter({listConversationTurns:async()=>history.promise}));
+  try{
+    await workspace.render(s18Adapter({notebookContext:{notebook_id:'notebook-new',sources:[]},
+      listConversationTurns:async()=>({items:[bTurn('turn-new-nb','새 Notebook 질문','새 Notebook 답변','request-new')],next_cursor:null}),
+      askQuestion:async()=>{posts++;return s18Answer();}}));
+    await workspace.act(async()=>{history.resolve({items:[bTurn('turn-old-nb','이전 Notebook 비공개 질문','이전 Notebook 비공개 답변','request-old')],next_cursor:null});await Promise.resolve();});
+    assert.match(workspace.container.textContent,/새 Notebook 질문/u);assert.doesNotMatch(workspace.container.textContent,/이전 Notebook 비공개/u);assert.equal(posts,0);
+  }finally{history.resolve({items:[],next_cursor:null});await workspace.cleanup();}
+});
+
+test('B Source 전환 취소 뒤 같은 요청의 저장 이력은 GET으로 병합하고 늦은 실행 응답을 무시한다',async()=>{
+  const pending=deferred();let key,submission,posts=0,cancelled=false;
+  const workspace=await mountS17ReconnectWorkspace(s18Adapter({
+    listConversationTurns:async()=>({items:cancelled?[bTurn('turn-cancel','취소 확인 질문',null,key,'pending')]:[],next_cursor:null}),
+    askQuestion:async(input,options)=>{key=options.idempotencyKey;posts++;return pending.promise;},
+  }));
+  try{
+    await s18Type(workspace,'취소 확인 질문');await workspace.act(async()=>{submission=s18Submit(workspace);});
+    await workspace.act(async()=>findElements(workspace.container,n=>n.tagName==='BUTTON'&&n.textContent.includes('other.pdf'))[0].dispatchEvent(new MinimalEvent('click')));
+    assert.match(workspace.container.textContent,/서버 처리를 중단했음을 보장하지 않습니다/u);cancelled=true;
+    await workspace.act(async()=>findElements(workspace.container,n=>n.tagName==='BUTTON'&&n.textContent==='대화 새로고침')[0].dispatchEvent(new MinimalEvent('click')));
+    assert.equal(findElements(workspace.container,n=>n.getAttribute?.('data-conversation-turn')!==null).length,1);
+    await workspace.act(async()=>{pending.resolve(s18Answer('늦은 취소 답변'));await submission;});
+    assert.doesNotMatch(workspace.container.textContent,/늦은 취소 답변/u);assert.equal(posts,1);
+  }finally{pending.resolve(s18Answer());if(submission)await submission;await workspace.cleanup();}
+});
+
+test('B 순수 병합은 상태 위조·중복 요청ID·모호한 turn 결합을 거부하고 시각을 추측 ID로 쓰지 않는다',async()=>{
+  const {mergeNotebookConversationTurns}=await import('../../packages/ui/src/product-workspace-model.js');
+  const one=bTurn('turn-1','같은 질문','답변1','request-1');
+  const two=bTurn('turn-2','같은 질문','답변2','request-2');
+  assert.equal(mergeNotebookConversationTurns([], [one,two]).length,2);
+  const actions=count=>({...one,response:{...one.response,next_actions:Array.from({length:count},(_,i)=>`행동 ${i+1}`)}});
+  assert.equal(mergeNotebookConversationTurns([],[actions(8)])[0].response.next_actions.length,8);
+  assert.throws(()=>mergeNotebookConversationTurns([],[actions(9)]),/NOTEBOOK_CONVERSATION_INVALID/u);
+  for(const bad of [{...one,state:'failed'},{...one,state:'pending'}, {...one,response:{...one.response,text:''}},
+    {...one,model:{api_key:'private'}},{...one,submitted_at:'yesterday'}]){
+    assert.throws(()=>mergeNotebookConversationTurns([],[bad]),/NOTEBOOK_CONVERSATION_INVALID/u);
+  }
+  assert.throws(()=>mergeNotebookConversationTurns([one],[{...two,client_request_id:'request-1'}]),/NOTEBOOK_CONVERSATION_INVALID/u);
+  assert.throws(()=>mergeNotebookConversationTurns([],[one,one]),/NOTEBOOK_CONVERSATION_INVALID/u);
+});
+
+
+test("D 실제 DOM 모델 선택 자동저장 중 잠금·정확 version 질문·재진입 복원",async()=>{
+  let current=dModelView(0),saves=0,posts=0;const pending=deferred();const inputs=[];
+  const make=()=>s18Adapter({getModelSettings:async()=>structuredClone(current),
+    saveModelSettings:async(input)=>{saves++;await pending.promise;current=dModelView(1,input.reasoning_effort);return {notebook_id:"notebook-s18",version:1,selection:current.selection,replayed:false};},
+    askQuestion:async(input)=>{posts++;inputs.push(input);return s18Answer("확인된 답변");}});
+  const workspace=await mountS17ReconnectWorkspace(make(),{outputRoot:tmpdir()});
+  const select=()=>findElements(workspace.container,n=>n.tagName==="SELECT"&&n.getAttribute("aria-label")==="Provider · 모델")[0];
+  const submit=()=>findElements(workspace.container,n=>n.tagName==="BUTTON"&&n.getAttribute("aria-label")==="질문 실행")[0];
+  try{
+    await s18Type(workspace);assert.equal(submit().disabled,true);
+    let saving;await workspace.act(async()=>{saving=s18Props(select()).onChange({target:{value:JSON.stringify(["connection-d","solar-pro4"])}});});
+    assert.equal(saves,1);assert.equal(submit().disabled,true);assert.match(workspace.container.textContent,/모델 설정 저장 중/u);
+    await workspace.act(async()=>{pending.resolve();await saving;await Promise.resolve();await Promise.resolve();});
+    assert.match(workspace.container.textContent,/모델 설정 저장됨/u);
+    await workspace.act(async()=>{await s18Submit(workspace);});
+    assert.equal(posts,1);assert.equal(inputs[0].modelSettingsVersion,1);
+    await workspace.render(make());assert.match(workspace.container.textContent,/모델 설정 저장됨/u);
+    assert.equal(saves,1);assert.equal(posts,1);
+  }finally{await workspace.cleanup();}
+});
+
+
+test("D 질문 오류는 모델 설정 원인과 명시 재선택 조치를 안내한다",()=>{
+  assert.match(questionFailureMessage("NOTEBOOK_MODEL_SETTINGS_CHANGED"),/다시 조회.*모델/u);
+  assert.match(questionFailureMessage("NOTEBOOK_MODEL_SELECTION_REQUIRED"),/직접 선택/u);
+  assert.match(questionFailureMessage("NOTEBOOK_MODEL_UNAVAILABLE"),/다른 허용 모델.*직접 선택/u);
+  assert.doesNotMatch(questionFailureMessage("NOTEBOOK_MODEL_UNAVAILABLE"),/입력을 확인/u);
+});
+
+
+test("D 실제 StudioPane 생성은 Web POST에 의도한 선택 version만 전달한다",async()=>{
+  const {createStudioGeneration,authorizeStudioGeneration}=await import("../../apps/web/lib/product-workspace-api.js");
+  const calls=[];
+  const workspace=await mountS17ReconnectWorkspace(s18Adapter({loadNotebookConversation:async()=>({...s18Answer("근거 답변"),citations:[{citation_id:"citation-d",source_id:"source-1",source_version_id:"version-1",evidence_span_id:"span-d",page:1,origin:"raw_source",context_item_id:"source-1",origin_label:"원본 자료",authority_label:"Source",locator:{kind:"page",value:"1"}}]}),
+    authorizeGeneration:(input,options)=>authorizeStudioGeneration("workspace-1",input,{...options,notebookId:"notebook-s18",fetchImpl:async(url,options)=>{
+      calls.push({url,body:JSON.parse(options.body),key:options.headers['Idempotency-Key']});return Response.json({data:{step_up_authorization_id:null,expires_at:"2099-01-01T00:00:00Z",generation_fingerprint:'a'.repeat(64)},meta:{trace_id:"trace-1",workspace_id:"workspace-1"}},{status:201});}}),
+    createGeneration:(input,options)=>createStudioGeneration("workspace-1",input,{...options,notebookId:"notebook-s18",fetchImpl:async(url,options)=>{
+      calls.push({url,body:JSON.parse(options.body),key:options.headers["Idempotency-Key"]});return Response.json({data:{job_id:"job-d",status:"queued",output_type:"evidence_report"},meta:{trace_id:"trace-1",workspace_id:"workspace-1",replayed:false}},{status:201});}}),
+  }),{outputRoot:tmpdir()});
+  const button=text=>findElements(workspace.container,n=>n.tagName==="BUTTON"&&n.textContent.trim()===text)[0];
+  const field=label=>findElements(workspace.container,n=>n.tagName==="LABEL"&&n.textContent.startsWith(label))[0];
+  const set=async(label,value)=>{
+    const control=findElements(field(label),n=>n.tagName==="INPUT"||n.tagName==="SELECT")[0];
+    assert(control,`FIELD_${label}`);await workspace.act(async()=>s18Props(control).onChange({currentTarget:{value},target:{value}}));
+  };
+  try{
+    const type=findElements(workspace.container,n=>n.tagName==="BUTTON"&&n.textContent.includes("근거 기반 보고서"))[0];
+    await workspace.act(async()=>type.dispatchEvent(new MinimalEvent("click")));
+    await set("목적","근거 정리");await set("독자","검토자");await set("분량","short");await set("구성","summary-body-conclusion");
+    await set("출력 형식","pdf");await set("검토 조건","review_required");
+    await workspace.act(async()=>button("설정 확인").dispatchEvent(new MinimalEvent("click")));
+    const form=findElements(workspace.container,n=>n.tagName==="FORM"&&n.getAttribute("class")==="studio-config-form")[0];
+    await workspace.act(async()=>{s18Props(form).onSubmit({preventDefault(){}});await Promise.resolve();await Promise.resolve();});
+    assert.equal(calls.length,2);
+    assert.equal(calls[0].url,"/bff/api/studio-generation-requests/authorization");
+    assert.equal(calls[0].key,calls[1].key);
+    assert.equal(calls[1].url,"/bff/api/studio-generation-requests");
+    assert.equal(calls[1].body.model_settings_version,1);
+    assert.equal(calls[1].body.run_id,"run-s18");
+    assert.equal(Object.hasOwn(calls[1].body,"intended_model_selection"),false);
+    assert.equal(Object.hasOwn(calls[1].body,"model_id"),false);
+  }finally{await workspace.cleanup();}
+});
+
+
+test("D version0 무Source 사실만 사전판정에 보내고 인사는 명시 모델 선택을 요구한다",async()=>{
+  let posts=0,studio=0,input;
+  const workspace=await mountS17ReconnectWorkspace(s18Adapter({getModelSettings:async()=>dModelView(0),listSources:async()=>[],listKnowledgePackages:async()=>[],
+    askQuestion:async(value)=>{posts++;input=value;return {kind:"system_notice",turn_id:"turn-notice-d",answer:"질문을 확인할 자료가 선택되지 않았습니다.",grounding_status:"no_knowledge",insufficient:true,citations:[],next_actions:["자료를 선택해 주세요."]};},
+    createGeneration:async()=>{studio++;}}),{outputRoot:tmpdir()});
+  try{
+    await s18Type(workspace,"안녕하세요");await workspace.act(async()=>{await s18Submit(workspace);});assert.equal(posts,0);
+    await s18Type(workspace,"안녕, 계약기간은 언제인가요?");await workspace.act(async()=>{await s18Submit(workspace);});
+    assert.equal(posts,1);assert.equal(Object.hasOwn(input,"modelSettingsVersion"),false);assert.equal(studio,0);
+    assert.match(workspace.container.textContent,/질문을 확인할 자료가 선택되지 않았습니다/u);
+  }finally{await workspace.cleanup();}
+});
+
+
+test("D 질문 설정 변경 오류 뒤 실행을 잠그고 명시 GET으로만 복구한다",async()=>{
+  let version=1,posts=0,reads=0;
+  const adapter=s18Adapter({getModelSettings:async()=>{reads++;return dModelView(version);},askQuestion:async()=>{posts++;throw new Error("NOTEBOOK_MODEL_SETTINGS_CHANGED");}});
+  const workspace=await mountS17ReconnectWorkspace(adapter,{outputRoot:tmpdir()});
+  try{
+    await s18Type(workspace);await workspace.act(async()=>{await s18Submit(workspace);});
+    const requery=()=>findElements(workspace.container,n=>n.tagName==="BUTTON"&&n.textContent==="마지막 저장값 다시 조회")[0];
+    assert(requery());await workspace.act(async()=>{await s18Submit(workspace);});assert.equal(posts,1);assert.equal(reads,1);
+    version=2;await workspace.act(async()=>{s18Props(requery()).onClick();await Promise.resolve();await Promise.resolve();});
+    assert.match(workspace.container.textContent,/모델 설정 저장됨/u);assert.equal(reads,2);assert.equal(posts,1);
+  }finally{await workspace.cleanup();}
+});
+
+
+test("D 저장 실패는 질문을 잠그고 같은 요청 재시도 또는 명시 조회만 허용한다",async()=>{
+  let saves=0,posts=0,reads=0;const keys=[];
+  const workspace=await mountS17ReconnectWorkspace(s18Adapter({getModelSettings:async()=>{reads++;return dModelView(1);},
+    saveModelSettings:async(input,options)=>{saves++;keys.push(options.idempotencyKey);throw new Error("NOTEBOOK_MODEL_SETTINGS_UNAVAILABLE");},
+    askQuestion:async()=>{posts++;return s18Answer("답변");}}),{outputRoot:tmpdir()});
+  const button=text=>findElements(workspace.container,n=>n.tagName==="BUTTON"&&n.textContent===text)[0];
+  try{
+    const select=findElements(workspace.container,n=>n.tagName==="SELECT"&&n.getAttribute("aria-label")==="추론 단계")[0];
+    await workspace.act(async()=>{await s18Props(select).onChange({target:{value:"low"}});});
+    await s18Type(workspace);await workspace.act(async()=>{await s18Submit(workspace);});assert.equal(posts,0);assert.equal(saves,1);
+    const retry=findElements(workspace.container,n=>n.tagName==="BUTTON"&&n.textContent.includes("같은 저장 요청"))[0];
+    assert(retry);await workspace.act(async()=>{await s18Props(retry).onClick();});assert.equal(saves,2);assert.equal(keys[0],keys[1]);
+    await workspace.act(async()=>{await s18Props(button("마지막 저장값 다시 조회")).onClick();await Promise.resolve();});
+    assert.equal(reads,2);assert.equal(posts,0);assert.match(workspace.container.textContent,/모델 설정 저장됨/u);
+  }finally{await workspace.cleanup();}
+});
+
+test("D Notebook 전환 뒤 늦은 모델 설정 조회는 현재 선택을 덮지 않는다",async()=>{
+  const old=deferred();let posts=0;
+  const workspace=await mountS17ReconnectWorkspace(s18Adapter({getModelSettings:()=>old.promise}),{outputRoot:tmpdir()});
+  try{
+    const current={...dModelView(2),notebook_id:"notebook-new"};
+    await workspace.render(s18Adapter({notebookContext:{notebook_id:"notebook-new",sources:[]},getModelSettings:async()=>current,
+      askQuestion:async(input)=>{posts++;assert.equal(input.modelSettingsVersion,2);return s18Answer("답변");}}));
+    await workspace.act(async()=>{old.resolve(dModelView(1));await Promise.resolve();await Promise.resolve();});
+    assert.match(workspace.container.textContent,/모델 설정 저장됨/u);
+    await s18Type(workspace);await workspace.act(async()=>{await s18Submit(workspace);});assert.equal(posts,1);
+  }finally{await workspace.cleanup();}
+});
+
+function defaultModelView(){
+  const view=dModelView(0);
+  const candidate={...view.available_models[0],connection_id:"connection-workspace-default",provider_code:"CUSTOM",display_name:"기존 기준모델",model_id:"uss/solar-pro4",
+    reasoning:{status:"unsupported",values:[],profile_version:null}};
+  return {...view,available_models:[...view.available_models,candidate],effective_selection:{connection_id:candidate.connection_id,model_id:candidate.model_id,reasoning_effort:null,origin:"workspace_default"}};
+}
+function confirmedDefault(view,input){
+  const selection={connection_id:input.connection_id,model_id:input.model_id,reasoning_effort:input.reasoning_effort};
+  return {...view,version:1,selection,effective_selection:{...selection,origin:"notebook"}};
+}
+const modelControl=workspace=>findElements(workspace.container,n=>n.tagName==="SELECT"&&n.getAttribute("aria-label")==="Provider · 모델")[0];
+
+test("D 기본값 실제 DOM은 저장 Workspace 모델을 표시하고 질문 명령에만 한번 확정한다",async()=>{
+  let current=defaultModelView();const saves=[],posts=[];
+  const make=()=>s18Adapter({getModelSettings:async()=>structuredClone(current),saveModelSettings:async(input,options)=>{
+    saves.push({input,key:options.idempotencyKey});current=confirmedDefault(current,input);return {notebook_id:current.notebook_id,version:1,selection:current.selection,replayed:false};},
+    askQuestion:async input=>{posts.push(input);return s18Answer("기본값으로 확인한 답변");}});
+  const workspace=await mountS17ReconnectWorkspace(make(),{outputRoot:tmpdir()});
+  try{
+    assert.equal(s18Props(modelControl(workspace)).value,JSON.stringify(["connection-workspace-default","uss/solar-pro4"]));
+    assert.match(workspace.container.textContent,/Workspace 기본값/u);assert.equal(saves.length,0);
+    await s18Type(workspace,"안녕");await workspace.act(async()=>{await s18Submit(workspace);});
+    assert.equal(saves.length,1);assert.deepEqual(saves[0].input,{connection_id:"connection-workspace-default",model_id:"uss/solar-pro4",reasoning_effort:null,expected_version:0});
+    assert.equal(posts.length,1);assert.equal(posts[0].modelSettingsVersion,1);
+    assert.equal(findElements(workspace.container,n=>n.tagName==="TEXTAREA")[0].value,"");
+    assert.match(workspace.container.textContent,/안녕/u);assert.match(workspace.container.textContent,/기본값으로 확인한 답변/u);
+    await workspace.render(make());assert.equal(saves.length,1);assert.equal(s18Props(modelControl(workspace)).value,JSON.stringify(["connection-workspace-default","uss/solar-pro4"]));
+  }finally{await workspace.cleanup();}
+});
+
+test("D 기본값 실제 DOM 저장 실패와 늦은 Notebook 저장은 질문을 실행하지 않는다",async()=>{
+  for(const late of [false,true]){
+    let current=defaultModelView(),posts=0,saves=0;const pending=deferred();let submission;
+    const workspace=await mountS17ReconnectWorkspace(s18Adapter({getModelSettings:async()=>structuredClone(current),saveModelSettings:async input=>{
+      saves++;if(!late)throw Error("NOTEBOOK_MODEL_SETTINGS_UNAVAILABLE");await pending.promise;current=confirmedDefault(current,input);return {notebook_id:current.notebook_id,version:1,selection:current.selection,replayed:false};},
+      askQuestion:async()=>{posts++;return s18Answer();}}),{outputRoot:tmpdir()});
+    try{
+      await s18Type(workspace,"안녕");await workspace.act(async()=>{submission=s18Submit(workspace);s18Submit(workspace);if(!late)await submission;});
+      assert.equal(saves,1);assert.equal(posts,0);
+      if(late){await workspace.render(s18Adapter({getModelSettings:async()=>({...dModelView(2),notebook_id:"notebook-new"})}));await workspace.act(async()=>{pending.resolve();await submission;});assert.equal(posts,0);}
+      else assert.equal(findElements(workspace.container,n=>n.tagName==="TEXTAREA")[0].value,"안녕");
+    }finally{pending.resolve();await workspace.cleanup();}
+  }
+});
+
+test("D 기본값 실제 DOM은 본인 선택 우선과 사용불가 선택의 대체 금지를 유지한다",async()=>{
+  for(const unavailable of [false,true]){
+    const view=dModelView(1);if(unavailable)view.effective_selection=null;let saves=0,posts=0;
+    const workspace=await mountS17ReconnectWorkspace(s18Adapter({getModelSettings:async()=>view,saveModelSettings:async()=>{saves++;},askQuestion:async()=>{posts++;return s18Answer();}}),{outputRoot:tmpdir()});
+    try{
+      assert.equal(s18Props(modelControl(workspace)).value,JSON.stringify(["connection-d","solar-pro4"]));
+      await s18Type(workspace,"안녕");await workspace.act(async()=>{await s18Submit(workspace);});
+      assert.equal(saves,0);assert.equal(posts,unavailable?0:1);
+    }finally{await workspace.cleanup();}
+  }
+});
+
+test("D 입력 정리는 정상 안내만 비우고 새 입력과 실패는 보존한다",async()=>{
+  for(const outcome of ["notice","changed","failed"]){
+    const pending=deferred();let submission;
+    const workspace=await mountS17ReconnectWorkspace(s18Adapter({askQuestion:()=>pending.promise}),{outputRoot:tmpdir()});
+    try{
+      const textarea=await s18Type(workspace,"안녕");await workspace.act(async()=>{submission=s18Submit(workspace);});
+      if(outcome==="changed")await s18Type(workspace,"새로 입력한 질문");
+      await workspace.act(async()=>{
+        if(outcome==="failed")pending.reject(Error("PROVIDER_TIMEOUT"));
+        else if(outcome==="notice")pending.resolve({kind:"system_notice",turn_id:"turn-input-notice",answer:"자료를 선택해 주세요.",grounding_status:"no_knowledge",insufficient:true,citations:[],next_actions:["자료를 선택해 주세요."]});
+        else pending.resolve(s18Answer("이전 질문 답변"));await submission;
+      });
+      assert.equal(textarea.value,outcome==="notice"?"":outcome==="changed"?"새로 입력한 질문":"안녕");
+      assert.match(workspace.container.textContent,/안녕/u);
+    }finally{pending.resolve(s18Answer());await workspace.cleanup();}
+  }
+});
+
+test("D 기본값 실제 Studio 명령은 저장 확인 뒤 같은 version으로만 인증과 생성한다",async()=>{
+  let current=defaultModelView();const calls=[];
+  const workspace=await mountS17ReconnectWorkspace(s18Adapter({getModelSettings:async()=>structuredClone(current),
+    saveModelSettings:async(input,options)=>{calls.push({kind:"save",input,key:options.idempotencyKey});current=confirmedDefault(current,input);return {notebook_id:current.notebook_id,version:1,selection:current.selection,replayed:false};},
+    loadNotebookConversation:async()=>({...s18Answer("근거 답변"),citations:[{citation_id:"citation-default",source_id:"source-1",source_version_id:"version-1",evidence_span_id:"span-default",page:1,origin:"raw_source",context_item_id:"source-1",origin_label:"원본 자료",authority_label:"Source",locator:{kind:"page",value:"1"}}]}),
+    authorizeGeneration:async(input,options)=>{calls.push({kind:"authorize",input,key:options.idempotencyKey});return {step_up_authorization_id:null,expires_at:"2099-01-01T00:00:00Z",generation_fingerprint:"a".repeat(64)};},
+    createGeneration:async(input,options)=>{calls.push({kind:"generate",input,key:options.idempotencyKey});return {job_id:"job-default",status:"queued",output_type:"evidence_report"};},
+    getGenerationJob:async()=>({job_id:"job-default",status:"unavailable",output_type:"evidence_report",error_code:"STUDIO_OUTPUT_UNAVAILABLE",next_actions:["필요한 자료를 확인해 주세요."]}),
+  }),{outputRoot:tmpdir()});
+  const button=text=>findElements(workspace.container,n=>n.tagName==="BUTTON"&&n.textContent.trim()===text)[0];
+  const set=async(label,value)=>{
+    const field=findElements(workspace.container,n=>n.tagName==="LABEL"&&n.textContent.startsWith(label))[0];
+    const control=findElements(field,n=>n.tagName==="INPUT"||n.tagName==="SELECT")[0];
+    await workspace.act(async()=>s18Props(control).onChange({currentTarget:{value},target:{value}}));
+  };
+  try{
+    assert.equal(calls.length,0);
+    const type=findElements(workspace.container,n=>n.tagName==="BUTTON"&&n.textContent.includes("근거 기반 보고서"))[0];
+    await workspace.act(async()=>type.dispatchEvent(new MinimalEvent("click")));
+    for(const [label,value] of [["목적","근거 정리"],["독자","검토자"],["분량","short"],["구성","summary-body-conclusion"],["출력 형식","pdf"],["검토 조건","review_required"]])await set(label,value);
+    await workspace.act(async()=>button("설정 확인").dispatchEvent(new MinimalEvent("click")));
+    const form=findElements(workspace.container,n=>n.tagName==="FORM"&&n.getAttribute("class")==="studio-config-form")[0];
+    await workspace.act(async()=>{s18Props(form).onSubmit({preventDefault(){}});s18Props(form).onSubmit({preventDefault(){}});await new Promise(resolve=>setImmediate(resolve));});
+    assert.deepEqual(calls.map(call=>call.kind),["save","authorize","generate"]);
+    assert.equal(calls[0].input.expected_version,0);assert.equal(calls[0].input.model_id,"uss/solar-pro4");
+    assert.equal(calls[1].input.model_settings_version,1);assert.equal(calls[2].input.model_settings_version,1);
+    assert.equal(calls[1].key,calls[2].key);
+  }finally{await workspace.cleanup();}
+});
+
+test("D 기본값이 있어도 무Source 사실 안내는 설정 저장과 모델 실행을 요구하지 않는다",async()=>{
+  let saves=0,posts=0;const inputs=[];
+  const workspace=await mountS17ReconnectWorkspace(s18Adapter({getModelSettings:async()=>defaultModelView(),listSources:async()=>[],listKnowledgePackages:async()=>[],
+    saveModelSettings:async()=>{saves++;throw Error("UNEXPECTED_SAVE");},askQuestion:async input=>{posts++;inputs.push(input);return {kind:"system_notice",turn_id:"turn-default-no-source",answer:"자료를 선택해 주세요.",grounding_status:"no_knowledge",insufficient:true,citations:[],next_actions:["자료를 선택해 주세요."]};}}),{outputRoot:tmpdir()});
+  try{
+    await s18Type(workspace,"계약 기간을 확인해 주세요");await workspace.act(async()=>{await s18Submit(workspace);});
+    assert.equal(saves,0);assert.equal(posts,1);assert.equal(Object.hasOwn(inputs[0],"modelSettingsVersion"),false);
+    assert.equal(findElements(workspace.container,n=>n.tagName==="TEXTAREA")[0].value,"");
+  }finally{await workspace.cleanup();}
+});
+
+test("D 입력 정리는 trim 전 제출 원문과 다르게 바뀐 공백도 보존한다",async()=>{
+  const pending=deferred();let submission;
+  const workspace=await mountS17ReconnectWorkspace(s18Adapter({askQuestion:()=>pending.promise}),{outputRoot:tmpdir()});
+  try{
+    const textarea=await s18Type(workspace,"  안녕  ");await workspace.act(async()=>{submission=s18Submit(workspace);});
+    await s18Type(workspace,"안녕 ");await workspace.act(async()=>{pending.resolve(s18Answer("인사 답변"));await submission;});
+    assert.equal(textarea.value,"안녕 ");assert.match(workspace.container.textContent,/인사 답변/u);
+  }finally{pending.resolve(s18Answer());await workspace.cleanup();}
 });

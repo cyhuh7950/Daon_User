@@ -10,6 +10,38 @@ from daon_user_api.question_answering_postgres import QuestionContext
 from daon_user_api.question_answering_service import QuestionAnsweringError
 
 
+@pytest.mark.parametrize("marker",[None,"no_knowledge","no_relevant_evidence"])
+def test_c_actual_egress_claim_rejects_missing_or_terminal_notice_before_any_run_insert(marker):
+    import hashlib,json
+    from test_question_egress_transform import Policy
+    from daon_user_api.notebook_conversation_postgres import _turn_id
+    context=QuestionContext("tenant-a","workspace-a","actor-a","trace-a","policy-a","notebook-a")
+    fingerprint="sha256:"+"a"*64
+    turn=_turn_id(context,"notebook-a","run-a")
+    payload={"kind":"notebook_grounding_disposition","turn_id":turn,"run_id":"run-a",
+        "request_fingerprint":fingerprint,"disposition":marker}
+    text=json.dumps(payload,sort_keys=True,ensure_ascii=False,separators=(',',':'))
+    calls=[]
+    class Connection:
+        def execute(self,sql,params=()):
+            calls.append(sql)
+            if sql.startswith("SELECT pg_advisory_xact_lock"):
+                assert params==("question-egress|tenant-a|workspace-a|run-a",)
+                return SimpleNamespace(fetchone=lambda:None)
+            assert sql.startswith("SELECT m.canonical_json,m.canonical_text")
+            return SimpleNamespace(fetchone=lambda:None if marker is None else (payload,text,hashlib.sha256(text.encode()).hexdigest(),context.actor_id,turn))
+    class Store:
+        @contextmanager
+        def _transaction(self,scope):yield Connection()
+    authorizer=PostgresQuestionEgressAuthorizer(Store(),Policy())
+    with pytest.raises(QuestionAnsweringError) as caught:
+        authorizer.authorize(context,run_id="run-a",source_id=None,source_version_id=None,
+            selection=TextModelSelection("OLLAMA","http://models.example.com","profile-a","deployment-a","model-a",1,"server_internal"),
+            provider_payload=b"{}",question="안녕",context_mode="general_ungrounded",request_fingerprint=fingerprint)
+    assert (caught.value.code,caught.value.status)==("QUESTION_PREPARATION_REQUIRED",409)
+    assert len(calls)==2 and not any(sql.startswith("INSERT") for sql in calls)
+
+
 def test_early_egress_denial_appends_one_workspace_event_preserves_first_time_and_original_403(caplog):
     stored={};calls=[]
     class Connection:

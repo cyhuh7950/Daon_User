@@ -257,6 +257,10 @@ export function createNotebookContextWorkspaceAdapter(baseAdapter, inputContext)
       : undefined,
     listKnowledgePackages,
     loadNotebookConversation,
+    getModelSettings: typeof baseAdapter.getModelSettings === "function" ? options => baseAdapter.getModelSettings({...options,notebookId:context.notebook_id}) : undefined,
+    saveModelSettings: typeof baseAdapter.saveModelSettings === "function" ? (input,options) => baseAdapter.saveModelSettings(input,{...options,notebookId:context.notebook_id}) : undefined,
+    listConversationTurns: typeof baseAdapter.listConversationTurns === "function"
+      ? (options) => baseAdapter.listConversationTurns({ ...options, notebookId:context.notebook_id }) : undefined,
     listStudioOutputs,
     listProductStudioOutputs: typeof baseAdapter.listProductStudioOutputs === "function"
       ? listProductStudioOutputs
@@ -285,6 +289,9 @@ export function createNotebookContextWorkspaceAdapter(baseAdapter, inputContext)
       : undefined,
     authorizeQuestion: typeof baseAdapter.authorizeQuestion === "function"
       ? (input, options) => baseAdapter.authorizeQuestion({ ...input, notebookId: context.notebook_id }, options)
+      : undefined,
+    authorizeGeneration: typeof baseAdapter.authorizeGeneration === "function"
+      ? (input, options) => baseAdapter.authorizeGeneration(input, { ...options, notebookId: context.notebook_id })
       : undefined,
     createGeneration: typeof baseAdapter.createGeneration === "function"
       ? (input, options) => baseAdapter.createGeneration(input, { ...options, notebookId: context.notebook_id })

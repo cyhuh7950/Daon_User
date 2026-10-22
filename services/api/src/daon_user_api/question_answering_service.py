@@ -9,6 +9,7 @@ import re
 import time
 import unicodedata
 from dataclasses import dataclass, replace
+from copy import deepcopy
 from typing import ContextManager, Mapping, Protocol, cast
 
 from .data_canon import canonical_json_bytes
@@ -20,7 +21,7 @@ from .question_answering import (
     GeneralConversationRequest, GroundedQuestionRequest, GroundedTextResult, TextGenerationTransport,
     OllamaTextGenerationAdapter, OpenAICompatibleTextGenerationAdapter,
     TextModelSelection,
-    _append_provider_path,
+    _append_provider_path, _validate_answer_fields, _finalize_grounded_result, _finalize_general_result, _DAON_GROUNDED_ROLE,
 )
 from .question_answering_postgres import (
     PostgresQuestionAnsweringRepository, QuestionContext, QuestionRepositoryError,
@@ -99,6 +100,12 @@ class QuestionAdapterRegistry:
         selection: object
         adapter: object
         provider_payload: dict[str, object]
+
+        def __post_init__(self):
+            from .notebook_model_settings import reasoning_wire_fields
+            self.provider_payload.update(reasoning_wire_fields(self.selection.provider_code,getattr(self.selection,"adapter_type",""),
+                getattr(self.selection,"reasoning_effort",None),reasoning_contract=getattr(self.selection,"reasoning_contract","unknown"),
+                connection_version=getattr(self.selection,"reasoning_connection_version",1)))
 
     def prepare(
         self, selection: ResolvedModel, evidence, question: str, trace_id: str,  # type: ignore[no-untyped-def]
@@ -271,17 +278,17 @@ class _OmniRouteTextGenerationAdapter(OpenAICompatibleTextGenerationAdapter):
         parsed = self._parsed(self._call(
             selection, provider_payload or self.general_provider_payload(request, selection),
         ))
-        if set(parsed) != {"answer"}:
-            raise ValueError("TEXT_GENERATION_RESPONSE_INVALID")
+        _validate_answer_fields(parsed, grounded=False)
         answer = str(parsed["answer"]).strip()
         if not answer or len(answer) > 8_000:
             raise ValueError("TEXT_GENERATION_RESPONSE_INVALID")
-        return GroundedTextResult(answer, (), False, {})
+        return _finalize_general_result(request,answer,{})
 
     def generate(self, request, selection, *, provider_payload=None):  # type: ignore[no-untyped-def]
         parsed = self._parsed(self._call(
             selection, provider_payload or self.provider_payload(request, selection),
         ))
+        _validate_answer_fields(parsed, grounded=True)
         try:
             answer = str(parsed["answer"]).strip()
             cited = tuple(str(item) for item in cast(list[object], parsed["cited_chunk_ids"]))
@@ -297,7 +304,7 @@ class _OmniRouteTextGenerationAdapter(OpenAICompatibleTextGenerationAdapter):
             or not _evidence_anchors(answer).issubset(_evidence_anchors(cited_text))
         ):
             raise ValueError("TEXT_GENERATION_GROUNDING_INVALID")
-        return GroundedTextResult(answer, cited, insufficient, {})
+        return _finalize_grounded_result(request, parsed, {})
 
 
 class QuestionAnsweringError(RuntimeError):
@@ -306,6 +313,16 @@ class QuestionAnsweringError(RuntimeError):
         self.status = status
         self.retryable = retryable
         super().__init__(code)
+
+
+class QuestionGroundingNotice(QuestionAnsweringError):
+    """A pre-generation outcome; no Run, authorization or model is created."""
+
+    def __init__(self, grounding_status: str) -> None:
+        if grounding_status not in {"no_knowledge", "no_relevant_evidence"}:
+            raise ValueError("QUESTION_GROUNDING_INVALID")
+        self.grounding_status = grounding_status
+        super().__init__("QUESTION_GROUNDING_REQUIRED", status=200)
 
 
 @dataclass(frozen=True, slots=True)
@@ -320,18 +337,17 @@ class _QaMediaBridgeDiagnosticAdapter(OpenAICompatibleTextGenerationAdapter):
 
     _INSUFFICIENT_ANSWER = "선택한 원문 근거에 질문에 답할 정보가 없습니다."
     _RESULT_SCHEMA = {
-        "type": "object", "properties": {"result": {"anyOf": [
-            {"type": "object", "properties": {
-                "answer": {"type": "string", "enum": [_INSUFFICIENT_ANSWER]},
-                "cited_chunk_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 0},
-                "insufficient": {"type": "boolean", "enum": [True]},
-            }, "required": ["answer", "cited_chunk_ids", "insufficient"], "additionalProperties": False},
-            {"type": "object", "properties": {
-                "answer": {"type": "string"},
-                "cited_chunk_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1},
-                "insufficient": {"type": "boolean", "enum": [False]},
-            }, "required": ["answer", "cited_chunk_ids", "insufficient"], "additionalProperties": False},
-        ]}}, "required": ["result"], "additionalProperties": False,
+        "type":"object","properties":{"result":{"anyOf":[
+            {**deepcopy(OpenAICompatibleTextGenerationAdapter._SCHEMA["json_schema"]["schema"]),"properties":{
+                **deepcopy(OpenAICompatibleTextGenerationAdapter._SCHEMA["json_schema"]["schema"]["properties"]),
+                "answer":{"type":"string","enum":[_INSUFFICIENT_ANSWER]},
+                "cited_chunk_ids":{"type":"array","items":{"type":"string"},"maxItems":0},
+                "insufficient":{"type":"boolean","enum":[True]}}},
+            {**deepcopy(OpenAICompatibleTextGenerationAdapter._SCHEMA["json_schema"]["schema"]),"properties":{
+                **deepcopy(OpenAICompatibleTextGenerationAdapter._SCHEMA["json_schema"]["schema"]["properties"]),
+                "cited_chunk_ids":{"type":"array","items":{"type":"string"},"minItems":1},
+                "insufficient":{"type":"boolean","enum":[False]}}},
+        ]}},"required":["result"],"additionalProperties":False,
     }
 
     def __init__(
@@ -348,11 +364,16 @@ class _QaMediaBridgeDiagnosticAdapter(OpenAICompatibleTextGenerationAdapter):
         if self._diagnostic_evidence is None:
             return "not_grounded"
         try:
+            try:
+                _validate_answer_fields(parsed, grounded=True)
+            except ValueError as error:
+                if str(error)!="TEXT_GENERATION_GROUNDING_INVALID":
+                    return "response_invalid"
             value = cast(dict[str, object], parsed)
             answer = str(value["answer"]).strip()
             cited = tuple(str(item) for item in cast(list[object], value["cited_chunk_ids"]))
             insufficient = bool(value["insufficient"])
-        except (KeyError, IndexError, TypeError):
+        except (KeyError, IndexError, TypeError, ValueError):
             return "response_invalid"
         if not answer:
             return "answer_empty"
@@ -428,14 +449,14 @@ class _QaMediaBridgeDiagnosticAdapter(OpenAICompatibleTextGenerationAdapter):
         envelope_valid = True
         if self._diagnostic_evidence is not None:
             inner = parsed.get("result") if isinstance(parsed, dict) else None
-            envelope_valid = bool(
-                isinstance(parsed, dict) and set(parsed) == {"result"}
-                and isinstance(inner, dict) and set(inner) == {"answer", "cited_chunk_ids", "insufficient"}
-                and isinstance(inner["answer"], str)
-                and isinstance(inner["cited_chunk_ids"], list)
-                and all(isinstance(item, str) for item in inner["cited_chunk_ids"])
-                and type(inner["insufficient"]) is bool
-            )
+            envelope_valid = isinstance(parsed, dict) and set(parsed) == {"result"}
+            try:
+                _validate_answer_fields(inner, grounded=True)
+            except ValueError as error:
+                # Valid shape with a contradictory citation/status is still
+                # classified by the shared grounding validation, never repaired.
+                if str(error)!="TEXT_GENERATION_GROUNDING_INVALID":
+                    envelope_valid = False
             parsed = inner
         usage = response.get("usage") if isinstance(response, dict) else None
         usage = usage if isinstance(usage, dict) else {}
@@ -589,7 +610,7 @@ class QuestionAnsweringService:
             if isinstance(prepared.request, GroundedQuestionRequest):
                 instruction += (
                     "\nThe root result envelope takes precedence over all earlier flat output-shape instructions; "
-                    "put exactly answer, cited_chunk_ids, and insufficient inside result. "
+                    "put exactly answer, cited_chunk_ids, insufficient, grounding_status and next_actions inside result. "
                     "Preserve the supplied evidence and question; decide sufficiency from that evidence. "
                     "When you choose insufficient=true, use the exact insufficient answer in the schema and no citations. "
                     "\nCite only supplied chunk_id values. If the supplied evidence cannot answer the question, "
@@ -714,35 +735,53 @@ class QuestionAnsweringService:
             ready.append(item)
         return tuple(ready)
 
+    def preflight_grounding(self,context,*,source_id,source_version_id,question,context_mode="raw_only",context_sources=None):
+        self._grounding_inputs(context,source_id=source_id,source_version_id=source_version_id,
+            question=question,context_sources=context_sources)
+
+    def _grounding_inputs(self, context, *, source_id, source_version_id, question, context_sources):
+        if (source_id is None) != (source_version_id is None):
+            raise QuestionAnsweringError("QUESTION_CONTEXT_INVALID")
+        general = is_general_conversation_intent(question)
+        if general:
+            return True, (), ()
+        if source_id is None and not context_sources:
+            raise QuestionGroundingNotice("no_knowledge")
+        sources = self._context_sources(source_id or "", source_version_id or "", context_sources)
+        sources = self._ready_context_sources(context, sources)
+        if not sources:
+            raise QuestionGroundingNotice("no_relevant_evidence")
+        evidence = self._search_context(context, sources, question)
+        current = getattr(self._repository,"revalidate_open_law_sources",None)
+        if callable(current):
+            try:
+                current(context,tuple(item.source_version_id for item in sources))
+            except QuestionRepositoryError as error:
+                raise QuestionAnsweringError(error.code,status=error.status,retryable=error.retryable) from None
+        if not evidence:
+            raise QuestionGroundingNotice("no_relevant_evidence")
+        return False, sources, evidence
+
+    def _resolve_question_model(self,context,model_context):
+        if context.model_settings is None:
+            return self._model_resolver.resolve(model_context,"text_generation")
+        return self._model_resolver.resolve(model_context,"text_generation",selected=context.model_settings)
+
     def prepare_authorization(
         self, context: QuestionContext, *, source_id: str | None,
         source_version_id: str | None, question: str,
         context_mode: str = "raw_only",
         context_sources: tuple[QuestionInputSource, ...] | None = None,
     ) -> PreparedQuestionAuthorization:
-        general = is_general_conversation_intent(question) or (source_id is None and source_version_id is None)
-        if (source_id is None) != (source_version_id is None):
-            raise QuestionAnsweringError("QUESTION_CONTEXT_INVALID")
-        sources = () if general and source_id is None else self._context_sources(
-            source_id or "", source_version_id or "", context_sources,
+        general, sources, evidence = self._grounding_inputs(
+            context, source_id=source_id, source_version_id=source_version_id,
+            question=question, context_sources=context_sources,
         )
-        if not general:
-            sources = self._ready_context_sources(context, sources)
-            if not sources:
-                general = True
-        evidence = ()
-        if not general:
-            # Freeze authorization against the same evidence that `ask` will
-            # use.  Otherwise the later grounded payload changes its digest
-            # and the egress authorizer rejects an otherwise valid approval.
-            evidence = self._search_context(context, sources, question)
-            if not evidence:
-                general = True
         model_context = WorkspaceModelContext(
             context.tenant_id, context.workspace_id, context.actor_id,
         )
         try:
-            with self._model_resolver.resolve(model_context, "text_generation") as selection:
+            with self._resolve_question_model(context,model_context) as selection:
                 prepared = (
                     self._adapter_registry.prepare_general(
                         selection, question, context.trace_id, self._transport,
@@ -793,22 +832,15 @@ class QuestionAnsweringService:
             )
             if replay is not None:
                 return replay
-        general = is_general_conversation_intent(question) or (source_id is None and source_version_id is None)
-        if general and ((source_id is None) != (source_version_id is None)):
-            raise QuestionAnsweringError("QUESTION_CONTEXT_INVALID")
-        sources = () if general and source_id is None else self._context_sources(
+        resolved_sources = () if source_id is None and not context_sources else self._context_sources(
             source_id or "", source_version_id or "", context_sources,
         )
-        resolved_sources = sources
+        general, sources, evidence = self._grounding_inputs(
+            context, source_id=source_id, source_version_id=source_version_id,
+            question=question, context_sources=context_sources,
+        )
         if not general:
-            sources = self._ready_context_sources(context, sources)
-            if not sources:
-                general = True
-                source_id = None
-                source_version_id = None
-            else:
-                source_id = sources[0].source_id
-                source_version_id = sources[0].source_version_id
+            source_id, source_version_id = sources[0].source_id, sources[0].source_version_id
         model_context = WorkspaceModelContext(
             context.tenant_id, context.workspace_id, context.actor_id,
         )
@@ -846,10 +878,10 @@ class QuestionAnsweringService:
             and callable(getattr(self._repository, "persist_failed", None))
         ) else None
         try:
-            with self._model_resolver.resolve(model_context, "text_generation") as selection:
+            with self._resolve_question_model(context,model_context) as selection:
                 try:
                     return self._ask_resolved(
-                        context, selection=selection, sources=sources, general=general,
+                        context, selection=selection, sources=sources, general=general, evidence=evidence,
                         source_id=source_id, source_version_id=source_version_id,
                         question=question, run_id=run_id,
                         approved_authorization=approved_authorization,
@@ -861,7 +893,7 @@ class QuestionAnsweringService:
                         context,selection,run_kind='question'):
                         # 명시 Run 비용 경로는 실패/불확정 뒤 자동 credential 재전송을 하지 않는다.
                         raise
-                    if not getattr(self._model_resolver, "supports_user_credential_fallback", False) or error.code not in {
+                    if context.model_settings is not None or not getattr(self._model_resolver, "supports_user_credential_fallback", False) or error.code not in {
                         "TEXT_PROVIDER_UNAVAILABLE", "TEXT_GENERATION_PROVIDER_UNAVAILABLE",
                         "TEXT_GENERATION_FAILED",
                     }:
@@ -872,7 +904,7 @@ class QuestionAnsweringService:
                     try:
                         with self._model_resolver.resolve(user_context, "text_generation") as fallback:
                             return self._ask_resolved(
-                                context, selection=fallback, sources=sources, general=general,
+                                context, selection=fallback, sources=sources, general=general, evidence=evidence,
                                 source_id=source_id, source_version_id=source_version_id,
                                 question=question, run_id=run_id,
                                 approved_authorization=approved_authorization,
@@ -902,7 +934,7 @@ class QuestionAnsweringService:
 
     def _ask_resolved(
         self, context: QuestionContext, *, selection: ResolvedModel,
-        sources: tuple[QuestionInputSource, ...], general: bool,
+        sources: tuple[QuestionInputSource, ...], general: bool, evidence: tuple[IndexedEvidenceChunk, ...],
         source_id: str | None, source_version_id: str | None,
         question: str, run_id: str,
         approved_authorization: Mapping[str, str] | None,
@@ -996,60 +1028,8 @@ class QuestionAnsweringService:
                 request_fingerprint=request_fingerprint,
                 **access_options,
             )
-        evidence = self._search_context(context, sources, question)
         if not evidence:
-            prepare_general = getattr(self._adapter_registry, "prepare_general", None)
-            # Legacy/custom evidence adapters do not advertise an ungrounded
-            # route; freeze an empty decision without sending the question.
-            if not callable(prepare_general):
-                recheck()
-                egress_authorization = self._egress.authorize(
-                    context, run_id=run_id, source_id=source_id,
-                    source_version_id=source_version_id, selection=selection,
-                    provider_payload=b"", no_external_payload=True,
-                    approved_authorization=approved_authorization,
-                    question=question, context_mode=context_mode,
-                    request_fingerprint=request_fingerprint,
-                )
-                return self._repository.persist_completed(
-                    context, run_id=run_id, source_id=source_id,
-                    source_version_id=source_version_id, question=question,
-                    selection=selection, evidence=(),
-                    result=GroundedTextResult("", (), False, {"no_evidence": True}),
-                    provider_called=False, egress_authorization=egress_authorization,
-                    context_mode=context_mode, context_sources=sources,
-                    request_fingerprint=request_fingerprint,
-                )
-            prepared = self._prepare_qa_structured_payload(context, prepare_general(
-                selection, question, context.trace_id, transport,
-            ))
-            # 전송할 실제 prepared payload를 기존 변환에 통과시키고 같은 표현의 canonical bytes를 승인한다.
-            fallback_wire = canonical_json_bytes(prepared.provider_payload)
-            transformer = getattr(self._egress, "prepare_payload", None)
-            if callable(transformer):
-                transformed = transformer(context, fallback_wire)
-                prepared = replace(prepared, provider_payload=json.loads(transformed))
-                fallback_wire = canonical_json_bytes(prepared.provider_payload)
-            egress_authorization = self._egress.authorize(
-                context, run_id=run_id, source_id=None, source_version_id=None,
-                selection=selection, provider_payload=fallback_wire,
-                approved_authorization=approved_authorization,
-                question=question, context_mode="general_ungrounded",
-                request_fingerprint=request_fingerprint,
-            )
-            if egress_authorization.get("provider_owner") is False:
-                return self._wait_for_provider_owner(context, run_id, request_fingerprint)
-            recheck()
-            generated = self._generate_with_run_cost(prepared,general=True,session=cost_session)
-            recheck()
-            return self._repository.persist_completed(
-                context, run_id=run_id, source_id=None, source_version_id=None,
-                question=question, selection=selection, evidence=(), result=generated,
-                provider_called=True, egress_authorization=egress_authorization,
-                context_mode="general_ungrounded", context_sources=(),
-                request_fingerprint=request_fingerprint,
-                **access_options,
-            )
+            raise QuestionGroundingNotice("no_relevant_evidence")
         try:
             prepared = self._adapter_registry.prepare(
                 selection, evidence, question, context.trace_id, transport,

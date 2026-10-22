@@ -642,6 +642,104 @@
         }
       }
     },
+    "/api/v1/workspaces/{id}/notebooks/{notebook_id}/conversation-turns": {
+      "get": {
+        "operationId": "listNotebookConversationTurns",
+        "tags": [
+          "Workspace"
+        ],
+        "summary": "현재 접근 권한으로 본인 Notebook 질문·답변 이력 조회",
+        "x-implementation-owner": "R1-M8-10",
+        "description": "현재 본인의 Notebook 질문을 최신순 페이지로 조회한다. 현재 Notebook·Source 접근을 재검사하며 답변 접근 철회 시 질문과 안전 안내만 제공한다. client_request_id는 기존 요청 멱등 ID이며 legacy는 null이다. cursor는 권한 근거가 아니다.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          },
+          {
+            "name": "notebook_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/OpaqueId"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048,
+              "pattern": "^[A-Za-z0-9_-]+$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "본인 질문·답변 페이지. legacy 요청ID와 미실행 모델은 null이다.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                }
+              },
+              "X-Trace-Id": {
+                "$ref": "#/components/headers/XTraceId"
+              },
+              "ETag": {
+                "$ref": "#/components/headers/ETag"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotebookConversationEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
     "/api/v1/workspaces/{id}/notebooks/{notebook_id}/context": {
       "get": {
         "operationId": "getWorkspaceNotebookContext", "tags": ["Workspace"],
@@ -1215,52 +1313,174 @@
     },
     "/api/v1/workspaces/{id}/questions/authorization": {
       "post": {
-        "operationId": "authorizeGroundedWorkspaceQuestion", "tags": ["Run", "Policy"],
-        "summary": "호환용 외부 Question Run 결속 추가 인증", "description": "관리자 설정 Step-up과 분리된 호환 API입니다. Product 질문 UI는 이 경로를 호출하지 않으며 유효 Session, EXTERNAL_LLM 권한과 effective Egress Policy를 질문 실행 시 검증합니다.", "x-implementation-owner": "R1-M8-09-EGRESS-POLICY-C01",
-        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GroundedQuestionAuthorizationRequest" } } } },
-        "responses": { "201": { "description": "Run/effective policy 결속 opaque authorization", "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GroundedQuestionAuthorizationEnvelope" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" } }
-      }
-    },
-    "/api/v1/workspaces/{id}/questions": {
-      "post": {
-        "operationId": "askGroundedWorkspaceQuestion",
-        "tags": ["Run", "Citation"],
-        "summary": "현재 단일 PDF 근거 제한 질문 실행",
-        "x-implementation-owner": "CP3-QUESTION-CITATION-004",
+        "operationId": "authorizeGroundedWorkspaceQuestion",
+        "tags": [
+          "Run",
+          "Policy"
+        ],
+        "summary": "호환용 외부 Question Run 결속 추가 인증",
+        "description": "관리자 설정 Step-up과 분리된 호환 API입니다. Product 질문 UI는 이 경로를 호출하지 않으며 유효 Session, EXTERNAL_LLM 권한과 effective Egress Policy를 질문 실행 시 검증합니다.",
+        "x-implementation-owner": "R1-M8-09-EGRESS-POLICY-C01",
         "parameters": [
-          { "$ref": "#/components/parameters/ResourceId" },
-          { "$ref": "#/components/parameters/IdempotencyKey" }
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
         ],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/GroundedQuestionRequest" }
+              "schema": {
+                "$ref": "#/components/schemas/GroundedQuestionAuthorizationRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Run/effective policy 결속 opaque authorization",
+            "headers": {
+              "X-Trace-Id": {
+                "$ref": "#/components/headers/XTraceId"
+              },
+              "ETag": {
+                "$ref": "#/components/headers/ETag"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroundedQuestionAuthorizationEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          },
+          "200": {
+            "description": "모델 전송·추가 인증 없이 현재 Notebook turn에 저장한 근거 안내",
+            "headers": {
+              "X-Trace-Id": {
+                "$ref": "#/components/headers/XTraceId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                }
+              },
+              "ETag": {
+                "$ref": "#/components/headers/ETag"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuestionSystemNoticeEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/workspaces/{id}/questions": {
+      "post": {
+        "operationId": "askGroundedWorkspaceQuestion",
+        "tags": [
+          "Run",
+          "Citation"
+        ],
+        "summary": "현재 단일 PDF 근거 제한 질문 실행",
+        "x-implementation-owner": "CP3-QUESTION-CITATION-004",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GroundedQuestionRequest"
+              }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Frozen text deployment으로 생성한 근거 제한 답변",
+            "description": "기존 완료 답변 또는 전송 전 근거 안내. 안내의 ETag는 불변 안내 표현을 식별하며 실행이나 인증 완료를 뜻하지 않는다.",
             "headers": {
-              "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" },
-              "ETag": { "$ref": "#/components/headers/ETag" }
+              "X-Trace-Id": {
+                "$ref": "#/components/headers/XTraceId"
+              },
+              "ETag": {
+                "$ref": "#/components/headers/ETag"
+              }
             },
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/GroundedAnswerEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/GroundedAnswerEnvelope"
+                }
               }
             }
           },
-          "400": { "$ref": "#/components/responses/BadRequest" },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "404": { "$ref": "#/components/responses/NotFound" },
-          "409": { "$ref": "#/components/responses/Conflict" },
-          "412": { "$ref": "#/components/responses/PreconditionFailed" },
-          "503": { "$ref": "#/components/responses/ServiceUnavailable" },
-          "500": { "$ref": "#/components/responses/SafeFailure" }
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
         }
       }
     },
@@ -2564,7 +2784,119 @@
         "x-list-operation": true
       }
     },
-    "/api/v1/studio-generation-requests": {
+    "/api/v1/studio-generation-requests/authorization": {
+  "post": {
+    "operationId": "authorizeStudioGeneration",
+    "x-implementation-owner": "SIX-E-STUDIO-20261021",
+    "tags": [
+      "Studio"
+    ],
+    "summary": "현재 생성 계획에 결속된 추가 인증",
+    "parameters": [
+      {
+        "$ref": "#/components/parameters/IdempotencyKey"
+      }
+    ],
+    "requestBody": {
+      "$ref": "#/components/requestBodies/StudioGenerationAuthorization"
+    },
+    "responses": {
+      "201": {
+        "$ref": "#/components/responses/StudioGenerationAuthorizationResponse"
+      },
+      "400": {
+        "$ref": "#/components/responses/BadRequest"
+      },
+      "401": {
+        "$ref": "#/components/responses/Unauthorized"
+      },
+      "403": {
+        "$ref": "#/components/responses/Forbidden"
+      },
+      "404": {
+        "$ref": "#/components/responses/NotFound"
+      },
+      "409": {
+        "$ref": "#/components/responses/Conflict"
+      },
+      "503": {
+        "$ref": "#/components/responses/SafeFailure"
+      },
+      "412": {
+        "$ref": "#/components/responses/PreconditionFailed"
+      },
+      "500": {
+        "$ref": "#/components/responses/SafeFailure"
+      }
+    }
+  }
+},
+      "/api/v1/studio-generation-jobs/{job_id}": {
+  "get": {
+    "operationId": "getStudioGenerationJob",
+    "x-implementation-owner": "SIX-E-STUDIO-20261021",
+    "tags": [
+      "Studio"
+    ],
+    "summary": "Studio 생성 처리 상태 조회",
+    "parameters": [
+      {
+        "name": "job_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/OpaqueId"
+        }
+      },
+      {
+        "name": "workspace_id",
+        "in": "query",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/OpaqueId"
+        }
+      },
+      {
+        "name": "notebook_id",
+        "in": "query",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/OpaqueId"
+        }
+      }
+    ],
+    "responses": {
+      "200": {
+        "$ref": "#/components/responses/StudioJobResponse"
+      },
+      "400": {
+        "$ref": "#/components/responses/BadRequest"
+      },
+      "401": {
+        "$ref": "#/components/responses/Unauthorized"
+      },
+      "403": {
+        "$ref": "#/components/responses/Forbidden"
+      },
+      "404": {
+        "$ref": "#/components/responses/NotFound"
+      },
+      "409": {
+        "$ref": "#/components/responses/Conflict"
+      },
+      "503": {
+        "$ref": "#/components/responses/SafeFailure"
+      },
+      "412": {
+        "$ref": "#/components/responses/PreconditionFailed"
+      },
+      "500": {
+        "$ref": "#/components/responses/SafeFailure"
+      }
+    }
+  }
+},
+      "/api/v1/studio-generation-requests": {
       "x-unimplemented-get": {
         "operationId": "listStudioGenerationRequests",
         "tags": [
@@ -2701,102 +3033,113 @@
       }
     },
     "/api/v1/studio-outputs/{id}/versions": {
-      "get": {
-        "operationId": "listStudioOutputVersions",
-        "tags": [
-          "Studio"
-        ],
-        "summary": "산출물 Version 목록 조회",
-        "x-implementation-owner": "R1-M8-01",
-        "responses": {
-          "200": {
-            "$ref": "#/components/responses/StudioVersionHistoryResponse"
-          },
-          "400": {
-            "$ref": "#/components/responses/BadRequest"
-          },
-          "401": {
-            "$ref": "#/components/responses/Unauthorized"
-          },
-          "403": {
-            "$ref": "#/components/responses/Forbidden"
-          },
-          "404": {
-            "$ref": "#/components/responses/NotFound"
-          },
-          "409": {
-            "$ref": "#/components/responses/Conflict"
-          },
-          "412": {
-            "$ref": "#/components/responses/PreconditionFailed"
-          },
-          "500": {
-            "$ref": "#/components/responses/SafeFailure"
-          }
-        },
-        "parameters": [
-          {
-            "$ref": "#/components/parameters/ResourceId"
-          },
-          {
-            "name": "workspace_id", "in": "query", "required": true,
-            "schema": { "$ref": "#/components/schemas/OpaqueId" }
-          },
-          {
-            "name": "notebook_id", "in": "query", "required": true,
-            "schema": { "$ref": "#/components/schemas/OpaqueId" }
-          }
-        ]
+  "get": {
+    "operationId": "listStudioOutputVersions",
+    "tags": [
+      "Studio"
+    ],
+    "summary": "산출물 Version 목록 조회",
+    "x-implementation-owner": "R1-M8-01",
+    "responses": {
+      "200": {
+        "$ref": "#/components/responses/StudioVersionHistoryResponse"
       },
-      "post": {
-        "operationId": "createStudioOutputVersion",
-        "tags": [
-          "Studio"
-        ],
-        "summary": "산출물 새 Version 생성",
-        "x-implementation-owner": "R1-M8-01",
-        "responses": {
-          "200": {
-            "$ref": "#/components/responses/StudioVersionMutationResponse"
-          },
-          "201": {
-            "$ref": "#/components/responses/StudioVersionMutationResponse"
-          },
-          "400": {
-            "$ref": "#/components/responses/BadRequest"
-          },
-          "401": {
-            "$ref": "#/components/responses/Unauthorized"
-          },
-          "403": {
-            "$ref": "#/components/responses/Forbidden"
-          },
-          "404": {
-            "$ref": "#/components/responses/NotFound"
-          },
-          "409": {
-            "$ref": "#/components/responses/Conflict"
-          },
-          "412": {
-            "$ref": "#/components/responses/PreconditionFailed"
-          },
-          "500": {
-            "$ref": "#/components/responses/SafeFailure"
-          }
-        },
-        "parameters": [
-          {
-            "$ref": "#/components/parameters/ResourceId"
-          },
-          {
-            "$ref": "#/components/parameters/IdempotencyKey"
-          }
-        ],
-        "requestBody": {
-          "$ref": "#/components/requestBodies/StudioRevision"
-        }
+      "400": {
+        "$ref": "#/components/responses/BadRequest"
+      },
+      "401": {
+        "$ref": "#/components/responses/Unauthorized"
+      },
+      "403": {
+        "$ref": "#/components/responses/Forbidden"
+      },
+      "404": {
+        "$ref": "#/components/responses/NotFound"
+      },
+      "409": {
+        "$ref": "#/components/responses/Conflict"
+      },
+      "412": {
+        "$ref": "#/components/responses/PreconditionFailed"
+      },
+      "500": {
+        "$ref": "#/components/responses/SafeFailure"
       }
     },
+    "parameters": [
+      {
+        "$ref": "#/components/parameters/ResourceId"
+      },
+      {
+        "name": "workspace_id",
+        "in": "query",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/OpaqueId"
+        }
+      },
+      {
+        "name": "notebook_id",
+        "in": "query",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/OpaqueId"
+        }
+      }
+    ]
+  },
+  "post": {
+    "operationId": "createStudioOutputVersion",
+    "tags": [
+      "Studio"
+    ],
+    "summary": "산출물 새 Version 생성",
+    "x-implementation-owner": "R1-M8-01",
+    "responses": {
+      "200": {
+        "$ref": "#/components/responses/StudioVersionMutationResponse"
+      },
+      "201": {
+        "$ref": "#/components/responses/StudioVersionMutationResponse"
+      },
+      "400": {
+        "$ref": "#/components/responses/BadRequest"
+      },
+      "401": {
+        "$ref": "#/components/responses/Unauthorized"
+      },
+      "403": {
+        "$ref": "#/components/responses/Forbidden"
+      },
+      "404": {
+        "$ref": "#/components/responses/NotFound"
+      },
+      "409": {
+        "$ref": "#/components/responses/Conflict"
+      },
+      "412": {
+        "$ref": "#/components/responses/PreconditionFailed"
+      },
+      "500": {
+        "$ref": "#/components/responses/SafeFailure"
+      },
+      "202": {
+        "$ref": "#/components/responses/StudioGenerationMutationResponse"
+      }
+    },
+    "parameters": [
+      {
+        "$ref": "#/components/parameters/ResourceId"
+      },
+      {
+        "$ref": "#/components/parameters/IdempotencyKey"
+      }
+    ],
+    "requestBody": {
+      "$ref": "#/components/requestBodies/StudioRevision"
+    }
+  }
+},
     "/api/v1/reviews": {
       "x-unimplemented-get": {
         "operationId": "listReviews",
@@ -4862,6 +5205,174 @@
         "responses": { "200": { "description": "보정된 모델 기능", "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProviderModelAdminEnvelope" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" } }
       }
     }
+  ,
+    "/api/v1/workspaces/{id}/notebooks/{notebook_id}/model-settings": {
+      "get": {
+        "operationId": "getNotebookModelSettings",
+        "tags": [
+          "Workspace"
+        ],
+        "summary": "본인 Notebook의 승인 모델·추론 설정 조회",
+        "x-implementation-owner": "R1-M8-10",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          },
+          {
+            "name": "notebook_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/OpaqueId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "현재 본인 선택. 모델 실행·인증 완료 증거가 아니다.",
+            "headers": {
+              "X-Trace-Id": {
+                "$ref": "#/components/headers/XTraceId"
+              },
+              "ETag": {
+                "$ref": "#/components/headers/ETag"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotebookModelSettingsEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "422": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      },
+      "patch": {
+        "operationId": "saveNotebookModelSettings",
+        "tags": [
+          "Workspace"
+        ],
+        "summary": "본인 Notebook의 승인 모델·추론 설정 저장",
+        "x-implementation-owner": "R1-M8-10",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          },
+          {
+            "name": "notebook_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/OpaqueId"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "현재 본인 선택. 모델 실행·인증 완료 증거가 아니다.",
+            "headers": {
+              "X-Trace-Id": {
+                "$ref": "#/components/headers/XTraceId"
+              },
+              "ETag": {
+                "$ref": "#/components/headers/ETag"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotebookModelSettingsSavedEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "422": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NotebookModelSettingsPatch"
+              }
+            }
+          }
+        }
+      }
+    }
   },
   "components": {
     "parameters": {
@@ -5053,6 +5564,16 @@
       }
     },
     "requestBodies": {
+      "StudioGenerationAuthorization": {
+  "required": true,
+  "content": {
+    "application/json": {
+      "schema": {
+        "$ref": "#/components/schemas/StudioGenerationAuthorizationRequest"
+      }
+    }
+  }
+},
       "StudioGeneration": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StudioGenerationRequest" } } } },
       "StudioRevision": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StudioRevisionRequest" } } } },
       "StudioAction": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StudioActionRequest" } } } },
@@ -5207,6 +5728,54 @@
         "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } },
         "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StudioVersionHistoryEnvelope" } } }
       },
+      "StudioGenerationAuthorizationResponse": {
+  "description": "실행 계획에 결속된 생성 전용 인증 응답. Job과 모델 호출은 생성하지 않는다.",
+  "headers": {
+    "ETag": {
+      "$ref": "#/components/headers/ETag"
+    },
+    "Cache-Control": {
+      "schema": {
+        "type": "string",
+        "const": "no-store"
+      }
+    },
+    "X-Trace-Id": {
+      "$ref": "#/components/headers/XTraceId"
+    }
+  },
+  "content": {
+    "application/json": {
+      "schema": {
+        "$ref": "#/components/schemas/StudioGenerationAuthorizationEnvelope"
+      }
+    }
+  }
+},
+      "StudioJobResponse": {
+  "description": "현재 권한으로 조회한 Studio Job 처리 상태와 안전한 자료 요청",
+  "headers": {
+    "ETag": {
+      "$ref": "#/components/headers/ETag"
+    },
+    "Cache-Control": {
+      "schema": {
+        "type": "string",
+        "const": "no-store"
+      }
+    },
+    "X-Trace-Id": {
+      "$ref": "#/components/headers/XTraceId"
+    }
+  },
+  "content": {
+    "application/json": {
+      "schema": {
+        "$ref": "#/components/schemas/StudioJobEnvelope"
+      }
+    }
+  }
+},
       "StudioGenerationMutationResponse": {
         "description": "Studio 생성 또는 멱등 재생의 exact data/meta 응답",
         "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } },
@@ -6108,6 +6677,7 @@
         "type": "object", "additionalProperties": false,
         "required": ["connection_id", "provider_code", "display_name", "enabled", "configured", "credential_version", "verification_status", "verified_at", "version", "catalog_status", "catalog_version", "models"],
         "properties": {
+          "reasoning_contract": { "type": "string", "enum": ["unknown", "unsupported", "router_effort_v1"], "default": "unknown" },
           "connection_id": { "$ref": "#/components/schemas/OpaqueId" },
           "provider_code": { "$ref": "#/components/schemas/ProviderCode" },
           "display_name": { "type": "string", "minLength": 1, "maxLength": 256 },
@@ -6138,6 +6708,7 @@
         "type": "object", "additionalProperties": false,
         "required": ["connection_id", "provider_code", "display_name", "base_url", "enabled", "expected_version"],
         "properties": {
+          "reasoning_contract": { "type": "string", "enum": ["unknown", "unsupported", "router_effort_v1"], "default": "unknown" },
           "connection_id": { "$ref": "#/components/schemas/OpaqueId" }, "provider_code": { "$ref": "#/components/schemas/ProviderCode" },
           "display_name": { "type": "string", "minLength": 1, "maxLength": 256 }, "base_url": { "type": "string", "minLength": 1, "maxLength": 2048 },
           "credential": { "type": "string", "minLength": 1, "maxLength": 16384, "writeOnly": true },
@@ -6149,6 +6720,7 @@
         "type": "object", "additionalProperties": false,
         "required": ["display_name", "base_url", "enabled", "expected_version"],
         "properties": {
+          "reasoning_contract": { "type": "string", "enum": ["unknown", "unsupported", "router_effort_v1"], "default": "unknown" },
           "display_name": { "type": "string", "minLength": 1, "maxLength": 256 }, "base_url": { "type": "string", "minLength": 1, "maxLength": 2048 },
           "credential": { "type": "string", "minLength": 1, "maxLength": 16384, "writeOnly": true },
           "logical_model_ids": { "type": "array", "maxItems": 256, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 256 } },
@@ -6703,14 +7275,21 @@
         }
       },
       "StudioGenerationMutationEnvelope": {
-        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
-        "properties": {
-          "data": { "type": "object", "additionalProperties": false, "required": ["studio_output_id", "output_version_id", "output_type", "title", "status", "content", "settings_snapshot_id", "citations"], "properties": {
-            "studio_output_id": { "$ref": "#/components/schemas/OpaqueId" }, "output_version_id": { "$ref": "#/components/schemas/OpaqueId" }, "output_type": { "type": "string", "enum": ["evidence_report", "compliance_checklist", "comparison_table", "knowledge_map", "business_draft"] }, "title": { "type": "string" }, "status": { "type": "string", "const": "draft" }, "content": { "type": "object" }, "settings_snapshot_id": { "$ref": "#/components/schemas/OpaqueId" }, "citations": { "type": "array", "items": { "type": "object" } }
-          } },
-          "meta": { "$ref": "#/components/schemas/StudioMutationMeta" }
-        }
-      },
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "data",
+    "meta"
+  ],
+  "properties": {
+    "data": {
+      "$ref": "#/components/schemas/StudioJobProjection"
+    },
+    "meta": {
+      "$ref": "#/components/schemas/StudioMutationMeta"
+    }
+  }
+},
       "StudioVersionMutationEnvelope": {
         "type": "object", "additionalProperties": false, "required": ["data", "meta"],
         "properties": {
@@ -6741,18 +7320,761 @@
           "review_condition": { "type": "string", "minLength": 1, "maxLength": 500 }
         }
       },
-      "StudioGenerationRequest": {
-        "type": "object", "additionalProperties": false,
-        "required": ["workspace_id", "notebook_id", "output_type", "source_id", "source_version_ids", "run_id", "run_result_id", "settings"],
+      "StudioGenerateAuthorization": {
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "workspace_id",
+    "notebook_id",
+    "output_type",
+    "source_version_ids",
+    "settings",
+    "model_settings_version",
+    "operation"
+  ],
+  "properties": {
+    "workspace_id": {
+      "$ref": "#/components/schemas/OpaqueId"
+    },
+    "notebook_id": {
+      "$ref": "#/components/schemas/OpaqueId"
+    },
+    "output_type": {
+      "type": "string",
+      "enum": [
+        "evidence_report",
+        "compliance_checklist",
+        "comparison_table",
+        "knowledge_map",
+        "business_draft",
+        "slides",
+        "infographic",
+        "flashcards",
+        "quiz",
+        "audio",
+        "video"
+      ]
+    },
+    "source_id": {
+      "oneOf": [
+        {
+          "$ref": "#/components/schemas/OpaqueId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "source_version_ids": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1000,
+      "items": {
+        "$ref": "#/components/schemas/OpaqueId"
+      }
+    },
+    "run_id": {
+      "oneOf": [
+        {
+          "$ref": "#/components/schemas/OpaqueId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "run_result_id": {
+      "oneOf": [
+        {
+          "$ref": "#/components/schemas/OpaqueId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "settings": {
+      "$ref": "#/components/schemas/StudioGenerationSettings"
+    },
+    "model_settings_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "source_only": {
+      "type": "boolean"
+    },
+    "operation": {
+      "type": "string",
+      "const": "generate"
+    },
+    "password": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 1024,
+      "writeOnly": true
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "source_only"
+        ],
         "properties": {
-          "workspace_id": { "$ref": "#/components/schemas/OpaqueId" }, "notebook_id": { "$ref": "#/components/schemas/OpaqueId" }, "output_type": { "type": "string", "enum": ["evidence_report", "compliance_checklist", "comparison_table", "knowledge_map", "business_draft"] },
-          "source_id": { "$ref": "#/components/schemas/OpaqueId" }, "source_version_ids": { "type": "array", "minItems": 1, "maxItems": 1000, "items": { "$ref": "#/components/schemas/OpaqueId" } },
-          "run_id": { "$ref": "#/components/schemas/OpaqueId" }, "run_result_id": { "$ref": "#/components/schemas/OpaqueId" }, "settings": { "$ref": "#/components/schemas/StudioGenerationSettings" }
+          "source_only": {
+            "const": true
+          }
         }
       },
+      "then": {
+        "properties": {
+          "run_id": {
+            "type": "null"
+          },
+          "run_result_id": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "required": [
+          "source_id",
+          "run_id",
+          "run_result_id"
+        ],
+        "properties": {
+          "source_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "run_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "run_result_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          }
+        }
+      }
+    }
+  ]
+},
+      "StudioRegenerateAuthorization": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "workspace_id",
+          "notebook_id",
+          "operation",
+          "output_id",
+          "previous_version_id",
+          "revision_type",
+          "change_reason",
+          "model_settings_version"
+        ],
+        "properties": {
+          "workspace_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "notebook_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "operation": {
+            "type": "string",
+            "const": "regenerate"
+          },
+          "output_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "previous_version_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "revision_type": {
+            "type": "string",
+            "enum": [
+              "ai_regeneration",
+              "settings_change"
+            ]
+          },
+          "change_reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "model_settings_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "settings": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StudioGenerationSettings"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "password": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 1024,
+            "writeOnly": true
+          }
+        },
+        "oneOf": [
+          {
+            "properties": {
+              "revision_type": {
+                "const": "ai_regeneration"
+              },
+              "settings": {
+                "type": "null"
+              }
+            }
+          },
+          {
+            "properties": {
+              "revision_type": {
+                "const": "settings_change"
+              },
+              "settings": {
+                "$ref": "#/components/schemas/StudioGenerationSettings"
+              }
+            },
+            "required": [
+              "settings"
+            ]
+          }
+        ]
+      },
+      "StudioGenerationAuthorizationRequest": {
+  "oneOf": [
+    {
+      "$ref": "#/components/schemas/StudioGenerateAuthorization"
+    },
+    {
+      "$ref": "#/components/schemas/StudioRegenerateAuthorization"
+    }
+  ]
+},
+      "StudioGenerationAuthorization": {
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "step_up_authorization_id",
+    "expires_at",
+    "generation_fingerprint"
+  ],
+  "properties": {
+    "step_up_authorization_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 4096
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "generation_fingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+},
+      "StudioGenerationAuthorizationEnvelope": {
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "data",
+    "meta"
+  ],
+  "properties": {
+    "data": {
+      "$ref": "#/components/schemas/StudioGenerationAuthorization"
+    },
+    "meta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trace_id",
+        "workspace_id"
+      ],
+      "properties": {
+        "trace_id": {
+          "$ref": "#/components/schemas/OpaqueId"
+        },
+        "workspace_id": {
+          "$ref": "#/components/schemas/OpaqueId"
+        }
+      }
+    }
+  }
+},
+      "StudioGenerationLineage": {
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "notebook_id",
+    "source_version_ids",
+    "artifact_type",
+    "instruction",
+    "run_id",
+    "citations",
+    "verification_required"
+  ],
+  "properties": {
+    "notebook_id": {
+      "$ref": "#/components/schemas/OpaqueId"
+    },
+    "source_version_ids": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": {
+        "$ref": "#/components/schemas/OpaqueId"
+      }
+    },
+    "artifact_type": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "evidence_report",
+        "compliance_checklist",
+        "comparison_table",
+        "knowledge_map",
+        "business_draft",
+        "slides",
+        "infographic",
+        "flashcards",
+        "quiz",
+        "audio",
+        "video",
+        null
+      ]
+    },
+    "instruction": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "run_id": {
+      "oneOf": [
+        {
+          "$ref": "#/components/schemas/OpaqueId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "source_only": {
+      "type": "boolean"
+    },
+    "citations": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": {
+        "$ref": "#/components/schemas/StudioCitationProjection"
+      }
+    },
+    "verification_required": {
+      "type": "boolean"
+    }
+  }
+},
+      "StudioJobProjection": {
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "job_id",
+    "status",
+    "output_type"
+  ],
+  "properties": {
+    "job_id": {
+      "$ref": "#/components/schemas/OpaqueId"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "queued",
+        "leased",
+        "generating",
+        "completed",
+        "failed",
+        "unavailable"
+      ]
+    },
+    "output_type": {
+      "type": "string",
+      "enum": [
+        "evidence_report",
+        "compliance_checklist",
+        "comparison_table",
+        "knowledge_map",
+        "business_draft",
+        "slides",
+        "infographic",
+        "flashcards",
+        "quiz",
+        "audio",
+        "video"
+      ]
+    },
+    "title": {
+      "type": "string"
+    },
+    "studio_output_id": {
+      "oneOf": [
+        {
+          "$ref": "#/components/schemas/OpaqueId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "output_version_id": {
+      "oneOf": [
+        {
+          "$ref": "#/components/schemas/OpaqueId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "error_code": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[A-Z][A-Z0-9_]{0,127}$"
+    },
+    "created_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "completed_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "next_actions": {
+      "type": "array",
+      "maxItems": 4,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 120
+      }
+    },
+    "lineage": {
+      "$ref": "#/components/schemas/StudioGenerationLineage"
+    },
+    "output": {
+      "oneOf": [
+        {
+          "$ref": "#/components/schemas/StudioVersionProjection"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  }
+},
+      "StudioJobEnvelope": {
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "data",
+    "meta"
+  ],
+  "properties": {
+    "data": {
+      "$ref": "#/components/schemas/StudioJobProjection"
+    },
+    "meta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trace_id",
+        "workspace_id"
+      ],
+      "properties": {
+        "trace_id": {
+          "$ref": "#/components/schemas/OpaqueId"
+        },
+        "workspace_id": {
+          "$ref": "#/components/schemas/OpaqueId"
+        }
+      }
+    }
+  }
+},
+      "StudioGenerationRequest": {
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "workspace_id",
+    "notebook_id",
+    "output_type",
+    "source_version_ids",
+    "settings",
+    "model_settings_version"
+  ],
+  "properties": {
+    "workspace_id": {
+      "$ref": "#/components/schemas/OpaqueId"
+    },
+    "notebook_id": {
+      "$ref": "#/components/schemas/OpaqueId"
+    },
+    "output_type": {
+      "type": "string",
+      "enum": [
+        "evidence_report",
+        "compliance_checklist",
+        "comparison_table",
+        "knowledge_map",
+        "business_draft",
+        "slides",
+        "infographic",
+        "flashcards",
+        "quiz",
+        "audio",
+        "video"
+      ]
+    },
+    "source_id": {
+      "oneOf": [
+        {
+          "$ref": "#/components/schemas/OpaqueId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "source_version_ids": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1000,
+      "items": {
+        "$ref": "#/components/schemas/OpaqueId"
+      }
+    },
+    "run_id": {
+      "oneOf": [
+        {
+          "$ref": "#/components/schemas/OpaqueId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "run_result_id": {
+      "oneOf": [
+        {
+          "$ref": "#/components/schemas/OpaqueId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "settings": {
+      "$ref": "#/components/schemas/StudioGenerationSettings"
+    },
+    "model_settings_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "source_only": {
+      "type": "boolean"
+    },
+    "step_up_authorization_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 4096,
+      "writeOnly": true
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "source_only"
+        ],
+        "properties": {
+          "source_only": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "run_id": {
+            "type": "null"
+          },
+          "run_result_id": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "required": [
+          "source_id",
+          "run_id",
+          "run_result_id"
+        ],
+        "properties": {
+          "source_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "run_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "run_result_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          }
+        }
+      }
+    }
+  ]
+},
       "StudioRevisionRequest": {
-        "type": "object", "additionalProperties": false, "required": ["workspace_id", "notebook_id", "previous_version_id", "revision_type", "change_reason", "content"],
-        "properties": { "workspace_id": { "$ref": "#/components/schemas/OpaqueId" }, "notebook_id": { "$ref": "#/components/schemas/OpaqueId" }, "previous_version_id": { "$ref": "#/components/schemas/OpaqueId" }, "revision_type": { "type": "string", "enum": ["user_edit", "ai_regeneration", "settings_change"] }, "change_reason": { "type": "string", "minLength": 1, "maxLength": 500 }, "content": { "type": "string", "minLength": 1, "maxLength": 8388608 }, "settings": { "$ref": "#/components/schemas/StudioGenerationSettings" } }
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "workspace_id",
+          "notebook_id",
+          "previous_version_id",
+          "revision_type",
+          "change_reason"
+        ],
+        "properties": {
+          "workspace_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "notebook_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "previous_version_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "revision_type": {
+            "type": "string",
+            "enum": [
+              "user_edit",
+              "ai_regeneration",
+              "settings_change"
+            ]
+          },
+          "change_reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "content": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8388608
+          },
+          "settings": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StudioGenerationSettings"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "model_settings_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "step_up_authorization_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 4096,
+            "writeOnly": true
+          }
+        },
+        "oneOf": [
+          {
+            "properties": {
+              "revision_type": {
+                "const": "user_edit"
+              }
+            },
+            "required": [
+              "content"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "model_settings_version"
+                  ]
+                },
+                {
+                  "required": [
+                    "step_up_authorization_id"
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "properties": {
+              "revision_type": {
+                "const": "ai_regeneration"
+              },
+              "settings": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "model_settings_version"
+            ]
+          },
+          {
+            "properties": {
+              "revision_type": {
+                "const": "settings_change"
+              },
+              "settings": {
+                "$ref": "#/components/schemas/StudioGenerationSettings"
+              }
+            },
+            "required": [
+              "model_settings_version",
+              "settings"
+            ]
+          }
+        ]
       },
       "StudioActionRequest": {
         "type": "object", "additionalProperties": false, "required": ["workspace_id", "notebook_id", "output_version_id"],
@@ -6995,38 +8317,187 @@
       "GroundedQuestionRequest": {
         "type": "object",
         "additionalProperties": false,
-      "description": "A grounded question may include exactly one Source or Knowledge Context. When neither is provided, the question is handled by the ordinary general work-support/LLM path. Ordinary product use is authorized by the current session, EXTERNAL_LLM permission, and effective Egress Policy without per-question reauthentication.",
-        "required": ["notebook_id", "question"],
+        "description": "A grounded question may include exactly one Source or Knowledge Context. When neither is provided, the question is handled by the ordinary general work-support/LLM path. Ordinary product use is authorized by the current session, EXTERNAL_LLM permission, and effective Egress Policy without per-question reauthentication.",
+        "required": [
+          "notebook_id",
+          "question"
+        ],
         "oneOf": [
-          { "required": ["source_id", "source_version_id"], "not": { "required": ["knowledge_context"] } },
-          { "required": ["knowledge_context"], "not": { "anyOf": [{ "required": ["source_id"] }, { "required": ["source_version_id"] }] } },
-          { "not": { "anyOf": [{ "required": ["source_id"] }, { "required": ["source_version_id"] }, { "required": ["knowledge_context"] }] } }
+          {
+            "required": [
+              "source_id",
+              "source_version_id"
+            ],
+            "not": {
+              "required": [
+                "knowledge_context"
+              ]
+            }
+          },
+          {
+            "required": [
+              "knowledge_context"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "source_id"
+                  ]
+                },
+                {
+                  "required": [
+                    "source_version_id"
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "source_id"
+                  ]
+                },
+                {
+                  "required": [
+                    "source_version_id"
+                  ]
+                },
+                {
+                  "required": [
+                    "knowledge_context"
+                  ]
+                }
+              ]
+            }
+          }
         ],
         "properties": {
-          "notebook_id": { "$ref": "#/components/schemas/OpaqueId" },
-          "source_id": { "$ref": "#/components/schemas/OpaqueId" },
-          "source_version_id": { "$ref": "#/components/schemas/OpaqueId" },
-          "knowledge_context": { "$ref": "#/components/schemas/QuestionKnowledgeContext" },
-          "question": { "type": "string", "minLength": 1, "maxLength": 2000 },
-          "step_up_authorization_id": { "allOf": [{ "$ref": "#/components/schemas/OpaqueId" }], "deprecated": true, "description": "Compatibility-only input. Product clients omit it; the ordinary question route does not consume per-question Step-up." }
+          "notebook_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "source_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "source_version_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "knowledge_context": {
+            "$ref": "#/components/schemas/QuestionKnowledgeContext"
+          },
+          "question": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "step_up_authorization_id": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/OpaqueId"
+              }
+            ],
+            "deprecated": true,
+            "description": "Compatibility-only input. Product clients omit it; the ordinary question route does not consume per-question Step-up."
+          },
+          "model_settings_version": {
+            "type": "integer",
+            "minimum": 1
+          }
         }
       },
       "GroundedQuestionAuthorizationRequest": {
-        "type": "object", "additionalProperties": false,
-      "description": "Authorization for a grounded question or a general work-support/LLM question without Source or Knowledge Context.",
-        "required": ["notebook_id", "question", "password"],
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Authorization for a grounded question or a general work-support/LLM question without Source or Knowledge Context.",
+        "required": [
+          "notebook_id",
+          "question",
+          "password"
+        ],
         "oneOf": [
-          { "required": ["source_id", "source_version_id"], "not": { "required": ["knowledge_context"] } },
-          { "required": ["knowledge_context"], "not": { "anyOf": [{ "required": ["source_id"] }, { "required": ["source_version_id"] }] } },
-          { "not": { "anyOf": [{ "required": ["source_id"] }, { "required": ["source_version_id"] }, { "required": ["knowledge_context"] }] } }
+          {
+            "required": [
+              "source_id",
+              "source_version_id"
+            ],
+            "not": {
+              "required": [
+                "knowledge_context"
+              ]
+            }
+          },
+          {
+            "required": [
+              "knowledge_context"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "source_id"
+                  ]
+                },
+                {
+                  "required": [
+                    "source_version_id"
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "source_id"
+                  ]
+                },
+                {
+                  "required": [
+                    "source_version_id"
+                  ]
+                },
+                {
+                  "required": [
+                    "knowledge_context"
+                  ]
+                }
+              ]
+            }
+          }
         ],
         "properties": {
-          "notebook_id": { "$ref": "#/components/schemas/OpaqueId" },
-          "source_id": { "$ref": "#/components/schemas/OpaqueId" },
-          "source_version_id": { "$ref": "#/components/schemas/OpaqueId" },
-          "knowledge_context": { "$ref": "#/components/schemas/QuestionKnowledgeContext" },
-          "question": { "type": "string", "minLength": 1, "maxLength": 2000 },
-          "password": { "type": "string", "minLength": 1, "maxLength": 1024, "writeOnly": true }
+          "notebook_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "source_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "source_version_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "knowledge_context": {
+            "$ref": "#/components/schemas/QuestionKnowledgeContext"
+          },
+          "question": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "password": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "writeOnly": true
+          },
+          "model_settings_version": {
+            "type": "integer",
+            "minimum": 1
+          }
         }
       },
       "GroundedQuestionAuthorizationEnvelope": {
@@ -7315,21 +8786,47 @@
         }
       },
       "GroundedAnswerEnvelope": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["data", "meta"],
-        "properties": {
-          "data": { "$ref": "#/components/schemas/GroundedAnswer" },
-          "meta": {
-            "type": "object", "additionalProperties": true,
-            "required": ["trace_id", "workspace_id"],
-            "properties": {
-              "trace_id": { "$ref": "#/components/schemas/OpaqueId" },
-              "workspace_id": { "$ref": "#/components/schemas/OpaqueId" }
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "data",
+        "meta"
+      ],
+      "properties": {
+        "data": {
+          "oneOf": [
+            {
+              "$ref": "#/components/schemas/GroundedAnswer"
+            },
+            {
+              "$ref": "#/components/schemas/GroundedAnswerWithMetadata"
+            },
+            {
+              "$ref": "#/components/schemas/GroundedAnswerWithGrounding"
+            },
+            {
+              "$ref": "#/components/schemas/QuestionSystemNotice"
+            }
+          ]
+        },
+        "meta": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "trace_id",
+            "workspace_id"
+          ],
+          "properties": {
+            "trace_id": {
+              "$ref": "#/components/schemas/OpaqueId"
+            },
+            "workspace_id": {
+              "$ref": "#/components/schemas/OpaqueId"
             }
           }
         }
-      },
+      }
+    },
       "SuccessEnvelope": {
         "type": "object",
         "additionalProperties": false,
@@ -7470,51 +8967,96 @@
         }
       },
       "SafeErrorCode": {
-        "type": "string",
-        "enum": [
-          "QUESTION_FAILED",
-          "AUTHENTICATION_REQUIRED",
-          "FORBIDDEN",
-          "RESOURCE_UNAVAILABLE",
-          "INVALID_REQUEST",
-          "METHOD_NOT_ALLOWED",
-          "REQUEST_TOO_LARGE",
-          "REQUEST_HEADERS_TOO_LARGE",
-          "REQUEST_TIMEOUT",
-          "UNSUPPORTED_MEDIA_TYPE",
-          "SHUTTING_DOWN",
-          "INTERNAL_ERROR",
-          "HTTPS_REQUIRED",
-          "GATEWAY_CONFIGURATION_INVALID",
-          "GATEWAY_TIMEOUT",
-          "GATEWAY_UNAVAILABLE",
-          "GATEWAY_UNEXPECTED_ERROR",
-          "CLIENT_REQUEST_ABORTED",
-          "CSRF_VALIDATION_FAILED",
-          "INVALID_REQUEST_BODY",
-          "INVALID_SESSION_COOKIE",
-          "UPSTREAM_RESPONSE_INVALID",
-          "UPSTREAM_REDIRECT_REJECTED",
-          "COST_LIMIT_EXCEEDED",
-          "STEP_UP_REQUIRED",
-          "CURRENT_ACCESS_DENIED",
-          "DELETION_GRACE_PERIOD_ACTIVE",
-          "LEGAL_HOLD_ACTIVE",
-          "DELETION_CLEANUP_PENDING",
-          "IMPORTANT_KNOWLEDGE_CONFLICT",
-          "NO_AVAILABLE_UNDERSTANDING_MODEL",
-          "NO_AVAILABLE_DEPLOYMENT",
-          "ACCOUNT_SESSION_CHANGED",
-          "WEBSITE_URL_INVALID", "WEBSITE_ACCESS_DENIED", "WEBSITE_FETCH_BLOCKED",
-          "WEBSITE_IDEMPOTENCY_KEY_REUSED", "WEBSITE_IMPORT_IN_PROGRESS", "WEBSITE_CONTENT_TOO_LARGE",
-          "WEBSITE_MEDIA_UNSUPPORTED", "WEBSITE_TEXT_UNAVAILABLE", "WEBSITE_FETCH_FAILED", "WEBSITE_STORAGE_UNAVAILABLE", "WEBSITE_FETCH_TIMEOUT",
-          "OPEN_LAW_INPUT_INVALID", "OPEN_LAW_ACCESS_DENIED", "OPEN_LAW_EGRESS_BLOCKED", "OPEN_LAW_NOT_FOUND",
-          "OPEN_LAW_PREVIEW_CHANGED", "OPEN_LAW_IMPORT_CONFLICT", "OPEN_LAW_IMPORT_IN_PROGRESS", "OPEN_LAW_BINDING_CONFLICT",
-          "OPEN_LAW_CONTENT_TOO_LARGE", "OPEN_LAW_TEXT_UNAVAILABLE", "OPEN_LAW_PROTOCOL_INVALID", "OPEN_LAW_UPSTREAM_FAILED",
-          "OPEN_LAW_CREDENTIAL_REQUIRED", "OPEN_LAW_UNAVAILABLE", "OPEN_LAW_BUSY", "OPEN_LAW_STORAGE_UNAVAILABLE", "OPEN_LAW_TIMEOUT",
-          "APPROVAL_REQUEST_EXPIRED", "APPROVAL_REQUEST_PENDING", "APPROVAL_REQUEST_REQUIRED", "PRECONDITION_FAILED"
-        ]
-      },
+  "type": "string",
+  "enum": [
+    "QUESTION_FAILED",
+    "NOTEBOOK_TURN_CONFLICT",
+    "NOTEBOOK_TURN_INVALID",
+    "NOTEBOOK_CURSOR_INVALID",
+    "NOTEBOOK_PAGE_INVALID",
+    "NOTEBOOK_CONVERSATION_UNAVAILABLE",
+    "AUTHENTICATION_REQUIRED",
+    "FORBIDDEN",
+    "RESOURCE_UNAVAILABLE",
+    "INVALID_REQUEST",
+    "METHOD_NOT_ALLOWED",
+    "REQUEST_TOO_LARGE",
+    "REQUEST_HEADERS_TOO_LARGE",
+    "REQUEST_TIMEOUT",
+    "UNSUPPORTED_MEDIA_TYPE",
+    "SHUTTING_DOWN",
+    "INTERNAL_ERROR",
+    "HTTPS_REQUIRED",
+    "GATEWAY_CONFIGURATION_INVALID",
+    "GATEWAY_TIMEOUT",
+    "GATEWAY_UNAVAILABLE",
+    "GATEWAY_UNEXPECTED_ERROR",
+    "CLIENT_REQUEST_ABORTED",
+    "CSRF_VALIDATION_FAILED",
+    "INVALID_REQUEST_BODY",
+    "INVALID_SESSION_COOKIE",
+    "UPSTREAM_RESPONSE_INVALID",
+    "UPSTREAM_REDIRECT_REJECTED",
+    "COST_LIMIT_EXCEEDED",
+    "STEP_UP_REQUIRED",
+    "CURRENT_ACCESS_DENIED",
+    "DELETION_GRACE_PERIOD_ACTIVE",
+    "LEGAL_HOLD_ACTIVE",
+    "DELETION_CLEANUP_PENDING",
+    "IMPORTANT_KNOWLEDGE_CONFLICT",
+    "NO_AVAILABLE_UNDERSTANDING_MODEL",
+    "NO_AVAILABLE_DEPLOYMENT",
+    "ACCOUNT_SESSION_CHANGED",
+    "WEBSITE_URL_INVALID",
+    "WEBSITE_ACCESS_DENIED",
+    "WEBSITE_FETCH_BLOCKED",
+    "WEBSITE_IDEMPOTENCY_KEY_REUSED",
+    "WEBSITE_IMPORT_IN_PROGRESS",
+    "WEBSITE_CONTENT_TOO_LARGE",
+    "WEBSITE_MEDIA_UNSUPPORTED",
+    "WEBSITE_TEXT_UNAVAILABLE",
+    "WEBSITE_FETCH_FAILED",
+    "WEBSITE_STORAGE_UNAVAILABLE",
+    "WEBSITE_FETCH_TIMEOUT",
+    "OPEN_LAW_INPUT_INVALID",
+    "OPEN_LAW_ACCESS_DENIED",
+    "OPEN_LAW_EGRESS_BLOCKED",
+    "OPEN_LAW_NOT_FOUND",
+    "OPEN_LAW_PREVIEW_CHANGED",
+    "OPEN_LAW_IMPORT_CONFLICT",
+    "OPEN_LAW_IMPORT_IN_PROGRESS",
+    "OPEN_LAW_BINDING_CONFLICT",
+    "OPEN_LAW_CONTENT_TOO_LARGE",
+    "OPEN_LAW_TEXT_UNAVAILABLE",
+    "OPEN_LAW_PROTOCOL_INVALID",
+    "OPEN_LAW_UPSTREAM_FAILED",
+    "OPEN_LAW_CREDENTIAL_REQUIRED",
+    "OPEN_LAW_UNAVAILABLE",
+    "OPEN_LAW_BUSY",
+    "OPEN_LAW_STORAGE_UNAVAILABLE",
+    "OPEN_LAW_TIMEOUT",
+    "APPROVAL_REQUEST_EXPIRED",
+    "APPROVAL_REQUEST_PENDING",
+    "APPROVAL_REQUEST_REQUIRED",
+    "PRECONDITION_FAILED",
+    "NOTEBOOK_MODEL_SETTINGS_INVALID",
+    "NOTEBOOK_MODEL_SETTINGS_UNAVAILABLE",
+    "NOTEBOOK_MODEL_SETTINGS_CONFLICT",
+    "NOTEBOOK_MODEL_SETTINGS_CHANGED",
+    "NOTEBOOK_MODEL_UNAVAILABLE",
+    "STUDIO_MODEL_CHANGED",
+    "STUDIO_SOURCE_CHANGED",
+    "STUDIO_POLICY_CHANGED",
+    "STUDIO_VERSION_CHANGED",
+    "STUDIO_COST_LIMIT_UNAVAILABLE",
+    "STUDIO_OUTPUT_UNAVAILABLE",
+    "STUDIO_AUTHORIZATION_EXPIRED",
+    "STUDIO_GENERATION_UNCERTAIN",
+    "STUDIO_CURRENT_ACCESS_DENIED",
+    "STUDIO_OUTPUT_SAVE_FAILED",
+    "STUDIO_JOB_LEASE_LOST"
+  ]
+},
       "CostLimitExceededDetails": {
         "type": "object",
         "additionalProperties": false,
@@ -9258,6 +10800,344 @@
           }
         }
       },
+      "NotebookConversationResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "text",
+          "insufficient",
+          "next_actions",
+          "citations"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "answer",
+              "system"
+            ]
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8000
+          },
+          "insufficient": {
+            "type": "boolean"
+          },
+          "next_actions": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "type": "string",
+              "maxLength": 255
+            }
+          },
+          "citations": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "$ref": "#/components/schemas/GroundedCitation"
+            }
+          }
+        }
+      },
+      "NotebookConversationTurn": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "turn_id",
+        "question",
+        "response",
+        "state",
+        "submitted_at",
+        "model",
+        "client_request_id"
+      ],
+      "properties": {
+        "turn_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "question": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32768
+        },
+        "response": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/components/schemas/NotebookConversationResponse"
+            }
+          ]
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "awaiting_authorization",
+            "completed",
+            "failed",
+            "uncertain",
+            "unavailable",
+            "no_knowledge",
+            "no_relevant_evidence"
+          ]
+        },
+        "submitted_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "model": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "provider_code",
+                "model_id"
+              ],
+              "properties": {
+                "provider_code": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 255,
+                  "pattern": "^[^\\x00-\\x20\\x7f]+$"
+                },
+                "model_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 255,
+                  "pattern": "^[^\\x00-\\x20\\x7f]+$"
+                }
+              }
+            }
+          ]
+        },
+        "client_request_id": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "completed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "response": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/NotebookConversationResponse"
+                  },
+                  {
+                    "properties": {
+                      "kind": {
+                        "const": "answer"
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "pending"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "response": {
+                "type": "null"
+              },
+              "model": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "awaiting_authorization",
+                  "failed",
+                  "uncertain",
+                  "unavailable",
+                  "no_knowledge",
+                  "no_relevant_evidence"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "model": {
+                "type": "null"
+              },
+              "response": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/NotebookConversationResponse"
+                  },
+                  {
+                    "properties": {
+                      "kind": {
+                        "const": "system"
+                      },
+                      "insufficient": {
+                        "const": true
+                      },
+                      "citations": {
+                        "maxItems": 0
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "no_knowledge",
+                  "no_relevant_evidence"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "response": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/NotebookConversationResponse"
+                  },
+                  {
+                    "properties": {
+                      "next_actions": {
+                        "type": "array",
+                        "maxItems": 4,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 120
+                        },
+                        "minItems": 1
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+      "NotebookConversationPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/NotebookConversationTurn"
+            }
+          },
+          "next_cursor": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2048,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            ]
+          }
+        }
+      },
+      "NotebookConversationEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data",
+          "meta"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/NotebookConversationPage"
+          },
+          "meta": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "trace_id",
+              "workspace_id",
+              "notebook_id"
+            ],
+            "properties": {
+              "trace_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "workspace_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "notebook_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              }
+            }
+          }
+        }
+      },
       "NotebookContextEnvelope": {
         "type": "object", "additionalProperties": false, "required": ["data", "meta"],
         "properties": { "data": { "$ref": "#/components/schemas/NotebookSelectedContext" }, "meta": { "$ref": "#/components/schemas/NotebookMeta" } }
@@ -9265,6 +11145,779 @@
       "RecoveryEnvelope": {
         "type": "object", "additionalProperties": false, "required": ["data", "meta"],
         "properties": { "data": {}, "meta": { "type": "object", "additionalProperties": true } }
+      }
+    ,
+      "GroundedAnswerWithMetadata": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "run_id",
+          "run_result_id",
+          "answer",
+          "insufficient",
+          "citations",
+          "mode",
+          "grounding",
+          "source_scope_summary",
+          "mismatch",
+          "next_actions"
+        ],
+        "properties": {
+          "run_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "run_result_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "answer": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8000
+          },
+          "insufficient": {
+            "type": "boolean"
+          },
+          "citations": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "$ref": "#/components/schemas/GroundedCitation"
+            }
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "work_support",
+              "explicit_source_lookup",
+              "source_backed_action",
+              "approved_web_research"
+            ]
+          },
+          "grounding": {
+            "type": "string",
+            "enum": [
+              "source_backed",
+              "ungrounded",
+              "source_evidence_unavailable",
+              "web_backed"
+            ]
+          },
+          "source_scope_summary": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "maxLength": 1000,
+                "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+              }
+            ]
+          },
+          "mismatch": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "code",
+                  "detail"
+                ],
+                "properties": {
+                  "code": {
+                    "type": "string",
+                    "const": "SOURCE_SCOPE_MISMATCH"
+                  },
+                  "detail": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1000
+                  }
+                }
+              }
+            ]
+          },
+          "next_actions": {
+            "type": "array",
+            "maxItems": 4,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            }
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "grounding": {
+                  "const": "source_evidence_unavailable"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "mismatch": {
+                  "type": "object"
+                },
+                "next_actions": {
+                  "minItems": 1
+                }
+              }
+            }
+          }
+        ]
+      },
+      "GroundedAnswerWithGrounding": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "run_id",
+          "run_result_id",
+          "answer",
+          "insufficient",
+          "citations",
+          "mode",
+          "grounding",
+          "source_scope_summary",
+          "mismatch",
+          "next_actions",
+          "grounding_status"
+        ],
+        "properties": {
+          "run_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "run_result_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "answer": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8000
+          },
+          "insufficient": {
+            "type": "boolean"
+          },
+          "citations": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "$ref": "#/components/schemas/GroundedCitation"
+            }
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "work_support",
+              "explicit_source_lookup",
+              "source_backed_action",
+              "approved_web_research"
+            ]
+          },
+          "grounding": {
+            "type": "string",
+            "enum": [
+              "source_backed",
+              "ungrounded",
+              "source_evidence_unavailable",
+              "web_backed"
+            ]
+          },
+          "source_scope_summary": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "maxLength": 1000,
+                "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+              }
+            ]
+          },
+          "mismatch": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "code",
+                  "detail"
+                ],
+                "properties": {
+                  "code": {
+                    "type": "string",
+                    "const": "SOURCE_SCOPE_MISMATCH"
+                  },
+                  "detail": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1000
+                  }
+                }
+              }
+            ]
+          },
+          "next_actions": {
+            "type": "array",
+            "maxItems": 4,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            }
+          },
+          "grounding_status": {
+            "type": "string",
+            "enum": [
+              "conversational",
+              "sufficient",
+              "partial",
+              "no_relevant_evidence"
+            ]
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "grounding_status": {
+                  "const": "conversational"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "insufficient": {
+                  "const": false
+                },
+                "citations": {
+                  "maxItems": 0
+                },
+                "next_actions": {
+                  "maxItems": 0
+                },
+                "grounding": {
+                  "const": "ungrounded"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "grounding_status": {
+                  "const": "sufficient"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "insufficient": {
+                  "const": false
+                },
+                "citations": {
+                  "minItems": 1
+                },
+                "next_actions": {
+                  "maxItems": 0
+                },
+                "grounding": {
+                  "const": "source_backed"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "grounding_status": {
+                  "const": "partial"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "insufficient": {
+                  "const": false
+                },
+                "citations": {
+                  "minItems": 1
+                },
+                "next_actions": {
+                  "minItems": 1
+                },
+                "grounding": {
+                  "const": "source_backed"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "grounding_status": {
+                  "const": "no_relevant_evidence"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "insufficient": {
+                  "const": true
+                },
+                "citations": {
+                  "maxItems": 0
+                },
+                "next_actions": {
+                  "minItems": 1
+                },
+                "grounding": {
+                  "const": "source_evidence_unavailable"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "QuestionSystemNotice": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "turn_id",
+          "answer",
+          "grounding_status",
+          "insufficient",
+          "citations",
+          "next_actions"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "system_notice"
+          },
+          "turn_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+          },
+          "answer": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8000
+          },
+          "grounding_status": {
+            "type": "string",
+            "enum": [
+              "no_knowledge",
+              "no_relevant_evidence"
+            ]
+          },
+          "insufficient": {
+            "type": "boolean",
+            "const": true
+          },
+          "citations": {
+            "type": "array",
+            "maxItems": 0,
+            "items": {
+              "$ref": "#/components/schemas/GroundedCitation"
+            }
+          },
+          "next_actions": {
+            "type": "array",
+            "maxItems": 4,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            },
+            "minItems": 1
+          }
+        }
+      },
+      "QuestionSystemNoticeEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data",
+          "meta"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/QuestionSystemNotice"
+          },
+          "meta": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "trace_id",
+              "workspace_id"
+            ],
+            "properties": {
+              "trace_id": {
+                "$ref": "#/components/schemas/OpaqueId"
+              },
+              "workspace_id": {
+                "$ref": "#/components/schemas/OpaqueId"
+              }
+            }
+          }
+        }
+      }
+    ,
+      "NotebookModelSelection": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "connection_id",
+          "model_id",
+          "reasoning_effort"
+        ],
+        "properties": {
+          "connection_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "model_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255,
+            "pattern": "^[^\\x00-\\x20\\x7f]+$"
+          },
+          "reasoning_effort": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              null,
+              "none",
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        }
+      },
+      "NotebookModelReasoning": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "status",
+          "values",
+          "profile_version"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "supported",
+              "unsupported",
+              "unknown"
+            ]
+          },
+          "values": {
+            "type": "array",
+            "maxItems": 4,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "value",
+                "label"
+              ],
+              "properties": {
+                "value": {
+                  "type": "string",
+                  "enum": [
+                    "none",
+                    "low",
+                    "medium",
+                    "high"
+                  ]
+                },
+                "label": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120
+                }
+              }
+            }
+          },
+          "profile_version": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/OpaqueId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "NotebookModelSettingsCandidate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "connection_id",
+          "provider_code",
+          "display_name",
+          "model_id",
+          "connection_version",
+          "catalog_version",
+          "reasoning"
+        ],
+        "properties": {
+          "connection_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "provider_code": {
+            "type": "string",
+            "enum": [
+              "OLLAMA",
+              "GROQ",
+              "MISTRAL",
+              "UPSTAGE",
+              "OPENROUTER",
+              "OMNIROUTE",
+              "EOUL_GATEWAY",
+              "CUSTOM"
+            ]
+          },
+          "display_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "model_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255,
+            "pattern": "^[^\\x00-\\x20\\x7f]+$"
+          },
+          "connection_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "catalog_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "reasoning": {
+            "$ref": "#/components/schemas/NotebookModelReasoning"
+          }
+        }
+      },
+      "NotebookEffectiveModelSelection": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "connection_id",
+          "model_id",
+          "reasoning_effort",
+          "origin"
+        ],
+        "properties": {
+          "connection_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "model_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255,
+            "pattern": "^[^\\x00-\\x20\\x7f]+$"
+          },
+          "reasoning_effort": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              null,
+              "none",
+              "low",
+              "medium",
+              "high"
+            ]
+          },
+          "origin": {
+            "type": "string",
+            "enum": [
+              "notebook",
+              "workspace_default"
+            ]
+          }
+        }
+      },
+      "NotebookModelSettings": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "notebook_id",
+          "version",
+          "selection",
+          "effective_selection",
+          "available_models"
+        ],
+        "properties": {
+          "notebook_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "selection": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/NotebookModelSelection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "effective_selection": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/NotebookEffectiveModelSelection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "available_models": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NotebookModelSettingsCandidate"
+            }
+          }
+        }
+      },
+      "NotebookModelSettingsPatch": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "connection_id",
+          "model_id",
+          "reasoning_effort",
+          "expected_version"
+        ],
+        "properties": {
+          "connection_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "model_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255,
+            "pattern": "^[^\\x00-\\x20\\x7f]+$"
+          },
+          "reasoning_effort": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              null,
+              "none",
+              "low",
+              "medium",
+              "high"
+            ]
+          },
+          "expected_version": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "NotebookModelSettingsSaved": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "notebook_id",
+          "version",
+          "selection",
+          "replayed"
+        ],
+        "properties": {
+          "notebook_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "selection": {
+            "$ref": "#/components/schemas/NotebookModelSelection"
+          },
+          "replayed": {
+            "type": "boolean"
+          }
+        }
+      },
+      "NotebookModelSettingsEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data",
+          "meta"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/NotebookModelSettings"
+          },
+          "meta": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "trace_id"
+            ],
+            "properties": {
+              "trace_id": {
+                "$ref": "#/components/schemas/OpaqueId"
+              }
+            }
+          }
+        }
+      },
+      "NotebookModelSettingsSavedEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data",
+          "meta"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/NotebookModelSettingsSaved"
+          },
+          "meta": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "trace_id"
+            ],
+            "properties": {
+              "trace_id": {
+                "$ref": "#/components/schemas/OpaqueId"
+              }
+            }
+          }
+        }
       }
     }
   }

@@ -1,11 +1,14 @@
 "use client";
+import { listNotebookConversationTurns, getNotebookModelSettings, saveNotebookModelSettings } from "../lib/notebook-api.js";
+
+import { useMemo, useState } from "react";
 
 import { createProductWorkspaceState } from "@daon-user/ui/product-workspace-model";
 import { ProductWorkspaceShell } from "@daon-user/ui/product-workspace-shell";
 import { ProviderSettingsWorkspace } from "./provider-settings-workspace.jsx";
 import { getDocumentProcessingStatus, reprocessSource, uploadSource } from "../lib/source-upload-api.js";
 import { askGroundedQuestion, authorizeGroundedQuestion, citationContentUrl } from "../lib/question-answering-api.js";
-import { createGroundedReport, createStudioGeneration, getStudioGenerationJob, createStudioVersion, createStudioAction, downloadStudioExport, getWorkspaceOperationsStatus, getWorkspaceOutputVersionSettings, issueStudioStepUp, listProductStudioOutputs, listStudioOutputs, listStudioVersions, listWorkspaceConnectors, listWorkspaceKnowledgePackages, listWorkspaceSources, reconnectWorkspaceConnector, registerWorkspaceConnector, unregisterWorkspaceConnector, saveWorkspaceOutputVersionSettings, unbindWorkspaceSource } from "../lib/product-workspace-api.js";
+import { createGroundedReport, authorizeStudioGeneration, createStudioGeneration, getStudioGenerationJob, createStudioVersion, createStudioAction, downloadStudioExport, getWorkspaceOperationsStatus, getWorkspaceOutputVersionSettings, issueStudioStepUp, listProductStudioOutputs, listStudioOutputs, listStudioVersions, listWorkspaceConnectors, listWorkspaceKnowledgePackages, listWorkspaceSources, reconnectWorkspaceConnector, registerWorkspaceConnector, unregisterWorkspaceConnector, saveWorkspaceOutputVersionSettings, unbindWorkspaceSource } from "../lib/product-workspace-api.js";
 import { issueStudioExportStepUp } from "../lib/product-workspace-api.js";
 import { getStudioApprovalPolicy, saveStudioApprovalPolicy, issueStudioApprovalPolicyStepUp, withdrawStudioApprovalRequest, listStudioApprovalNotices, markStudioApprovalNoticeRead } from "../lib/product-workspace-api.js";
 import { approveWorkspaceSyncOperation, listWorkspaceSyncOperations } from "../lib/sync-approval-settings-api.js";
@@ -60,12 +63,16 @@ export function createWebProductWorkspaceAdapter(workspaceId, notebookId) {
     uploadPdf: (file, options) => uploadSource(workspaceId, file, notebookOptions(options)),
     reprocessSource: (source, options) => reprocessSource(workspaceId, source, notebookOptions(options)),
     getProcessingStatus: (processingRunId, options) => getDocumentProcessingStatus(workspaceId, processingRunId, notebookOptions(options)),
+    listConversationTurns: (options) => listNotebookConversationTurns(workspaceId, notebookId, options),
+    getModelSettings: options => getNotebookModelSettings(workspaceId,notebookId,options),
+    saveModelSettings: (input,options) => saveNotebookModelSettings(workspaceId,notebookId,input,options),
     askQuestion: (input, options) => askGroundedQuestion(workspaceId, notebookInput(input), options),
     authorizeQuestion: (input, options) => authorizeGroundedQuestion(workspaceId, notebookInput(input), options),
     citationUrl: (citation, options) => citationContentUrl(workspaceId, citation, notebookOptions(options)),
     createReport: (input, options) => createGroundedReport(workspaceId, input, notebookOptions(options)),
     listStudioOutputs: (options) => listStudioOutputs(workspaceId, notebookOptions(options)),
     listProductStudioOutputs: (options) => listProductStudioOutputs(workspaceId, notebookOptions(options)),
+    authorizeGeneration: (input, options) => authorizeStudioGeneration(workspaceId, input, notebookOptions(options)),
     createGeneration: (input, options) => createStudioGeneration(workspaceId, input, notebookOptions(options)),
     getGenerationJob: (jobId, options) => getStudioGenerationJob(workspaceId, jobId, notebookOptions(options)),
     createStudioVersion: (outputId, input, options) => createStudioVersion(workspaceId, outputId, input, notebookOptions(options)),
@@ -85,7 +92,9 @@ export function createWebProductWorkspaceAdapter(workspaceId, notebookId) {
 
 export function ActualWorkspace({ workspaceId, notebookId, notebookTitle, adapter, processingPollOptions, onLogout,
   initialSourceVersionId = null, initialStudioOutput = null }) {
-  const activeAdapter = workspaceId ? (adapter ?? createWebProductWorkspaceAdapter(workspaceId, notebookId)) : null;
+  const activeAdapter = useMemo(() => workspaceId ? (adapter ?? createWebProductWorkspaceAdapter(workspaceId, notebookId)) : null, [workspaceId, notebookId, adapter]);
+  const [providerSettingsDirty, setProviderSettingsDirty] = useState(false);
+  const [providerSettingsSaving, setProviderSettingsSaving] = useState(false);
   return (
     <ProductWorkspaceShell
       workspaceId={workspaceId}
@@ -94,7 +103,9 @@ export function ActualWorkspace({ workspaceId, notebookId, notebookTitle, adapte
       initialSourceVersionId={initialSourceVersionId}
       initialStudioOutput={initialStudioOutput}
       processingPollOptions={processingPollOptions}
-      providerSettings={<ProviderSettingsWorkspace workspaceId={workspaceId} embedded />}
+      providerSettings={<ProviderSettingsWorkspace key="provider-settings" workspaceId={workspaceId} embedded onDirtyChange={setProviderSettingsDirty} onSavingChange={setProviderSettingsSaving} />}
+      providerSettingsDirty={providerSettingsDirty}
+      providerSettingsSaving={providerSettingsSaving}
       onLogout={onLogout}
       state={createProductWorkspaceState(workspaceId
         ? { status: "loading" }

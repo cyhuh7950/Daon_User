@@ -323,3 +323,50 @@ test("Source 목록은 exact DTO를 유지하고 safe retryable을 보존한다"
     /SOURCE_LIST_RESPONSE_INVALID/u,
   );
 });
+
+test('B 전체 대화 조회는 exact scope와 닫힌 DTO·cursor를 검증한다', async () => {
+  const { listNotebookConversationTurns } = await import('../../apps/web/lib/notebook-api.js');
+  const turn = { turn_id:'turn-1',question:'원문 질문',response:{kind:'system',text:'추가 인증 대기',insufficient:true,next_actions:[],citations:[]},state:'awaiting_authorization',submitted_at:'2026-10-21T00:00:00Z',model:null,client_request_id:'request-1' };
+  const calls=[];
+  const envelope={data:{items:[turn],next_cursor:'bmV4dA'},meta:{...META,notebook_id:'notebook-1'}};
+  const fetchImpl=async (url,init)=>{calls.push([url,init]);return json(envelope);};
+  const page=await listNotebookConversationTurns('workspace-1','notebook-1',{fetchImpl,before:'Y3Vyc29y',limit:20});
+  assert.deepEqual(page,envelope.data);
+  assert.equal(calls[0][0],'/bff/api/workspaces/workspace-1/notebooks/notebook-1/conversation-turns?limit=20&before=Y3Vyc29y');
+  assert.equal(calls[0][1].cache,'no-store'); assert.equal(calls[0][1].credentials,'same-origin');
+  for (const mutate of [value=>{value.meta.workspace_id='other';},value=>{value.data.items[0].model={api_key:'unsafe'};},value=>{value.data.items[0].response.endpoint='unsafe';}]) {
+    const bad=structuredClone(envelope);mutate(bad);
+    await assert.rejects(listNotebookConversationTurns('workspace-1','notebook-1',{fetchImpl:async()=>json(bad)}),/NOTEBOOK_CONVERSATION_INVALID/u);
+  }
+  await assert.rejects(listNotebookConversationTurns('workspace-1','notebook-1',{fetchImpl,limit:101}),/NOTEBOOK_INPUT_INVALID/u);
+  await assert.rejects(listNotebookConversationTurns('workspace-1','notebook-1',{fetchImpl,before:'../bad'}),/NOTEBOOK_INPUT_INVALID/u);
+  assert.equal(calls.length,1);
+});
+
+test('B 상태별 answer/system/null 교차 계약과 citation 상한은 위조를 거부한다',async()=>{
+  const {listNotebookConversationTurns}=await import('../../apps/web/lib/notebook-api.js');
+  const good={turn_id:'turn-1',question:'질문',response:{kind:'system',text:'안내',insufficient:true,next_actions:[],citations:[]},state:'failed',submitted_at:'2026-10-21T00:00:00Z',model:null,client_request_id:'request-1'};
+  for(const mutate of [t=>{t.response.kind='answer';},t=>{t.response=null;},t=>{t.response.text='';},t=>{t.state='completed';},t=>{t.state='pending';},t=>{t.response.insufficient=false;}]){
+    const bad=structuredClone(good);mutate(bad);
+    await assert.rejects(listNotebookConversationTurns('workspace-1','notebook-1',{fetchImpl:async()=>json({data:{items:[bad],next_cursor:null},meta:{...META,notebook_id:'notebook-1'}})}),/NOTEBOOK_CONVERSATION_INVALID/u);
+  }
+});
+
+
+test("D 모델 설정 GET/PATCH는 same-origin exact DTO와 version을 보존한다",async()=>{
+  const api=await import("../../apps/web/lib/notebook-api.js");
+  const calls=[];
+  const selected={connection_id:"connection-a",model_id:"solar-pro4",reasoning_effort:null};
+  const view={notebook_id:"notebook-a",version:1,selection:selected,effective_selection:{...selected,origin:"notebook"},available_models:[
+    {connection_id:"connection-a",provider_code:"UPSTAGE",display_name:"이름",model_id:"solar-pro4",connection_version:2,catalog_version:3,
+     reasoning:{status:"supported",values:[{value:"none",label:"사용 안 함"},{value:"low",label:"낮음"}],profile_version:"upstage-solar-pro4-safe-wire-v1"}}]};
+  const fetchImpl=async(url,options)=>{calls.push({url,...options});return new Response(JSON.stringify({data:options.method==="GET"?view:
+    {notebook_id:"notebook-a",version:2,selection:{...selected,reasoning_effort:"low"},replayed:false},meta:{trace_id:"trace-a"}}),{status:200});};
+  assert.deepEqual(await api.getNotebookModelSettings("workspace-a","notebook-a",{fetchImpl}),view);
+  await api.saveNotebookModelSettings("workspace-a","notebook-a",{...selected,reasoning_effort:"low",expected_version:1},{fetchImpl,idempotencyKey:"request-model-0001"});
+  assert.equal(calls[0].url,"/bff/api/workspaces/workspace-a/notebooks/notebook-a/model-settings");
+  assert.deepEqual(JSON.parse(calls[1].body),{...selected,reasoning_effort:"low",expected_version:1});
+  assert.equal(calls[1].headers["Idempotency-Key"],"request-model-0001");
+  const malformed=structuredClone(view);malformed.available_models[0].endpoint="https://private.invalid";
+  await assert.rejects(()=>api.getNotebookModelSettings("workspace-a","notebook-a",{fetchImpl:async()=>new Response(JSON.stringify({data:malformed,meta:{trace_id:"trace-a"}}))}),/MODEL_SETTINGS_RESPONSE_INVALID/u);
+});

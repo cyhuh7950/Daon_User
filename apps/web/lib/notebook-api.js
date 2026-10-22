@@ -1,4 +1,5 @@
 "use client";
+import { isNotebookModelSettings, isNotebookModelSelection } from "@daon-user/ui/product-workspace-model";
 import { parseImageRegion } from "@daon-user/ui/product-workspace-model";
 import { parseSheetCell } from "./sheet-cell-locator.js";
 import { parseDocxBlock } from "./docx-block-locator.js";
@@ -235,4 +236,79 @@ export async function getNotebookDeletion(workspaceId, notebookId, requestId, { 
   if (!response.ok) throw new Error(typeof payload?.error?.code === "string" ? payload.error.code : "NOTEBOOK_UNAVAILABLE");
   if (!exact(payload, ["data", "meta"]) || !validDeletion(payload.data)) throw new Error("NOTEBOOK_RESPONSE_INVALID");
   return payload;
+}
+
+function validConversationTurn(value) {
+  const response = value?.response;
+  const states = ['pending','awaiting_authorization','completed','failed','uncertain','unavailable','no_knowledge','no_relevant_evidence'];
+  const safeModel = value?.model === null || (exact(value?.model,['provider_code','model_id'])
+    && ['provider_code','model_id'].every(key => typeof value.model[key] === 'string'
+      && value.model[key].length >= 1 && value.model[key].length <= 255 && !/[\x00-\x20\x7f]/u.test(value.model[key])));
+  const safeResponse = response === null || (exact(response,['kind','text','insufficient','next_actions','citations'])
+    && ['answer','system'].includes(response.kind) && typeof response.text === 'string' && response.text.length >= 1 && response.text.length <= 8000
+    && typeof response.insufficient === 'boolean' && Array.isArray(response.next_actions) && response.next_actions.length <= 8
+    && response.next_actions.every(item => typeof item === 'string' && item.length <= 255)
+    && Array.isArray(response.citations) && response.citations.length <= 10 && response.citations.every(validCitation)
+    && (response.kind !== 'system' || (response.citations.length === 0 && response.insufficient === true)));
+  return exact(value,['turn_id','question','response','state','submitted_at','model','client_request_id'])
+    && (value.client_request_id === null || (safeId(value.client_request_id) && value.client_request_id.length >= 8))
+    && safeId(value.turn_id) && typeof value.question === 'string' && value.question.length >= 1 && value.question.length <= 32768
+    && states.includes(value.state) && timestamp(value.submitted_at) && safeModel && safeResponse
+    && (value.state === 'completed' ? response?.kind === 'answer' : value.model === null)
+    && (!['no_knowledge','no_relevant_evidence'].includes(value.state)
+      || response?.next_actions.length>=1&&response.next_actions.length<=4
+        &&response.next_actions.every(item=>item.trim().length>=1&&item.length<=120))
+    && (value.state === 'pending' ? response === null
+      : value.state === 'completed' ? response?.kind === 'answer'
+      : response?.kind === 'system' && response.insufficient === true && response.citations.length === 0);
+}
+
+export async function listNotebookConversationTurns(workspaceId, notebookId, { fetchImpl=fetch, signal, before, limit=50 }={}) {
+  const cursor = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,2048}$/u.test(value);
+  if (!safeId(notebookId) || !Number.isSafeInteger(limit) || limit < 1 || limit > 100
+      || (before !== undefined && before !== null && !cursor(before))) throw new Error('NOTEBOOK_INPUT_INVALID');
+  const query = new URLSearchParams({ limit:String(limit) });
+  if (before !== undefined && before !== null) query.set('before',before);
+  const response = await fetchImpl(`${basePath(workspaceId)}/${encodeURIComponent(notebookId)}/conversation-turns?${query}`, {
+    method:'GET',credentials:'same-origin',cache:'no-store',signal,
+  });
+  let payload;
+  try { payload=await response.json(); } catch { throw new Error('NOTEBOOK_CONVERSATION_INVALID'); }
+  if (!response.ok) throw new Error(typeof payload?.error?.code === 'string' ? payload.error.code : 'NOTEBOOK_UNAVAILABLE');
+  if (!exact(payload,['data','meta']) || !exact(payload.meta,['trace_id','workspace_id','notebook_id'])
+      || !safeId(payload.meta.trace_id) || payload.meta.workspace_id !== workspaceId || payload.meta.notebook_id !== notebookId
+      || !exact(payload.data,['items','next_cursor']) || !Array.isArray(payload.data.items) || payload.data.items.length > limit
+      || new Set(payload.data.items.map(item => item?.turn_id)).size !== payload.data.items.length
+      || new Set(payload.data.items.map(item=>item?.client_request_id).filter(id=>id!==null)).size !== payload.data.items.filter(item=>item?.client_request_id!==null).length
+      || !payload.data.items.every(validConversationTurn) || !(payload.data.next_cursor === null || cursor(payload.data.next_cursor))
+      || (before !== undefined && before !== null && payload.data.next_cursor === before)) {
+    throw new Error('NOTEBOOK_CONVERSATION_INVALID');
+  }
+  return payload.data;
+}
+
+
+async function decodeModelSettings(response,notebookId,saved,signal){
+  let body;try{body=await response.json();}catch{throw new Error("MODEL_SETTINGS_RESPONSE_INVALID");}
+  signal?.throwIfAborted();
+  if(!response.ok)throw new Error(typeof body?.error?.code==="string"?body.error.code:"NOTEBOOK_MODEL_SETTINGS_UNAVAILABLE");
+  if(!exact(body,["data","meta"])||!exact(body.meta,["trace_id"])||!safeId(body.meta.trace_id)
+    ||!isNotebookModelSettings(body.data,{saved})||body.data.notebook_id!==notebookId)throw new Error("MODEL_SETTINGS_RESPONSE_INVALID");
+  return body.data;
+}
+export async function getNotebookModelSettings(workspaceId,notebookId,{fetchImpl=fetch,signal}={}){
+  if(!safeId(notebookId))throw new Error("NOTEBOOK_MODEL_SETTINGS_INVALID");
+  signal?.throwIfAborted();
+  const response=await fetchImpl(`${basePath(workspaceId)}/${encodeURIComponent(notebookId)}/model-settings`,
+    {method:"GET",credentials:"same-origin",cache:"no-store",signal});
+  return decodeModelSettings(response,notebookId,false,signal);
+}
+export async function saveNotebookModelSettings(workspaceId,notebookId,input,{fetchImpl=fetch,signal,idempotencyKey}={}){
+  if(!safeId(notebookId)||!safeId(idempotencyKey)||!exact(input,["connection_id","model_id","reasoning_effort","expected_version"])
+    ||!isNotebookModelSelection({connection_id:input.connection_id,model_id:input.model_id,reasoning_effort:input.reasoning_effort})
+    ||!Number.isSafeInteger(input.expected_version)||input.expected_version<0)throw new Error("NOTEBOOK_MODEL_SETTINGS_INVALID");
+  signal?.throwIfAborted();
+  const response=await fetchImpl(`${basePath(workspaceId)}/${encodeURIComponent(notebookId)}/model-settings`,
+    {method:"PATCH",credentials:"same-origin",cache:"no-store",signal,headers:{"Content-Type":"application/json","Idempotency-Key":idempotencyKey},body:JSON.stringify(input)});
+  return decodeModelSettings(response,notebookId,true,signal);
 }

@@ -106,3 +106,17 @@ test("Connector Source BFF는 목록·등록·재연결·해제·Source 목록�
     { url: "https://api.example.com/api/v1/workspaces/workspace-1/connectors/mcp-open-law-go-kr/sources", method: "GET" },
   ]);
 });
+
+test('B conversation-turns BFF는 정확 GET과 단일 cursor/limit만 허용한다',async()=>{
+  const calls=[];const proxy=makeProxy(calls);
+  const segments=['workspaces','workspace-1','notebooks','notebook-1','conversation-turns'];
+  const path=`${ORIGIN}/bff/api/${segments.join('/')}`;
+  const response=await proxy(new Request(path+'?limit=20&before=Y3Vyc29y',{headers:{Cookie:COOKIE}}),segments);
+  assert.equal(response.status,200);
+  assert.equal(calls[0].url,'https://api.example.com/api/v1/workspaces/workspace-1/notebooks/notebook-1/conversation-turns?limit=20&before=Y3Vyc29y');
+  for(const query of ['?limit=0','?limit=101','?limit=2&limit=3','?before=','?before=../x','?secret=x']){
+    assert.equal((await proxy(new Request(path+query,{headers:{Cookie:COOKIE}}),segments)).status,400);
+  }
+  assert.equal(calls.length,1);
+  assert.equal((await proxy(new Request(path,{method:'POST',headers:{Cookie:COOKIE,Origin:ORIGIN}}),segments)).status,405);
+});

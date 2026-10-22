@@ -799,7 +799,7 @@ function validGeneration(request, workspaceId) {
   const runValid = sourceOnly
     ? request.run_id == null && request.run_result_id == null
     : safeId(request?.run_id) && safeId(request?.run_result_id);
-  return record(request) && STUDIO_OUTPUT_TYPES.has(request.output_type) && (sourceOnly ? (request.source_id == null || safeId(request.source_id)) : safeId(request.source_id))
+  return record(request) && (request.model_settings_version===undefined||Number.isSafeInteger(request.model_settings_version)&&request.model_settings_version>0) && STUDIO_OUTPUT_TYPES.has(request.output_type) && (sourceOnly ? (request.source_id == null || safeId(request.source_id)) : safeId(request.source_id))
     && runValid
     && Array.isArray(request.source_version_ids) && request.source_version_ids.length > 0
     && request.source_version_ids.every(safeId) && record(request.settings)
@@ -807,18 +807,73 @@ function validGeneration(request, workspaceId) {
     && (request.workspace_id === undefined || request.workspace_id === null || request.workspace_id === workspaceId);
 }
 
+function studioResponseError(response,payload,fallback){
+  const error=new Error(safeConnectorErrorCode(payload?.error?.code)&&payload.error.code!==null?payload.error.code:fallback);
+  Object.defineProperty(error,"httpStatus",{value:response.status});
+  return error;
+}
+
+function validStudioJob(value) {
+  const allowed=["job_id","status","output_type","title","studio_output_id","output_version_id","error_code","created_at","completed_at","next_actions","lineage","output"];
+  if(!record(value)||Object.keys(value).some(key=>!allowed.includes(key))||!safeId(value.job_id)||!STUDIO_OUTPUT_TYPES.has(value.output_type)
+    ||!["queued","leased","generating","completed","failed","unavailable"].includes(value.status))return false;
+  for(const key of ["studio_output_id","output_version_id"])if(Object.hasOwn(value,key)&&value[key]!==null&&!safeId(value[key]))return false;
+  for(const key of ["created_at","completed_at"])if(Object.hasOwn(value,key)&&value[key]!==null&&!approvalTime(value[key]))return false;
+  if(Object.hasOwn(value,"error_code")&&!safeConnectorErrorCode(value.error_code))return false;
+  if(Object.hasOwn(value,"title")&&!safeText(value.title,0,8000))return false;
+  if(Object.hasOwn(value,"next_actions")&&(!Array.isArray(value.next_actions)||value.next_actions.length>4||value.next_actions.some(item=>!safeText(item,1,120))))return false;
+  if(Object.hasOwn(value,"output")&&value.output!==null&&!validStudioVersion(value.output))return false;
+  if(Object.hasOwn(value,"lineage")){
+    const l=value.lineage,keys=["notebook_id","source_version_ids","artifact_type","instruction","run_id","citations","verification_required"];
+    if(!record(l)||!exact(l,Object.hasOwn(l,"source_only")?[...keys,"source_only"]:keys)||!safeId(l.notebook_id)
+      ||!Array.isArray(l.source_version_ids)||l.source_version_ids.length>1000||!l.source_version_ids.every(safeId)
+      ||!(l.artifact_type===null||STUDIO_OUTPUT_TYPES.has(l.artifact_type))||!(l.instruction===null||safeText(l.instruction,0,8000))
+      ||!(l.run_id===null||safeId(l.run_id))||!Array.isArray(l.citations)||l.citations.length>1000||!l.citations.every(validStudioCitation)
+      ||typeof l.verification_required!=="boolean"||Object.hasOwn(l,"source_only")&&typeof l.source_only!=="boolean")return false;
+  }
+  return true;
+}
+
+export async function authorizeStudioGeneration(workspaceId,request,{notebookId,fetchImpl=fetch,idempotencyKey=secureUuid(),signal}={}){
+  const workspace=requiredWorkspace(workspaceId,"STUDIO_INPUT_INVALID"),notebook=requiredWorkspace(notebookId,"STUDIO_INPUT_INVALID");
+  const common=["workspace_id","notebook_id","operation","model_settings_version","password"];
+  const generate=[...common,"output_type","source_only","source_id","source_version_ids","run_id","run_result_id","settings"];
+  const regenerate=[...common,"output_id","previous_version_id","revision_type","change_reason","settings"];
+  if(!record(request)||!safeIdempotencyKey(idempotencyKey)||!Number.isSafeInteger(request.model_settings_version)||request.model_settings_version<1
+    ||(request.workspace_id!==undefined&&request.workspace_id!==workspace)||(request.notebook_id!==undefined&&request.notebook_id!==notebook)
+    ||(request.password!==undefined&&request.password!==null&&(typeof request.password!=="string"||request.password.length>1024)))throw Error("STUDIO_INPUT_INVALID");
+  if(request.operation==="generate"){
+    if(Object.keys(request).some(key=>!generate.includes(key))||!validGeneration(request,workspace))throw Error("STUDIO_INPUT_INVALID");
+  }else if(request.operation==="regenerate"){
+    if(Object.keys(request).some(key=>!regenerate.includes(key))||!safeId(request.output_id)||!safeId(request.previous_version_id)
+      ||!["ai_regeneration","settings_change"].includes(request.revision_type)||!safeText(request.change_reason,1,500)
+      ||(request.revision_type==="settings_change")!==record(request.settings))throw Error("STUDIO_INPUT_INVALID");
+  }else throw Error("STUDIO_INPUT_INVALID");
+  if(signal?.aborted)throw Error("STUDIO_REQUEST_ABORTED");
+  const response=await fetchImpl("/bff/api/studio-generation-requests/authorization",{method:"POST",credentials:"same-origin",cache:"no-store",signal,
+    headers:{"Content-Type":"application/json","Idempotency-Key":idempotencyKey},body:JSON.stringify({...request,workspace_id:workspace,notebook_id:notebook})});
+  const payload=await json(response,"STUDIO_RESPONSE_INVALID");
+  if(signal?.aborted)throw Error("STUDIO_REQUEST_ABORTED");
+  if(!response.ok)throw studioResponseError(response,payload,"STUDIO_AUTHORIZATION_FAILED");
+  const value=payload?.data;
+  if(!exact(payload,["data","meta"])||!validMeta(payload.meta,workspace)||!exact(value,["step_up_authorization_id","expires_at","generation_fingerprint"])
+    ||!(value.step_up_authorization_id===null||typeof value.step_up_authorization_id==="string"&&/^[\x21-\x7e]{1,4096}$/u.test(value.step_up_authorization_id))
+    ||!approvalTime(value.expires_at)||!/^([0-9a-f]{64})$/u.test(value.generation_fingerprint))throw Error("STUDIO_RESPONSE_INVALID");
+  return value;
+}
+
 export async function createStudioGeneration(workspaceId, request, { notebookId, fetchImpl = fetch, idempotencyKey = secureUuid(), signal } = {}) {
   const workspace = requiredWorkspace(workspaceId, "STUDIO_INPUT_INVALID");
   const notebook = requiredWorkspace(notebookId, "STUDIO_INPUT_INVALID");
-  if (!validGeneration(request, workspace) || !safeIdempotencyKey(idempotencyKey)) throw new Error("STUDIO_INPUT_INVALID");
+  if (!validGeneration(request, workspace) || !Number.isSafeInteger(request.model_settings_version)||request.model_settings_version<1 || !safeIdempotencyKey(idempotencyKey)) throw new Error("STUDIO_INPUT_INVALID");
   const response = await fetchImpl("/bff/api/studio-generation-requests", {
     method: "POST", credentials: "same-origin", cache: "no-store", signal,
     headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
     body: JSON.stringify({ ...request, workspace_id: workspace, notebook_id: notebook }),
   });
   const payload = await json(response, "STUDIO_RESPONSE_INVALID");
-  if (!response.ok) throw new Error(typeof payload?.error?.code === "string" ? payload.error.code : "STUDIO_CREATE_FAILED");
-  if (!record(payload?.data) || !safeId(payload.data.job_id) || !["queued", "leased", "generating", "completed", "failed", "unavailable"].includes(payload.data.status)) throw new Error("STUDIO_RESPONSE_INVALID");
+  if (!response.ok) throw studioResponseError(response,payload,"STUDIO_CREATE_FAILED");
+  if (!exact(payload,["data","meta"])||!validMeta(payload.meta,workspace,{replay:true})||!validStudioJob(payload.data)) throw new Error("STUDIO_RESPONSE_INVALID");
   return payload.data;
 }
 
@@ -830,8 +885,8 @@ export async function getStudioGenerationJob(workspaceId, jobId, { notebookId, f
     method: "GET", credentials: "same-origin", cache: "no-store", signal,
   });
   const payload = await json(response, "STUDIO_RESPONSE_INVALID");
-  if (!response.ok) throw new Error(typeof payload?.error?.code === "string" ? payload.error.code : "STUDIO_JOB_FAILED");
-  if (!record(payload?.data) || !safeId(payload.data.job_id) || !["queued", "leased", "generating", "completed", "failed", "unavailable"].includes(payload.data.status)) throw new Error("STUDIO_RESPONSE_INVALID");
+  if (!response.ok) throw studioResponseError(response,payload,"STUDIO_JOB_FAILED");
+  if (!exact(payload,["data","meta"])||!validMeta(payload.meta,workspace)||!validStudioJob(payload.data)||payload.data.job_id!==jobId) throw new Error("STUDIO_RESPONSE_INVALID");
   return payload.data;
 }
 
@@ -851,7 +906,9 @@ export async function createStudioVersion(workspaceId, outputId, request, { note
   if (!safeId(outputId) || !record(request) || !safeId(request.previous_version_id)
       || !new Set(["user_edit", "ai_regeneration", "settings_change"]).has(request.revision_type)
       || typeof request.change_reason !== "string" || !request.change_reason.trim()
-      || typeof request.content !== "string" || !request.content.trim()
+      || (request.revision_type==="user_edit"&&(typeof request.content!=="string"||!request.content.trim()))
+      || (request.revision_type!=="user_edit"&&(!Number.isSafeInteger(request.model_settings_version)||request.model_settings_version<1))
+      || (request.revision_type==="ai_regeneration"&&request.settings!=null)
       || (request.revision_type === "settings_change" && (!record(request.settings) || !Array.isArray(request.settings.source_version_ids)))
       || !safeIdempotencyKey(idempotencyKey)) throw new Error("STUDIO_INPUT_INVALID");
   const response = await fetchImpl(`/bff/api/studio-outputs/${encodeURIComponent(outputId)}/versions`, {
@@ -860,8 +917,10 @@ export async function createStudioVersion(workspaceId, outputId, request, { note
     body: JSON.stringify({ ...request, workspace_id: workspace, notebook_id: notebook }),
   });
   const payload = await json(response, "STUDIO_RESPONSE_INVALID");
-  if (!response.ok) throw new Error(typeof payload?.error?.code === "string" ? payload.error.code : "STUDIO_VERSION_FAILED");
-  if (!record(payload?.data) || !safeId(payload.data.output_version_id)) throw new Error("STUDIO_RESPONSE_INVALID");
+  if (!response.ok) throw studioResponseError(response,payload,"STUDIO_VERSION_FAILED");
+  if(request.revision_type!=="user_edit"){
+    if(response.status!==202||!exact(payload,["data","meta"])||!validMeta(payload.meta,workspace,{replay:true})||!validStudioJob(payload.data))throw Error("STUDIO_RESPONSE_INVALID");
+  }else if (!record(payload?.data) || !safeId(payload.data.output_version_id)) throw new Error("STUDIO_RESPONSE_INVALID");
   return payload.data;
 }
 

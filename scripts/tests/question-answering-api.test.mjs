@@ -42,6 +42,32 @@ const request = (payload) => askGroundedQuestion(
   { idempotencyKey: "question-1", fetchImpl: async () => Response.json(payload) }
 );
 
+test("C system notice는 Run 없는 정확한 응답이며 추가 인증 응답도 재실행 토큰으로 바꾸지 않는다", async () => {
+  const notice={kind:"system_notice",turn_id:"turn-c",answer:"질문을 확인할 자료를 선택해 주세요.",
+    grounding_status:"no_knowledge",insufficient:true,citations:[],next_actions:["질문의 조건을 확인할 자료를 선택해 주세요."]};
+  assert.deepEqual(await request(envelope(notice)),notice);
+  assert.deepEqual(await authorizeGroundedQuestion("workspace-1",{notebookId:"notebook-1",question:"계약 기간은?",password:"synthetic"},
+    {idempotencyKey:"question-c-notice",fetchImpl:async()=>Response.json(envelope(notice))}),notice);
+  for(const changes of [{run_id:"run-forged"},{insufficient:false},{citations:[citation]},{grounding_status:"sufficient"},
+      {next_actions:[]},{next_actions:Array(5).fill("자료 선택")},{turn_id:null},{step_up_authorization_id:"not-a-grant"}]) {
+    await assert.rejects(request(envelope({...notice,...changes})),/QUESTION_RESPONSE_INVALID/);
+  }
+});
+
+test("C 새 완료 11필드의 sufficient partial conversational은 정확 조합만 수용하고 legacy 5·10은 보존한다", async () => {
+  assert.deepEqual(await request(envelope()),answerData);
+  assert.deepEqual(await request(envelope(enrichedAnswerData)),enrichedAnswerData);
+  for(const [status,actions] of [["sufficient",[]],["partial",["질문의 기간을 확인할 자료를 추가해 주세요."]]]) {
+    const fresh={...enrichedAnswerData,grounding_status:status,next_actions:actions};
+    assert.deepEqual(await request(envelope(fresh)),fresh);
+  }
+  for(const changes of [{grounding_status:"no_knowledge"},{grounding_status:"partial",next_actions:[]},
+      {grounding_status:"sufficient",insufficient:true},{grounding_status:"sufficient",citations:[]},
+      {grounding_status:"conversational"}]) {
+    await assert.rejects(request(envelope({...enrichedAnswerData,...changes})),/QUESTION_RESPONSE_INVALID/);
+  }
+});
+
 test("S18 질문 추가 인증 helper는 동일 입력/key와 signal을 전달하고 취소 후 응답을 사용하지 않는다", async () => {
   const controller = new AbortController();
   let calls = 0;
@@ -261,3 +287,17 @@ for (const [name, payload] of [
     await assert.rejects(request(payload), { message: "QUESTION_RESPONSE_INVALID" });
   });
 }
+
+
+test("D 질문·추가인증은 동일 명시 설정 version을 전달하고 0·bool은 전송하지 않는다",async()=>{
+  const calls=[];const input={notebookId:"notebook-1",question:"안녕하세요",password:"fixture-only",modelSettingsVersion:7};
+  const fetchImpl=async(url,init)=>{calls.push({url,body:JSON.parse(init.body)});return Response.json(url.endsWith("/authorization")?{data:{step_up_authorization_id:"grant-d"}}:envelope());};
+  await authorizeGroundedQuestion("workspace-1",input,{idempotencyKey:"d-version-request",fetchImpl});
+  await askGroundedQuestion("workspace-1",input,{idempotencyKey:"d-version-request",fetchImpl});
+  assert.deepEqual(calls.map(v=>v.body.model_settings_version),[7,7]);
+  for(const modelSettingsVersion of [0,true,-1,1.5]){
+    await assert.rejects(askGroundedQuestion("workspace-1",{...input,modelSettingsVersion},{idempotencyKey:"d-version-request",fetchImpl}));
+    await assert.rejects(authorizeGroundedQuestion("workspace-1",{...input,modelSettingsVersion},{idempotencyKey:"d-version-request",fetchImpl}));
+  }
+  assert.equal(calls.length,2);
+});

@@ -18,6 +18,39 @@ async function loadContract() {
   return JSON.parse(await readFile(contractPath, "utf8"));
 }
 
+test("HC2 연결 추론 계약은 기존 CRUD의 선택 enum 하나이며 변조를 거부한다",async()=>{
+  const document=await loadContract();assert.doesNotThrow(()=>validateOpenApiDocument(document));
+  for(const name of ["ProviderConnectionAdminView","ProviderConnectionCreateRequest","ProviderConnectionUpdateRequest"]){
+    for(const mutate of [s=>delete s.properties.reasoning_contract,s=>s.properties.reasoning_contract.enum.push("other"),s=>s.required.push("reasoning_contract")]){
+      const invalid=structuredClone(document);mutate(invalid.components.schemas[name]);assert.throws(()=>validateOpenApiDocument(invalid));
+    }
+  }
+});
+
+test('C 근거 응답은 기존5·10 신규11·Run 없는 notice를 닫힌 분기로 선언하고 변조를 거부한다',async()=>{
+  const document=await loadContract(),schemas=document.components.schemas;
+  assert.deepEqual(schemas.GroundedAnswerEnvelope.properties.data.oneOf.map(item=>item.$ref),[
+    '#/components/schemas/GroundedAnswer','#/components/schemas/GroundedAnswerWithMetadata',
+    '#/components/schemas/GroundedAnswerWithGrounding','#/components/schemas/QuestionSystemNotice']);
+  assert.deepEqual(document.paths['/api/v1/workspaces/{id}/questions/authorization'].post.responses['200'].content['application/json'].schema,
+    {$ref:'#/components/schemas/QuestionSystemNoticeEnvelope'});
+  assert.doesNotThrow(()=>validateOpenApiDocument(document));
+  for(const mutate of [
+    d=>{d.components.schemas.QuestionSystemNotice.additionalProperties=true;},
+    d=>{d.components.schemas.QuestionSystemNotice.properties.run_id={type:'string'};},
+    d=>{d.components.schemas.QuestionSystemNotice.properties.citations.maxItems=1;},
+    d=>{d.components.schemas.QuestionSystemNotice.properties.insufficient.const=false;},
+    d=>{d.components.schemas.QuestionSystemNotice.properties.grounding_status.enum.push('sufficient');},
+    d=>{d.components.schemas.QuestionSystemNotice.properties.next_actions.minItems=0;},
+    d=>{d.components.schemas.GroundedAnswerWithGrounding.allOf=[];},
+    d=>{d.components.schemas.GroundedAnswerWithGrounding.required.pop();},
+    d=>{d.components.schemas.GroundedAnswerWithMetadata.additionalProperties=true;},
+    d=>{d.components.schemas.GroundedAnswerEnvelope.properties.data.oneOf.pop();},
+    d=>{delete d.paths['/api/v1/workspaces/{id}/questions/authorization'].post.responses['200'];},
+    d=>{delete d.paths['/api/v1/workspaces/{id}/questions/authorization'].post.responses['200'].headers.ETag;},
+  ]) {const bad=structuredClone(document);mutate(bad);assert.throws(()=>validateOpenApiDocument(bad),/Question grounding/u);}
+});
+
 test('S44 capacity contracts keep default twelve and require exact independent opt-in branches',async()=>{
   const doc=await loadContract(),s=doc.components.schemas;
   const workspace=doc.paths['/api/v1/workspaces/{id}/operations/status'].get;
@@ -809,7 +842,7 @@ test("Product Studio OpenAPI는 Runtime method·exact body·7 media type 불일�
   const responseMismatch = structuredClone(document);
   responseMismatch.paths["/api/v1/reviews"].post.responses["201"].$ref = "#/components/responses/CreatedResponse";
   assert.throws(() => validateOpenApiDocument(responseMismatch), /Studio Runtime response mismatch/);
-  assert.ok(document.components.schemas.StudioRevisionRequest.properties.settings.$ref.endsWith("/StudioGenerationSettings"));
+  assert.deepEqual(document.components.schemas.StudioRevisionRequest.properties.settings.anyOf,[{$ref:"#/components/schemas/StudioGenerationSettings"},{type:"null"}]);
   assert.ok(document.components.schemas.StudioVersionMutationEnvelope.properties.data.required.includes("content"));
   assert.deepEqual(document.components.schemas.StudioVersionMutationEnvelope.properties.data.properties.content.oneOf, [
     { type: "string" }, { type: "object" },
@@ -837,4 +870,67 @@ test("Question Citation 계약은 원본 페이지와 Daon 지식 구간을 같�
   for (const name of ["CitationLocator", "StudioCitationLocator"]) {
     assert.ok(document.components.schemas[name].allOf.some((condition) => condition.if?.properties?.kind?.const === "image_region" && condition.then?.properties?.value?.pattern));
   }
+});
+
+test('B conversation 공개계약은 상태 교차조건·현재범위·요청ID·상한 변조를 거부한다',async()=>{
+  const document=await loadContract();
+  assert.doesNotThrow(()=>validateOpenApiDocument(document));
+  for(const mutate of [
+    d=>{d.components.schemas.NotebookConversationResponse.properties.text.minLength=0;},
+    d=>{d.components.schemas.NotebookConversationResponse.properties.citations.maxItems=20;},
+    d=>{d.components.schemas.NotebookConversationTurn.allOf=[];},
+    d=>{d.components.schemas.NotebookConversationTurn.required=d.components.schemas.NotebookConversationTurn.required.filter(key=>key!=='client_request_id');},
+    d=>{d.paths['/api/v1/workspaces/{id}/notebooks/{notebook_id}/conversation-turns'].post={};},
+  ]) {
+    const bad=structuredClone(document);mutate(bad);
+    assert.throws(()=>validateOpenApiDocument(bad),/Notebook conversation|Notebook method/u);
+  }
+});
+
+
+test("D Notebook 모델 설정은 닫힌 GET/PATCH와 질문 version 결속을 선언한다",async()=>{
+  const d=await loadContract(),route=d.paths["/api/v1/workspaces/{id}/notebooks/{notebook_id}/model-settings"];
+  assert.deepEqual(Object.keys(route),["get","patch"]);
+  assert.equal(d.components.schemas.GroundedQuestionRequest.properties.model_settings_version.minimum,1);
+  assert.doesNotThrow(()=>validateOpenApiDocument(d));
+  for(const mutate of [
+    b=>{b.paths["/api/v1/workspaces/{id}/notebooks/{notebook_id}/model-settings"].post={};},
+    b=>{b.components.schemas.NotebookModelSettingsPatch.additionalProperties=true;},
+    b=>{b.components.schemas.NotebookModelSettingsPatch.properties.expected_version.minimum=-1;},
+    b=>{delete b.components.schemas.GroundedQuestionAuthorizationRequest.properties.model_settings_version;},
+    b=>{b.components.schemas.NotebookModelSettingsCandidate.properties.endpoint={type:"string"};},
+  ]){const b=structuredClone(d);mutate(b);assert.throws(()=>validateOpenApiDocument(b),/Notebook model settings|Notebook method mismatch.*model-settings/u);}
+});
+
+
+test("E Studio 생성 인증·비동기 재생성은 닫힌 계약과 목적별 입력을 유지한다",async()=>{
+  const document=await loadContract(),schemas=document.components.schemas;
+  assert.ok(document.paths['/api/v1/studio-generation-requests/authorization']?.post);
+  assert.deepEqual(schemas.StudioGenerationAuthorizationRequest.oneOf.map(value=>value.$ref),[
+    '#/components/schemas/StudioGenerateAuthorization','#/components/schemas/StudioRegenerateAuthorization']);
+  assert.equal(document.paths['/api/v1/studio-outputs/{id}/versions'].post.responses['202'].$ref,'#/components/responses/StudioGenerationMutationResponse');
+  assert.equal(schemas.StudioJobProjection.properties.next_actions.maxItems,4);
+  assert.equal(schemas.StudioJobProjection.properties.next_actions.items.maxLength,120);
+  assert.doesNotThrow(()=>validateOpenApiDocument(document));
+  for(const change of [
+    d=>{delete d.paths['/api/v1/studio-generation-requests/authorization'];},
+    d=>{d.components.schemas.StudioRegenerateAuthorization.additionalProperties=true;},
+    d=>{d.components.schemas.StudioRegenerateAuthorization.properties.settings={$ref:'#/components/schemas/StudioGenerationSettings'};},
+    d=>{d.components.schemas.StudioRevisionRequest.oneOf[2].properties.settings={type:'object'};},
+    d=>{d.components.schemas.StudioRegenerateAuthorization.properties.source_version_ids={type:'array'};},
+    d=>{d.components.schemas.StudioJobProjection.properties.next_actions.maxItems=5;},
+    d=>{delete d.paths['/api/v1/studio-outputs/{id}/versions'].post.responses['202'];},
+  ]){const invalid=structuredClone(document);change(invalid);assert.throws(()=>validateOpenApiDocument(invalid));}
+});
+
+test('E 재생성 설정은 AI의 명시 null과 설정 변경의 완전 객체를 구별한다',async()=>{
+  const schemas=(await loadContract()).components.schemas;
+  for(const name of ['StudioRegenerateAuthorization','StudioRevisionRequest']){
+    assert.deepEqual(schemas[name].properties.settings,{anyOf:[{$ref:'#/components/schemas/StudioGenerationSettings'},{type:'null'}]});
+    const branch=schemas[name].oneOf.find(item=>item.properties.revision_type.const==='settings_change');
+    assert.deepEqual(branch.properties.settings,{$ref:'#/components/schemas/StudioGenerationSettings'});
+    assert.ok(branch.required.includes('settings'));
+  }
+  assert.equal(schemas.StudioGenerationSettings.additionalProperties,false);
+  assert.ok(schemas.StudioGenerationSettings.required.includes('purpose'));
 });

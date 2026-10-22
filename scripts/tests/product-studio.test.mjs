@@ -379,7 +379,7 @@ test("Web Studio Adapter는 same-origin 공통 계약과 파일 bytes만 사용�
     return Response.json({ data: { output_version_id: "version-2", status: "draft" }, meta: { trace_id: "trace-1", workspace_id: "workspace-1", replayed: false } }, { status: 201 });
   };
   await createStudioGeneration("workspace-1", {
-    output_type: "evidence_report", source_id: "source-1", source_version_ids: ["source-version-1"],
+    model_settings_version: 1, output_type: "evidence_report", source_id: "source-1", source_version_ids: ["source-version-1"],
     run_id: "run-1", run_result_id: "result-1", settings: { purpose: "목적", audience: "독자", language: "ko", source_version_ids: ["source-version-1"], ruleset_version_id: null, length: "short", structure: "summary", output_format: "pdf", review_condition: "review_required" },
   }, { notebookId: "notebook-1", fetchImpl, idempotencyKey: "generation-key-0001" });
   await listProductStudioOutputs("workspace-1", { notebookId: "notebook-1", fetchImpl });
@@ -392,13 +392,13 @@ test("Web Studio Adapter는 same-origin 공통 계약과 파일 bytes만 사용�
       output_version_id: "version-1", content_version: 1, previous_version_id: null, status: "draft",
       content: { body: "근거 내용" }, revision_type: "initial", change_reason: "initial_generation",
       settings_snapshot_id: "settings-1", output_format: "pdf", citations: [{ citation_id: "citation-1", source_version_id: "source-version-1", evidence_span_id: "span-1", origin: "raw_source", locator: { kind: "page", value: "2" } }],
-      review_request_id: null, approval_request_id: null, approval_id: null, delivery_id: null, knowledge_registration_id: null,
+      review_request_id: null, approval_request_id: null, approval_request_state: null, approval_expires_at: null, approval_id: null, delivery_id: null, knowledge_registration_id: null,
     }] }, meta: { trace_id: "trace-1", workspace_id: "workspace-1" } });
   } });
   for (const region of ["5,7,80,20,120,60", "5,7,180,20,120,60"]) {
     const operation = listStudioVersions("workspace-1", "output-1", { notebookId: "notebook-1", fetchImpl: async () => Response.json({ data: { output_id: "output-1", versions: [{
       output_version_id: "version-1", content_version: 1, previous_version_id: null, status: "draft", content: { body: "이미지 근거" }, revision_type: "initial", change_reason: "initial_generation", settings_snapshot_id: "settings-1", output_format: "pdf",
-      citations: [{ citation_id: "citation-image", source_version_id: "source-version-1", evidence_span_id: "span-image", origin: "raw_source", locator: { kind: "image_region", value: region } }], review_request_id: null, approval_request_id: null, approval_id: null, delivery_id: null, knowledge_registration_id: null,
+      citations: [{ citation_id: "citation-image", source_version_id: "source-version-1", evidence_span_id: "span-image", origin: "raw_source", locator: { kind: "image_region", value: region } }], review_request_id: null, approval_request_id: null, approval_request_state: null, approval_expires_at: null, approval_id: null, delivery_id: null, knowledge_registration_id: null,
     }] }, meta: { trace_id: "trace-1", workspace_id: "workspace-1" } }) });
     if (region === "5,7,80,20,120,60") assert.equal((await operation)[0].citations[0].locator.value, region);
     else await assert.rejects(operation, /STUDIO_RESPONSE_INVALID/);
@@ -426,4 +426,24 @@ test("Step-up Adapter는 현재 비밀번호를 요청 body에만 넣고 응답�
   assert.equal(grant, "opaque-grant");
   assert.deepEqual(calls[0].body, { action_group: "external_transfer", target_id: "version-1", ttl_seconds: 300, password: "current password value" });
   assert.doesNotMatch(JSON.stringify(grant), /current password value/);
+});
+
+
+test('E 생성 전용 인증과 AI202 helper는 현재 선택·같은 논리키·닫힌 안전 응답을 유지한다',async()=>{
+  assert.equal(typeof studioApi.authorizeStudioGeneration,'function');
+  const request={operation:'generate',output_type:'slides',source_only:true,source_id:null,source_version_ids:['version-1'],run_id:null,run_result_id:null,model_settings_version:1,
+    settings:{purpose:'자료 정리',audience:'검토자',source_version_ids:['version-1'],ruleset_version_id:null,length:'short',structure:'summary',output_format:'pdf',review_condition:'review_required',language:'ko'}};
+  const calls=[],key='studio-generation-test-key-0001';
+  const auth={step_up_authorization_id:null,expires_at:'2026-10-22T10:00:00Z',generation_fingerprint:'a'.repeat(64)};
+  const options={notebookId:'notebook-1',idempotencyKey:key,fetchImpl:async(url,init)=>{calls.push({url,init});return Response.json({data:auth,meta:{trace_id:'trace-1',workspace_id:'workspace-1'}},{status:201});}};
+  assert.deepEqual(await studioApi.authorizeStudioGeneration('workspace-1',request,options),auth);
+  assert.equal(calls[0].url,'/bff/api/studio-generation-requests/authorization');
+  assert.equal(calls[0].init.headers['Idempotency-Key'],key);
+  assert.equal(JSON.parse(calls[0].init.body).model_settings_version,1);
+  for(const invalid of [{...auth,raw:'not-allowed'},{...auth,step_up_authorization_id:{}},{...auth,generation_fingerprint:'bad'}]){
+    await assert.rejects(()=>studioApi.authorizeStudioGeneration('workspace-1',request,{...options,fetchImpl:async()=>Response.json({data:invalid,meta:{trace_id:'trace-1',workspace_id:'workspace-1'}},{status:201})}),/STUDIO_RESPONSE_INVALID/);
+  }
+  const version=await studioApi.createStudioVersion('workspace-1','output-1',{previous_version_id:'previous-1',revision_type:'ai_regeneration',change_reason:'자료 재정리',model_settings_version:1},
+    {...options,fetchImpl:async()=>Response.json({data:{job_id:'job-1',status:'queued',output_type:'slides'},meta:{trace_id:'trace-1',workspace_id:'workspace-1',replayed:false}},{status:202})});
+  assert.equal(version.job_id,'job-1');
 });

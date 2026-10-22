@@ -42,7 +42,7 @@ class PostgresNotebookRepository:
         "conversation_thread": "SELECT 1 FROM conversations WHERE tenant_id=%s AND workspace_id=%s AND record_id=%s",
         "studio_output": "SELECT 1 FROM studio_outputs WHERE tenant_id=%s AND workspace_id=%s AND record_id=%s",
         "output_version": "SELECT 1 FROM output_versions WHERE tenant_id=%s AND workspace_id=%s AND record_id=%s",
-        "generation_settings": "SELECT 1 FROM generation_settings_snapshots WHERE tenant_id=%s AND workspace_id=%s AND record_id=%s",
+        "generation_settings": "SELECT 1 FROM generation_settings_snapshots WHERE tenant_id=%s AND workspace_id=%s AND record_id=%s AND coalesce(canonical_json->>'kind','') NOT IN ('notebook_model_settings','studio_execution_plan','studio_execution_admission')",
     }
     def __init__(self, store: PostgresCloudStore, *, creation_enforcer=None) -> None:  # type: ignore[no-untyped-def]
         self._store = store
@@ -270,6 +270,25 @@ class PostgresNotebookRepository:
         except CloudDatabaseError as error:
             raise NotebookError("NOTEBOOK_UNAVAILABLE", 503) from error
 
+    def _conversation_repository(self):
+        from .notebook_conversation_postgres import PostgresNotebookConversationRepository
+        return PostgresNotebookConversationRepository(self)
+
+    def admit_question_turn(self, context, notebook_id, **values):
+        return self._conversation_repository().admit_question_turn(context, notebook_id, **values)
+
+    def claim_question_grounding(self,context,notebook_id,**values):
+        return self._conversation_repository().claim_question_grounding(context,notebook_id,**values)
+
+    def load_question_turn_notice(self, context, notebook_id, **values):
+        return self._conversation_repository().load_question_turn_notice(context,notebook_id,**values)
+
+    def append_question_turn_event(self, context, notebook_id, **values):
+        return self._conversation_repository().append_question_turn_event(context, notebook_id, **values)
+
+    def list_conversation_turns(self, context, notebook_id, **values):
+        return self._conversation_repository().list_conversation_turns(context, notebook_id, **values)
+
     def _read_exact_context(self, context, notebook_id, *, run_id=None, studio_job_id=None):
         """새 선택 경로만 실제 원장에 결속한다. 기본 조회와 공유 Job GET 정책은 유지한다."""
         from types import SimpleNamespace
@@ -390,6 +409,9 @@ class PostgresNotebookRepository:
                     "AND NOT (binding_kind='source' AND EXISTS (SELECT 1 FROM identity_auth_source_access a "
                     "WHERE a.tenant_id=notebook_bindings.tenant_id AND a.workspace_id=notebook_bindings.workspace_id "
                     "AND a.user_id=%s AND a.source_version_id=notebook_bindings.version_id AND a.allowed=0)) "
+                    "AND NOT (binding_kind='generation_settings' AND EXISTS (SELECT 1 FROM generation_settings_snapshots private_settings "
+                    "WHERE private_settings.tenant_id=notebook_bindings.tenant_id AND private_settings.workspace_id=notebook_bindings.workspace_id "
+                    "AND private_settings.record_id=notebook_bindings.record_id AND private_settings.canonical_json->>'kind' IN ('notebook_model_settings','studio_execution_plan','studio_execution_admission'))) "
                     "ORDER BY binding_kind,created_at,record_id",
                     (context.tenant_id, context.workspace_id, notebook_id, context.actor_id),
                 ).fetchall()

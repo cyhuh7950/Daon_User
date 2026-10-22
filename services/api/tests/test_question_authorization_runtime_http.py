@@ -17,12 +17,13 @@ from daon_user_api.question_answering import TextModelSelection
 from daon_user_api.question_answering_postgres import StoredQuestionAnswer
 from daon_user_api.question_answering_service import QuestionAnsweringError
 from daon_user_api.runtime import RuntimeDependencies, RuntimeSettings, WEB_SESSION_COOKIE, create_app
+from notebook_conversation_test_support import ExplicitNotebookModelSettings
 from test_identity_support import POLICY_VERSION, TRACE_ID, create_service
 from test_question_answering_runtime_http import FakeNotebookService
 
 
 PASSWORD = "S18 synthetic local reauthentication fixture"
-BODY = {"notebook_id": "notebook-s18", "question": "선택한 근거를 설명해 주세요."}
+BODY = {"model_settings_version":1,"notebook_id": "notebook-s18", "question": "선택한 근거를 설명해 주세요."}
 
 
 class QuestionBoundary:
@@ -41,6 +42,10 @@ class QuestionBoundary:
         if saved and saved[0] != request_fingerprint:
             raise QuestionAnsweringError("QUESTION_NEW_RUN_REQUIRED", status=409)
         return saved[1] if saved else None
+
+    def preflight_grounding(self,context,**values):
+        # Retrieval semantics are covered by the actual service tests, not this auth boundary.
+        return None
 
     def prepare_authorization(self, context, **kwargs):
         return SimpleNamespace(selection=self.selection, provider_payload=json.dumps({
@@ -95,6 +100,7 @@ class S18QuestionAuthorizationTests(unittest.IsolatedAsyncioTestCase):
             masking_required=True, redaction_required=True,
         )
         self.dependencies = RuntimeDependencies(
+            notebook_model_settings_service=ExplicitNotebookModelSettings(),
             settings=RuntimeSettings.for_test(database_path=path, policy_version=POLICY_VERSION),
             audit_store=audit, identity_service=self.identity, identity_repository=self.repo,
             authorization_service=AuthorizationService(repository=authorization_repository, audit_store=audit, clock=self.clock),
@@ -131,6 +137,14 @@ class S18QuestionAuthorizationTests(unittest.IsolatedAsyncioTestCase):
             return connection.execute("SELECT count(*) FROM step_up_consumptions").fetchone()[0]
         finally:
             connection.close()
+
+    async def test_d_changed_notebook_model_version_rejects_old_step_up_without_consumption(self):
+        approval=await self.grant()
+        self.dependencies.notebook_model_settings_service.version=2
+        response=await self.post(body={**BODY,"step_up_authorization_id":approval["step_up_authorization_id"]})
+        self.assertEqual(response.status_code,409,response.text)
+        self.assertEqual(response.json()["error"]["code"],"NOTEBOOK_MODEL_SETTINGS_CHANGED")
+        self.assertEqual((self.service.calls,self.consumption_count()),(0,0))
 
     async def test_s18_question_missing_token_is_step_up_required_before_provider(self):
         response = await self.post()
@@ -211,9 +225,9 @@ class S18QuestionAuthorizationTests(unittest.IsolatedAsyncioTestCase):
                 if changed == "model": self.service.selection = replace(self.service.selection, binding_version=5)
                 if changed == "payload": self.service.payload_suffix = "changed"
                 response = await self.post(body=body, token=token)
-                self.assertEqual(response.status_code, 403, response.text)
-                # Existing public error mapping intentionally hides binding details.
-                self.assertEqual(response.json()["error"]["code"], "INVALID_REQUEST")
+                self.assertEqual(response.status_code, 409 if changed == "question" else 403, response.text)
+                # Admission now rejects changed logical input before token consumption.
+                self.assertEqual(response.json()["error"]["code"], "NOTEBOOK_TURN_CONFLICT" if changed == "question" else "INVALID_REQUEST")
                 self.assertEqual((self.service.calls, self.consumption_count()), (0, 0))
                 self.effective.fingerprint = "policy-s18-v1"
                 self.service.selection = replace(self.service.selection, binding_version=4)
@@ -266,7 +280,8 @@ class S18QuestionAuthorizationTests(unittest.IsolatedAsyncioTestCase):
         grant = await self.grant(source_id="source-s18", source_version_id="version-s18")
         response = await self.post(body={**BODY, "source_id": "source-s18", "source_version_id": "version-other",
                                          "step_up_authorization_id": grant["step_up_authorization_id"]})
-        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["error"]["code"], "NOTEBOOK_TURN_CONFLICT")
         self.assertEqual((self.service.calls, self.consumption_count()), (0, 0))
 
     async def test_s18_question_changed_input_same_completed_key_is_not_replayed(self):

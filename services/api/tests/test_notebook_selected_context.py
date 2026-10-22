@@ -102,7 +102,9 @@ def test_s18_selected_context_current_raw_binding(sources, citations, restore):
         assert selected.conversation.answer == "과거 원문 답변"
         assert len(selected.conversation.citations) == len(citations)
     assert store.responses == before, "stored result/citations/bindings must remain unchanged"
-    assert store.calls[:3] == [("tenant-s18", "workspace-s18", "notebook-s18")] * 3
+    assert store.calls[:3] == [("tenant-s18", "workspace-s18", "notebook-s18"),
+        ("tenant-s18", "workspace-s18", "notebook-s18", "actor-s18"),
+        ("tenant-s18", "workspace-s18", "notebook-s18", "actor-s18")]
     assert len(store.calls) == 6
     assert (store.scopes[0].tenant_id, store.scopes[0].workspace_id, store.scopes[0].actor_id) == (
         "tenant-s18", "workspace-s18", "actor-s18")
@@ -116,3 +118,12 @@ def test_s18_selected_context_legacy_raw_origin_and_insufficient_general():
     selected = PostgresNotebookRepository(_ReadStore([], [], insufficient=True)).read_selected_context(context, "notebook-s18")
     assert selected.conversation.insufficient is True
     assert selected.conversation.citations == ()
+
+
+def test_private_studio_execution_snapshots_are_not_generic_notebook_selections():
+    from pathlib import Path
+    query=PostgresNotebookRepository._TARGET_QUERIES["generation_settings"]
+    source=(Path(__file__).resolve().parents[1]/"src/daon_user_api/notebook_postgres.py").read_text(encoding="utf-8")
+    for kind in ("notebook_model_settings","studio_execution_plan","studio_execution_admission"):
+        assert kind in query
+        assert kind in source[source.index("private_settings.canonical_json"):]

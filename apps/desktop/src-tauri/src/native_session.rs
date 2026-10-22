@@ -560,6 +560,16 @@ pub(crate) enum NativeWorkspaceOperation {
         workspace_id: String,
         notebook_id: String,
     },
+    GetNotebookModelSettings {
+        workspace_id: String,
+        notebook_id: String,
+    },
+    SaveNotebookModelSettings {
+        workspace_id: String,
+        notebook_id: String,
+        body: Zeroizing<Vec<u8>>,
+        idempotency_key: Zeroizing<String>,
+    },
     ListSources {
         workspace_id: String,
         notebook_id: String,
@@ -628,6 +638,8 @@ impl NativeWorkspaceOperation {
             && match self {
                 Self::GetNotebook { notebook_id, .. }
                 | Self::GetNotebookContext { notebook_id, .. }
+                | Self::GetNotebookModelSettings { notebook_id, .. }
+                | Self::SaveNotebookModelSettings { notebook_id, .. }
                 | Self::ListSources { notebook_id, .. }
                 | Self::UploadPdf { notebook_id, .. }
                 | Self::ProcessingStatus { notebook_id, .. }
@@ -645,6 +657,8 @@ impl NativeWorkspaceOperation {
             | Self::CreateNotebook { workspace_id, .. }
             | Self::GetNotebook { workspace_id, .. }
             | Self::GetNotebookContext { workspace_id, .. }
+            | Self::GetNotebookModelSettings { workspace_id, .. }
+            | Self::SaveNotebookModelSettings { workspace_id, .. }
             | Self::ListSources { workspace_id, .. }
             | Self::UploadPdf { workspace_id, .. }
             | Self::ProcessingStatus { workspace_id, .. }
@@ -673,6 +687,12 @@ impl NativeWorkspaceOperation {
             Self::GetNotebookContext { workspace_id, notebook_id } => (
                 "GET",
                 format!("/api/v1/workspaces/{workspace_id}/notebooks/{notebook_id}/context"),
+            ),
+            Self::GetNotebookModelSettings { workspace_id, notebook_id } => (
+                "GET", format!("/api/v1/workspaces/{workspace_id}/notebooks/{notebook_id}/model-settings"),
+            ),
+            Self::SaveNotebookModelSettings { workspace_id, notebook_id, .. } => (
+                "PATCH", format!("/api/v1/workspaces/{workspace_id}/notebooks/{notebook_id}/model-settings"),
             ),
             Self::ListSources { workspace_id, notebook_id } => {
                 ("GET", format!("/api/v1/workspaces/{workspace_id}/sources?notebook_id={notebook_id}"))
@@ -731,6 +751,10 @@ impl NativeWorkspaceOperation {
         }
     }
 
+    fn is_model_settings(&self) -> bool {
+        matches!(self, Self::GetNotebookModelSettings { .. } | Self::SaveNotebookModelSettings { .. })
+    }
+
     fn expects_pdf(&self) -> bool {
         matches!(self, Self::CitationContent { .. })
     }
@@ -743,6 +767,8 @@ impl fmt::Debug for NativeWorkspaceOperation {
             Self::CreateNotebook { .. } => "NativeWorkspaceOperation::CreateNotebook([redacted])",
             Self::GetNotebook { .. } => "NativeWorkspaceOperation::GetNotebook",
             Self::GetNotebookContext { .. } => "NativeWorkspaceOperation::GetNotebookContext",
+            Self::GetNotebookModelSettings { .. } => "NativeWorkspaceOperation::GetNotebookModelSettings",
+            Self::SaveNotebookModelSettings { .. } => "NativeWorkspaceOperation::SaveNotebookModelSettings([redacted])",
             Self::ListSources { .. } => "NativeWorkspaceOperation::ListSources",
             Self::UploadPdf { .. } => "NativeWorkspaceOperation::UploadPdf([redacted])",
             Self::ProcessingStatus { .. } => "NativeWorkspaceOperation::ProcessingStatus",
@@ -761,6 +787,7 @@ pub(crate) struct NativeWorkspaceResponse {
     pub(crate) status: u16,
     pub(crate) content_type: Option<String>,
     pub(crate) citation_page: Option<u32>,
+    pub(crate) etag: Option<String>,
     pub(crate) body: Zeroizing<Vec<u8>>,
 }
 
@@ -914,6 +941,11 @@ impl NativeWorkspaceTransport for NativeWorkspaceClient {
                     idempotency_key,
                     ..
                 }
+                | NativeWorkspaceOperation::SaveNotebookModelSettings {
+                    body,
+                    idempotency_key,
+                    ..
+                }
                 | NativeWorkspaceOperation::CreateReport {
                     body,
                     idempotency_key,
@@ -968,6 +1000,11 @@ impl NativeWorkspaceTransport for NativeWorkspaceClient {
                 .get("X-Citation-Page")
                 .and_then(|value| value.to_str().ok())
                 .and_then(|value| value.parse::<u32>().ok());
+            let etag=response.headers().get(reqwest::header::ETAG).and_then(|v|v.to_str().ok()).map(str::to_owned);
+            if operation.is_model_settings() && status==200 && (etag.as_deref().is_none_or(|v| v.is_empty() || v.len()>512 || v.chars().any(char::is_control))
+                || response.headers().get(reqwest::header::CACHE_CONTROL).and_then(|v|v.to_str().ok())!=Some("no-store")) {
+                return Err("WORKSPACE_RESPONSE_REJECTED");
+            }
             let maximum = if operation.expects_pdf() {
                 MAX_WORKSPACE_PDF_BYTES
             } else {
@@ -1022,6 +1059,7 @@ impl NativeWorkspaceTransport for NativeWorkspaceClient {
                 status,
                 content_type,
                 citation_page,
+                etag,
                 body,
             })
         })
@@ -2017,6 +2055,16 @@ mod workspace_transport_tests {
     fn workspace_operation_method_and_path_are_fixed() {
         let cases = [
             (
+                NativeWorkspaceOperation::GetNotebookModelSettings { workspace_id: "workspace-1".into(), notebook_id: "notebook-1".into() },
+                "GET",
+                "/api/v1/workspaces/workspace-1/notebooks/notebook-1/model-settings",
+            ),
+            (
+                NativeWorkspaceOperation::SaveNotebookModelSettings { workspace_id: "workspace-1".into(), notebook_id: "notebook-1".into(), body: Zeroizing::new(Vec::new()), idempotency_key: Zeroizing::new("native-0123456789abcdef".into()) },
+                "PATCH",
+                "/api/v1/workspaces/workspace-1/notebooks/notebook-1/model-settings",
+            ),
+            (
                 NativeWorkspaceOperation::ListSources {
                     workspace_id: "workspace-1".into(),
                     notebook_id: "notebook-1".into(),
@@ -2098,6 +2146,41 @@ mod workspace_transport_tests {
         assert_eq!(first.as_str(), replay.as_str());
         assert_ne!(first.as_str(), changed.as_str());
         assert!((16..=128).contains(&first.len()));
+    }
+
+    #[test]
+    fn model_settings_transport_preserves_patch_and_error_contracts() {
+        for status in [200, 401, 403, 409, 412, 422] {
+            let headers = if status == 200 { "ETag: \"model-1\"\r\nCache-Control: no-store\r\n" } else { "" };
+            let response = format!("HTTP/1.1 {status} Response\r\nContent-Type: application/json\r\n{headers}Content-Length: 2\r\n\r\n{{}}").into_bytes();
+            let (gateway, request) = server(response, Duration::ZERO);
+            let client = NativeWorkspaceClient::for_contract_test(&gateway, Duration::from_millis(500)).expect("client");
+            let result = block_on(client.execute(
+                b"a-credential-that-is-at-least-forty-bytes-long",
+                NativeWorkspaceOperation::SaveNotebookModelSettings {
+                    workspace_id: "workspace-1".into(), notebook_id: "notebook-1".into(),
+                    body: Zeroizing::new(b"{\"expected_version\":0}".to_vec()),
+                    idempotency_key: Zeroizing::new("native-0123456789abcdef".into()),
+                },
+            ));
+            if status == 200 {
+                assert_eq!(result.expect("success").etag.as_deref(), Some("\"model-1\""));
+            } else {
+                assert_eq!(result.err(), Some(NativeWorkspaceClient::status_error(status)));
+            }
+            let wire = String::from_utf8_lossy(&request.recv().expect("request")).to_ascii_lowercase();
+            assert!(wire.starts_with("patch /api/v1/workspaces/workspace-1/notebooks/notebook-1/model-settings http/1.1"));
+            assert!(wire.contains("idempotency-key: native-0123456789abcdef"));
+            assert!(wire.ends_with("\r\n\r\n{\"expected_version\":0}"));
+        }
+        for headers in ["", "ETag: \"model-1\"\r\n", "Cache-Control: no-store\r\n"] {
+            let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n{headers}Content-Length: 2\r\n\r\n{{}}").into_bytes();
+            let (gateway, _) = server(response, Duration::ZERO);
+            let client = NativeWorkspaceClient::for_contract_test(&gateway, Duration::from_millis(500)).expect("client");
+            let result = block_on(client.execute(b"a-credential-that-is-at-least-forty-bytes-long",
+                NativeWorkspaceOperation::GetNotebookModelSettings { workspace_id: "workspace-1".into(), notebook_id: "notebook-1".into() }));
+            assert_eq!(result.err(), Some("WORKSPACE_RESPONSE_REJECTED"));
+        }
     }
 
     #[test]

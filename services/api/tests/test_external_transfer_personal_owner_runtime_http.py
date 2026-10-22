@@ -15,13 +15,23 @@ from daon_user_api.notebook import NotebookError
 from daon_user_api.question_answering import TextModelSelection
 from daon_user_api.question_answering_postgres import StoredQuestionAnswer
 from daon_user_api.runtime import WEB_SESSION_COOKIE, RuntimeDependencies, RuntimeSettings, create_app
+from notebook_conversation_test_support import ExplicitNotebookModelSettings
 from test_identity_support import POLICY_VERSION, create_service, identity_session_view
 
 
-class NotebookBoundary:
+from notebook_conversation_test_support import ConversationTestLedger
+
+
+class NotebookBoundary(ConversationTestLedger):
     def __init__(self) -> None:
+        super().__init__()
         self.calls = 0
         self.error: NotebookError | None = None
+
+    def admit_question_turn(self, *args, **kwargs):
+        if self.error is not None:
+            raise self.error
+        return super().admit_question_turn(*args, **kwargs)
 
     def require_selected_bindings(self, *_args, **_kwargs) -> None:  # type: ignore[no-untyped-def]
         self.calls += 1
@@ -39,6 +49,10 @@ class QuestionBoundary:
 
     def replay(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
         return self.replay_answer
+
+    def preflight_grounding(self,context,**values):
+        # Retrieval semantics are covered by the actual service tests, not this auth boundary.
+        return None
 
     def prepare_authorization(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
         self.prepare_calls += 1
@@ -90,7 +104,8 @@ class EffectivePolicyBoundary:
     def get_effective(self, _context):  # type: ignore[no-untyped-def]
         self.calls += 1
         return SimpleNamespace(
-            mode=self.mode, required_approver="organization_admin",
+            # This fixture explicitly represents a no-step-up policy.
+            mode=self.mode, question_step_up_required=False, required_approver="organization_admin",
             fingerprint="sha256:" + "a" * 64,
             allowed_provider_kinds=self.allowed_provider_kinds,
             allowed_destinations=self.allowed_destinations,
@@ -116,6 +131,7 @@ def _bootstrap_dependencies(
     )
     question = QuestionBoundary(provider_kind)
     dependencies = RuntimeDependencies(
+            notebook_model_settings_service=ExplicitNotebookModelSettings(),
         settings=RuntimeSettings.for_test(database_path=db_path, policy_version=POLICY_VERSION),
         identity_service=identity,
         authorization_service=AuthorizationService(
@@ -132,7 +148,7 @@ def _bootstrap_dependencies(
 
 
 def _question_payload(*, grounded: bool = False) -> dict[str, object]:
-    payload: dict[str, object] = {
+    payload: dict[str, object] = {"model_settings_version":1,
         "notebook_id": "notebook-session-auth",
         "question": "선택 Source를 근거로 답해줘" if grounded else "안녕하세요",
     }

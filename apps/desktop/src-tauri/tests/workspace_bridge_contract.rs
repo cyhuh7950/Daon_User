@@ -35,7 +35,7 @@ fn notebook_scope_is_required_and_rich_citation_shape_is_exact() {
     for question in ["안녕하세요?", "안녕하세요!"] {
         let input = WorkspaceAskQuestionInput {
             workspace_id: "workspace-1".into(), notebook_id: "notebook-1".into(),
-            source_id: None, source_version_id: None, question: question.into(),
+            source_id: None, source_version_id: None, question: question.into(), model_settings_version: None,
         };
         assert!(valid_workspace_question_input_for_contract(&input));
     }
@@ -50,7 +50,7 @@ fn notebook_scope_is_required_and_rich_citation_shape_is_exact() {
     for question in ["안녕하세요！", "안녕하세요？", "안녕하세요　"] {
         let input = WorkspaceAskQuestionInput {
             workspace_id: "workspace-1".into(), notebook_id: "notebook-1".into(),
-            source_id: None, source_version_id: None, question: question.into(),
+            source_id: None, source_version_id: None, question: question.into(), model_settings_version: None,
         };
         assert!(!valid_workspace_question_input_for_contract(&input));
     }

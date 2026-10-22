@@ -197,7 +197,7 @@ test('S24 lifecycle expired request forbids approval allows explicit new request
 
 async function withS24Studio(fetchImpl, run, version = s24Version(), lifecycle = false, policySettings = false) {
   const rootPath = path.resolve(import.meta.dirname, '../..');
-  const output = await mkdtemp(path.join('D:/tmp', 'daon-user-approval-policy-s24-'));
+  const output = await mkdtemp(path.join(rootPath, '.product-studio-approval-policy-s24-'));
   const dom = installMinimalDom(); let reactRoot;
   try {
     const { createElement, act } = await import('react'), { createRoot } = await import('react-dom/client'), { build } = await import('vite');
@@ -234,7 +234,7 @@ async function withS24Studio(fetchImpl, run, version = s24Version(), lifecycle =
     await run({ container, act, render, adapterFor, stateFor, click, fillPassword, detail, document: dom.document });
   } finally {
     if (reactRoot) { const { act } = await import('react'); await act(async () => reactRoot.unmount()); }
-    dom.restore(); assert.equal(path.dirname(output),path.resolve('D:/tmp')); await rm(output, { recursive: true, force: true });
+    dom.restore(); assert.equal(path.dirname(output),rootPath); await rm(output, { recursive: true, force: true });
   }
 }
 
@@ -482,8 +482,8 @@ function s23Version(number, target = 'target', content = `정본 ${target} V${nu
     settings_snapshot_id: `settings-${target}`, output_format: 'csv',
     citations: [{ citation_id: 'citation-1', source_version_id: 'source-version-1', evidence_span_id: 'span-1',
       origin: 'raw_source', locator: { kind: 'section', value: '시험 근거' } }],
-    review_request_id: null, approval_request_id: null, approval_id: null, delivery_id: null, knowledge_registration_id: null,
-    approval_request_state:null,approval_expires_at:null };
+    review_request_id: null, approval_request_id: null, approval_request_state:null,approval_expires_at:null,approval_id: null, delivery_id: null, knowledge_registration_id: null,
+    };
 }
 function s23Read(versions, target = 'target', workspace = 'workspace-1') {
   return Response.json({ data: { output_id: `output-${target}`, versions }, meta: { trace_id: 'trace-1', workspace_id: workspace } });
@@ -593,14 +593,13 @@ test('S23 active revision blocks type entry after a reread and permits generatio
   const fetchImpl = async (url, init) => {
     if (url === '/bff/api/studio-generation-requests') {
       generationCalls++; await generation.promise;
-      return Response.json({ data: { job_id: 'job-after-revision', status: 'completed', studio_output_id: 'output-after-revision',
-        output_version_id: 'version-after-revision', title: '편집 종료 후 생성', output_type: 'comparison_table', content: { rows: [] } } }, { status: 201 });
+      return Response.json({data:{job_id:'job-after-revision',status:'queued',output_type:'comparison_table'},meta:{trace_id:'trace-1',workspace_id:'workspace-1',replayed:false}},{status:201});
     }
     if (init.method === 'POST') { await write.promise; committed = true; return s23Receipt(); }
     return s23Read(committed ? [s23Version(2), s23Version(1)] : [s23Version(1)]);
   };
   await withS23Studio(fetchImpl, async ({ container, render, adapterFor, edit, click, act }) => {
-    const adapter = { ...adapterFor(), createGeneration: (input, options) => createStudioGeneration('workspace-1', input,
+    const adapter = { ...adapterFor(), ...eSelectedFixture(),getGenerationJob:async()=>eFixtureJob({studio_output_id:'output-after-revision',output_version_id:'version-after-revision',title:'편집 종료 후 생성',content:{rows:[]}}), createGeneration: (input, options) => createStudioGeneration('workspace-1', input,
       { ...options, notebookId: 'notebook-1', fetchImpl }) };
     await render({ ...s23State(), sources: s22Sources, settings: { sourceVersionIds: ['source-version-1'] } }, adapter);
     try {
@@ -802,6 +801,10 @@ test('S23 partial receipt must not present inherited content or citations as the
   });
 });
 
+function eSelectedFixture(extra={}) { return {getStudioModelSettingsVersion:()=>1,
+  authorizeGeneration:async()=>({step_up_authorization_id:null}),...extra}; }
+function eFixtureJob(output) { return {job_id:'job-test-owned',status:'completed',output_type:output.output_type??'comparison_table',
+  title:output.title,studio_output_id:output.studio_output_id,output_version_id:output.output_version_id,output}; }
 const s22Sources = [{ sourceId: 'source-1', sourceVersionId: 'source-version-1', filename: 'QA 시험 문서.txt', ready: true }];
 const s22Settings = { purpose: '시험 비교', audience: '검토자', language: 'ko', sourceVersionIds: ['source-version-1'],
   length: 'short', structure: 'summary-body-conclusion', outputFormat: 'csv', reviewCondition: 'review_required' };
@@ -880,10 +883,11 @@ test('S22 React editing confirmed settings requires confirmation again and submi
       { field: 'reviewCondition', value: 'review_required', reason: 'WORKSPACE_POLICY' },
       { field: 'rulesetVersionId', value: 'ruleset-v3', reason: 'RULESET_BINDING' },
     ] });
-  const adapter = { createGeneration: async input => { inputs.push(input); return {
+  const configured={
     status: 'completed', studio_output_id: 'configured-output', output_version_id: 'configured-version',
     title: '설정된 비교표', output_type: 'comparison_table', content: { rows: [] },
-  }; } };
+  };
+  const adapter=eSelectedFixture({createGeneration:async input=>{inputs.push(input);return {job_id:'job-test-owned',status:'queued'};},getGenerationJob:async()=>eFixtureJob(configured)});
   await withS22Studio(state, adapter, async ({ container, act }) => {
     await act(async () => buttonByText(container, '비교·데이터 표').dispatchEvent(new MinimalEvent('click')));
     for (const [label, tag, value] of [
@@ -898,7 +902,7 @@ test('S22 React editing confirmed settings requires confirmation again and submi
     assert.equal(buttonByText(container, '생성').disabled, true);
     await act(async () => buttonByText(container, '설정 확인').dispatchEvent(new MinimalEvent('click')));
     await act(async () => findElements(container, node => node.tagName === 'FORM')[0].dispatchEvent(new MinimalEvent('submit')));
-    assert.deepEqual(inputs, [{ workspace_id: 'workspace-1', output_type: 'comparison_table', source_only: true,
+    assert.deepEqual(inputs, [{ model_settings_version:1, workspace_id: 'workspace-1', output_type: 'comparison_table', source_only: true,
       source_id: 'source-1', source_version_ids: ['source-version-1'], run_id: null, run_result_id: null,
       settings: { purpose: '시험 비교', audience: '업무 담당자', language: 'ko', source_version_ids: ['source-version-1'],
         ruleset_version_id: 'ruleset-v3', length: 'short', structure: 'summary-body-conclusion', output_format: 'csv', review_condition: 'review_required' } }]);
@@ -907,7 +911,7 @@ test('S22 React editing confirmed settings requires confirmation again and submi
 });
 
 test('S22 React new config does not announce the previous library output as saved', async () => {
-  const output = { studio_output_id: 'saved-output', title: '이전 비교표', output_type: 'comparison_table', status: 'approved', content: { rows: [] } };
+  const output = { studio_output_id: 'saved-output', output_version_id:'saved-version', title: '이전 비교표', output_type: 'comparison_table', status: 'approved', content: { rows: [] } };
   await withS22Studio({ ...createProductStudioState({ sources: s22Sources, outputs: [output] }), selectedOutputId: 'saved-output' }, {},
     async ({ container, act }) => {
       await act(async () => buttonByText(container, '비교·데이터 표').dispatchEvent(new MinimalEvent('click')));
@@ -919,10 +923,10 @@ test('S22 React new config does not announce the previous library output as save
     });
 });
 
-test('S22 React summary describes actual structuring without claiming a model call', async t => {
+test('E React 생성 안내는 명시 선택 모델 호출과 Source 근거를 구별한다', async t => {
   for (const [kind, grounded, expected] of [
-    ['source-only', null, /선택 Source 구조화.*추가 LLM 호출 없음/],
-    ['grounded', { sourceId: 'source-1', sourceVersionIds: ['source-version-1'], runId: 'run-1', runResultId: 'result-1' }, /저장된 답변·근거 구조화.*추가 LLM 호출 없음/],
+    ['source-only', null, /명시 선택한 모델로 자료 기반 생성.*모델 호출이 발생합니다/],
+    ['grounded', { sourceId: 'source-1', sourceVersionIds: ['source-version-1'], runId: 'run-1', runResultId: 'result-1' }, /명시 선택한 모델로 자료 기반 생성.*모델 호출이 발생합니다/],
   ]) await t.test(kind, async () => {
     await withS22Studio({ ...s22Confirmed(), grounded }, {}, async ({ container }) => {
       assert.match(container.textContent, expected);
@@ -933,7 +937,7 @@ test('S22 React summary describes actual structuring without claiming a model ca
 
 test('S22 React same-turn submits enqueue only once and freeze pending settings', async () => {
   const pending = s22Deferred(); const calls = [];
-  const adapter = { createGeneration: (input, options) => { calls.push({ input, options }); return pending.promise; } };
+  const adapter = eSelectedFixture({ createGeneration: (input, options) => { calls.push({ input, options }); return pending.promise; },getGenerationJob:async()=>eFixtureJob({studio_output_id:'new-output',output_version_id:'new-version',output_type:'comparison_table',title:'새 비교표',content:{rows:[]},source_version_ids:['source-version-1']}) });
   await withS22Studio(s22Confirmed(), adapter, async ({ container, act }) => {
     const form = findElements(container, node => node.tagName === 'FORM')[0];
     await act(async () => { form.dispatchEvent(new MinimalEvent('submit')); form.dispatchEvent(new MinimalEvent('submit')); });
@@ -949,8 +953,7 @@ test('S22 React same-turn submits enqueue only once and freeze pending settings'
       for (const field of findElements(form, node => ['INPUT', 'SELECT'].includes(node.tagName))) assert.equal(field.disabled, true);
       assert.match(container.textContent, /산출물을 생성하고 있습니다/);
     } finally {
-      await act(async () => pending.resolve({ status: 'completed', studio_output_id: 'new-output', output_version_id: 'new-version',
-        output_type: 'comparison_table', title: '새 비교표', content: { rows: [] }, source_version_ids: ['source-version-1'] }));
+      await act(async () => pending.resolve({job_id:'job-test-owned',status:'queued'}));
     }
     assert.match(container.textContent, /산출물이 저장되었습니다/);
     await act(async () => buttonByText(container, '뒤로').dispatchEvent(new MinimalEvent('click')));
@@ -958,26 +961,21 @@ test('S22 React same-turn submits enqueue only once and freeze pending settings'
   });
 });
 
-test('S22 React safe failure releases only its request and permits explicit submission', async () => {
-  let calls = 0;
-  const adapter = { createGeneration: async () => { calls++; if (calls === 1) throw new Error('private response text');
-    return { status: 'completed', studio_output_id: 'retry-output', output_version_id: 'retry-version', title: '명시 재제출 결과', content: '저장 내용' }; } };
-  await withS22Studio(s22Confirmed(), adapter, async ({ container, act }) => {
-    const submit = () => findElements(container, node => node.tagName === 'FORM')[0].dispatchEvent(new MinimalEvent('submit'));
-    await act(async () => submit());
-    assert.equal(calls, 1); assert.match(container.textContent, /생성을 완료하지 못했습니다/);
-    assert.doesNotMatch(container.textContent, /private response text/);
-    assert.equal(buttonByText(container, '생성').disabled, false);
-    await act(async () => submit());
-    assert.equal(calls, 2); assert.match(container.textContent, /명시 재제출 결과/);
+test('E React 생성 응답유실은 원문 오류를 숨기고 새 요청을 잠근다',async()=>{
+  let calls=0;
+  await withS22Studio(s22Confirmed(),eSelectedFixture({createGeneration:async()=>{calls++;throw Error('private response text');}}),async({container,act})=>{
+    const submit=()=>findElements(container,node=>node.tagName==='FORM')[0].dispatchEvent(new MinimalEvent('submit'));
+    await act(async()=>submit());assert.equal(calls,1);assert.doesNotMatch(container.textContent,/private response text/);
+    assert.match(container.textContent,/접수 식별자를 받지 못했습니다/);assert.equal(buttonByText(container,'생성').disabled,true);
+    await act(async()=>submit());assert.equal(calls,1);
   });
 });
 
 test('S22 React adapter change ignores late success and failure without releasing a new request', async t => {
   for (const outcome of ['resolve', 'reject']) await t.test(outcome, async () => {
     const old = s22Deferred(), next = s22Deferred(); let oldSignal;
-    const first = { createGeneration: (_input, options) => { oldSignal = options?.signal; return old.promise; } };
-    const second = { createGeneration: () => next.promise };
+    const first = eSelectedFixture({createGeneration:(_input,options)=>{oldSignal=options?.signal;return old.promise;},getGenerationJob:async()=>eFixtureJob({studio_output_id:'old-output',title:'이전 Notebook 응답',content:'이전 본문'})});
+    const second=eSelectedFixture({createGeneration:()=>next.promise,getGenerationJob:async()=>eFixtureJob({studio_output_id:'new-output',output_version_id:'new-version',title:'현재 Notebook 결과',content:'현재 본문'})});
     await withS22Studio(s22Confirmed(), first, async ({ container, act, render }) => {
       const submit = () => findElements(container, node => node.tagName === 'FORM')[0].dispatchEvent(new MinimalEvent('submit'));
       await act(async () => submit());
@@ -987,13 +985,13 @@ test('S22 React adapter change ignores late success and failure without releasin
         assert.equal(buttonByText(container, '생성').disabled, false);
         await act(async () => submit());
         await act(async () => outcome === 'resolve'
-          ? old.resolve({ status: 'completed', studio_output_id: 'old-output', title: '이전 Notebook 응답', content: '이전 본문' })
+          ? old.resolve({job_id:'job-test-owned',status:'queued'})
           : old.reject(new Error('STUDIO_CREATE_FAILED')));
         assert.match(container.textContent, /산출물을 생성하고 있습니다/);
         assert.doesNotMatch(container.textContent, /이전 Notebook 응답|생성을 완료하지 못했습니다/);
       } finally {
         await act(async () => { old.resolve({ status: 'completed', studio_output_id: 'old-output', title: '이전 Notebook 응답' });
-          next.resolve({ status: 'completed', studio_output_id: 'current-output', title: '현재 Notebook 결과', content: '현재 본문' }); });
+          next.resolve({job_id:'job-test-owned',status:'queued'}); });
       }
       assert.match(container.textContent, /현재 Notebook 결과/);
     });
@@ -1069,7 +1067,7 @@ test("새 Version 저장 후 정식 조회는 생성 ID·이력·Region을 복�
             { citation_id: "citation-cell", source_version_id: "source-version-xlsx", evidence_span_id: "span-cell", origin: "raw_source", locator: { kind: "sheet_cell", value: '{"sheet":"납품 계획","range":"B2:C3"}' } },
             { citation_id: "citation-docx", source_version_id: "source-version-docx", evidence_span_id: "span-docx", origin: "raw_source", locator: { kind: "docx_block", value: '{"block":"p:2","start":1,"end":2}' } },
           ];
-          const v1 = { output_version_id: "version-1", content_version: 1, previous_version_id: null, status: "draft", content: { body: "이전 본문" }, revision_type: "initial", change_reason: "최초", settings_snapshot_id: "settings-1", citations, review_request_id: null, approval_request_id: null, approval_id: null, delivery_id: null, knowledge_registration_id: null, output_format: "pdf" };
+          const v1 = { output_version_id: "version-1", content_version: 1, previous_version_id: null, status: "draft", content: { body: "이전 본문" }, revision_type: "initial", change_reason: "최초", settings_snapshot_id: "settings-1", citations, review_request_id: null, approval_request_id: null, approval_request_state:null,approval_expires_at:null, approval_id: null, delivery_id: null, knowledge_registration_id: null, output_format: "pdf" };
           const v2 = { ...v1, output_version_id: "version-2", content_version: 2, previous_version_id: "version-1", content: { body: "정식 새 본문" }, revision_type: "user_edit", change_reason: "편집 반영", settings_snapshot_id: "settings-2" };
           // A newer history head must not replace the ID returned by this POST.
           const v3 = { ...v2, output_version_id: "version-3", content_version: 3, previous_version_id: "version-2", content: { body: "다른 요청 본문" } };
@@ -1095,7 +1093,7 @@ test("새 Version 저장 후 정식 조회는 생성 ID·이력·Region을 복�
             createStudioVersion: (id, input) => createStudioVersion("workspace-1", id, input, { notebookId: "notebook-1", fetchImpl, idempotencyKey: "revision-key-0001" }),
             ...(scenario === "no-getter" ? {} : { listStudioVersions: (id) => listStudioVersions("workspace-1", id, { notebookId: "notebook-1", fetchImpl }) }),
           };
-          const state = { status: "ready", workspaceId: "workspace-1", grounded: null, locks: [], selectedOutputType: "evidence_report", settings: {}, settingsConfirmed: false, outputs: [
+          const state = { status: "ready", workspaceId: "workspace-1", grounded: null, locks: [], selectedOutputType: null, settings: {}, settingsConfirmed: false, outputs: [
             { ...v1, studio_output_id: "output-1", title: "대상 보고서", output_type: "evidence_report", version: v1, versions: [v1] },
             { ...other, studio_output_id: "output-other", title: "다른 보고서", output_type: "evidence_report" },
           ], selectedOutputId: "output-1", pending: false, safeError: null };
@@ -1109,7 +1107,6 @@ test("새 Version 저장 후 정식 조회는 생성 ID·이력·Region을 복�
           await act(async () => { change("변경 사유", "INPUT", "편집 반영"); change("편집 내용", "TEXTAREA", "편집 입력"); });
           await act(async () => { buttonByText(container, "편집 새 Version").dispatchEvent(new MinimalEvent("click")); });
           if (["selection-change", "read-selection-change"].includes(scenario)) {
-            await act(async () => { buttonByText(container, "뒤로").dispatchEvent(new MinimalEvent("click")); });
             await act(async () => { buttonByText(container, "다른 보고서").dispatchEvent(new MinimalEvent("click")); });
             await act(async () => { releaseWrite(); });
           }
@@ -1166,7 +1163,7 @@ test("생성 클릭은 queued·leased·generating 동안 진행을 유지하고 
     const state = { status: "ready", workspaceId: "workspace-1", grounded: null, sources: [{ sourceId: "source-1", sourceVersionId: "source-version-1", filename: "자료.pdf", ready: true }], locks: [], selectedOutputType: "evidence_report", settings, settingsConfirmed: true, settingsSnapshot: settings, outputs: [], selectedOutputId: null, pending: false, safeError: null };
     let poll = 0; let sawGenerating;
     const generatingSeen = new Promise((resolve) => { sawGenerating = resolve; });
-    const adapter = {
+    const adapter = {getStudioModelSettingsVersion:()=>1,authorizeGeneration:async()=>({step_up_authorization_id:null}),
       createGeneration: async () => ({ job_id: "job-1", status: "queued" }),
       getGenerationJob: async () => {
         poll += 1;
@@ -1215,13 +1212,20 @@ test("실제 React click은 저장 구조 산출물을 선택하고 검토·승�
     const { build } = await import("vite"); const { createElement, act } = await import("react"); const { createRoot } = await import("react-dom/client");
     await build({ configFile: false, logLevel: "silent", root: rootPath, build: { outDir: output, emptyOutDir: false, lib: { entry: path.join(rootPath, "packages/ui/src/product-studio-pane.jsx"), formats: ["es"], fileName: "product-studio" }, rollupOptions: { external: ["react", "react-dom", "react-dom/client"] } } });
     const entry = (await readdir(output)).find((name) => name.startsWith("product-studio") && /\.m?js$/u.test(name)); const { ProductStudioPane } = await import(`${pathToFileURL(path.join(output, entry)).href}?v=${Date.now()}`);
-    const calls = []; const requestKeys = []; const fetchImpl = async (url, init) => {
+    const calls = []; const requestKeys = [];
+    let canonical={...s23Version(1),output_version_id:"version-1",status:"revision_requested"};
+    const fetchImpl=async(url,init)=>{
+      if(init.method==="GET")return Response.json({data:{output_id:"output-1",versions:[canonical]},meta:{trace_id:"trace-1",workspace_id:"workspace-1"}});
       requestKeys.push(init.headers["Idempotency-Key"]);
-      return Response.json({ data: String(url).endsWith("/versions")
-        ? { output_version_id: "version-2", status: "draft" }
-        : { record_id: "action-1" }, meta: { trace_id: "trace-1", workspace_id: "workspace-1", replayed: false } }, { status: 201 });
+      if(String(url).endsWith("/versions")){
+        canonical={...s23Version(2),output_version_id:"version-2",previous_version_id:"version-1",content:"새 내용"};
+        return Response.json({data:{output_version_id:"version-2",status:"draft"},meta:{trace_id:"trace-1",workspace_id:"workspace-1",replayed:false}},{status:201});
+      }
+      const action=String(url).split('/').at(-1),record_id=`record-${action}`;
+      canonical={...canonical,...(action==="reviews"?{status:"in_review",review_request_id:record_id}:action==="approval-requests"?{approval_request_id:record_id,approval_request_state:"pending",approval_expires_at:"2099-01-01T00:00:00Z"}:{status:"approved",approval_id:record_id})};
+      return Response.json({data:{record_id,action:({reviews:"review","approval-requests":"approval_request",approvals:"approval"})[action],status:"accepted",output_version_id:"version-2"},meta:{trace_id:"trace-1",workspace_id:"workspace-1",replayed:false}},{status:201});
     };
-    const adapter = { createStudioVersion: async (id, payload) => { calls.push(["version", payload.revision_type]); return createStudioVersion("workspace-1", id, payload, { notebookId: "notebook-1", fetchImpl }); }, createStudioAction: async (action, payload) => { calls.push([action, payload.decision]); return createStudioAction("workspace-1", action, payload, { notebookId: "notebook-1", fetchImpl }); }, issueStudioStepUp: async (_group, _target, password) => { calls.push(["step-up", password]); return "grant"; } };
+    const adapter = {listStudioVersions:(id,options)=>listStudioVersions("workspace-1",id,{...options,notebookId:"notebook-1",fetchImpl}), createStudioVersion: async (id, payload) => { calls.push(["version", payload.revision_type]); return createStudioVersion("workspace-1", id, payload, { notebookId: "notebook-1", fetchImpl }); }, createStudioAction: async (action, payload) => { calls.push([action, payload.decision]); return createStudioAction("workspace-1", action, payload, { notebookId: "notebook-1", fetchImpl }); }, issueStudioStepUp: async (_group, _target, password) => { calls.push(["step-up", password]); return "grant"; } };
     const state = { status: "ready", workspaceId: "workspace-1", grounded: null, locks: [], selectedOutputType: null, settings: {}, settingsConfirmed: false, settingsSnapshot: null, outputs: [{ studio_output_id: "output-1", output_version_id: "version-1", title: "반려 보고서", status: "revision_requested", citations: 1, review_request_id: "review-old", approval_request_id: "approval-old", content: { summary: "반려" } }], selectedOutputId: "output-1", pending: false, safeError: null };
     const container = dom.document.createElement("div"); dom.document.body.appendChild(container); reactRoot = createRoot(container); await act(async () => { reactRoot.render(createElement(ProductStudioPane, { state, adapter })); });
     await act(async () => { buttonByText(container, "반려 보고서").dispatchEvent(new MinimalEvent("click")); });
@@ -1234,7 +1238,7 @@ test("실제 React click은 저장 구조 산출물을 선택하고 검토·승�
     const reactProps = (element) => element[Object.keys(element).find((key) => key.startsWith("__reactProps"))];
     await act(async () => { reactProps(reasonInput).onChange({ currentTarget: { value: "내용 수정" } }); reactProps(contentInput).onChange({ currentTarget: { value: "새 내용" } }); });
     await act(async () => { buttonByText(container, "편집 새 Version").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
-    await act(async () => { buttonByText(container, "검토 요청").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); }); await act(async () => { buttonByText(container, "승인 요청").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+    await act(async () => { buttonByText(container, "검토 요청").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); }); assert.equal(buttonByText(container,"승인 요청").disabled,false,container.textContent); await act(async () => { buttonByText(container, "승인 요청").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
     await act(async () => { buttonByText(container, "승인").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
     assert.deepEqual(calls.map((item) => item[0]), ["version", "reviews", "approval-requests"]);
     const passwordLabel = findElements(container, (node) => node.tagName === "LABEL" && node.textContent.includes("추가 인증 비밀번호"))[0];
@@ -1367,4 +1371,211 @@ test("Library는 다섯 산출물 유형을 구분하고 선택한 산출물의 
     assert.ok(findElements(container, (element) => element.getAttribute?.("aria-label") === "선택 산출물 상세").length);
     for (const action of ["편집 새 Version", "AI 재생성 새 Version", "검토 요청", "승인 요청", "내보내기"]) assert.match(container.textContent, new RegExp(action));
   } finally { if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount())); dom.restore(); await rm(output, { recursive: true, force: true }); }
+});
+
+
+test('E 실제 Studio 생성은 전용 인증과 같은 논리키·모델버전을 결속하고 응답유실은 GET만으로 확인한다',async()=>{
+  const calls=[];let reads=0;
+  const adapter={getStudioModelSettingsVersion:()=>3,
+    authorizeGeneration:async(input,options)=>{calls.push({kind:'auth',input,options});return {step_up_authorization_id:null};},
+    createGeneration:async(input,options)=>{calls.push({kind:'create',input,options});return {job_id:'job-real',status:'queued'};},
+    getGenerationJob:async(id)=>{reads++;if(reads===1)throw new Error('STUDIO_JOB_FAILED');return {job_id:id,status:'completed',output_type:'comparison_table',studio_output_id:'output-e',output_version_id:'version-e',title:'확인된 비교표',output:{content:{rows:[]},citations:[]}};},
+  };
+  await withS22Studio(s22Confirmed(),adapter,async({container,act})=>{
+    await act(async()=>findElements(container,node=>node.tagName==='FORM')[0].dispatchEvent(new MinimalEvent('submit')));
+    await act(async()=>new Promise(resolve=>setTimeout(resolve,650)));
+    assert.equal(calls.filter(item=>item.kind==='auth').length,1);
+    assert.equal(calls.filter(item=>item.kind==='create').length,1);
+    assert.equal(calls[0].input.operation,'generate');assert.equal(calls[0].input.model_settings_version,3);
+    assert.equal(calls[0].options.idempotencyKey,calls[1].options.idempotencyKey);
+    assert.equal(calls[1].input.model_settings_version,3);
+    assert.ok(buttonByText(container,'생성').disabled);
+    await act(async()=>buttonByText(container,'처리 상태 확인').dispatchEvent(new MinimalEvent('click')));
+    assert.equal(reads,2);assert.equal(calls.length,2);assert.match(container.textContent,/확인된 비교표/);
+  });
+});
+
+
+test('E 생성 추가 인증은 전용 요청과 같은 키를 쓰고 비밀번호 없이 자동 전송하지 않는다',async()=>{
+  const calls=[];let n=0;
+  const adapter={getStudioModelSettingsVersion:()=>2,
+    authorizeGeneration:async(input,options)=>{calls.push({kind:'auth',input,options});if(++n===1)throw Error('STEP_UP_REQUIRED');return {step_up_authorization_id:'test-owned-generation-proof'};},
+    issueStudioStepUp:async()=>{throw Error('다른 목적 인증 호출 금지');},
+    createGeneration:async(input,options)=>{calls.push({kind:'create',input,options});return {job_id:'job-auth',status:'queued'};},
+    getGenerationJob:async()=>({job_id:'job-auth',status:'unavailable',error_code:'STUDIO_OUTPUT_UNAVAILABLE',next_actions:['질문의 범위에 해당하는 자료를 추가해 주세요.']}),
+  };
+  await withS22Studio(s22Confirmed(),adapter,async({container,act})=>{
+    await act(async()=>findElements(container,node=>node.tagName==='FORM')[0].dispatchEvent(new MinimalEvent('submit')));
+    assert.equal(calls.length,1);assert.match(container.textContent,/이 생성 요청에 결속된 추가 인증/);
+    await act(async()=>s22Props(s22Field(container,'생성 인증 비밀번호','INPUT')).onChange({currentTarget:{value:'test-owned-password'}}));
+    await act(async()=>buttonByText(container,'생성 인증 확인').dispatchEvent(new MinimalEvent('click')));
+    await act(async()=>new Promise(resolve=>setTimeout(resolve,650)));
+    assert.equal(calls.length,3);assert.equal(calls[0].options.idempotencyKey,calls[1].options.idempotencyKey);
+    assert.equal(calls[1].options.idempotencyKey,calls[2].options.idempotencyKey);
+    assert.equal(Object.hasOwn(calls[2].input,'password'),false);
+    assert.equal(calls[2].input.step_up_authorization_id,'test-owned-generation-proof');
+    assert.match(container.textContent,/질문의 범위에 해당하는 자료/);
+  });
+});
+
+test('E AI 재생성은 편집 본문 없이 사유와 현재 선택을 인증하고 202 작업을 확인한다',async()=>{
+  const calls=[];const state=s23State();
+  const adapter={getStudioModelSettingsVersion:()=>4,
+    authorizeGeneration:async(input,options)=>{calls.push({kind:'auth',input,options});return {step_up_authorization_id:null};},
+    createStudioVersion:async(id,input,options)=>{calls.push({kind:'revision',id,input,options});return {job_id:'job-revision',status:'queued'};},
+    getGenerationJob:async()=>({job_id:'job-revision',status:'completed',output_type:'evidence_report',title:'새 근거 보고서',studio_output_id:state.outputs[0].studio_output_id,output_version_id:'version-ai',output:{content:{body:'선택 자료 원문'},citations:[]}}),
+  };
+  await withS22Studio(state,adapter,async({container,act})=>{
+    await act(async()=>s22Props(s22Field(container,'변경 사유','INPUT')).onChange({currentTarget:{value:'자료에 맞게 다시 구성'}}));
+    assert.equal(buttonByText(container,'AI 재생성 새 Version').disabled,false);
+    assert.equal(buttonByText(container,'편집 새 Version').disabled,true);
+    await act(async()=>buttonByText(container,'AI 재생성 새 Version').dispatchEvent(new MinimalEvent('click')));
+    await act(async()=>new Promise(resolve=>setTimeout(resolve,650)));
+    assert.equal(calls.length,2);assert.equal(calls[0].input.operation,'regenerate');
+    assert.equal(calls[0].input.revision_type,'ai_regeneration');assert.equal(calls[0].input.model_settings_version,4);
+    assert.equal(calls[1].input.change_reason,'자료에 맞게 다시 구성');assert.equal(Object.hasOwn(calls[1].input,'content'),false);
+    assert.equal(calls[0].options.idempotencyKey,calls[1].options.idempotencyKey);
+    assert.match(container.textContent,/선택 자료 원문/);
+  });
+});
+
+
+test('E Notebook 전환 후 늦은 생성 인증은 새 화면에 제출하거나 비밀번호를 남기지 않는다',async()=>{
+  const grant=s22Deferred();let sends=0;let signal;
+  const old=eSelectedFixture({authorizeGeneration:(_input,options)=>{signal=options.signal;return grant.promise;},createGeneration:async()=>{sends++;}});
+  await withS22Studio(s22Confirmed(),old,async({container,act,render})=>{
+    await act(async()=>findElements(container,node=>node.tagName==='FORM')[0].dispatchEvent(new MinimalEvent('submit')));
+    await render(s22Confirmed('workspace-2'),eSelectedFixture({}));assert.equal(signal.aborted,true);
+    await act(async()=>grant.resolve({step_up_authorization_id:'test-owned-late-proof'}));
+    assert.equal(sends,0);assert.equal(buttonByText(container,'생성').disabled,false);
+    assert.doesNotMatch(container.textContent,/추가 인증이 필요|test-owned-late-proof/);
+  });
+});
+
+test('E 모델 선택이나 생성 인증 port가 없으면 옛 템플릿 호출로 우회하지 않는다',async()=>{
+  let sends=0;
+  for(const adapter of [{createGeneration:async()=>{sends++;}},eSelectedFixture({getStudioModelSettingsVersion:()=>null,createGeneration:async()=>{sends++;}})]){
+    await withS22Studio(s22Confirmed(),adapter,async({container,act})=>{
+      await act(async()=>findElements(container,node=>node.tagName==='FORM')[0].dispatchEvent(new MinimalEvent('submit')));
+      assert.equal(sends,0);assert.match(container.textContent,/생성 연결을 사용할 수 없습니다|사용할 허용 모델을 직접 선택/);
+    });
+  }
+});
+
+test('E 새 graph는 방향 없는 인용 맥락으로 표시하고 원문 label을 보존한다',async()=>{
+  const output={studio_output_id:'graph-e',output_version_id:'graph-version',output_type:'knowledge_map',title:'인용 맥락',status:'draft',content:{relation_mode:'quoted_context',nodes:[{id:'a',label:'draft',confidence:'verified'},{id:'b',label:'다른 항목'}],edges:[{source:'a',target:'b',direction:'none',condition:'온전한 원문'}]}};
+  await withS22Studio({...s22Confirmed(),selectedOutputType:null,outputs:[output],selectedOutputId:output.studio_output_id},{},async({container})=>{
+    assert.match(container.textContent,/방향 미확정/);assert.match(container.textContent,/draft — 다른 항목/);
+    assert.match(container.textContent,/원문 확인/);assert.doesNotMatch(container.textContent,/draft → 다른 항목|검증됨/);
+  });
+});
+
+
+test('E 같은 Notebook Source 변경 뒤 늦은 인증은 옛 Source 요청을 제출하지 않는다',async()=>{
+  const grant=s22Deferred();let sends=0,signal;
+  const adapter=eSelectedFixture({authorizeGeneration:(_input,options)=>{signal=options.signal;return grant.promise;},createGeneration:async()=>{sends++;return {job_id:'old-source-job',status:'queued'};},getGenerationJob:async()=>({status:'unavailable'})});
+  await withS22Studio(s22Confirmed(),adapter,async({container,act,render})=>{
+    await act(async()=>findElements(container,node=>node.tagName==='FORM')[0].dispatchEvent(new MinimalEvent('submit')));
+    const next=s22Confirmed();next.settings={...next.settings,sourceVersionIds:['source-version-2']};next.sources=[{sourceId:'source-2',sourceVersionId:'source-version-2',ready:true}];
+    await render(next,adapter);
+    await act(async()=>grant.resolve({step_up_authorization_id:'test-owned-obsolete-source-proof'}));
+    assert.equal(sends,0);assert.equal(signal.aborted,true);assert.doesNotMatch(container.textContent,/test-owned-obsolete-source-proof/);
+  });
+});
+
+test('E 같은 adapter의 모델 변경 뒤 늦은 완료는 현재 화면에 삽입하지 않고 접수 Job을 보존한다',async()=>{
+  const done=s22Deferred();let version=1,sends=0;
+  const adapter=eSelectedFixture({getStudioModelSettingsVersion:()=>version,createGeneration:async()=>{sends++;return {job_id:'job-frozen-model',status:'queued'};},getGenerationJob:()=>done.promise});
+  await withS22Studio(s22Confirmed(),adapter,async({container,act,render})=>{
+    await act(async()=>findElements(container,node=>node.tagName==='FORM')[0].dispatchEvent(new MinimalEvent('submit')));
+    version=2;await render(s22Confirmed(),adapter);
+    await act(async()=>done.resolve(eFixtureJob({studio_output_id:'old-model-output',output_version_id:'old-model-version',title:'옛 모델 늦은 산출물',content:{body:'현재 화면 삽입 금지'}})));
+    assert.equal(sends,1);assert.doesNotMatch(container.textContent,/옛 모델 늦은 산출물|현재 화면 삽입 금지/);
+    assert.match(container.textContent,/처리 상태|접수된 작업/);
+    assert.ok(buttonByText(container,'처리 상태 확인'));
+  });
+});
+
+
+test('E Library 설정 변경은 원설정을 추정하지 않고 해당 Output에 완전한 재입력·확정을 결속한다',async()=>{
+  const calls=[];
+  const adapter=eSelectedFixture({authorizeGeneration:async(input,options)=>{calls.push({kind:'auth',input,options});return {step_up_authorization_id:null};},
+    createStudioVersion:async(id,input,options)=>{calls.push({kind:'revision',id,input,options});return {job_id:'job-settings',status:'queued'};},
+    getGenerationJob:async()=>({job_id:'job-settings',status:'completed',studio_output_id:'output-target',output_version_id:'settings-version-2',output_type:'comparison_table',title:'변경 설정 비교표',output:{content:{rows:[]},citations:[]}})});
+  const state={...s23State(),sources:s22Sources,settings:{sourceVersionIds:['source-version-1']}};
+  await withS22Studio(state,adapter,async({container,act})=>{
+    assert.equal(buttonByText(container,'설정 변경 새 Version').disabled,true);
+    await act(async()=>buttonByText(container,'설정 변경 준비').dispatchEvent(new MinimalEvent('click')));
+    assert.equal(s22Props(s22Field(container,'목적','INPUT')).value,'');
+    assert.equal(buttonByText(container,'설정 변경 생성').disabled,true);
+    for(const [label,tag,value] of [['목적','INPUT','현재 자료 비교'],['독자','INPUT','검토자'],['분량','SELECT','short'],['구성','SELECT','summary-body-conclusion'],['출력 형식','SELECT','csv'],['검토 조건','SELECT','review_required']]){
+      await act(async()=>s22Props(s22Field(container,label,tag)).onChange({currentTarget:{value}}));
+    }
+    await act(async()=>s22Props(s22Field(container,'변경 사유','INPUT')).onChange({currentTarget:{value:'표현 범위 변경'}}));
+    assert.equal(buttonByText(container,'설정 변경 생성').disabled,true);
+    await act(async()=>buttonByText(container,'설정 확인').dispatchEvent(new MinimalEvent('click')));
+    await act(async()=>findElements(container,node=>node.tagName==='FORM')[0].dispatchEvent(new MinimalEvent('submit')));
+    assert.equal(calls.length,2);assert.equal(calls[0].input.operation,'regenerate');assert.equal(calls[0].input.output_id,'output-target');
+    assert.equal(calls[0].input.previous_version_id,'version-target-1');assert.equal(calls[0].input.revision_type,'settings_change');
+    assert.deepEqual(calls[0].input.settings,{purpose:'현재 자료 비교',audience:'검토자',language:'ko',source_version_ids:['source-version-1'],ruleset_version_id:null,length:'short',structure:'summary-body-conclusion',output_format:'csv',review_condition:'review_required'});
+    assert.equal(calls[1].id,'output-target');assert.equal(calls[0].options.idempotencyKey,calls[1].options.idempotencyKey);
+    assert.equal(Object.hasOwn(calls[1].input,'content'),false);assert.match(container.textContent,/변경 설정 비교표/);
+  });
+});
+
+
+test('E POST 중 Source 변경은 늦은 Job 영수증과 같은 요청키를 보존하고 재POST하지 않는다',async()=>{
+  const accepted=s22Deferred();const calls=[];
+  const adapter=eSelectedFixture({createGeneration:(input,options)=>{calls.push({input,options});return accepted.promise;},getGenerationJob:async id=>({job_id:id,status:'completed',studio_output_id:'old-post-output',output_version_id:'old-post-version',output_type:'comparison_table',title:'옛 입력 결과',output:{content:{body:'늦은 본문'},citations:[]}})});
+  await withS22Studio(s22Confirmed(),adapter,async({container,act,render})=>{
+    await act(async()=>findElements(container,node=>node.tagName==='FORM')[0].dispatchEvent(new MinimalEvent('submit')));
+    const changed=s22Confirmed();changed.settings={...changed.settings,sourceVersionIds:['source-version-2']};changed.sources=[{sourceId:'source-2',sourceVersionId:'source-version-2',ready:true}];
+    await render(changed,adapter);assert.equal(calls[0].options.signal.aborted,true);
+    assert.match(container.textContent,/접수 식별자를 받지 못했습니다/);
+    await act(async()=>accepted.resolve({job_id:'late-accepted-job',status:'queued'}));
+    assert.ok(buttonByText(container,'처리 상태 확인'));assert.equal(buttonByText(container,'생성').disabled,true);
+    await act(async()=>buttonByText(container,'처리 상태 확인').dispatchEvent(new MinimalEvent('click')));
+    assert.equal(calls.length,1);assert.doesNotMatch(container.textContent,/옛 입력 결과|늦은 본문/);
+    assert.match(container.textContent,/설정이 변경되기 전 접수된 작업/);
+  });
+});
+
+test('E 생성 인증 확인의 같은 이벤트 중복은 재인증과 제출을 한 번만 수행한다',async()=>{
+  const gate=s22Deferred();let auth=0,sends=0;
+  const adapter=eSelectedFixture({authorizeGeneration:async()=>{auth++;if(auth===1)throw Error('STEP_UP_REQUIRED');return gate.promise;},createGeneration:async()=>{sends++;return {job_id:'single-confirm',status:'queued'};},getGenerationJob:async()=>({status:'unavailable'})});
+  await withS22Studio(s22Confirmed(),adapter,async({container,act})=>{
+    await act(async()=>findElements(container,node=>node.tagName==='FORM')[0].dispatchEvent(new MinimalEvent('submit')));
+    await act(async()=>s22Props(s22Field(container,'생성 인증 비밀번호','INPUT')).onChange({currentTarget:{value:'test-owned-password'}}));
+    const confirm=s22Props(buttonByText(container,'생성 인증 확인')).onClick;
+    await act(async()=>{confirm();confirm();});
+    assert.equal(auth,2);assert.equal(sends,0);
+    await act(async()=>gate.resolve({step_up_authorization_id:'single-fixture-proof'}));assert.equal(sends,1);
+  });
+});
+
+
+test('E 같은 Source라도 원 Run 문맥이 바뀌면 대기 중 생성 인증을 폐기한다',async()=>{
+  const grant=s22Deferred();let sends=0;
+  const adapter=eSelectedFixture({authorizeGeneration:()=>grant.promise,createGeneration:async()=>{sends++;}});
+  const original={...s22Confirmed(),grounded:{sourceId:'source-1',sourceVersionIds:['source-version-1'],runId:'run-original',runResultId:'result-original'}};
+  await withS22Studio(original,adapter,async({container,act,render})=>{
+    await act(async()=>findElements(container,node=>node.tagName==='FORM')[0].dispatchEvent(new MinimalEvent('submit')));
+    await render({...original,grounded:{...original.grounded,runId:'run-new',runResultId:'result-new'}},adapter);
+    await act(async()=>grant.resolve({step_up_authorization_id:'old-context-proof'}));assert.equal(sends,0);
+    assert.doesNotMatch(container.textContent,/old-context-proof/);
+  });
+});
+
+test('D 기본값 Studio 확정 중 Source가 바뀌었다 돌아와도 이전 명령은 실행하지 않는다',async()=>{
+  const confirmation=s22Deferred();let version=null,auths=0,sends=0;
+  const adapter={getStudioModelSettingsVersion:()=>version,ensureStudioModelSettingsVersion:()=>confirmation.promise,
+    authorizeGeneration:async()=>{auths++;return {step_up_authorization_id:null};},
+    createGeneration:async()=>{sends++;return {job_id:'job-default-stale',status:'queued'};},getGenerationJob:async()=>({status:'unavailable'})};
+  await withS22Studio(s22Confirmed(),adapter,async({container,act,render})=>{
+    await act(async()=>findElements(container,node=>node.tagName==='FORM')[0].dispatchEvent(new MinimalEvent('submit')));
+    const other=s22Confirmed();other.settings={...other.settings,sourceVersionIds:['source-version-2']};other.sources=[{sourceId:'source-2',sourceVersionId:'source-version-2',ready:true}];
+    await render(other,adapter);await render(s22Confirmed(),adapter);
+    await act(async()=>{version=1;confirmation.resolve(1);await Promise.resolve();});
+    assert.equal(auths,0);assert.equal(sends,0);assert.match(container.textContent,/변경|확인/u);
+  });
 });

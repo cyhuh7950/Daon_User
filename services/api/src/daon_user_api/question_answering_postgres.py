@@ -49,6 +49,7 @@ class QuestionContext:
     trace_id: str
     policy_version: str
     notebook_id: str | None = None
+    model_settings: object | None = None
 
     def __post_init__(self) -> None:
         if any(not isinstance(value, str) or not _SAFE_ID.fullmatch(value) for value in (
@@ -104,6 +105,8 @@ class StoredQuestionAnswer:
     citations: tuple[StoredCitation, ...]
     provider_kind: str | None = None
     egress_scope: Mapping[str, object] | None = None
+    grounding_status: str | None = None
+    next_actions: tuple[str, ...] = ()
 
 
 class PostgresQuestionAnsweringRepository:
@@ -543,11 +546,18 @@ class PostgresQuestionAnsweringRepository:
                 )
                 for row in rows if row[2] is not None and row[3] is not None
             )
+            if "grounding_status" in result_payload or "next_actions" in result_payload:
+                if (not isinstance(result_payload.get("answer"),str) or not 1<=len(result_payload["answer"])<=8000
+                    or type(result_payload.get("insufficient")) is not bool):
+                    raise ValueError("QUESTION_RESULT_INVALID")
+            from .question_answering import stored_grounding_metadata
+            grounding_status, next_actions = stored_grounding_metadata(result_payload, citation_count=len(citations))
             return StoredQuestionAnswer(
                 run_id, str(rows[0][0]), str(result_payload["answer"]),
                 bool(result_payload["insufficient"]), citations,
                 str(rows[0][4]) if rows[0][4] is not None else None,
                 cast(Mapping[str, object], rows[0][5]) if rows[0][5] is not None else None,
+                grounding_status, next_actions,
             )
         except (KeyError, TypeError, ValueError):
             raise QuestionRepositoryError("QUESTION_RESULT_INVALID", status=500) from None
@@ -844,6 +854,46 @@ class PostgresQuestionAnsweringRepository:
             str(row[0]), str(row[1]), filename, content, content.count(b"\f") + 1,
         )
 
+    @staticmethod
+    def _citation_notebook_scope(context):
+        """과거 질문 binding 또는 실제 Studio 실행·산출물 계보만 원문 읽기에 사용한다."""
+        if context.notebook_id is None:
+            return " AND NOT EXISTS(SELECT 1 FROM run_results sr WHERE sr.tenant_id=c.tenant_id AND sr.workspace_id=c.workspace_id AND sr.record_id=c.run_result_id AND sr.canonical_json->>'kind'='studio_execution')",()
+        clause=""" AND EXISTS(SELECT 1 FROM run_results rr JOIN runs r
+          ON (r.tenant_id,r.workspace_id,r.record_id)=(rr.tenant_id,rr.workspace_id,rr.run_id)
+          CROSS JOIN (SELECT %s::text notebook_id,%s::text actor_id) scope
+          WHERE (rr.tenant_id,rr.workspace_id,rr.record_id)=(c.tenant_id,c.workspace_id,c.run_result_id)
+          AND (EXISTS(SELECT 1 FROM notebook_bindings nb WHERE
+            (nb.tenant_id,nb.workspace_id,nb.record_id)=(r.tenant_id,r.workspace_id,r.conversation_id)
+            AND nb.binding_kind='conversation_thread' AND nb.notebook_id=scope.notebook_id)
+          OR (rr.canonical_json->>'kind'='studio_execution' AND r.canonical_json->>'kind'='studio_execution'
+            AND r.canonical_json->>'notebook_id'=scope.notebook_id
+            AND rr.canonical_json->>'notebook_id'=scope.notebook_id
+            AND r.state='completed' AND r.created_by=scope.actor_id AND rr.created_by=scope.actor_id AND c.created_by=scope.actor_id
+            AND EXISTS(SELECT 1 FROM model_attempts ma JOIN routing_decisions rd
+              ON (rd.tenant_id,rd.workspace_id,rd.record_id)=(ma.tenant_id,ma.workspace_id,ma.routing_decision_id)
+              WHERE (ma.tenant_id,ma.workspace_id,ma.record_id)=(rr.tenant_id,rr.workspace_id,rr.selected_model_attempt_id)
+              AND rd.run_id=r.record_id AND ma.routing_decision_id=rr.routing_decision_id)
+            AND EXISTS(SELECT 1 FROM output_versions ov JOIN notebook_bindings nb
+              ON (nb.tenant_id,nb.workspace_id,nb.record_id)=(ov.tenant_id,ov.workspace_id,ov.record_id)
+              WHERE (ov.tenant_id,ov.workspace_id)=(r.tenant_id,r.workspace_id)
+              AND nb.binding_kind='output_version' AND nb.notebook_id=scope.notebook_id
+              AND ov.created_by=scope.actor_id
+              AND ov.canonical_json->'source_lineage'->>'notebook_id'=scope.notebook_id
+              AND ov.canonical_json->'execution_lineage'->>'run_id'=r.record_id
+              AND ov.canonical_json->'execution_lineage'->>'model_attempt_id'=rr.selected_model_attempt_id
+              AND EXISTS(SELECT 1 FROM evidence_references er WHERE
+                (er.tenant_id,er.workspace_id,er.output_version_id)=(ov.tenant_id,ov.workspace_id,ov.record_id)
+                AND er.source_version_id=c.source_version_id AND er.evidence_span_id=c.evidence_span_id
+                AND er.canonical_json->>'citation_id'=c.record_id)))))"""
+        return clause,(context.notebook_id,context.actor_id)
+
+    def _check_studio_citation_source(self,connection,context,row,*,studio_flag_index):
+        if len(row)>studio_flag_index and row[studio_flag_index] is True:
+            from .question_answering_service import QuestionInputSource
+            self._knowledge_selections(connection,context,(QuestionInputSource(
+                origin="raw_source",context_item_id=row[0],source_id=row[0],source_version_id=row[1]),),write=False)
+
     def read_citation_pdf(
         self, context: QuestionContext, citation_id: str,
     ) -> tuple[CitationPdfContent, int]:
@@ -853,28 +903,19 @@ class PostgresQuestionAnsweringRepository:
             with self._cloud_store._transaction(
                 self._cloud_context(context, "citation.read"),
             ) as connection:
-                notebook_clause = (
-                    " AND EXISTS (SELECT 1 FROM run_results rr JOIN runs r ON "
-                    "r.tenant_id=rr.tenant_id AND r.workspace_id=rr.workspace_id "
-                    "AND r.record_id=rr.run_id JOIN notebook_bindings nb ON "
-                    "nb.tenant_id=r.tenant_id AND nb.workspace_id=r.workspace_id "
-                    "AND nb.binding_kind='conversation_thread' AND nb.record_id=r.conversation_id "
-                    "WHERE rr.tenant_id=c.tenant_id AND rr.workspace_id=c.workspace_id "
-                    "AND rr.record_id=c.run_result_id AND nb.notebook_id=%s)"
-                    if context.notebook_id is not None else ""
-                )
+                notebook_clause,notebook_params=self._citation_notebook_scope(context)
                 row = connection.execute(
                     "SELECT c.canonical_json->>'source_id',c.source_version_id,"
-                    "c.canonical_json->>'page',es.canonical_json->>'page' "
+                    "c.canonical_json->>'page',es.canonical_json->>'page',EXISTS(SELECT 1 FROM run_results sr WHERE (sr.tenant_id,sr.workspace_id,sr.record_id)=(c.tenant_id,c.workspace_id,c.run_result_id) AND sr.canonical_json->>'kind'='studio_execution') "
                     "FROM citations c JOIN evidence_spans es ON "
                     "es.tenant_id=c.tenant_id AND es.workspace_id=c.workspace_id "
                     "AND es.record_id=c.evidence_span_id WHERE c.record_id=%s "
                     "AND NOT EXISTS (SELECT 1 FROM deletion_requests dr WHERE dr.tenant_id=c.tenant_id "
                     "AND dr.workspace_id=c.workspace_id AND dr.source_id=c.canonical_json->>'source_id' "
                     "AND dr.source_active=false)" + notebook_clause,
-                    (citation_id, context.notebook_id)
-                    if context.notebook_id is not None else (citation_id,),
+                    (citation_id,*notebook_params),
                 ).fetchone()
+                if row is not None:self._check_studio_citation_source(connection,context,row,studio_flag_index=4)
         except CloudDatabaseError as error:
             raise QuestionRepositoryError(
                 "QUESTION_DATABASE_UNAVAILABLE", status=503, retryable=error.retryable,
@@ -903,22 +944,13 @@ class PostgresQuestionAnsweringRepository:
             with self._cloud_store._transaction(
                 self._cloud_context(context, "citation.read"),
             ) as connection:
-                notebook_clause = (
-                    " AND EXISTS (SELECT 1 FROM run_results rr JOIN runs r ON "
-                    "r.tenant_id=rr.tenant_id AND r.workspace_id=rr.workspace_id "
-                    "AND r.record_id=rr.run_id JOIN notebook_bindings nb ON "
-                    "nb.tenant_id=r.tenant_id AND nb.workspace_id=r.workspace_id "
-                    "AND nb.binding_kind='conversation_thread' AND nb.record_id=r.conversation_id "
-                    "WHERE rr.tenant_id=c.tenant_id AND rr.workspace_id=c.workspace_id "
-                    "AND rr.record_id=c.run_result_id AND nb.notebook_id=%s)"
-                    if context.notebook_id is not None else ""
-                )
+                notebook_clause,notebook_params=self._citation_notebook_scope(context)
                 row = connection.execute(
                     "SELECT c.canonical_json->>'source_id',c.source_version_id,"
                     "c.canonical_json->>'page',es.canonical_json->>'page',"
                     "es.canonical_json,s.canonical_json->>'kind',"
                     "COALESCE(sv.canonical_json->>'filename',s.canonical_json->>'filename',sv.record_id),"
-                    "s.state,es.record_id,c.canonical_json->'locator' FROM citations c JOIN evidence_spans es ON "
+                    "s.state,es.record_id,c.canonical_json->'locator',EXISTS(SELECT 1 FROM run_results sr WHERE (sr.tenant_id,sr.workspace_id,sr.record_id)=(c.tenant_id,c.workspace_id,c.run_result_id) AND sr.canonical_json->>'kind'='studio_execution') FROM citations c JOIN evidence_spans es ON "
                     "es.tenant_id=c.tenant_id AND es.workspace_id=c.workspace_id "
                     "AND es.record_id=c.evidence_span_id AND es.source_version_id=c.source_version_id JOIN source_versions sv ON "
                     "sv.tenant_id=c.tenant_id AND sv.workspace_id=c.workspace_id "
@@ -933,9 +965,9 @@ class PostgresQuestionAnsweringRepository:
                     "AND newer.version>sv.version) AND NOT EXISTS (SELECT 1 FROM deletion_requests dr "
                     "WHERE dr.tenant_id=s.tenant_id AND dr.workspace_id=s.workspace_id "
                     "AND dr.source_id=s.record_id AND dr.source_active=false)" + notebook_clause,
-                    (citation_id, context.notebook_id)
-                    if context.notebook_id is not None else (citation_id,),
+                    (citation_id,*notebook_params),
                 ).fetchone()
+                if row is not None:self._check_studio_citation_source(connection,context,row,studio_flag_index=10)
         except CloudDatabaseError as error:
             raise QuestionRepositoryError(
                 "QUESTION_DATABASE_UNAVAILABLE", status=503, retryable=error.retryable,
@@ -1243,8 +1275,11 @@ class PostgresQuestionAnsweringRepository:
             or not isinstance(egress_authorization,Mapping) or context.notebook_id is None):
             raise QuestionRepositoryError('QUESTION_RESULT_INVALID')
         payload=dict(request_payload)
-        if (set(payload)-{'question','source_id','source_version_id','context_mode','notebook_id','knowledge_context'}
+        if (set(payload)-{'question','source_id','source_version_id','context_mode','notebook_id','knowledge_context','model_settings_version'}
             or not isinstance(payload.get('question'),str) or not payload['question'].strip()):
+            raise QuestionRepositoryError('QUESTION_RESULT_INVALID')
+        if 'model_settings_version' in payload and (type(payload['model_settings_version']) is not int
+            or context.model_settings is None or payload['model_settings_version']!=context.model_settings.version):
             raise QuestionRepositoryError('QUESTION_RESULT_INVALID')
         actual_question=payload['question'] if question is None else question
         # legacy 지문의 strip만 허용한다. 역방향 정규화/다른 질문은 원 선택으로 취급하지 않는다.
@@ -1436,6 +1471,7 @@ class PostgresQuestionAnsweringRepository:
                     'data_area':'workspace','data_classification':'workspace_private','egress_decision_id':egress_id,
                     'egress_policy_fingerprint':authorization['policy_fingerprint'],'frozen_routing_context':dict(frozen),
                     'user_policy_version':context.policy_version,'organization_policy_version':context.policy_version,
+                    **({'notebook_model_settings':context.model_settings.as_dict()} if context.model_settings is not None else {}),
                     'cost_limit':0,'currency':'USD',
                     'prompt_version':'general-conversation-v1' if mode=='general_ungrounded' else 'cp3-grounded-question-v1',
                     'tool_version':'provider-chat-v1' if mode=='general_ungrounded' else 'document-index-v1'},
@@ -1486,6 +1522,16 @@ class PostgresQuestionAnsweringRepository:
             and not re.fullmatch(r"sha256:[0-9a-f]{64}", request_fingerprint)
         ):
             raise QuestionRepositoryError("QUESTION_RESULT_INVALID")
+        if not isinstance(result.next_actions,tuple):
+            raise QuestionRepositoryError("QUESTION_RESULT_INVALID")
+        result_metadata = {}
+        if result.grounding_status is not None or result.next_actions:
+            from .question_answering import stored_grounding_metadata
+            result_metadata={"grounding_status":result.grounding_status,"next_actions":list(result.next_actions)}
+            try:
+                stored_grounding_metadata({**result_metadata,"insufficient":result.insufficient},citation_count=len(result.cited_chunk_ids))
+            except ValueError:
+                raise QuestionRepositoryError("QUESTION_RESULT_INVALID") from None
         evidence_by_id = {item.chunk_id: item for item in evidence}
         if any(chunk_id not in evidence_by_id for chunk_id in result.cited_chunk_ids):
             raise QuestionRepositoryError("QUESTION_RESULT_INVALID")
@@ -1679,6 +1725,8 @@ class PostgresQuestionAnsweringRepository:
                     "prompt_version": "general-conversation-v1" if general else "cp3-grounded-question-v1",
                     "tool_version": "provider-chat-v1" if general else "document-index-v1",
                 }
+                if context.model_settings is not None:
+                    run_snapshot_payload["notebook_model_settings"] = context.model_settings.as_dict()
                 self._insert_canon(connection, context, "run_snapshots", run_snapshot_id,
                     run_snapshot_payload,
                     extra_columns=("run_id", "scope_snapshot_id", "routing_policy_version_id"),
@@ -1696,6 +1744,7 @@ class PostgresQuestionAnsweringRepository:
                         "run_id": run_id, "deployment_id": deployment_id,
                         "model_artifact_id": artifact_id, "outcome": "succeeded",
                         "usage": dict(result.usage),
+                        **({"notebook_model_settings":context.model_settings.as_dict()} if context.model_settings is not None else {}),
                     }, extra_columns=(
                         "routing_decision_id", "model_deployment_id", "model_artifact_id",
                         "candidate_order", "started_at", "finished_at", "usage_json",
@@ -1708,6 +1757,7 @@ class PostgresQuestionAnsweringRepository:
                 self._insert_canon(connection, context, "run_results", run_result_id, {
                     "run_id": run_id, "answer": result.answer,
                     "insufficient": result.insufficient,
+                    **result_metadata,
                     "citation_ids": [item.citation_id for item in citations],
                 }, extra_columns=("run_id", "routing_decision_id", "selected_model_attempt_id"),
                     extra_values=(
@@ -1779,5 +1829,5 @@ class PostgresQuestionAnsweringRepository:
             ) from None
         return StoredQuestionAnswer(
             run_id, run_result_id, result.answer, result.insufficient, citations,
-            selection.provider_kind, replay_egress_scope,
+            selection.provider_kind, replay_egress_scope, result.grounding_status, result.next_actions,
         )
