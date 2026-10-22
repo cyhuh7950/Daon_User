@@ -577,7 +577,8 @@ test("custom router Auto is offered only after an admin enables it and saves its
     const routerToggle = findElements(view.container, (node) => node.tagName === "INPUT" && node.parentNode?.textContent.includes("라우터 Auto 사용"))[0];
     assert.ok(routerToggle);
     await setChecked(view.act, routerToggle, true);
-    assert.equal(controlFor(view.container, "Auto 모델 ID").value, "auto");
+    assert.equal(controlFor(view.container, "Auto 모델 ID").value, "");
+    await fill(view.act, controlFor(view.container, "Auto 모델 ID"), "auto");
     assert.match(view.container.textContent, /Auto · auto/u);
     await fill(view.act, controlFor(view.container, "Provider 표시 이름"), "Media Bridge Server");
     await fill(view.act, controlFor(view.container, "연결 이름"), "Media Bridge Server");
@@ -809,6 +810,7 @@ test("saved personal CUSTOM needs a one-time test Key when enabling router Auto"
     const routerToggle = findElements(view.container, (node) => node.tagName === "INPUT" && node.parentNode?.textContent.includes("라우터 Auto 사용"))[0];
     await setChecked(view.act, routerToggle, true);
     assert.equal(buttonByText(view.container, "연결 시험 및 저장").disabled, true);
+    await fill(view.act, controlFor(view.container, "Auto 모델 ID"), "configured-route");
     await fill(view.act, controlFor(view.container, "API Key 또는 Client Key"), "fixture-one-time-key");
     assert.equal(buttonByText(view.container, "연결 시험 및 저장").disabled, false);
   } finally { await view.cleanup(); }
@@ -1035,7 +1037,7 @@ test("OpenRouter Auto uses the actual openrouter/auto ID in the admin save", asy
   const view = await mountAdminFixture(fixture, "openrouter-auto-real-id");
   try {
     assert.equal(controlFor(view.container, "Auto 모델 ID").value, "openrouter/auto");
-    assert.equal(reactProps(controlFor(view.container, "Auto 모델 ID")).readOnly, true);
+    assert.notEqual(reactProps(controlFor(view.container, "Auto 모델 ID")).readOnly, true);
     const option = findElements(view.container, (node) => node.tagName === "INPUT" && node.parentNode?.textContent.includes("Auto · openrouter/auto"))[0];
     await setChecked(view.act, option, true);
     await click(view.act, buttonByText(view.container, "연결 시험 및 저장"));
@@ -1410,4 +1412,54 @@ test("provider view helpers expose safe status and connection-name model choices
   } finally {
     await rm(output, { recursive: true, force: true });
   }
+});
+
+test("HC1 저장 Auto 설정이 없으면 Provider 이름으로 합성하지 않고 체크 후 정확 ID를 입력한다",async()=>{
+  const connection={connection_id:"route-config",provider_code:"OMNIROUTE",adapter_type:"OMNIROUTE",provider_name:"설정 연결",display_name:"설정 연결",base_url:"https://omniroute.example/v1",short_code:"OM",access_mode:"public",credential_requirement:"required",auto_model_id:null,
+    configured:true,allowed_model_ids:["manual-model"],enabled:true,verification_status:"verified",version:1,catalog_status:"ready",catalog_version:1,models:[{model_id:"manual-model",catalog_status:"ready",effective_capabilities:["text_generation"]}]};
+  const fixture=adminFixture({existingConnections:[connection]});
+  const view=await mountAdminFixture(fixture,"hc-auto-exact-setting");
+  try{
+    assert.equal(findElements(view.container,node=>node.tagName==="LABEL"&&node.textContent.startsWith("Auto 모델 ID")).length,0);
+    const toggle=findElements(view.container,node=>node.tagName==="INPUT"&&node.parentNode?.textContent.includes("라우터 Auto 사용"))[0];assert.ok(toggle);
+    await setChecked(view.act,toggle,true);
+    assert.equal(controlFor(view.container,"Auto 모델 ID").value,"");
+    assert.equal(buttonByText(view.container,"연결 시험 및 저장").disabled,true);
+    await fill(view.act,controlFor(view.container,"Auto 모델 ID"),"configured/route-choice");
+    assert.notEqual(reactProps(controlFor(view.container,"Auto 모델 ID")).readOnly,true);
+    assert.equal(fixture.requests.filter(request=>request.method!=="GET").length,0);
+    await click(view.act,buttonByText(view.container,"변경 취소"));
+    assert.equal(findElements(view.container,node=>node.tagName==="LABEL"&&node.textContent.startsWith("Auto 모델 ID")).length,0);
+    assert.equal(connection.auto_model_id,null);
+  }finally{await view.cleanup();}
+});
+
+test("HC1 기존 Auto ID는 설정에서 편집하고 정확 값·버전으로 한번 저장 후 재조회한다",async()=>{
+  const connection={connection_id:"route-editable",provider_code:"OMNIROUTE",adapter_type:"OMNIROUTE",provider_name:"설정 라우터",display_name:"설정 라우터",base_url:"https://omniroute.example/v1",short_code:"OM",access_mode:"public",credential_requirement:"required",auto_model_id:"stored-route",
+    configured:true,allowed_model_ids:["stored-route"],enabled:true,verification_status:"verified",version:3,catalog_status:"ready",catalog_version:1,models:[{model_id:"stored-route",catalog_status:"ready",effective_capabilities:["text_generation"]}]};
+  const fixture=adminFixture({existingConnections:[connection]}),base=fixture.fetch;let writes=0,key;
+  fixture.fetch=async(url,options={})=>{
+    if(String(url)==="/bff/api/admin/provider-connections/route-editable"&&options.method==="PUT"){
+      writes++;const body=JSON.parse(options.body);key=options.headers["Idempotency-Key"];fixture.requests.push({path:String(url),method:"PUT",body});
+      const {expected_version,...safe}=body;Object.assign(connection,safe,{version:expected_version+1,configured:true});
+      connection.models=body.allowed_model_ids.map(model_id=>({model_id,catalog_status:"ready",effective_capabilities:["text_generation"]}));
+      return Response.json({data:connection});
+    }
+    return base(url,options);
+  };
+  const view=await mountAdminFixture(fixture,"hc-auto-save-exact");
+  try{
+    assert.equal(controlFor(view.container,"Auto 모델 ID").value,"stored-route");
+    assert.notEqual(reactProps(controlFor(view.container,"Auto 모델 ID")).readOnly,true);
+    await fill(view.act,controlFor(view.container,"Auto 모델 ID"),"configured/route-choice");
+    const choice=findElements(view.container,node=>node.tagName==="INPUT"&&node.parentNode?.textContent.includes("Auto · configured/route-choice"))[0];
+    await setChecked(view.act,choice,true);
+    assert.equal(connection.auto_model_id,"stored-route");assert.equal(writes,0);
+    await click(view.act,buttonByText(view.container,"연결 시험 및 저장"));
+    assert.equal(writes,1);assert.ok(key);assert.equal(connection.auto_model_id,"configured/route-choice");
+    const body=fixture.requests.find(request=>request.method==="PUT").body;
+    assert.equal(body.auto_model_id,"configured/route-choice");assert.equal(body.expected_version,3);
+    assert.deepEqual(body.allowed_model_ids,["stored-route","configured/route-choice"]);
+    assert.match(view.container.textContent,/서버 저장값을 확인/u);
+  }finally{await view.cleanup();}
 });

@@ -765,8 +765,8 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
     }catch(error){if(!controller.signal.aborted&&sameModelScope(owner))setNotebookModel({status:"error",view:null,code:error?.message});}
   };
   useEffect(()=>{modelSaveRetry.current=null;loadNotebookModel();return()=>modelRequest.current?.abort();},[adapter,workspaceId]);
-  const saveNotebookModel=async(selection,{retry=false}={})=>{
-    if(questionRequestRef.current||modelRequest.current?.saving)return;
+  const saveNotebookModel=async(selection,{retry=false,executionRequest=null}={})=>{
+    if((questionRequestRef.current&&questionRequestRef.current!==executionRequest)||modelRequest.current?.saving)return null;
     const view=notebookModel.view;if(!view||typeof adapter?.saveModelSettings!=="function")return;
     const owner={adapter,workspaceId};
     const pending=retry?modelSaveRetry.current:{input:{...selection,expected_version:view.version},key:secureUuid()};
@@ -783,14 +783,27 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
       if(controller.signal.aborted||!sameModelScope(owner))return;
       if(!isNotebookModelSettings(current)||current.notebook_id!==receipt.notebook_id||current.version!==receipt.version
         ||["connection_id","model_id","reasoning_effort"].some(k=>current.selection?.[k]!==receipt.selection[k]))throw new Error("NOTEBOOK_MODEL_SETTINGS_CHANGED");
-      modelSaveRetry.current=null;setNotebookModel({status:"ready",view:current});
+      modelSaveRetry.current=null;modelExecutionRef.current=current.version;setNotebookModel({status:"ready",view:current});return current;
     }catch(error){if(!controller.signal.aborted&&sameModelScope(owner))setNotebookModel({status:"error",view,draft:selection,code:error?.message});}
     finally{controller.saving=false;}
   };
-  const modelReady=modelLoadedScope.current?.adapter===adapter&&modelLoadedScope.current?.workspaceId===workspaceId&&notebookModel.status==="ready"&&notebookModel.view?.version>0&&notebookModel.view.effective_selection?.origin==="notebook";
-  const canSubmitQuestion=()=>modelReady||(modelLoadedScope.current?.adapter===adapter&&modelLoadedScope.current?.workspaceId===workspaceId
-    &&notebookModel.status==="ready"&&notebookModel.view?.version===0&&!viewState.selectedSource&&!selectedKnowledgeId&&!isGeneralConversationIntent(question));
+  const modelScopeReady=modelLoadedScope.current?.adapter===adapter&&modelLoadedScope.current?.workspaceId===workspaceId&&notebookModel.status==="ready";
+  const modelReady=modelScopeReady&&notebookModel.view?.version>0&&notebookModel.view.effective_selection?.origin==="notebook";
+  const workspaceDefault=modelScopeReady&&notebookModel.view?.version===0&&notebookModel.view.selection===null
+    &&notebookModel.view.effective_selection?.origin==="workspace_default"?notebookModel.view.effective_selection:null;
+  const displayedSelection=notebookModel.view?.selection??workspaceDefault;
+  const canSubmitQuestion=()=>modelReady||Boolean(workspaceDefault)||(modelScopeReady
+    &&notebookModel.view?.version===0&&!viewState.selectedSource&&!selectedKnowledgeId&&!isGeneralConversationIntent(question));
   const modelExecutionRef=useRef(null);modelExecutionRef.current=modelReady?notebookModel.view.version:null;
+  const confirmModelRef=useRef(null);
+  confirmModelRef.current=async(executionRequest=null)=>{
+    if(modelReady)return notebookModel.view.version;
+    if(!workspaceDefault)throw new Error("NOTEBOOK_MODEL_SELECTION_REQUIRED");
+    const selection={connection_id:workspaceDefault.connection_id,model_id:workspaceDefault.model_id,reasoning_effort:workspaceDefault.reasoning_effort};
+    const saved=await saveNotebookModel(selection,{executionRequest});
+    if(!saved)throw new Error("NOTEBOOK_MODEL_SETTINGS_CHANGED");
+    return saved.version;
+  };
   const studioModelAdapter=useMemo(()=>{
     if(!adapter)return null;
     const selectedInput=input=>{
@@ -799,6 +812,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
       return input;
     };
     return {...adapter,getStudioModelSettingsVersion:()=>modelExecutionRef.current,
+      ensureStudioModelSettingsVersion:()=>confirmModelRef.current(),
       authorizeGeneration:typeof adapter.authorizeGeneration==="function"?(input,options)=>adapter.authorizeGeneration(selectedInput(input),options):undefined,
       createGeneration:typeof adapter.createGeneration==="function"?(input,options)=>adapter.createGeneration(selectedInput(input),options):undefined,
       createStudioVersion:typeof adapter.createStudioVersion==="function"?(id,input,options)=>adapter.createStudioVersion(id,input.revision_type==="user_edit"?input:selectedInput(input),options):undefined};
@@ -1561,7 +1575,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
     if (!adapter || !question.trim() || questionRequestRef.current || !workspaceMountedRef.current || !canSubmitQuestion()) return;
     const conversationMode = classifyConversationIntent(question);
     const questionEpoch = ++questionEpochRef.current;
-    const token = { controller: new AbortController() };
+    const token = { controller: new AbortController(), rawQuestion:question };
     const signal = token.controller.signal;
     questionRequestRef.current = token;
     setQuestionPending(true);
@@ -1579,7 +1593,11 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
         ? buildQuestionKnowledgeContext(viewState.selectedSource, selectedKnowledgeId)
         : null;
       if (!current()) return;
-      const input = { knowledgeContext, question: question.trim(),...(modelReady?{modelSettingsVersion:notebookModel.view.version}:{}) };
+      // 무Source 사실 질문은 기존 C 사전판정을 유지하고 기본값 저장을 요구하지 않는다.
+      const needsDefaultModel=Boolean(workspaceDefault)&&(Boolean(knowledgeContext)||isGeneralConversationIntent(token.rawQuestion));
+      const executionVersion=modelReady?notebookModel.view.version:needsDefaultModel?await confirmModelRef.current(token):null;
+      if(!current())return;
+      const input = { knowledgeContext, question: token.rawQuestion.trim(),...(executionVersion?{modelSettingsVersion:executionVersion}:{}) };
       token.input = input;
       token.options = { signal, idempotencyKey };
       let answer;
@@ -1603,6 +1621,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
       if (isQuestionSystemNotice(answer)) {
         updateConversationRequest(token,{turn_id:answer.turn_id,state:answer.grounding_status,
           response:{kind:"system",text:answer.answer,insufficient:true,citations:[],next_actions:answer.next_actions}});
+        setQuestion(value=>value===token.rawQuestion?"":value);
         // A notice never becomes a fabricated completed Run or the Studio source.
         setViewState(current=>({...current,conversationSafeError:null}));
         return;
@@ -1619,6 +1638,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
       }));
       updateConversationRequest(token,{state:"completed",response:{kind:"answer",text:safeAnswer.answer,insufficient:safeAnswer.insufficient,next_actions:safeAnswer.next_actions??[],
         citations:safeAnswer.citations.map(({content_url,...citation})=>citation)}});
+      setQuestion(value=>value===token.rawQuestion?"":value);
       reportIdempotencyRef.current = null;
     } catch (error) {
       if (!current()) return;
@@ -2349,13 +2369,13 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
             <label><span className="sr-only">질문</span><textarea rows="2" disabled={questionPending} placeholder={viewState.selectedSource || selectedKnowledgeId ? "선택한 지식과 작업에 대해 질문하세요" : "작업 내용이나 궁금한 점을 질문하세요"} value={question} onChange={(event) => setQuestion(event.currentTarget.value)} /></label>
             <div className="notebook-model-settings" aria-label="Notebook 모델 설정">
               <label>Provider · 모델<select aria-label="Provider · 모델" disabled={questionPending||notebookModel.status!=="ready"}
-                value={notebookModel.view?.selection?JSON.stringify([notebookModel.view.selection.connection_id,notebookModel.view.selection.model_id]):""}
+                value={displayedSelection?JSON.stringify([displayedSelection.connection_id,displayedSelection.model_id]):""}
                 onChange={event=>{const row=notebookModel.view?.available_models.find(v=>JSON.stringify([v.connection_id,v.model_id])===event.target.value);
                   if(row)return saveNotebookModel({connection_id:row.connection_id,model_id:row.model_id,reasoning_effort:null});}}>
                 <option value="">모델을 직접 선택해 주세요</option>
                 {(notebookModel.view?.available_models??[]).map(row=><option key={JSON.stringify([row.connection_id,row.model_id])} value={JSON.stringify([row.connection_id,row.model_id])}>{row.display_name} · {row.provider_code} / {row.model_id}</option>)}
               </select></label>
-              {(()=>{const selection=notebookModel.view?.selection;const candidate=notebookModel.view?.available_models.find(r=>r.connection_id===selection?.connection_id&&r.model_id===selection?.model_id);
+              {(()=>{const selection=displayedSelection;const candidate=notebookModel.view?.available_models.find(r=>r.connection_id===selection?.connection_id&&r.model_id===selection?.model_id);
                 const supported=candidate?.reasoning.status==="supported";
                 return <label>추론 단계<select aria-label="추론 단계" value={selection?.reasoning_effort??""}
                   disabled={questionPending||notebookModel.status!=="ready"||!supported}
@@ -2363,7 +2383,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
                   <option value="">{supported?"미지정":candidate?.reasoning.status==="unsupported"?"현재 실행 경로 미지원":"추론 설정 정보 없음"}</option>
                   {(candidate?.reasoning.values??[]).map(v=><option key={v.value} value={v.value}>{v.label}</option>)}
                 </select></label>;})()}
-              <small role="status">{notebookModel.status==="saving"?"모델 설정 저장 중":notebookModel.status==="loading"?"모델 설정 조회 중":notebookModel.status==="unsupported"?"모델 설정 조회를 지원하지 않는 연결입니다":notebookModel.status==="error"?"모델 설정을 확인하지 못했습니다. 재조회 후 다시 선택해 주세요.":modelReady?"모델 설정 저장됨":notebookModel.view?.selection?"저장한 모델을 사용할 수 없습니다. 다시 선택해 주세요.":notebookModel.view?.effective_selection?"현재 Workspace 기본값을 확인하고 모델을 직접 선택해 주세요.":"사용 가능한 모델을 직접 선택해 주세요."}</small>
+              <small role="status">{notebookModel.status==="saving"?"모델 설정 저장 중":notebookModel.status==="loading"?"모델 설정 조회 중":notebookModel.status==="unsupported"?"모델 설정 조회를 지원하지 않는 연결입니다":notebookModel.status==="error"?"모델 설정을 확인하지 못했습니다. 재조회 후 다시 선택해 주세요.":modelReady?"모델 설정 저장됨":notebookModel.view?.selection?"저장한 모델을 사용할 수 없습니다. 다시 선택해 주세요.":workspaceDefault?"Workspace 기본값 · 실행할 때 현재 모델을 저장합니다.":"사용 가능한 모델을 직접 선택해 주세요."}</small>
               {notebookModel.status==="error"?<><button type="button" onClick={()=>loadNotebookModel()}>마지막 저장값 다시 조회</button>
                 {modelSaveRetry.current?<button type="button" onClick={()=>saveNotebookModel(notebookModel.draft,{retry:true})}>같은 저장 요청 재시도</button>:null}</>:null}
             </div>

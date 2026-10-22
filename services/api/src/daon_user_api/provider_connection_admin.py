@@ -42,18 +42,10 @@ DEFAULT_PROVIDER_ENDPOINTS = {
     "SENTENCE_TRANSFORMERS": "http://localhost:8000",
 }
 
-FIXED_ROUTER_AUTO_IDS = {"OMNIROUTE": "auto", "OPENROUTER": "openrouter/auto"}
-
-
 def _router_auto_id(provider_code: str, adapter_type: str, value: str | None) -> str | None:
-    fixed = FIXED_ROUTER_AUTO_IDS.get(provider_code)
-    if fixed is not None:
-        if value is not None and value != fixed:
-            raise ProviderConnectionAdminError("PROVIDER_AUTO_MODEL_ID_INVALID", 409)
-        return fixed
     if value is None:
         return None
-    if provider_code != "CUSTOM" or adapter_type != "openai_compatible":
+    if provider_code not in {"OMNIROUTE", "OPENROUTER"} and not (provider_code == "CUSTOM" and adapter_type == "openai_compatible"):
         raise ProviderConnectionAdminError("PROVIDER_AUTO_MODEL_ID_INVALID", 409)
     try:
         return _valid_model_id(value)
@@ -879,9 +871,6 @@ class PostgresProviderConnectionService:
                 str(current[1]), command.adapter_type,
                 command.auto_model_id if command.auto_model_id_specified else current[18],
             )
-            if (str(current[1]) in FIXED_ROUTER_AUTO_IDS and command.auto_model_id_specified
-                    and command.auto_model_id is None):
-                raise ProviderConnectionAdminError("PROVIDER_AUTO_MODEL_ID_INVALID", 409)
             if current[18] is not None and current[18] != auto_model_id:
                 referenced = connection.execute(
                     "SELECT count(*) FROM workspace_model_defaults WHERE connection_id=%s AND model_id=%s",
@@ -931,7 +920,7 @@ class PostgresProviderConnectionService:
             verify_required = not custom and command.access_mode == "public" and (
                 command.base_url != str(current[3]) or command.credential is not None
                 or str(current[13]) != "public" or str(current[14]) != command.credential_requirement
-                or route_models_changed
+                or route_models_changed or (route and auto_model_id != current[18])
             )
             profile, sealed, models = self._prepare(
                 connection_id=connection_id, provider_code=str(current[1]),

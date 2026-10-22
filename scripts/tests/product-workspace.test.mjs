@@ -2579,3 +2579,129 @@ test("D Notebook 전환 뒤 늦은 모델 설정 조회는 현재 선택을 덮�
     await s18Type(workspace);await workspace.act(async()=>{await s18Submit(workspace);});assert.equal(posts,1);
   }finally{await workspace.cleanup();}
 });
+
+function defaultModelView(){
+  const view=dModelView(0);
+  const candidate={...view.available_models[0],connection_id:"connection-workspace-default",provider_code:"CUSTOM",display_name:"기존 기준모델",model_id:"uss/solar-pro4",
+    reasoning:{status:"unsupported",values:[],profile_version:null}};
+  return {...view,available_models:[...view.available_models,candidate],effective_selection:{connection_id:candidate.connection_id,model_id:candidate.model_id,reasoning_effort:null,origin:"workspace_default"}};
+}
+function confirmedDefault(view,input){
+  const selection={connection_id:input.connection_id,model_id:input.model_id,reasoning_effort:input.reasoning_effort};
+  return {...view,version:1,selection,effective_selection:{...selection,origin:"notebook"}};
+}
+const modelControl=workspace=>findElements(workspace.container,n=>n.tagName==="SELECT"&&n.getAttribute("aria-label")==="Provider · 모델")[0];
+
+test("D 기본값 실제 DOM은 저장 Workspace 모델을 표시하고 질문 명령에만 한번 확정한다",async()=>{
+  let current=defaultModelView();const saves=[],posts=[];
+  const make=()=>s18Adapter({getModelSettings:async()=>structuredClone(current),saveModelSettings:async(input,options)=>{
+    saves.push({input,key:options.idempotencyKey});current=confirmedDefault(current,input);return {notebook_id:current.notebook_id,version:1,selection:current.selection,replayed:false};},
+    askQuestion:async input=>{posts.push(input);return s18Answer("기본값으로 확인한 답변");}});
+  const workspace=await mountS17ReconnectWorkspace(make(),{outputRoot:tmpdir()});
+  try{
+    assert.equal(s18Props(modelControl(workspace)).value,JSON.stringify(["connection-workspace-default","uss/solar-pro4"]));
+    assert.match(workspace.container.textContent,/Workspace 기본값/u);assert.equal(saves.length,0);
+    await s18Type(workspace,"안녕");await workspace.act(async()=>{await s18Submit(workspace);});
+    assert.equal(saves.length,1);assert.deepEqual(saves[0].input,{connection_id:"connection-workspace-default",model_id:"uss/solar-pro4",reasoning_effort:null,expected_version:0});
+    assert.equal(posts.length,1);assert.equal(posts[0].modelSettingsVersion,1);
+    assert.equal(findElements(workspace.container,n=>n.tagName==="TEXTAREA")[0].value,"");
+    assert.match(workspace.container.textContent,/안녕/u);assert.match(workspace.container.textContent,/기본값으로 확인한 답변/u);
+    await workspace.render(make());assert.equal(saves.length,1);assert.equal(s18Props(modelControl(workspace)).value,JSON.stringify(["connection-workspace-default","uss/solar-pro4"]));
+  }finally{await workspace.cleanup();}
+});
+
+test("D 기본값 실제 DOM 저장 실패와 늦은 Notebook 저장은 질문을 실행하지 않는다",async()=>{
+  for(const late of [false,true]){
+    let current=defaultModelView(),posts=0,saves=0;const pending=deferred();let submission;
+    const workspace=await mountS17ReconnectWorkspace(s18Adapter({getModelSettings:async()=>structuredClone(current),saveModelSettings:async input=>{
+      saves++;if(!late)throw Error("NOTEBOOK_MODEL_SETTINGS_UNAVAILABLE");await pending.promise;current=confirmedDefault(current,input);return {notebook_id:current.notebook_id,version:1,selection:current.selection,replayed:false};},
+      askQuestion:async()=>{posts++;return s18Answer();}}),{outputRoot:tmpdir()});
+    try{
+      await s18Type(workspace,"안녕");await workspace.act(async()=>{submission=s18Submit(workspace);s18Submit(workspace);if(!late)await submission;});
+      assert.equal(saves,1);assert.equal(posts,0);
+      if(late){await workspace.render(s18Adapter({getModelSettings:async()=>({...dModelView(2),notebook_id:"notebook-new"})}));await workspace.act(async()=>{pending.resolve();await submission;});assert.equal(posts,0);}
+      else assert.equal(findElements(workspace.container,n=>n.tagName==="TEXTAREA")[0].value,"안녕");
+    }finally{pending.resolve();await workspace.cleanup();}
+  }
+});
+
+test("D 기본값 실제 DOM은 본인 선택 우선과 사용불가 선택의 대체 금지를 유지한다",async()=>{
+  for(const unavailable of [false,true]){
+    const view=dModelView(1);if(unavailable)view.effective_selection=null;let saves=0,posts=0;
+    const workspace=await mountS17ReconnectWorkspace(s18Adapter({getModelSettings:async()=>view,saveModelSettings:async()=>{saves++;},askQuestion:async()=>{posts++;return s18Answer();}}),{outputRoot:tmpdir()});
+    try{
+      assert.equal(s18Props(modelControl(workspace)).value,JSON.stringify(["connection-d","solar-pro4"]));
+      await s18Type(workspace,"안녕");await workspace.act(async()=>{await s18Submit(workspace);});
+      assert.equal(saves,0);assert.equal(posts,unavailable?0:1);
+    }finally{await workspace.cleanup();}
+  }
+});
+
+test("D 입력 정리는 정상 안내만 비우고 새 입력과 실패는 보존한다",async()=>{
+  for(const outcome of ["notice","changed","failed"]){
+    const pending=deferred();let submission;
+    const workspace=await mountS17ReconnectWorkspace(s18Adapter({askQuestion:()=>pending.promise}),{outputRoot:tmpdir()});
+    try{
+      const textarea=await s18Type(workspace,"안녕");await workspace.act(async()=>{submission=s18Submit(workspace);});
+      if(outcome==="changed")await s18Type(workspace,"새로 입력한 질문");
+      await workspace.act(async()=>{
+        if(outcome==="failed")pending.reject(Error("PROVIDER_TIMEOUT"));
+        else if(outcome==="notice")pending.resolve({kind:"system_notice",turn_id:"turn-input-notice",answer:"자료를 선택해 주세요.",grounding_status:"no_knowledge",insufficient:true,citations:[],next_actions:["자료를 선택해 주세요."]});
+        else pending.resolve(s18Answer("이전 질문 답변"));await submission;
+      });
+      assert.equal(textarea.value,outcome==="notice"?"":outcome==="changed"?"새로 입력한 질문":"안녕");
+      assert.match(workspace.container.textContent,/안녕/u);
+    }finally{pending.resolve(s18Answer());await workspace.cleanup();}
+  }
+});
+
+test("D 기본값 실제 Studio 명령은 저장 확인 뒤 같은 version으로만 인증과 생성한다",async()=>{
+  let current=defaultModelView();const calls=[];
+  const workspace=await mountS17ReconnectWorkspace(s18Adapter({getModelSettings:async()=>structuredClone(current),
+    saveModelSettings:async(input,options)=>{calls.push({kind:"save",input,key:options.idempotencyKey});current=confirmedDefault(current,input);return {notebook_id:current.notebook_id,version:1,selection:current.selection,replayed:false};},
+    loadNotebookConversation:async()=>({...s18Answer("근거 답변"),citations:[{citation_id:"citation-default",source_id:"source-1",source_version_id:"version-1",evidence_span_id:"span-default",page:1,origin:"raw_source",context_item_id:"source-1",origin_label:"원본 자료",authority_label:"Source",locator:{kind:"page",value:"1"}}]}),
+    authorizeGeneration:async(input,options)=>{calls.push({kind:"authorize",input,key:options.idempotencyKey});return {step_up_authorization_id:null,expires_at:"2099-01-01T00:00:00Z",generation_fingerprint:"a".repeat(64)};},
+    createGeneration:async(input,options)=>{calls.push({kind:"generate",input,key:options.idempotencyKey});return {job_id:"job-default",status:"queued",output_type:"evidence_report"};},
+    getGenerationJob:async()=>({job_id:"job-default",status:"unavailable",output_type:"evidence_report",error_code:"STUDIO_OUTPUT_UNAVAILABLE",next_actions:["필요한 자료를 확인해 주세요."]}),
+  }),{outputRoot:tmpdir()});
+  const button=text=>findElements(workspace.container,n=>n.tagName==="BUTTON"&&n.textContent.trim()===text)[0];
+  const set=async(label,value)=>{
+    const field=findElements(workspace.container,n=>n.tagName==="LABEL"&&n.textContent.startsWith(label))[0];
+    const control=findElements(field,n=>n.tagName==="INPUT"||n.tagName==="SELECT")[0];
+    await workspace.act(async()=>s18Props(control).onChange({currentTarget:{value},target:{value}}));
+  };
+  try{
+    assert.equal(calls.length,0);
+    const type=findElements(workspace.container,n=>n.tagName==="BUTTON"&&n.textContent.includes("근거 기반 보고서"))[0];
+    await workspace.act(async()=>type.dispatchEvent(new MinimalEvent("click")));
+    for(const [label,value] of [["목적","근거 정리"],["독자","검토자"],["분량","short"],["구성","summary-body-conclusion"],["출력 형식","pdf"],["검토 조건","review_required"]])await set(label,value);
+    await workspace.act(async()=>button("설정 확인").dispatchEvent(new MinimalEvent("click")));
+    const form=findElements(workspace.container,n=>n.tagName==="FORM"&&n.getAttribute("class")==="studio-config-form")[0];
+    await workspace.act(async()=>{s18Props(form).onSubmit({preventDefault(){}});s18Props(form).onSubmit({preventDefault(){}});await new Promise(resolve=>setImmediate(resolve));});
+    assert.deepEqual(calls.map(call=>call.kind),["save","authorize","generate"]);
+    assert.equal(calls[0].input.expected_version,0);assert.equal(calls[0].input.model_id,"uss/solar-pro4");
+    assert.equal(calls[1].input.model_settings_version,1);assert.equal(calls[2].input.model_settings_version,1);
+    assert.equal(calls[1].key,calls[2].key);
+  }finally{await workspace.cleanup();}
+});
+
+test("D 기본값이 있어도 무Source 사실 안내는 설정 저장과 모델 실행을 요구하지 않는다",async()=>{
+  let saves=0,posts=0;const inputs=[];
+  const workspace=await mountS17ReconnectWorkspace(s18Adapter({getModelSettings:async()=>defaultModelView(),listSources:async()=>[],listKnowledgePackages:async()=>[],
+    saveModelSettings:async()=>{saves++;throw Error("UNEXPECTED_SAVE");},askQuestion:async input=>{posts++;inputs.push(input);return {kind:"system_notice",turn_id:"turn-default-no-source",answer:"자료를 선택해 주세요.",grounding_status:"no_knowledge",insufficient:true,citations:[],next_actions:["자료를 선택해 주세요."]};}}),{outputRoot:tmpdir()});
+  try{
+    await s18Type(workspace,"계약 기간을 확인해 주세요");await workspace.act(async()=>{await s18Submit(workspace);});
+    assert.equal(saves,0);assert.equal(posts,1);assert.equal(Object.hasOwn(inputs[0],"modelSettingsVersion"),false);
+    assert.equal(findElements(workspace.container,n=>n.tagName==="TEXTAREA")[0].value,"");
+  }finally{await workspace.cleanup();}
+});
+
+test("D 입력 정리는 trim 전 제출 원문과 다르게 바뀐 공백도 보존한다",async()=>{
+  const pending=deferred();let submission;
+  const workspace=await mountS17ReconnectWorkspace(s18Adapter({askQuestion:()=>pending.promise}),{outputRoot:tmpdir()});
+  try{
+    const textarea=await s18Type(workspace,"  안녕  ");await workspace.act(async()=>{submission=s18Submit(workspace);});
+    await s18Type(workspace,"안녕 ");await workspace.act(async()=>{pending.resolve(s18Answer("인사 답변"));await submission;});
+    assert.equal(textarea.value,"안녕 ");assert.match(workspace.container.textContent,/인사 답변/u);
+  }finally{pending.resolve(s18Answer());await workspace.cleanup();}
+});

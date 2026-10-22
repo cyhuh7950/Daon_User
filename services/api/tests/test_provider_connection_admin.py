@@ -935,7 +935,7 @@ def test_update_omits_auto_model_id_preserves_existing_router(monkeypatch) -> No
     transport = FixtureTransport()
     transport.responses["https://omniroute.example/v1/responses"] = TransportResponse(200, {"output_text": "ready"})
     service, database = compatible_service(monkeypatch, transport)
-    created, _ = service.create_connection(context(), route_command(), "route-auto-create")
+    created, _ = service.create_connection(context(), replace(route_command(),auto_model_id="auto"), "route-auto-create")
     assert created["auto_model_id"] == "auto"
     assert {key: database.system_connection[key] for key in (
         "version", "updated_by", "trace_id", "policy_version", "access_mode",
@@ -968,21 +968,27 @@ def test_named_custom_is_not_router_until_admin_marks_it(monkeypatch) -> None:
     assert saved["allowed_model_ids"] == []
 
 
-def test_fixed_router_rejects_changed_auto_model_id_without_mutation(monkeypatch) -> None:
+def test_router_auto_id_change_uses_settings_and_invalid_id_preserves_state(monkeypatch) -> None:
     transport = FixtureTransport()
     transport.responses["https://omniroute.example/v1/responses"] = TransportResponse(200, {"output_text": "ready"})
     service, database = compatible_service(monkeypatch, transport)
-    service.create_connection(context(), route_command(), "route-fixed-auto-create")
-    before = durable_state(database)
-    with pytest.raises(ProviderConnectionAdminError, match="^PROVIDER_AUTO_MODEL_ID_INVALID$"):
-        service.update_connection(context(), "route-1", ProviderConnectionUpdateCommand(
-            display_name="OmniRoute", base_url="https://omniroute.example/v1", credential=None,
-            logical_model_ids=("auto",), enabled=True, expected_version=1,
-            access_mode="public", credential_requirement="required", short_code="OM",
-            adapter_type="OMNIROUTE", allowed_model_ids=("auto",), provider_name="OmniRoute",
-            auto_model_id="other-auto", auto_model_id_specified=True,
-        ), "route-fixed-auto-tamper")
-    assert durable_state(database) == before
+    service.create_connection(context(), replace(route_command(),auto_model_id="auto"), "route-configured-auto-create")
+    transport.requests.clear()
+    command=ProviderConnectionUpdateCommand(
+        display_name="OmniRoute", base_url="https://omniroute.example/v1", credential=None,
+        logical_model_ids=("configured-route",), enabled=True, expected_version=1,
+        access_mode="public", credential_requirement="required", short_code="OM",
+        adapter_type="OMNIROUTE", allowed_model_ids=("configured-route",), provider_name="OmniRoute",
+        auto_model_id="configured-route", auto_model_id_specified=True,
+    )
+    saved,_=service.update_connection(context(),"route-1",command,"route-configured-auto-change")
+    assert saved["auto_model_id"]==database.system_connection["auto_model_id"]=="configured-route"
+    assert saved["allowed_model_ids"]==["configured-route"]
+    assert [request[3]["model"] for request in transport.requests if request[0]=="POST"]==["configured-route"]
+    before=durable_state(database);before_calls=len(transport.requests)
+    with pytest.raises(ProviderConnectionAdminError,match="^PROVIDER_AUTO_MODEL_ID_INVALID$"):
+        service.update_connection(context(),"route-1",replace(command,expected_version=2,auto_model_id="bad model"),"route-invalid-configured-auto")
+    assert durable_state(database)==before and len(transport.requests)==before_calls
 
 
 def test_custom_auto_requires_openai_compatible_and_valid_id(monkeypatch) -> None:
@@ -1125,7 +1131,7 @@ def test_omniroute_create_uses_selected_model_or_auto_for_probe_and_allowlist(mo
 
     chosen = list(model_ids or ("auto",))
     assert saved["allowed_model_ids"] == chosen
-    assert {item["model_id"] for item in saved["models"]} == set(chosen) | {"auto"}
+    assert {item["model_id"] for item in saved["models"]} == set(chosen)
     assert [(item[0], item[1], item[3]["model"]) for item in transport.requests] == [
         ("POST", "https://omniroute.example/v1/responses", chosen[0])
     ]
@@ -1183,8 +1189,8 @@ def test_omniroute_unselected_model_uses_provider_default_without_granting_auto(
     service, _ = compatible_service(monkeypatch, transport)
     saved, _ = service.create_connection(context(), route_command(model_ids=()), "route-unselected-create")
     assert saved["allowed_model_ids"] == []
-    assert saved["auto_model_id"] == "auto"
-    assert next(item for item in saved["models"] if item["model_id"] == "auto")["catalog_origin"] == "logical"
+    assert saved["auto_model_id"] is None
+    assert saved["models"] == []
     assert [item[3] for item in transport.requests] == [
         {"input": "Reply OK.", "max_output_tokens": 16, "stream": False}
     ]
@@ -1264,7 +1270,7 @@ def test_omniroute_refresh_stales_missing_unallowed_but_preserves_allowed(
         200, {"data": [{"id": "old-discovered"}]},
     )
     service, database = compatible_service(monkeypatch, transport)
-    service.create_connection(context(), route_command(model_ids=(allowed_model,)), f"route-stale-create-{allowed_model}")
+    service.create_connection(context(), replace(route_command(model_ids=(allowed_model,)),auto_model_id="auto"), f"route-stale-create-{allowed_model}")
     service.refresh_catalog(context(), "route-1", 1, f"route-stale-refresh-1-{allowed_model}")
     transport.responses["https://omniroute.example/v1/models"] = TransportResponse(
         200, {"data": [{"id": "new-discovered"}]},
@@ -1475,7 +1481,7 @@ def test_omniroute_unchanged_legacy_allowlist_survives_admin_rename_and_disable(
     transport = FixtureTransport()
     transport.responses["https://omniroute.example/v1/responses"] = TransportResponse(200, {"output_text": "ready"})
     service, database = compatible_service(monkeypatch, transport)
-    service.create_connection(context(), route_command(), "route-legacy-admin-seed")
+    service.create_connection(context(), replace(route_command(),auto_model_id="auto"), "route-legacy-admin-seed")
     database.allowed_model_ids = list(legacy_allowed)
     database.models = [
         (model_id, ["text_generation"], ["text_generation"], False, "ready", 1)
@@ -1530,7 +1536,7 @@ def test_omniroute_explicit_legacy_model_change_removes_auto_only_after_probe(mo
     transport = FixtureTransport()
     transport.responses["https://omniroute.example/v1/responses"] = TransportResponse(200, {"output_text": "ready"})
     service, database = compatible_service(monkeypatch, transport)
-    service.create_connection(context(), route_command(), "route-legacy-explicit-seed")
+    service.create_connection(context(), replace(route_command(),auto_model_id="auto"), "route-legacy-explicit-seed")
     database.allowed_model_ids = ["auto", "m1", "m2", "m3", "m4"]
     database.models = [
         (model_id, ["text_generation"], ["text_generation"], False, "ready", 1)
@@ -2227,3 +2233,32 @@ def test_logical_embedding_catalog_without_runtime_request_is_not_readiness_obse
     assert result["status"] == "failed"  # 기존 health 경로에는 논리 목록 주입이 없어 실패하며 이 판정은 유지한다.
     assert transport.requests == []
     assert probes == []  # 실제 런타임 호출 없는 논리 catalog를 연결 복귀로 승격하지 않는다.
+
+@pytest.mark.parametrize("provider",["OMNIROUTE","OPENROUTER"])
+def test_hc_auto_setting_unspecified_never_injects_provider_model_id(monkeypatch,provider):
+    transport=FixtureTransport()
+    transport.responses["https://omniroute.example/v1/responses"]=TransportResponse(200,{"output_text":"ready"})
+    transport.responses["https://openrouter.ai/api/v1/models"]=TransportResponse(200,{"data":[{"id":"manual-model","architecture":{"output_modalities":["text"]}}]})
+    service,database=compatible_service(monkeypatch,transport)
+    command=replace(route_command(model_ids=("manual-model",)),provider_code=provider,adapter_type=provider,
+        base_url="https://omniroute.example/v1" if provider=="OMNIROUTE" else "https://openrouter.ai/api/v1",auto_model_id=None)
+    saved,_=service.create_connection(context(),command,"hc-auto-absent")
+    assert saved["auto_model_id"] is None and database.system_connection["auto_model_id"] is None
+    assert [row["model_id"] for row in saved["models"]]==["manual-model"]
+    assert saved["allowed_model_ids"]==["manual-model"]
+
+@pytest.mark.parametrize("provider",["OMNIROUTE","OPENROUTER"])
+def test_hc_auto_setting_exact_id_is_registered_and_verified_without_provider_rewrite(monkeypatch,provider):
+    selected="configured/route-choice"
+    transport=FixtureTransport()
+    transport.responses["https://omniroute.example/v1/responses"]=TransportResponse(200,{"output_text":"ready"})
+    transport.responses["https://openrouter.ai/api/v1/models"]=TransportResponse(200,{"data":[{"id":selected,"architecture":{"output_modalities":["text"]}}]})
+    service,database=compatible_service(monkeypatch,transport)
+    command=replace(route_command(model_ids=(selected,)),provider_code=provider,adapter_type=provider,
+        base_url="https://omniroute.example/v1" if provider=="OMNIROUTE" else "https://openrouter.ai/api/v1",auto_model_id=selected)
+    saved,_=service.create_connection(context(),command,"hc-auto-exact")
+    assert saved["auto_model_id"]==database.system_connection["auto_model_id"]==selected
+    assert saved["allowed_model_ids"]==[selected]
+    assert [row["model_id"] for row in saved["models"]]==[selected]
+    if provider=="OMNIROUTE":
+        assert [request[3].get("model") for request in transport.requests if request[0]=="POST"]==[selected]

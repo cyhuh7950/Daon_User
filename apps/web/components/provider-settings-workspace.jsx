@@ -16,7 +16,6 @@ const COMPATIBLE_APIS = Object.freeze({
   openai_compatible: { label: "OpenAI 호환", apiType: "Chat Completions" },
   anthropic_compatible: { label: "Anthropic 호환", apiType: "Messages" },
 });
-const FIXED_AUTO_MODELS = Object.freeze({ OMNIROUTE: "auto", OPENROUTER: "openrouter/auto" });
 const CAPABILITY_LABELS = Object.freeze({
   text_generation: "텍스트 생성",
   image_understanding: "이미지 이해",
@@ -74,7 +73,7 @@ function draftFromConnection(connection) {
     provider_name: connection.provider_name ?? connection.provider_code,
     base_url: connection.base_url || "",
     logical_model_ids: (connection.allowed_model_ids ?? []).join("\n"),
-    auto_model_id: connection.auto_model_id ?? FIXED_AUTO_MODELS[connection.provider_code] ?? "",
+    auto_model_id: connection.auto_model_id ?? "",
     short_code: connection.short_code ?? "",
     access_mode: connection.access_mode ?? "public",
     credential_requirement: connection.credential_requirement ?? "required",
@@ -221,7 +220,7 @@ function omniRouteSelectedModelCount(value) {
 }
 
 function unchangedRouteSelection(draft, connection) {
-  if (!Object.hasOwn(FIXED_AUTO_MODELS, draft.provider_code) || !draft.version || connection?.connection_id !== draft.connection_id) return false;
+  if (!["OMNIROUTE","OPENROUTER"].includes(draft.provider_code) || !draft.version || connection?.connection_id !== draft.connection_id) return false;
   const selected = normalizedLogicalModels(draft.logical_model_ids);
   const allowed = connection.allowed_model_ids ?? [];
   return allowed.length > 0 && selected.length === allowed.length && selected.every((modelId) => allowed.includes(modelId));
@@ -244,6 +243,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
   const [userCredentials, setUserCredentials] = useState({});
   const [selectedId, setSelectedId] = useState(null);
   const [draft, setDraft] = useState(() => emptyConnectionDraft());
+  const [routerAutoEnabled,setRouterAutoEnabled]=useState(false);
   const [credential, setCredential] = useState("");
   const [ownPersonalCredential, setOwnPersonalCredential] = useState("");
   const [previewModelIds, setPreviewModelIds] = useState([]);
@@ -283,6 +283,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
     discardPreview();
     setSelectedId(connection.connection_id);
     setDraft(draftFromConnection(connection));
+    setRouterAutoEnabled(Boolean(connection.auto_model_id));
     setCredential("");
     setOwnPersonalCredential("");
     setPreviewModelIds([]);
@@ -300,7 +301,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
     if (selected) selectConnection(selected);
     else {
       setSelectedId(null);
-      setDraft(emptyConnectionDraft());
+      setDraft(emptyConnectionDraft());setRouterAutoEnabled(false);
       setPreviewModelIds([]);
     }
   }, [selectConnection]);
@@ -386,7 +387,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
     setPendingNavigation(null);saveRetryRef.current=null;setSaveState("idle");
     if(target.kind==="refresh"){load();return;}
     if(target.kind==="select"){selectConnection(target.connection);return;}
-    discardPreview();setSelectedId(null);setDraft(emptyConnectionDraft());setCredential("");setOwnPersonalCredential("");setPreviewModelIds([]);
+    discardPreview();setSelectedId(null);setDraft(emptyConnectionDraft());setRouterAutoEnabled(false);setCredential("");setOwnPersonalCredential("");setPreviewModelIds([]);
   }
   function cancelChanges(){
     if(saveRequestRef.current)return;
@@ -394,6 +395,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
     discardPreview();setCredential("");setOwnPersonalCredential("");
     if(!uncertain){saveRetryRef.current=null;setSaveState("idle");}
     setDraft(selectedConnection?draftFromConnection(selectedConnection):emptyConnectionDraft());
+    setRouterAutoEnabled(Boolean(selectedConnection?.auto_model_id));
     setStatus({kind:"ready",message:uncertain?"입력만 되돌렸습니다. 서버 저장 여부는 여전히 확인이 필요하며 서버 작업을 취소한 것은 아닙니다. 새로고침으로 확인하세요.":"변경을 취소했습니다. 서버에 저장된 설정은 유지됩니다."});
   }
   const connectionUsage = summarizeConnectionUsage(connections);
@@ -500,6 +502,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
   async function saveConnection(includeCredential, settingsOnly=false) {
     if(saveRequestRef.current || saveState==="uncertain" || uncertainConnectionsRef.current.has(draft.connection_id))return;
     if(settingsOnly && (!draftChanged || verificationNeeded))return;
+    if(routerAutoEnabled&&!draft.auto_model_id.trim())return;
     const connectionId = draft.connection_id.trim();
     const nativeAsr=draft.provider_code==='CUSTOM' && draft.adapter_type==='asr_base_native';
     if(nativeAsr && includeCredential)return;
@@ -736,6 +739,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
 
   const busy = status.kind === "saving" || status.kind === "loading";
   const compatible = draft.provider_code === "CUSTOM" && Object.hasOwn(COMPATIBLE_APIS, draft.adapter_type);
+  const routerConfigurable=(compatible&&draft.adapter_type==="openai_compatible")||["OMNIROUTE","OPENROUTER"].includes(draft.provider_code);
   const nativeAsr = draft.provider_code==='CUSTOM' && draft.adapter_type==='asr_base_native';
   const pendingCompatible = compatible && draft.version === 0 && draft.access_mode === "personal"
     && !credential.trim() && selectedModelIds.length === 0 && !draft.auto_model_id.trim();
@@ -750,7 +754,8 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
   const managedModels = MANAGED_MODEL_PROVIDERS.has(selectedConnection?.provider_code);
   const canMutate = isSystemAdmin === true && !busy && Boolean(draft.connection_id.trim()) && Boolean(draft.provider_name.trim()) && Boolean(draft.display_name.trim()) && Boolean(draft.base_url.trim())
     && (!draft.auto_model_id || (draft.auto_model_id.length <= 256 && /^\S+$/u.test(draft.auto_model_id)))
-    && (!Object.hasOwn(FIXED_AUTO_MODELS, draft.provider_code) || routeModelsUnchanged || omniRouteSelectedModelCount(draft.logical_model_ids) <= 4)
+    && (!routerAutoEnabled || Boolean(draft.auto_model_id.trim()))
+    && (!["OMNIROUTE","OPENROUTER"].includes(draft.provider_code) || routeModelsUnchanged || omniRouteSelectedModelCount(draft.logical_model_ids) <= 4)
     && (!personalCustomProbeNeeded || Boolean(credential.trim()))
     && (!compatible || pendingCompatible || ((selectedModelIds.length >= 1 || draft.auto_model_id.trim()) && selectedModelIds.length <= 4 && (draft.version > 0 || draft.credential_requirement === "none" || Boolean(credential.trim()))));
   const canPreview = isSystemAdmin === true && compatible && !busy && saveState!=="uncertain"
@@ -797,7 +802,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
                   : <label>호환 방식<select value={draft.adapter_type} onChange={(event) => {
                     discardPreview();
                     const protocol = event.target.value;
-                    setCredential(""); setPreviewModelIds([]);
+                    setCredential(""); setPreviewModelIds([]);setRouterAutoEnabled(false);
                     if(protocol==='asr_base_native'){
                       setDraft(current=>({...current,provider_code:'CUSTOM',adapter_type:protocol,
                         display_name:'QA CPU base ASR',provider_name:'CPU base ASR',short_code:'AS',
@@ -821,9 +826,11 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
                 <div className="provider-field-wide provider-configuration-columns">
                   <div className="provider-configuration-settings">
                     <label>인증 유형{nativeAsr || draft.version > 0 && compatible ? <input readOnly value={draft.credential_requirement === "none" ? "Key 불필요" : "Key 필요"} /> : <select value={draft.credential_requirement} onChange={(event) => { discardPreview(); if (event.target.value === "none") setCredential(""); setDraft((current) => ({ ...current, credential_requirement: event.target.value, access_mode: event.target.value === "none" ? "public" : current.access_mode })); }}><option value="required">Key 필요</option><option value="none">Key 불필요</option></select>}</label>
-                    {Object.hasOwn(FIXED_AUTO_MODELS, draft.provider_code) ? <label>Auto 모델 ID<input readOnly value={draft.auto_model_id} /></label> : null}
-                    {compatible && draft.adapter_type === "openai_compatible" ? <label className="styled-check"><input type="checkbox" checked={Boolean(draft.auto_model_id)} onChange={(event) => setDraft((current) => ({ ...current, auto_model_id: event.target.checked ? "auto" : "" }))} /><span>라우터 Auto 사용</span></label> : null}
-                    {compatible && draft.adapter_type === "openai_compatible" && draft.auto_model_id ? <label>Auto 모델 ID<input value={draft.auto_model_id} maxLength={256} autoComplete="off" onChange={(event) => setDraft((current) => ({ ...current, auto_model_id: event.target.value }))} /></label> : null}
+                    {routerConfigurable ? <label className="styled-check"><input type="checkbox" checked={routerAutoEnabled||Boolean(draft.auto_model_id)} onChange={(event) => {
+                      setRouterAutoEnabled(event.target.checked);
+                      if(!event.target.checked)setDraft(current=>({...current,auto_model_id:""}));
+                    }} /><span>라우터 Auto 사용</span></label> : null}
+                    {routerConfigurable && (routerAutoEnabled||draft.auto_model_id) ? <label>Auto 모델 ID<input value={draft.auto_model_id} maxLength={256} autoComplete="off" placeholder="설정할 정확한 모델 ID" onChange={(event) => setDraft((current) => ({ ...current, auto_model_id: event.target.value }))} /></label> : null}
                     {credentialField}
                   </div>
                   <fieldset className="provider-model-picker">

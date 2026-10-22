@@ -113,3 +113,20 @@ def test_current_execution_permission_denial_removes_candidate_and_blocks_replay
 def test_private_snapshot_without_exact_notebook_binding_is_not_executable(setup_service):
     service,store,context=setup_service;save(service,context);store.bindings=[]
     with pytest.raises(NotebookModelSettingsError,match="UNAVAILABLE"):service.read(context,"notebook-a")
+
+@pytest.mark.parametrize("provider,model",[("OMNIROUTE","auto"),("OMNIROUTE","cc/claude-sonnet"),("OPENROUTER","openrouter/auto")])
+def test_registered_gateway_selection_save_execution_and_permission_revocation(setup_service,provider,model):
+    service,store,context=setup_service
+    store.candidates=[("connection-a",provider,"명시 허용 Gateway",model,3,5,provider,["text_generation"])]
+    before=len(store.rows)
+    view=service.read(context,"notebook-a")
+    assert [candidate["model_id"] for candidate in view["available_models"]]==[model]
+    assert len(store.rows)==before
+    assert save(service,context,model_id=model)["selection"]["model_id"]==model
+    execution=service.require_execution(context,"notebook-a",1)
+    assert execution.selection.model_id==model and execution.version==1
+    store.permissions=set()
+    assert service.read(context,"notebook-a")["available_models"]==[]
+    with pytest.raises(NotebookModelSettingsError):service.require_execution(context,"notebook-a",1)
+    with pytest.raises(NotebookModelSettingsError):save(service,context,model_id=model)
+    assert len(store.rows)==1

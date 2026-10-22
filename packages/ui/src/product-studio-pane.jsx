@@ -238,6 +238,7 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered, initi
   const [approvalInfo, setApprovalInfo] = useState({ items: [], unread_count: 0, error: false });
   const [approvalRefresh, setApprovalRefresh] = useState(0);
   const generationRequestRef = useRef(null);
+  const modelPreparationRef=useRef(null);
   const generationScopeRef = useRef(null);
   const detailRequestRef = useRef(null);
   const revisionRequestRef = useRef(null);
@@ -247,9 +248,9 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered, initi
   const currentInputKey=JSON.stringify({selected:state.settings?.sourceVersionIds??[],grounded:state.grounded??null,
     sources:(state.sources??[]).map(source=>[source.sourceId,source.sourceVersionId,source.ready]),locks:state.locks??[]});
   const inputScopeRef=useRef({key:currentInputKey,modelVersion:currentModelVersion,epoch:0});
-  if(inputScopeRef.current.key!==currentInputKey||inputScopeRef.current.modelVersion!==currentModelVersion){
+  if(inputScopeRef.current.key!==currentInputKey){
     inputScopeRef.current={key:currentInputKey,modelVersion:currentModelVersion,epoch:inputScopeRef.current.epoch+1};
-  }
+  }else inputScopeRef.current.modelVersion=currentModelVersion;
   generationScopeRef.current = { adapter, workspaceId: state.workspaceId };
   useEffect(() => {
     const controller = new AbortController();
@@ -367,12 +368,15 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered, initi
       setView(current=>({...current,pending:false,safeError:"STUDIO_INPUT_CHANGED"}));
     }
   };
-  const appliedInputScopeRef=useRef(inputScopeRef.current.epoch);
+  const appliedInputScopeRef=useRef({...inputScopeRef.current});
   useEffect(()=>{
-    if(appliedInputScopeRef.current===inputScopeRef.current.epoch)return;
-    appliedInputScopeRef.current=inputScopeRef.current.epoch;
+    const previous=appliedInputScopeRef.current;
+    if(previous.epoch===inputScopeRef.current.epoch&&previous.modelVersion===currentModelVersion)return;
+    appliedInputScopeRef.current={...inputScopeRef.current};
     const request=generationRequestRef.current;
     if(request&&!typedCurrent(request))invalidateTyped(request);
+    // 같은 사용자 명령의 기본값 확정은 현재 근거/이미 고정한 선택을 바꾸지 않는다.
+    if(previous.epoch===inputScopeRef.current.epoch&&((request&&typedCurrent(request))||modelPreparationRef.current))return;
     setView(current=>({...current,sources:state.sources,grounded:state.grounded,locks:state.locks,
       settings:{...current.settings,sourceVersionIds:state.settings?.sourceVersionIds??[]},settingsConfirmed:false,settingsSnapshot:null}));
   },[currentInputKey,currentModelVersion]);
@@ -450,17 +454,26 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered, initi
     }finally{request.authorizing=false;}
   };
   const beginTyped=async(kind,input,outputId=null)=>{
-    if(generationRequestRef.current||revisionRequestRef.current||actionRequestRef.current||view.pending)return;
+    if(generationRequestRef.current||modelPreparationRef.current||revisionRequestRef.current||actionRequestRef.current||view.pending)return;
+    const preparation={adapter,workspaceId:state.workspaceId,inputKey:currentInputKey,inputEpoch:inputScopeRef.current.epoch};
+    modelPreparationRef.current=preparation;
     try{
       if(!adapter?.authorizeGeneration)throw new Error("STUDIO_GENERATION_UNAVAILABLE");
-      const version=adapter.getStudioModelSettingsVersion?.();
+      setView(current=>({...current,pending:true,safeError:null}));
+      const version=typeof adapter.ensureStudioModelSettingsVersion==="function"
+        ?await adapter.ensureStudioModelSettingsVersion():adapter.getStudioModelSettingsVersion?.();
+      if(generationScopeRef.current.adapter!==preparation.adapter||generationScopeRef.current.workspaceId!==preparation.workspaceId
+        ||inputScopeRef.current.key!==preparation.inputKey||inputScopeRef.current.epoch!==preparation.inputEpoch)throw new Error("STUDIO_INPUT_CHANGED");
       if(!Number.isInteger(version)||version<1)throw new Error("NOTEBOOK_MODEL_SELECTION_REQUIRED");
       const frozen={...input,model_settings_version:version};
       const auth=kind==="generate"?{...frozen,operation:"generate"}:{workspace_id:state.workspaceId,operation:"regenerate",output_id:outputId,...frozen};
       const request={kind,input:frozen,auth,outputId,adapter,workspaceId:state.workspaceId,
         controller:new AbortController(),idempotencyKey:secureUuid(),phase:"authorize",inputEpoch:inputScopeRef.current.epoch};
-      generationRequestRef.current=request;setTypedStatus(null);await dispatchTyped(request);
-    }catch(error){setView(current=>({...current,pending:false,safeError:error.message==="NOTEBOOK_MODEL_SELECTION_REQUIRED"?error.message:"STUDIO_GENERATION_UNAVAILABLE"}));}
+      generationRequestRef.current=request;modelPreparationRef.current=null;setTypedStatus(null);await dispatchTyped(request);
+    }catch(error){
+      if(generationScopeRef.current.adapter===preparation.adapter&&generationScopeRef.current.workspaceId===preparation.workspaceId)
+        setView(current=>({...current,pending:false,safeError:["NOTEBOOK_MODEL_SELECTION_REQUIRED","NOTEBOOK_MODEL_SETTINGS_CHANGED","STUDIO_INPUT_CHANGED"].includes(error.message)?error.message:"STUDIO_GENERATION_UNAVAILABLE"}));
+    }finally{if(modelPreparationRef.current===preparation)modelPreparationRef.current=null;}
   };
   const submit=async()=>{if(canSubmitGeneration(view))await beginTyped("generate",createStudioGenerationInput(view));};
   const prepareSettingsRevision=()=>{

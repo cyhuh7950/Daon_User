@@ -57,8 +57,6 @@ def project_candidate(row):
     if type(row) not in (tuple,list) or len(row)!=8:
         raise NotebookModelSettingsError("NOTEBOOK_MODEL_SETTINGS_UNAVAILABLE",503)
     connection,provider,label,model,connection_version,catalog_version,adapter,capabilities=row
-    if model in ("auto","openrouter/auto"):
-        return None
     if provider not in _PROVIDERS or "text_generation" not in (capabilities or ()):
         return None
     if provider=="CUSTOM" and adapter not in ("","CUSTOM","openai_compatible","anthropic_compatible"):

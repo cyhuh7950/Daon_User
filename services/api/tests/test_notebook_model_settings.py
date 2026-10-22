@@ -42,10 +42,13 @@ def test_repository_exact_canonical_scope_rejects_corruption():
         decode_snapshot(context,"notebook-a",("record-a",1,None,{},"{}","0"*64,"actor-b"))
 
 
-@pytest.mark.parametrize("provider,model",[("OMNIROUTE","auto"),("OPENROUTER","openrouter/auto"),("CUSTOM","auto")])
-def test_automatic_router_alias_is_not_a_direct_model_candidate(provider,model):
+@pytest.mark.parametrize("provider,model",[("OMNIROUTE","openrouter/auto"),("OPENROUTER","auto"),("CUSTOM","auto"),("CUSTOM","openrouter/auto"),("UPSTAGE","auto")])
+def test_registered_current_model_ids_are_not_reinterpreted_by_name(provider,model):
     from daon_user_api.notebook_model_settings import project_candidate
-    assert project_candidate(("connection-a",provider,"이름",model,1,1,provider,["text_generation"])) is None
+    # 입력 row는 repository의 현재 등록/허용/권한 검사를 이미 통과한 자료다.
+    value=project_candidate(("connection-a",provider,"설정에 등록된 모델",model,1,1,provider,["text_generation"]))
+    assert value is not None and value["model_id"]==model
+    assert project_candidate(("connection-a",provider,"음성 전용",model,1,1,provider,["speech_to_text"])) is None
 
 
 def test_exact_resolver_reuses_current_credentials_without_reading_workspace_default():
@@ -96,3 +99,13 @@ def test_invalid_profile_does_not_create_decrypted_credential(monkeypatch,effort
     with pytest.raises((NotebookModelSettingsError,WorkspaceModelUnavailable)):
         with PostgresWorkspaceModelResolver(MetadataStore(),cipher).resolve(context(),"text_generation",selected=binding):pass
     assert calls==[]
+
+
+@pytest.mark.parametrize("provider,model",[("OMNIROUTE","auto"),("OPENROUTER","openrouter/auto")])
+def test_registered_gateway_auto_remains_an_explicit_text_candidate(provider,model):
+    from daon_user_api.notebook_model_settings import project_candidate
+    value=project_candidate(("connection-gateway",provider,"명시 허용 Gateway",model,3,5,provider,["text_generation"]))
+    assert value is not None
+    assert value["model_id"]==model and value["connection_id"]=="connection-gateway"
+    assert value["reasoning"]["status"]=="unknown" and value["reasoning"]["values"]==[]
+    assert project_candidate(("connection-gateway",provider,"음성 전용",model,3,5,provider,["speech_to_text"])) is None

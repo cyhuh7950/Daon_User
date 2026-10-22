@@ -1565,3 +1565,17 @@ test('E 같은 Source라도 원 Run 문맥이 바뀌면 대기 중 생성 인증
     assert.doesNotMatch(container.textContent,/old-context-proof/);
   });
 });
+
+test('D 기본값 Studio 확정 중 Source가 바뀌었다 돌아와도 이전 명령은 실행하지 않는다',async()=>{
+  const confirmation=s22Deferred();let version=null,auths=0,sends=0;
+  const adapter={getStudioModelSettingsVersion:()=>version,ensureStudioModelSettingsVersion:()=>confirmation.promise,
+    authorizeGeneration:async()=>{auths++;return {step_up_authorization_id:null};},
+    createGeneration:async()=>{sends++;return {job_id:'job-default-stale',status:'queued'};},getGenerationJob:async()=>({status:'unavailable'})};
+  await withS22Studio(s22Confirmed(),adapter,async({container,act,render})=>{
+    await act(async()=>findElements(container,node=>node.tagName==='FORM')[0].dispatchEvent(new MinimalEvent('submit')));
+    const other=s22Confirmed();other.settings={...other.settings,sourceVersionIds:['source-version-2']};other.sources=[{sourceId:'source-2',sourceVersionId:'source-version-2',ready:true}];
+    await render(other,adapter);await render(s22Confirmed(),adapter);
+    await act(async()=>{version=1;confirmation.resolve(1);await Promise.resolve();});
+    assert.equal(auths,0);assert.equal(sends,0);assert.match(container.textContent,/변경|확인/u);
+  });
+});
