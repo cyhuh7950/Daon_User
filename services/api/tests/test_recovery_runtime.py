@@ -319,6 +319,7 @@ class RecoveryRuntimeContractTests(unittest.TestCase):
             "/api/v1/backups": {"post", "get"},
             "/api/v1/backups/{id}": {"get"},
             "/api/v1/backups/{id}/restore-previews": {"post"},
+    "/api/v1/backups/{id}/restore-destinations": {"get"},
             "/api/v1/restore-requests/{id}": {"get"},
             "/api/v1/restore-requests/{id}/execute": {"post"},
             "/api/v1/restore-requests/{id}/cancel": {"post"},

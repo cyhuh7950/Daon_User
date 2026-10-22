@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "release_version": "1.0.0",
-  "released_at": "2026-08-20",
+  "released_at": "2026-10-22",
   "language": "ko-KR",
   "documents": [
     {
@@ -15,22 +15,22 @@
         "markdown": {
           "filename": "daon-getting-started.md",
           "href": "/manual/daon-getting-started.md",
-          "bytes": 25833,
-          "sha256": "7ddd4b670e323c1fc9c15e0bcce41dbba8ff2a9b366691c451c1693a9efa445e",
+          "bytes": 30789,
+          "sha256": "95b03061e486ecb2529fbbebac230219e71f9aadea687158e5cfd8c6db9cc430",
           "mime": "text/markdown; charset=utf-8"
         },
         "docx": {
           "filename": "daon-getting-started.docx",
           "href": "/manual/daon-getting-started.docx",
-          "bytes": 49670,
-          "sha256": "e1a426d0a9ef9204573fbb2566600af6536d2c0bc69dc60180bee142b4cb34e2",
+          "bytes": 51572,
+          "sha256": "bd35a65bb3ec642e0a9898070ad3cccd3cee72d897f25c113dc648dc6a366efb",
           "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         },
         "pdf": {
           "filename": "daon-getting-started.pdf",
           "href": "/manual/daon-getting-started.pdf",
-          "bytes": 381455,
-          "sha256": "3477e59958460e7fb67d694d988c0e00f2d4b59dbdd0eb92a0c9a071f62e217b",
+          "bytes": 132632,
+          "sha256": "a8890b68bae9919f047b26b5e7c7727c8702ee6583448bf3445dc891084a3345",
           "mime": "application/pdf"
         }
       }
@@ -46,22 +46,22 @@
         "markdown": {
           "filename": "daon-user-manual.md",
           "href": "/manual/daon-user-manual.md",
-          "bytes": 47112,
-          "sha256": "8cecb15a15075a5e61a128e1eb4192b2e33b752251b00de2bb68c989fb23a4e5",
+          "bytes": 52271,
+          "sha256": "a55f7cc198903c5abdb07a8b38d17a3197ffa5772cbdda89bffea4819903a926",
           "mime": "text/markdown; charset=utf-8"
         },
         "docx": {
           "filename": "daon-user-manual.docx",
           "href": "/manual/daon-user-manual.docx",
-          "bytes": 57905,
-          "sha256": "57becac687d15f4ff050d0a672f155a7f1b242189329e4bb3a8408d8485b35c0",
+          "bytes": 59791,
+          "sha256": "daf22dfce547772812ff88a4b72a8a8675417d3e46c1e435b24adc6ac654852f",
           "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         },
         "pdf": {
           "filename": "daon-user-manual.pdf",
           "href": "/manual/daon-user-manual.pdf",
-          "bytes": 559304,
-          "sha256": "9fdb08b3615a96bf174b989a1a04a13df1f0abea4700b2fbd365b9f09ae44c49",
+          "bytes": 168835,
+          "sha256": "09c9cf6bbd2001f893a3df9ab2b185f8f5b145376c97f7d0693b1b0d9f5acce5",
           "mime": "application/pdf"
         }
       }
@@ -77,22 +77,22 @@
         "markdown": {
           "filename": "daon-knowledge-llm-guide.md",
           "href": "/manual/daon-knowledge-llm-guide.md",
-          "bytes": 23294,
-          "sha256": "0925b2e7083aea7b174ba00ac1d19c9abd0fe35063d51064228df045aafb806e",
+          "bytes": 28573,
+          "sha256": "5c782f46e5a7d2b32050d1136746eacd2da54db2db6d11c5301a434d40236645",
           "mime": "text/markdown; charset=utf-8"
         },
         "docx": {
           "filename": "daon-knowledge-llm-guide.docx",
           "href": "/manual/daon-knowledge-llm-guide.docx",
-          "bytes": 49399,
-          "sha256": "d7818e6453797f6e2013a6fcb25cd0b44046e3a73ea46c7cb5b92c40f3fed614",
+          "bytes": 51434,
+          "sha256": "434881d88f823cb3997dc046c05809b31d9d04e4cfb489d8318f1de0b39557c7",
           "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         },
         "pdf": {
           "filename": "daon-knowledge-llm-guide.pdf",
           "href": "/manual/daon-knowledge-llm-guide.pdf",
-          "bytes": 364632,
-          "sha256": "4f98fd4a54b88453a4dcd95df7333495246a8659feb3134ba55a0dfa7ac879f4",
+          "bytes": 131608,
+          "sha256": "cf9c6d155789cdcd07baaf75fbc9a5c98ae6a2b19608f2832521d0df8a49c984",
           "mime": "application/pdf"
         }
       }

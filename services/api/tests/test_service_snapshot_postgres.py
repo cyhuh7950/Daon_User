@@ -10,6 +10,7 @@ import secrets
 import sys
 import time
 import unittest
+import tempfile
 from contextlib import ExitStack, contextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -1712,13 +1713,14 @@ class ServiceSnapshotOperatorTests(unittest.TestCase):
         from test_service_image_archive import _Reader
         from daon_user_api import service_snapshot as snapshot
         m = self.module()
-        root = Path(os.environ.get("DAON_SERVICE_SNAPSHOT_TEST_ROOT", "D:/tmp/daon-user-s44-d1-eoul2-20261019"))
-        self.assertTrue(root.is_absolute() and root.parent==Path("D:/tmp") and root.name in
-            {"daon-user-s44-d1-eoul2-20261019","daon-user-s44-d1-main-20261019"})
-        self.assertFalse(root.exists() or root.is_symlink())
-        for parent in (root.parent,*root.parent.parents):
-            self.assertFalse(parent.is_symlink() or getattr(parent.lstat(),"st_file_attributes",0)&0x400)
-        root.mkdir(mode=0o700)
+        parent = Path(tempfile.gettempdir()).absolute()
+        self.assertTrue(parent.is_absolute())
+        for ancestor in (parent, *parent.parents):
+            self.assertFalse(ancestor.is_symlink() or getattr(ancestor.lstat(), "st_file_attributes", 0) & 0x400)
+        owned_temp = tempfile.TemporaryDirectory(prefix="r4-snapshot-", dir=parent)
+        self.addCleanup(owned_temp.cleanup)
+        root = Path(owned_temp.name)
+        self.assertEqual(root.resolve(), root)
         try:
             for mode in ("normal","owner","spec","ciphertext","receipt-race"):
                 with self.subTest(mode=mode):
@@ -1780,7 +1782,7 @@ class ServiceSnapshotOperatorTests(unittest.TestCase):
     def test_operator_normal_assembly_consumes_image_proofs_and_schema_checked_ports(self):
         m = self.module()
         self.assertTrue(callable(getattr(m, "capture_service", None)), "실제 고정 port 조립 미구현")
-        self.assertEqual(m.current_schema_revision(), "0071")
+        self.assertEqual(m.current_schema_revision(), "0074")
 
     def test_operator_pg_identity_is_bounded_readonly_and_closes_on_error(self):
         import json
@@ -1842,13 +1844,14 @@ class ServiceSnapshotOperatorTests(unittest.TestCase):
         from daon_user_api import service_snapshot as snapshot_module
         from daon_user_api.recovery_capture import _WindowsFiles, _PosixFiles
         m = self.module()
-        root = Path(os.environ.get("DAON_SERVICE_SNAPSHOT_TEST_ROOT", "D:/tmp/daon-user-s44-d1-eoul2-20261019"))
-        allowed = {"daon-user-s44-d1-eoul2-20261019", "daon-user-s44-d1-main-20261019"}
-        self.assertTrue(root.is_absolute() and root.name in allowed and root.parent == Path("D:/tmp"))
-        self.assertFalse(root.exists() or root.is_symlink())
-        for parent in (root.parent, *root.parent.parents):
-            self.assertFalse(parent.is_symlink() or getattr(parent.lstat(), "st_file_attributes", 0) & 0x400)
-        root.mkdir(mode=0o700)
+        parent = Path(tempfile.gettempdir()).absolute()
+        self.assertTrue(parent.is_absolute())
+        for ancestor in (parent, *parent.parents):
+            self.assertFalse(ancestor.is_symlink() or getattr(ancestor.lstat(), "st_file_attributes", 0) & 0x400)
+        owned_temp = tempfile.TemporaryDirectory(prefix="r4-snapshot-", dir=parent)
+        self.addCleanup(owned_temp.cleanup)
+        root = Path(owned_temp.name)
+        self.assertEqual(root.resolve(), root)
         try:
             for mode in modes:
                 with self.subTest(mode=mode):
@@ -1960,7 +1963,7 @@ class ServiceSnapshotOperatorTests(unittest.TestCase):
                     def open_snapshot(port, spec, *, cancelled):
                         object_ref = snapshot_module.SnapshotObjectRef("tenant-a", "workspace-a", "source", "a"*32, "completed",
                             hashlib.sha256(b"synthetic-object").hexdigest(), len(b"synthetic-object"))
-                        port._active = snapshot_module.SnapshotLease("snapshot-a", "0070" if mode=="schema" else "0071", (object_ref,), port._runtime_inventory,
+                        port._active = snapshot_module.SnapshotLease("snapshot-a", "0070" if mode=="schema" else "0074", (object_ref,), port._runtime_inventory,
                             {"roles": [], "memberships": [], "relations": [], "functions": []})
                         port._deadline, port._external_cancel = time.monotonic()+30, cancelled
                         try: yield port._active
@@ -2021,7 +2024,7 @@ class ServiceSnapshotOperatorTests(unittest.TestCase):
                         self.assertEqual(sum(isinstance(event, tuple) and event[0]=="save" for event in events), 5, "API/doc/Studio 동일 image는 archive 한 개")
                         self.assertEqual(events.count("load"), 10)
                         self.assertEqual(len(physical_reads), 4)
-                        self.assertEqual(result.schema_revision, "0071")
+                        self.assertEqual(result.schema_revision, "0074")
                         source.unlink()  # 본인 합성 원본만 제거한 뒤 실제 보존본 readback.
                         verifier = snapshot_module.ServiceSnapshotExecutor(folder / "capture", master_key=key, ports=None)
                         readback = io.BytesIO(); verifier.read_stream(config.spec, "capture-a", "runtime:runtime-a", readback)

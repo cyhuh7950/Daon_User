@@ -318,11 +318,17 @@ const LICENSE_STATUS_LABELS = Object.freeze({
   expired: "만료", limit_reached: "한도 도달",
 });
 
-function SafePane({ id, title, description, children }) {
+function SafePane({ id, title, description, children, placement = "inline", drawerOpen = false, dialogActive = true, onDrawerClose, paneRef, backgroundBlocked = false }) {
+  const drawer = placement === "drawer";
+  const dialog = drawer && drawerOpen && dialogActive;
   return (
-    <div className="pane-slot">
-      <section id={id} className="workspace-pane" aria-labelledby={`${id}-title`}>
+    <div className="pane-slot" data-pane-placement={placement} hidden={drawer && !drawerOpen}
+      inert={backgroundBlocked ? true : undefined} aria-hidden={backgroundBlocked ? "true" : undefined}>
+      <section ref={paneRef} id={id} className="workspace-pane" aria-labelledby={`${id}-title`} tabIndex={-1}
+        role={dialog ? "dialog" : undefined} aria-modal={dialog ? "true" : undefined}
+        onKeyDown={dialog ? event => trapDialogFocus(event, onDrawerClose) : undefined}>
         <div className="pane-heading">
+          <button className="workspace-pane-drawer-close" type="button" hidden={!drawer} data-pane-close="true" aria-label="보조 패널 닫기" onClick={onDrawerClose}>닫기</button>
           <h2 id={`${id}-title`}><span className={`pane-icon icon-${PANE_ICONS[id]}`} aria-hidden="true" />{title}</h2>
           <button className="info-button" type="button" title={description} aria-label={`${title} 설명`}>i</button>
         </div>
@@ -732,6 +738,35 @@ function SheetOriginalTable({ content }) {
 function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state = createProductWorkspaceState(), adapter = null, processingPollOptions = null, desktopOfflineStudio = null, providerSettings = null, providerSettingsDirty = false, providerSettingsSaving = false, onLogout = null,
   initialSourceVersionId = null, initialStudioOutput = null }) {
   const [viewState, setViewState] = useState(() => normalizeProductWorkspaceState(state));
+  const [mediumWorkspace, setMediumWorkspace] = useState(false);
+  const [visiblePanePair, setVisiblePanePair] = useState("source-conversation");
+  const [paneDrawerOpen, setPaneDrawerOpen] = useState(false);
+  const responsivePaneRefs = useRef({});
+  const paneDrawerOpener = useRef(null);
+  const paneControlsRef = useRef(null);
+  const drawerPaneId = visiblePanePair === "conversation-studio" ? "sources"
+    : visiblePanePair === "source-studio" ? "conversation" : "studio";
+  const drawerPaneTitle = {sources:"자료", conversation:"대화", studio:"Studio"}[drawerPaneId];
+  const closePaneDrawer = () => {
+    setPaneDrawerOpen(false);
+    queueMicrotask(() => paneDrawerOpener.current?.focus?.());
+  };
+  useEffect(() => {
+    const media = window.matchMedia?.("(min-width: 1024px) and (max-width: 1439px)");
+    if (!media) return undefined;
+    const update = () => {
+      setMediumWorkspace(media.matches);
+      const pane = responsivePaneRefs.current[drawerPaneId];
+      if (media.matches && pane?.contains(document.activeElement)) setPaneDrawerOpen(true);
+      if (!media.matches) {
+        setPaneDrawerOpen(false);
+        if (document.activeElement?.getAttribute?.("data-pane-close") === "true" || paneControlsRef.current?.contains(document.activeElement)) pane?.focus?.();
+      }
+    };
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, [drawerPaneId]);
   const notificationOutputScope = useRef({adapter, output:initialStudioOutput, consumed:false});
   if (notificationOutputScope.current.adapter !== adapter || notificationOutputScope.current.output !== initialStudioOutput) {
     notificationOutputScope.current = {adapter, output:initialStudioOutput, consumed:false};
@@ -1010,6 +1045,15 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
     setQuestionAuthError(null);
     setQuestionPending(false);
   };
+
+  useEffect(() => {
+    if (!mediumWorkspace || !paneDrawerOpen || modalView) return undefined;
+    const pane = responsivePaneRefs.current[drawerPaneId];
+    if (!pane?.contains(document.activeElement)) pane?.querySelector?.("button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled])")?.focus();
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = overflow; };
+  }, [mediumWorkspace, paneDrawerOpen, drawerPaneId, modalView]);
 
   useEffect(() => {
     if (!modalView) return undefined;
@@ -2060,7 +2104,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
   return (
     <main className="adaptive-workspace" data-product-workspace-state={viewState.status} data-workspace-id={workspaceId ?? ""}>
       <div className="workspace-surface" inert={modalView ? true : undefined} aria-hidden={modalView ? "true" : undefined}>
-      <header className="workspace-header workspace-app-bar">
+      <header className="workspace-header workspace-app-bar" inert={mediumWorkspace && paneDrawerOpen ? true : undefined} aria-hidden={mediumWorkspace && paneDrawerOpen ? "true" : undefined}>
         <div className="workspace-brand"><span className="daon-mark" aria-hidden="true">D</span><div><p className="eyebrow">DAON WORKSPACE · NOTEBOOK</p><h1>{notebookTitle || "Workspace"}</h1></div></div>
         <div className="workspace-app-actions">
           <span className={`workspace-status status-${viewState.status}`} role="status" data-cloud-status={operationsStatus?.overall_status ?? "unknown"}><span className="status-dot" aria-hidden="true" />{sourceCompactState}<span className="status-connection"> · {cloudCompactState}</span></span>
@@ -2080,8 +2124,17 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
           </div>
         </div>
       </header>
-      <div className="workspace-panes" data-layout="source-conversation-studio" aria-label="Workspace 3면">
-        <SafePane id="product-pane-sources" title="Source·지식·권위" description="NotebookLM처럼 파일·웹·Drive·복사 텍스트를 Source로 추가합니다.">
+      <nav ref={paneControlsRef} className="workspace-pane-controls" aria-label="작업 패널 배치" hidden={!mediumWorkspace}
+        inert={paneDrawerOpen ? true : undefined} aria-hidden={paneDrawerOpen ? "true" : undefined}>
+        {[["source-conversation", "자료·대화"], ["conversation-studio", "대화·Studio"], ["source-studio", "자료·Studio"]].map(([pair, label]) =>
+          <button key={pair} type="button" aria-pressed={visiblePanePair === pair} onClick={() => {setPaneDrawerOpen(false); setVisiblePanePair(pair);}}>{label}</button>)}
+        <button ref={paneDrawerOpener} type="button" aria-expanded={paneDrawerOpen} aria-controls={`product-pane-${drawerPaneId}`}
+          onClick={() => setPaneDrawerOpen(true)}>{drawerPaneTitle} 열기</button>
+      </nav>
+      <div className="workspace-panes" data-layout="source-conversation-studio" data-responsive-layout={mediumWorkspace ? "two-pane" : "three-pane"} data-visible-pair={visiblePanePair} aria-label={mediumWorkspace ? "Workspace 2면과 보조 패널" : "Workspace 3면"}>
+        <div className="workspace-pane-drawer-backdrop" hidden={!mediumWorkspace || !paneDrawerOpen} aria-hidden="true" onMouseDown={event => {if(event.target === event.currentTarget) closePaneDrawer();}} />
+        <SafePane placement={mediumWorkspace && drawerPaneId === "sources" ? "drawer" : "inline"} drawerOpen={paneDrawerOpen} dialogActive={!modalView} onDrawerClose={closePaneDrawer}
+          paneRef={node => {responsivePaneRefs.current.sources = node;}} backgroundBlocked={mediumWorkspace && paneDrawerOpen && drawerPaneId !== "sources"} id="product-pane-sources" title="Source·지식·권위" description="NotebookLM처럼 파일·웹·Drive·복사 텍스트를 Source로 추가합니다.">
           <button className="source-add-button" type="button" onClick={() => { setSourceAddOpen(true); setSourceAddError(null); }} disabled={!adapter}><span aria-hidden="true">＋</span>Source 추가</button>
           <input className="source-legacy-input" type="file" accept="application/pdf" onChange={uploadSource} aria-hidden="true" tabIndex="-1" />
           {sourceAddOpen ? <section className="source-action-dialog source-add-dialog" role="dialog" aria-modal="true" aria-label="Source 추가">
@@ -2230,7 +2283,8 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
               }}>{sourceAction.deletionRequest ? "닫기" : "취소"}</button></div>
           </section> : null}
         </SafePane>
-        <SafePane id="product-pane-conversation" title="대화·실행" description="ready Source 선택 후 실제 질문과 Citation을 사용합니다.">
+        <SafePane placement={mediumWorkspace && drawerPaneId === "conversation" ? "drawer" : "inline"} drawerOpen={paneDrawerOpen} dialogActive={!modalView} onDrawerClose={closePaneDrawer}
+          paneRef={node => {responsivePaneRefs.current.conversation = node;}} backgroundBlocked={mediumWorkspace && paneDrawerOpen && drawerPaneId !== "conversation"} id="product-pane-conversation" title="대화·실행" description="ready Source 선택 후 실제 질문과 Citation을 사용합니다.">
           {desktopEditor ? desktopEditor : <div className="conversation-workspace"><div className="conversation-transcript" role="log" aria-label="질문과 답변 이력" aria-live="polite">
           <div className="context-selection-status" role="status">질문 컨텍스트 · {selectedKnowledgeId ? "Daon 승인 지식" : ""}{selectedKnowledgeId && viewState.selectedSource ? " + " : ""}{viewState.selectedSource ? "Raw Source" : !selectedKnowledgeId ? "일반 상담" : ""}</div>
           {questionPending ? <div className="context-selection-status" role="status">답변을 기다리고 있습니다.</div> : null}
@@ -2392,7 +2446,8 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
             <button className="composer-submit" type="submit" aria-label="질문 실행" disabled={questionPending || !question.trim() || !canSubmitQuestion()}>↑</button>
           </form></div>}
         </SafePane>
-        <SafePane id="product-pane-studio" title="업무 Studio" description="근거가 확인된 답변으로 보고서를 생성하고 저장 결과를 확인합니다.">
+        <SafePane placement={mediumWorkspace && drawerPaneId === "studio" ? "drawer" : "inline"} drawerOpen={paneDrawerOpen} dialogActive={!modalView} onDrawerClose={closePaneDrawer}
+          paneRef={node => {responsivePaneRefs.current.studio = node;}} backgroundBlocked={mediumWorkspace && paneDrawerOpen && drawerPaneId !== "studio"} id="product-pane-studio" title="업무 Studio" description="근거가 확인된 답변으로 보고서를 생성하고 저장 결과를 확인합니다.">
           {desktopStudio ? desktopStudio : <><ProductStudioPane
             adapter={studioModelAdapter}
             initialOutput={notificationOutput}

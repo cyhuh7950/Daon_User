@@ -481,8 +481,10 @@ class RecoveryLineageConsumerTests(unittest.TestCase):
     def setUp(self):
         from test_recovery_lineage import Ledger, recanonical
         from daon_user_api.recovery_lineage_capture import FileLineageCaptureStore
-        parent = Path(os.environ.get("TMP", ""))
-        self.assertIn(parent, {Path("D:/tmp/daon-user-s44-d1-eoul2-20261019"), Path("D:/tmp/daon-user-s44-d1-main-20261019")})
+        parent = Path(tempfile.gettempdir()).absolute()
+        self.assertTrue(parent.is_absolute())
+        for ancestor in (parent, *parent.parents):
+            self.assertFalse(ancestor.is_symlink() or getattr(ancestor.lstat(), "st_file_attributes", 0) & 0x400)
         self.tmp = tempfile.TemporaryDirectory(prefix="r1c-", dir=parent); self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name); archive = self.root / "archive"; archive.mkdir()
         self.ledger = Ledger(); self.context = self.ledger.context
@@ -1586,18 +1588,15 @@ class PostgresRecoveryIntegrationTests(unittest.TestCase):
         # 어떤 DML/Object 쓰기보다 먼저 독립 DB 경계를 검사한다.
         with self._connect():
             pass
-        self.file_root = Path(os.environ.get("DAON_RECOVERY_CAPTURE_TEST_ROOT", "D:/tmp/daon-user-s44-l2a-eoul2-20261018"))
-        if not self.file_root.is_absolute() or self.file_root.name not in {
-                "daon-user-s44-l2a-eoul2-20261018", "daon-user-s44-l2a-main-20261018"}:
-            raise AssertionError("S44_EXACT_TEST_ROOT_REQUIRED")
-        if os.name == "nt" and self.file_root.parent != Path("D:/tmp"):
-            raise AssertionError("S44_EXACT_TEST_ROOT_REQUIRED")
-        if self.file_root.exists() or self.file_root.is_symlink():
-            raise AssertionError("S44_TEST_ROOT_MUST_BE_NEW")
-        for parent in (self.file_root.parent, *self.file_root.parent.parents):
-            if parent.is_symlink() or getattr(parent.lstat(), "st_file_attributes", 0) & 0x400:
+        parent = Path(tempfile.gettempdir()).absolute()
+        for ancestor in (parent, *parent.parents):
+            if ancestor.is_symlink() or getattr(ancestor.lstat(), "st_file_attributes", 0) & 0x400:
                 raise AssertionError("S44_TEST_ROOT_LINK_FORBIDDEN")
-        self.file_root.mkdir()
+        self._owned_temp = tempfile.TemporaryDirectory(prefix="r4-recovery-integration-", dir=parent)
+        self.addCleanup(self._owned_temp.cleanup)
+        self.file_root = Path(self._owned_temp.name)
+        if not self.file_root.is_absolute() or self.file_root.resolve() != self.file_root:
+            raise AssertionError("S44_TEST_ROOT_BOUNDARY_INVALID")
         self.addCleanup(self._cleanup_files)
         self.archive = self.file_root / "archive"
         self.archive.mkdir()

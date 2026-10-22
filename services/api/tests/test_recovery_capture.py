@@ -8,29 +8,28 @@ from pathlib import Path
 import secrets
 import shutil
 import unittest
+import tempfile
 from dataclasses import replace
 
 from daon_user_api.recovery import BackupObjectInput, RecoveryError
 
 
-ROOT = Path(os.environ.get("DAON_RECOVERY_CAPTURE_TEST_ROOT", "D:/tmp/daon-user-s44-l2a-eoul2-20261018"))
+ROOT: Path | None = None
 
 
-@unittest.skipUnless(os.name == "nt" or os.environ.get("DAON_RECOVERY_CAPTURE_TEST_ROOT"),
-                     "NOT RUN: POSIX 전용 승인 root를 명시 주입해야 한다")
 class RecoveryCaptureFileTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        allowed_names = {"daon-user-s44-l2a-eoul2-20261018", "daon-user-s44-l2a-main-20261018"}
-        if (os.name == "nt" and ROOT not in (Path("D:/tmp/daon-user-s44-l2a-eoul2-20261018"), Path("D:/tmp/daon-user-s44-l2a-main-20261018"))) or not ROOT.is_absolute() or ROOT.name not in allowed_names:
-            raise AssertionError("S44_EXACT_TEST_ROOT_REQUIRED")
-        if ROOT.exists() or ROOT.is_symlink():
-            raise AssertionError("S44_TEST_ROOT_MUST_BE_NEW")
-        for parent in (ROOT.parent, *ROOT.parent.parents):
-            info = parent.lstat()
-            if parent.is_symlink() or getattr(info, "st_file_attributes", 0) & 0x400:
-                raise AssertionError("S44_TEST_ROOT_LINK_FORBIDDEN")
-        ROOT.mkdir()
+        global ROOT
+        parent = Path(tempfile.gettempdir()).absolute()
+        for ancestor in (parent, *parent.parents):
+            if ancestor.is_symlink() or getattr(ancestor.lstat(), "st_file_attributes", 0) & 0x400:
+                raise AssertionError("TEST_ROOT_LINK_FORBIDDEN")
+        cls._owned_temp = tempfile.TemporaryDirectory(prefix="r4-file-")
+        cls.addClassCleanup(cls._owned_temp.cleanup)
+        ROOT = Path(cls._owned_temp.name)
+        if not ROOT.is_absolute() or ROOT.resolve() != ROOT or ROOT.is_symlink():
+            raise AssertionError("TEST_ROOT_BOUNDARY_INVALID")
 
     @classmethod
     def tearDownClass(cls):

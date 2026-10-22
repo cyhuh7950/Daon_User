@@ -206,3 +206,13 @@ test("Evidence manifest의 Network 계수는 실제 JSONL row와 unique path를 
   assert.equal(rows.length, 11);
   assert.equal(uniquePaths.size, 4);
 });
+
+
+test("R4 매뉴얼은 제한형 WAV·Notebook 모델·선택적 추론·대화와 Studio·반응형 경계를 설명한다", async () => {
+  for (const [id] of docs) {
+    const text = await readFile(new URL(`docs/manual/${id}/index.md`, root), "utf8");
+    for (const phrase of ["PCM16", "16,000", "25MiB", "MP3/M4A는 미지원", "Notebook별 모델", "추론 옵션", "지원 정보 미확인", "자동 저장", "다시 조회", "낮음·보통·높음", "인사", "Studio를 선택하지", "1200", "Drawer"])
+      assert.ok(text.includes(phrase), `${id}: ${phrase}`);
+    assert.doesNotMatch(text, /M4A\/WAV\/MP3를 선택|M4A, WAV, MP3|12개 파일 형식을 허용/u);
+  }
+});

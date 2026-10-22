@@ -66,11 +66,11 @@ test("정책 React는 이전 context load의 reverse response를 무시하고 �
     assert.equal(buttonByText(container, "1. 조직 정책"), undefined);
     assert.equal(buttonByText(container, "2. Workspace 정책"), undefined);
     assert.equal(findElements(container, (node) => node.tagName === "INPUT").length, 0);
-    assert.doesNotMatch(container.textContent, /외부 전송 차단|승인된 외부 전송 허용/u);
+    assert.doesNotMatch(container.textContent, /외부 전송 차단|추가 인증 후 외부 전송 허용|추가 인증 없이 외부 전송 허용/u);
     await act(async () => { latest.resolve(view("allow_approved_external", "new")); await Promise.resolve(); await Promise.resolve(); });
     await act(async () => { stale.resolve(view("deny_external", "old")); await Promise.resolve(); await Promise.resolve(); });
     const status = findElements(container, (node) => node.getAttribute?.("role") === "status")[0];
-    assert.match(status.textContent, /승인된 외부 전송 허용/u);
+    assert.equal(status.textContent, "최종 effective 정책: 추가 인증 후 외부 전송 허용");
     assert.doesNotMatch(container.textContent, /조직 차단 정책/u);
   } finally { if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount())); dom.restore(); await rm(output, { recursive: true, force: true }); }
 });

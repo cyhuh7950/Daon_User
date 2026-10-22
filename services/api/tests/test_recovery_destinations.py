@@ -13,6 +13,7 @@ from pathlib import Path
 import secrets
 import shutil
 import unittest
+import tempfile
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -25,7 +26,7 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from daon_user_api.recovery import RecoveryContext, RecoveryError
 
 
-ROOT = Path("D:/tmp/daon-user-s44-d1-eoul2-20261019")
+ROOT: Path | None = None
 NOW = datetime(2026, 10, 19, 1, tzinfo=timezone.utc)
 PURPOSE = b"restore-destination-registry-v1"
 
@@ -81,12 +82,14 @@ class RecoveryDestinationTests(unittest.TestCase):
         module = Path(__file__).parents[1] / "src/daon_user_api/recovery_destinations.py"
         self.assertTrue(module.is_file(), "R2 signed registry/reservation implementation missing")
         self.api = importlib.import_module("daon_user_api.recovery_destinations")
-        self.assertEqual(ROOT.parent, Path("D:/tmp"))
-        for parent in (ROOT.parent, *ROOT.parent.parents):
+        global ROOT
+        self.temp_parent = Path(tempfile.gettempdir()).absolute()
+        for parent in (self.temp_parent, *self.temp_parent.parents):
             self.assertFalse(parent.is_symlink())
             self.assertFalse(getattr(parent.lstat(), "st_file_attributes", 0) & 0x400)
-        self.assertFalse(ROOT.exists(), "owned root must be new")
-        ROOT.mkdir()
+        self._owned_temp = tempfile.TemporaryDirectory(prefix="r4-destination-")
+        ROOT = Path(self._owned_temp.name)
+        self.assertEqual(ROOT.resolve(), ROOT)
         self.addCleanup(self.cleanup)
         protect_windows(ROOT)
         self.key = secrets.token_bytes(32)
@@ -113,10 +116,10 @@ class RecoveryDestinationTests(unittest.TestCase):
 
     def cleanup(self):
         # 정확 본인 신규 root만. 링크/경계 변경은 성공 정리로 보고하지 않는다.
-        self.assertEqual(ROOT.parent, Path("D:/tmp"))
+        self.assertEqual(ROOT.parent, self.temp_parent)
         self.assertFalse(ROOT.is_symlink())
         self.assertFalse(getattr(ROOT.lstat(), "st_file_attributes", 0) & 0x400)
-        shutil.rmtree(ROOT)
+        self._owned_temp.cleanup()
         self.assertFalse(ROOT.exists())
 
     def registry(self, raw=None):

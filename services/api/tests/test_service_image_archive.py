@@ -12,12 +12,13 @@ import shutil
 import tarfile
 import time
 import unittest
+import tempfile
 from contextlib import contextmanager
 from dataclasses import replace
 
 from daon_user_api.service_snapshot import BoundedSnapshotReader, SnapshotError
 
-ROOT = Path(os.environ.get("DAON_SERVICE_SNAPSHOT_TEST_ROOT", "D:/tmp/daon-user-s44-d1-eoul2-20261019"))
+ROOT: Path | None = None
 
 
 def _archive(*, wrong_layer=False, extra=None, manifests=1, layer=None, tags=(), labels="revision"):
@@ -146,12 +147,16 @@ class _Docker:
 class ServiceImageArchiveTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        allowed = {"daon-user-s44-d1-eoul2-20261019", "daon-user-s44-d1-main-20261019"}
-        if (not ROOT.is_absolute() or ROOT.name not in allowed or (os.name == "nt" and ROOT.parent != Path("D:/tmp"))
-                or ROOT.exists() or ROOT.is_symlink()): raise AssertionError("D1_EXACT_NEW_TEST_ROOT_REQUIRED")
-        for parent in (ROOT.parent, *ROOT.parent.parents):
-            if parent.is_symlink() or getattr(parent.lstat(), "st_file_attributes", 0) & 0x400: raise AssertionError("D1_TEST_ROOT_LINK_FORBIDDEN")
-        ROOT.mkdir(mode=0o700)
+        global ROOT
+        parent = Path(tempfile.gettempdir()).absolute()
+        for ancestor in (parent, *parent.parents):
+            if ancestor.is_symlink() or getattr(ancestor.lstat(), "st_file_attributes", 0) & 0x400:
+                raise AssertionError("TEST_ROOT_LINK_FORBIDDEN")
+        cls._owned_temp = tempfile.TemporaryDirectory(prefix="r4-file-")
+        cls.addClassCleanup(cls._owned_temp.cleanup)
+        ROOT = Path(cls._owned_temp.name)
+        if not ROOT.is_absolute() or ROOT.resolve() != ROOT or ROOT.is_symlink():
+            raise AssertionError("TEST_ROOT_BOUNDARY_INVALID")
 
     @classmethod
     def tearDownClass(cls):

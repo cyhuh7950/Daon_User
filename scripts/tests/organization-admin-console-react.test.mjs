@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { lstat, realpath, mkdtemp, readdir, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 import test from "node:test";
@@ -27,9 +27,10 @@ function fixture(overrides = {}) {
 }
 async function render(api, mode = "organization") {
   const root = path.resolve(import.meta.dirname, "../..");
-  const temp = "D:/tmp/daon-user-s39-l3-20261017-eoul2";
-  assert.equal(path.resolve(process.env.TEMP || ""), path.resolve(temp), "승인된 L3 TEMP만 사용한다");
-  const output = await mkdtemp(path.join(temp, "react-"));
+  const temp = root;
+  assert.ok(path.isAbsolute(temp));
+  assert.equal(await realpath(temp), temp, "소유 root의 링크 우회를 거부한다");
+  const output = await mkdtemp(path.join(temp, ".r4-react-"));
   const dom = installMinimalDom();
   window.location = { search: "", replace() {} };
   const originalFetch = globalThis.fetch;
@@ -37,7 +38,7 @@ async function render(api, mode = "organization") {
   let reactRoot;
   const { createElement, act } = await import("react");
   const { createRoot } = await import("react-dom/client");
-  const cleanup = async () => { if (reactRoot) await act(async () => reactRoot.unmount()); globalThis.fetch = originalFetch; dom.restore(); await rm(output, { recursive: true, force: true }); };
+  const cleanup = async () => { if (reactRoot) await act(async () => reactRoot.unmount()); globalThis.fetch = originalFetch; dom.restore(); assert.equal(path.dirname(output), temp); assert.equal(await realpath(output), output); assert.equal((await lstat(output)).isSymbolicLink(), false); await rm(output, { recursive: true, force: true }); };
   try {
     const { build } = await import("vite");
     await build({ configFile: false, logLevel: "silent", root, build: { outDir: output, emptyOutDir: false,

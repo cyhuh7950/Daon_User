@@ -18,6 +18,7 @@ PATHS = {
     "/api/v1/backups": {"get", "post"},
     "/api/v1/backups/{id}": {"get"},
     "/api/v1/backups/{id}/restore-previews": {"post"},
+    "/api/v1/backups/{id}/restore-destinations": {"get"},
     "/api/v1/restore-requests/{id}": {"get"},
     "/api/v1/restore-requests/{id}/execute": {"post"},
     "/api/v1/restore-requests/{id}/cancel": {"post"},
@@ -93,7 +94,7 @@ class RecoveryContractTests(unittest.TestCase):
             source.index("SELECT set_config('app.tenant_id'"),
         )
 
-    def test_openapi_exposes_exact_eight_operations_and_write_guards(self) -> None:
+    def test_openapi_exposes_exact_nine_operations_and_write_guards(self) -> None:
         document = json.loads(OPENAPI.read_text(encoding="utf-8"))
         actual = {
             path: set(document["paths"][path])
@@ -102,7 +103,7 @@ class RecoveryContractTests(unittest.TestCase):
             or path.startswith("/api/v1/restore-requests")
         }
         self.assertEqual(actual, PATHS)
-        self.assertEqual(sum(len(methods) for methods in PATHS.values()), 8)
+        self.assertEqual(sum(len(methods) for methods in PATHS.values()), 9)
         for path, methods in PATHS.items():
             for method in methods:
                 operation = document["paths"][path][method]

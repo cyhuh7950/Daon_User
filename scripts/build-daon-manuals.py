@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / "docs" / "manual" / "dist"
 PUBLIC = ROOT / "apps" / "web" / "public" / "manual"
 RELEASE = "1.0.0"
-RELEASED_AT = "2026-08-20"
+RELEASED_AT = "2026-10-22"
 DOCS = (
     ("daon-getting-started", "Daon Getting Started", "Notebook의 첫 작업 흐름과 안전한 운영"),
     ("daon-user-manual", "Daon 사용자 설명서", "Workspace 화면·설정·운영 절차"),
@@ -380,6 +380,112 @@ def build_docx():
         document.save(DIST / f"{document_id}.docx")
 
 
+def build_pdf():
+    """동일 Markdown의 게시용 PDF. DOCX 스타일·생성 경로는 변경하지 않는다."""
+    from io import BytesIO
+    from xml.sax.saxutils import escape
+
+    from pypdf import PdfReader, PdfWriter
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.units import inch
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    from reportlab.platypus import Image, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+    font = "DaonManualKorean"
+    pdfmetrics.registerFont(TTFont(font, str(ROOT / "services/api/src/daon_user_api/assets/NanumGothic-Regular.ttf")))
+    body = ParagraphStyle("Body", fontName=font, fontSize=10, leading=15,
+                          spaceAfter=6, wordWrap="CJK", splitLongWords=True)
+    title_style = ParagraphStyle("Title", parent=body, fontSize=28, leading=38,
+                                 alignment=TA_CENTER, spaceAfter=20)
+    heading_styles = {level: ParagraphStyle(f"Heading{level}", parent=body,
+                      fontSize=16 if level == 2 else 13, leading=23 if level == 2 else 19,
+                      textColor=colors.HexColor("#2E74B5"), spaceBefore=16,
+                      spaceAfter=8, keepWithNext=True) for level in (2, 3)}
+    small = ParagraphStyle("Small", parent=body, fontSize=9, leading=13)
+    width = 6.5 * inch
+
+    def paragraph(text, style=body):
+        return Paragraph(escape(clean_inline(text)), style)
+
+    def footer(canvas, document):
+        canvas.saveState()
+        canvas.setFont(font, 9)
+        canvas.setFillColor(colors.HexColor("#5A5A64"))
+        canvas.drawString(inch, 10.65 * inch, "DAON · USER GUIDE")
+        canvas.drawRightString(7.5 * inch, 0.6 * inch, f"DAON · {document.page}")
+        canvas.restoreState()
+
+    DIST.mkdir(parents=True, exist_ok=True)
+    for document_id, title, summary in DOCS:
+        source = ROOT / "docs/manual" / document_id / "index.md"
+        lines = source.read_text(encoding="utf-8").splitlines()
+        headings = parse_headings(lines)
+        story = [Spacer(1, inch), paragraph(title, title_style), paragraph(summary),
+                 paragraph(f"Release {RELEASE} · {RELEASED_AT} · 한국어"), PageBreak(),
+                 paragraph("문서 정보", heading_styles[2]), paragraph(title),
+                 paragraph("공개 안내와 로그인 후 조직 전용 절차를 구분합니다."),
+                 paragraph("목차", heading_styles[2])]
+        for level, text, anchor in headings:
+            if level == 2:
+                story.append(Paragraph(f'<link href="#{anchor}" color="#2E74B5">{escape(clean_inline(text))}</link>', small))
+        story.append(PageBreak())
+        index, heading_index = 0, 0
+        while index < len(lines):
+            raw = lines[index].strip()
+            index += 1
+            if not raw or raw.startswith("# "):
+                continue
+            heading = re.match(r"^(#{2,3})\s+(.+)$", raw)
+            if heading:
+                level, text, anchor = headings[heading_index]
+                heading_index += 1
+                story.append(Paragraph(f'<a name="{anchor}"/>{escape(clean_inline(text))}', heading_styles[level]))
+                continue
+            image = re.match(r"^!\[(.+)]\((.+)\)$", raw)
+            if image:
+                image_path = (source.parent / image.group(2)).resolve()
+                if image_path.is_file() and ROOT in image_path.parents:
+                    picture = Image(str(image_path))
+                    factor = min(width / picture.imageWidth, 6.8 * inch / picture.imageHeight, 1)
+                    picture.drawWidth = picture.imageWidth * factor
+                    picture.drawHeight = picture.imageHeight * factor
+                    story.extend([picture, paragraph(image.group(1), small)])
+                continue
+            if raw.startswith("|") and index < len(lines) and re.fullmatch(r"[| :\-]+", lines[index].strip()):
+                rows = [[paragraph(cell.strip(), small) for cell in raw.strip("|").split("|")]]
+                index += 1  # Markdown separator is formatting, not source content.
+                while index < len(lines) and lines[index].strip().startswith("|"):
+                    row = lines[index].strip().strip("|").split("|")
+                    if len(row) != len(rows[0]):
+                        raise ValueError("MANUAL_TABLE_INVALID")
+                    rows.append([paragraph(cell.strip(), small) for cell in row])
+                    index += 1
+                table = Table(rows, colWidths=[width / len(rows[0])] * len(rows[0]), repeatRows=1,
+                              hAlign="LEFT")
+                table.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E8EEF5")),
+                                           ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                                           ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#CAD2DC")),
+                                           ("TOPPADDING", (0, 0), (-1, -1), 6),
+                                           ("BOTTOMPADDING", (0, 0), (-1, -1), 6)]))
+                story.extend([table, Spacer(1, 8)])
+                continue
+            if raw.startswith(">"):
+                raw = raw[1:].lstrip()
+            story.append(paragraph(raw))
+        document = SimpleDocTemplate(str(DIST / f"{document_id}.pdf"), pagesize=(8.5 * inch, 11 * inch),
+                                     rightMargin=inch, leftMargin=inch, topMargin=inch, bottomMargin=inch,
+                                     title=title, author="Daon", subject=summary)
+        document.build(story, onFirstPage=footer, onLaterPages=footer)
+        # 표준 binary stream 직렬화로 게시/checkout의 text 변환으로부터 PDF를 보호한다.
+        path = DIST / f"{document_id}.pdf"
+        writer = PdfWriter()
+        writer.clone_document_from_reader(PdfReader(BytesIO(path.read_bytes())))
+        writer.write(path)
+
+
 def sha256(path):
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -430,10 +536,12 @@ def build_manifest():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("docx", "manifest"))
+    parser.add_argument("mode", choices=("docx", "pdf", "manifest"))
     args = parser.parse_args()
     if args.mode == "docx":
         build_docx()
+    elif args.mode == "pdf":
+        build_pdf()
     else:
         build_manifest()
 

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { lstat, realpath, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -11,9 +11,10 @@ const read = (path) => readFile(new URL(`../../${path}`, import.meta.url), "utf8
 
 test("기존 미연결 조직 역할은 실제 컴포넌트에서 표기 역할·읽기 전용으로 구분한다", async () => {
   const root = path.resolve(import.meta.dirname, "../..");
-  const temp = "D:/tmp/daon-user-s39-l3-20261017-eoul2";
-  assert.equal(path.resolve(process.env.TEMP || ""), path.resolve(temp));
-  const output = await mkdtemp(path.join(temp, "role-label-"));
+  const temp = root;
+  assert.ok(path.isAbsolute(temp));
+  assert.equal(await realpath(temp), temp, "소유 root의 링크 우회를 거부한다");
+  const output = await mkdtemp(path.join(temp, ".r4-role-label-"));
   const dom = installMinimalDom(); window.location = { search: "" };
   let reactRoot;
   const { createElement, act } = await import("react");
@@ -35,7 +36,7 @@ test("기존 미연결 조직 역할은 실제 컴포넌트에서 표기 역할�
     assert.match(container.textContent, /표기 역할 organization_admin · 실제 실행 권한과 별개/u);
     assert.equal(findElements(container, node => node.tagName === "BUTTON" && node.textContent === "역할 저장").length, 0);
     assert.equal(findElements(container, node => node.tagName === "SELECT" && node.getAttribute("aria-label") === "legacy-user 실제 역할").length, 0);
-  } finally { if (reactRoot) await act(async () => reactRoot.unmount()); dom.restore(); await rm(output, { recursive: true, force: true }); }
+  } finally { if (reactRoot) await act(async () => reactRoot.unmount()); dom.restore(); assert.equal(path.dirname(output), temp); assert.equal(await realpath(output), output); assert.equal((await lstat(output)).isSymbolicLink(), false); await rm(output, { recursive: true, force: true }); }
 });
 
 test("기존 조직 역할 변경과 상태 변경 요청은 그대로 분리된다", async () => {
