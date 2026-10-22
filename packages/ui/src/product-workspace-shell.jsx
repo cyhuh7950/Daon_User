@@ -769,7 +769,8 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
     if((questionRequestRef.current&&questionRequestRef.current!==executionRequest)||modelRequest.current?.saving)return null;
     const view=notebookModel.view;if(!view||typeof adapter?.saveModelSettings!=="function")return;
     const owner={adapter,workspaceId};
-    const pending=retry?modelSaveRetry.current:{input:{...selection,expected_version:view.version},key:secureUuid()};
+    const pending=retry?modelSaveRetry.current:{input:{connection_id:selection.connection_id,model_id:selection.model_id,
+      reasoning_effort:selection.reasoning_effort,expected_version:view.version},key:secureUuid()};
     if(!pending)return;
     modelSaveRetry.current=pending;
     modelRequest.current?.abort();const controller=new AbortController();controller.saving=true;modelRequest.current=controller;

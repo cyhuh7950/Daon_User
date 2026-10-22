@@ -453,6 +453,31 @@ test("HC2 미지원 추론은 숨기고 미확인은 비활성 상태로 미지�
     }finally{await workspace.cleanup();}
   }
 });
+
+test("HC2 Workspace 기본값과 명시 선택의 추론 변경은 허용 선택 필드만 저장하고 재조회한다",async()=>{
+  for(const version of [0,1]){
+    let current=dModelView(version);const saves=[];
+    if(version===0)current.effective_selection={connection_id:"connection-d",model_id:"solar-pro4",reasoning_effort:null,origin:"workspace_default"};
+    const workspace=await mountS17ReconnectWorkspace(s18Adapter({getModelSettings:async()=>current,
+      saveModelSettings:async(input)=>{
+        saves.push(structuredClone(input));
+        assert.deepEqual(Object.keys(input).sort(),["connection_id","expected_version","model_id","reasoning_effort"]);
+        current=dModelView(input.expected_version+1,input.reasoning_effort);
+        return {notebook_id:current.notebook_id,version:current.version,selection:current.selection,replayed:false};
+      }}));
+    try{
+      assert.equal(saves.length,0);
+      const reasoning=()=>findElements(workspace.container,node=>node.getAttribute?.("aria-label")==="추론 단계")[0];
+      await workspace.act(async()=>{await s18Props(reasoning()).onChange({target:{value:"medium"}});});
+      assert.deepEqual(saves[0],{connection_id:"connection-d",model_id:"solar-pro4",reasoning_effort:"medium",expected_version:version});
+      assert.match(workspace.container.textContent,/모델 설정 저장됨/u);
+      assert.equal(s18Props(reasoning()).value,"medium");
+      await workspace.act(async()=>{await s18Props(reasoning()).onChange({target:{value:""}});});
+      assert.deepEqual(saves[1],{connection_id:"connection-d",model_id:"solar-pro4",reasoning_effort:null,expected_version:version+1});
+      assert.equal(s18Props(reasoning()).value,"");
+    }finally{await workspace.cleanup();}
+  }
+});
 const s18Composer = workspace => findElements(workspace.container, node => node.tagName === "FORM" && node.getAttribute("class") === "conversation-composer")[0];
 const s18Props = node => node[Object.keys(node).find(key => key.startsWith("__reactProps$"))];
 const s18Submit = workspace => s18Props(s18Composer(workspace)).onSubmit({ preventDefault() {} });
