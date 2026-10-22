@@ -438,14 +438,16 @@ test("Recovery Pane은 Cloud 7종의 조회·생성·Preview·상태 조회·실
   }
 });
 
-test("운영 Web Wrapper는 Stage A Safe surface이고 실제 Recovery 자산은 Stage C용으로 보존한다", async () => {
+test("운영 Web Wrapper는 정상 세션·현재 권한·명시 실행과 same-origin Recovery API를 연결한다", async () => {
   const [wrapper, pane] = await Promise.all([
     read("apps/web/app/operations/recovery-workspace.jsx"),
     read("packages/ui/src/operations-recovery-pane.jsx")
   ]);
-  assert.match(wrapper, /RESOURCE_UNAVAILABLE/);
-  assert.match(wrapper, /후속 Stage C/);
-  assert.doesNotMatch(wrapper, /recoveryApi|resolveRecoverySession|OperationsRecoveryWorkspace|useEffect|fetch\s*\(/);
+  assert.match(wrapper, /import \{ recoveryApi, parseSystemOperationsStatus \} from/);
+  for (const guard of ["systemSession", "actionSession", "sameSession", "canAct", "permits", "RECOVERY_SESSION_CHANGED", "등록 목적지 Preview 준비", "복구 실행 준비", "자동으로 재전송하지 않습니다"])
+    assert.ok(wrapper.includes(guard), `현재 공개 복구 경계: ${guard}`);
+  assert.match(wrapper, /api\.getSession\(/);
+  assert.doesNotMatch(wrapper, /fetch\s*\(|https?:\/\/|localhost|127\.0\.0\.1|NEXT_PUBLIC_API_BASE_URL/i);
   assert.match(pane, /sessionContext/);
   for (const token of ["actorId: sessionContext.userId", "tenantId: sessionContext.tenantId", "workspaceId: sessionContext.workspaceId", "membership: sessionContext.membership ?? null"]) {
     assert.ok(pane.includes(token));
