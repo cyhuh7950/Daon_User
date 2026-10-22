@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { lstat, realpath, mkdtemp, readdir, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 import test from "node:test";
@@ -14,9 +14,10 @@ const session = (tenant = "personal", id = "session-a") => ({ user_id: "member",
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 
 async function render({ getSession = async () => session(), getNotebooks = async () => ({ data: [] }), tenants = () => ({ current_tenant_id: "personal", tenants: [personal] }), switchTenant, createNotebook } = {}) {
-  const temp = "D:/tmp/daon-user-s39-j3-20261017-eoul2", root = path.resolve(import.meta.dirname, "../..");
-  assert.equal(path.resolve(process.env.TEMP || ""), path.resolve(temp));
-  const output = await mkdtemp(path.join(temp, "journey-react-")), dom = installMinimalDom();
+  const root = path.resolve(import.meta.dirname, "../.."), temp = root;
+  assert.ok(path.isAbsolute(temp));
+  assert.equal(await realpath(temp), temp, "소유 root의 링크 우회를 거부한다");
+  const output = await mkdtemp(path.join(temp, ".r4-journey-react-")), dom = installMinimalDom();
   const oldFetch = globalThis.fetch, requests = [], navigations = [];
   window.location = { replace: value => navigations.push(value), assign: value => navigations.push(value) };
   globalThis.fetch = async (url, init) => {
@@ -28,7 +29,7 @@ async function render({ getSession = async () => session(), getNotebooks = async
   };
   const { createElement, act } = await import("react"), { createRoot } = await import("react-dom/client");
   let reactRoot;
-  const cleanup = async () => { if (reactRoot) await act(async () => reactRoot.unmount()); globalThis.fetch = oldFetch; dom.restore(); await rm(output, { recursive: true, force: true }); };
+  const cleanup = async () => { if (reactRoot) await act(async () => reactRoot.unmount()); globalThis.fetch = oldFetch; dom.restore(); assert.equal(path.dirname(output), temp); assert.equal(await realpath(output), output); assert.equal((await lstat(output)).isSymbolicLink(), false); await rm(output, { recursive: true, force: true }); };
   try {
     const { build } = await import("vite");
     await build({ configFile: false, logLevel: "silent", root, build: { outDir: output, emptyOutDir: false,

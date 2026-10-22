@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { lstat, realpath, mkdtemp, readdir, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 import test from "node:test";
@@ -18,9 +18,10 @@ function fixture(overrides = {}, rows = []) {
   return { api, state };
 }
 async function render(api) {
-  const root = path.resolve(import.meta.dirname, "../.."), temp = "D:/tmp/daon-user-s39-j2-20261017-eoul2";
-  assert.equal(path.resolve(process.env.TEMP || ""), path.resolve(temp));
-  const output = await mkdtemp(path.join(temp, "join-react-")), dom = installMinimalDom();
+  const root = path.resolve(import.meta.dirname, "../.."), temp = root;
+  assert.ok(path.isAbsolute(temp));
+  assert.equal(await realpath(temp), temp, "소유 root의 링크 우회를 거부한다");
+  const output = await mkdtemp(path.join(temp, ".r4-join-react-")), dom = installMinimalDom();
   const originalFetch = globalThis.fetch, storage = [];
   const originalStorage = [globalThis.localStorage, globalThis.sessionStorage, window.localStorage, window.sessionStorage];
   const guardedStorage = { setItem(...args) { storage.push(args); }, getItem() { return null; }, removeItem() {} };
@@ -31,7 +32,7 @@ async function render(api) {
   const cleanup = async () => {
     if (reactRoot) await act(async () => reactRoot.unmount());
     [globalThis.localStorage, globalThis.sessionStorage, window.localStorage, window.sessionStorage] = originalStorage;
-    globalThis.fetch = originalFetch; dom.restore(); await rm(output, { recursive: true, force: true });
+    globalThis.fetch = originalFetch; dom.restore(); assert.equal(path.dirname(output), temp); assert.equal(await realpath(output), output); assert.equal((await lstat(output)).isSymbolicLink(), false); await rm(output, { recursive: true, force: true });
   };
   try {
     const { build } = await import("vite");

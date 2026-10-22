@@ -27,7 +27,7 @@ from daon_user_api.license import (
 )
 from daon_user_api.runtime import (
     WEB_SESSION_COOKIE, RuntimeDependencies, RuntimeSettings,
-    _ensure_development_cloud_scope, _license_enforcement_enabled,
+    _license_enforcement_enabled,
     _requires_runtime_license_precheck, create_app,
 )
 from daon_user_api.studio_report import StudioReportService
@@ -121,25 +121,28 @@ def test_development_notebook_creation_does_not_require_a_license_enforcer():
     assert calls == ["enforced"]
 
 
-def test_development_scope_is_seeded_in_cloud_storage_when_configured():
-    class Cloud:
-        def __init__(self):
-            self.contexts = []
-
-        def seed_scope(self, context):
-            self.contexts.append(context)
-
-    cloud = Cloud()
-    dependencies = type("Dependencies", (), {"cloud_store": cloud})()
-    principal = IdentityPrincipal("dev-user", "dev-session", "dev-device", "dev-tenant")
-
-    _ensure_development_cloud_scope(
-        dependencies, principal=principal, workspace_id="dev-workspace",
-    )
-
-    assert [(item.tenant_id, item.workspace_id, item.actor_id, item.capability) for item in cloud.contexts] == [
-        ("dev-tenant", "dev-workspace", "dev-user", "workspace.bootstrap"),
-    ]
+def test_unauthenticated_request_never_seeds_cloud_scope():
+    async def exercise():
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "runtime.sqlite3"
+            audit = AuditEventStore()
+            identity, repository, _, clock = create_service(db_path, audit_store=audit)
+            authorization_repository = SqliteAuthorizationRepository(db_path)
+            authorization = AuthorizationService(repository=authorization_repository, audit_store=audit, clock=clock, identity_service=identity)
+            cloud = type("Cloud", (), {"seed_scope": lambda *_args: pytest.fail("UNAUTHENTICATED_SCOPE_SEED"), "close": lambda *_args: None})()
+            dependencies = RuntimeDependencies(
+                settings=RuntimeSettings.for_test(database_path=db_path, policy_version=POLICY_VERSION),
+                identity_service=identity, identity_repository=repository, audit_store=audit, cloud_store=cloud,
+                authorization_service=authorization, authorization_repository=authorization_repository,
+            )
+            try:
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(dependencies)), base_url="http://test") as client:
+                    response = await client.get("/api/v1/workspaces/workspace-001/license")
+                assert response.status_code == 401
+                assert response.json()["error"]["code"] == "AUTHENTICATION_REQUIRED"
+            finally:
+                dependencies.close()
+    asyncio.run(exercise())
 
 
 def test_cloud_store_development_defaults_use_stage_instead_of_auth_bypass(monkeypatch):
