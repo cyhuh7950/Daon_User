@@ -35,7 +35,7 @@ use tauri::Manager;
 use zeroize::Zeroize;
 use workspace_bridge::{
     notebook_context, notebook_create, notebook_get, notebook_list,
-    workspace_ask_question, workspace_citation_content, workspace_create_report,
+    workspace_ask_question, workspace_get_model_settings, workspace_save_model_settings, workspace_citation_content, workspace_create_report,
     workspace_apply_license, workspace_get_license,
     workspace_list_sources, workspace_list_studio_outputs, workspace_processing_status,
     workspace_upload_pdf,
@@ -228,6 +228,8 @@ pub fn run() {
                 workspace_upload_pdf,
                 workspace_processing_status,
                 workspace_ask_question,
+                workspace_get_model_settings,
+                workspace_save_model_settings,
                 workspace_citation_content,
                 workspace_create_report,
                 workspace_list_studio_outputs,

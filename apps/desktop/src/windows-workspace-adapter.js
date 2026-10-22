@@ -1,3 +1,5 @@
+import { isNotebookModelSettings, isNotebookModelSelection } from "@daon-user/ui/product-workspace-model";
+
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u;
 const PDF_MAX_BYTES = 25 * 1024 * 1024;
 const SAFE_ERROR_CODES = new Set([
@@ -109,6 +111,21 @@ export function createWindowsWorkspaceAdapter(workspaceId, { invoke = nativeInvo
   if (!id(workspaceId) || !id(notebookId) || typeof invoke !== "function") throw fail("WORKSPACE_ADAPTER_UNAVAILABLE");
   const call = (command, input, signal) => invokeAbortable(invoke, command, input, signal);
   const adapter = {
+    async getModelSettings({ signal } = {}) {
+      const value=await call("workspace_get_model_settings",{workspace_id:workspaceId,notebook_id:notebookId},signal);
+      if(!isNotebookModelSettings(value)||value.notebook_id!==notebookId)throw fail("WORKSPACE_RESPONSE_REJECTED");
+      return value;
+    },
+    async saveModelSettings(input,{signal,idempotencyKey}={}) {
+      if(!exact(input,["connection_id","model_id","reasoning_effort","expected_version"])
+        ||!isNotebookModelSelection({connection_id:input.connection_id,model_id:input.model_id,reasoning_effort:input.reasoning_effort})
+        ||!Number.isSafeInteger(input.expected_version)||input.expected_version<0
+        ||typeof idempotencyKey!=="string"||!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(idempotencyKey))throw fail("INVALID_REQUEST");
+      const value=await call("workspace_save_model_settings",{workspace_id:workspaceId,notebook_id:notebookId,...input,request_idempotency_key:idempotencyKey},signal);
+      if(!isNotebookModelSettings(value,{saved:true})||value.notebook_id!==notebookId
+        ||value.version!==input.expected_version+1||["connection_id","model_id","reasoning_effort"].some(k=>value.selection[k]!==input[k]))throw fail("WORKSPACE_RESPONSE_REJECTED");
+      return value;
+    },
     async listSources({ signal } = {}) {
       const value = assertArray(await call("workspace_list_sources", { workspace_id: workspaceId, notebook_id: notebookId }, signal), "SOURCE_LIST_RESPONSE_INVALID");
       if (value.length > 1_000 || !value.every((source) => exact(source, ["source_id", "source_version_id", "filename", "source_state", "processing_state", "job_state"]) && id(source.source_id) && id(source.source_version_id))) {
@@ -150,16 +167,18 @@ export function createWindowsWorkspaceAdapter(workspaceId, { invoke = nativeInvo
       if (!id(processingRunId)) return Promise.reject(fail("PROCESSING_STATUS_INPUT_INVALID"));
       return call("workspace_processing_status", { workspace_id: workspaceId, notebook_id: notebookId, processing_run_id: processingRunId }, signal);
     },
-    askQuestion({ knowledgeContext, question }, { signal } = {}) {
+    askQuestion({ knowledgeContext, question, modelSettingsVersion }, { signal } = {}) {
+      if(modelSettingsVersion!==undefined&&(!Number.isSafeInteger(modelSettingsVersion)||modelSettingsVersion<1))return Promise.reject(fail("INVALID_REQUEST"));
+      const selection=modelSettingsVersion===undefined?{}:{model_settings_version:modelSettingsVersion};
       const source = knowledgeContext?.resources?.find((resource) => resource?.resourceKind === "source");
       const sourceId = source?.resourceId;
       const sourceVersionId = source?.versionId;
       if (typeof question !== "string" || !question.trim() || question.length > 2_000) return Promise.reject(fail("QUESTION_INPUT_INVALID"));
       const normalizedQuestion = question.trim();
       if (!id(sourceId) || !id(sourceVersionId)) {
-        return call("workspace_ask_question", { workspace_id: workspaceId, notebook_id: notebookId, question: normalizedQuestion }, signal);
+        return call("workspace_ask_question", { workspace_id: workspaceId, notebook_id: notebookId, question: normalizedQuestion,...selection }, signal);
       }
-      return call("workspace_ask_question", { workspace_id: workspaceId, notebook_id: notebookId, source_id: sourceId, source_version_id: sourceVersionId, question: normalizedQuestion }, signal);
+      return call("workspace_ask_question", { workspace_id: workspaceId, notebook_id: notebookId, source_id: sourceId, source_version_id: sourceVersionId, question: normalizedQuestion,...selection }, signal);
     },
     citationUrl(citation) {
       if (!id(citation?.citation_id) || !Number.isSafeInteger(citation?.page) || citation.page < 1) throw fail("CITATION_INPUT_INVALID");

@@ -17,6 +17,27 @@ function savedNotebookModelFixture() {
       model_id:selection.model_id,connection_version:1,catalog_version:1,reasoning:{status:"unknown",values:[],profile_version:null}}]};
 }
 
+test("Native 모델 설정은 고정 명령·Notebook scope·멱등 key·질문 version을 보존한다",async()=>{
+  const {createWindowsWorkspaceAdapter}=await import("../../apps/desktop/src/windows-workspace-adapter.js");
+  const calls=[];
+  const adapter=createWindowsWorkspaceAdapter("workspace-1",{notebookId:"notebook-1",invoke:async(command,args)=>{
+    calls.push({command,input:args.input});
+    if(command==="workspace_get_model_settings")return savedNotebookModelFixture();
+    if(command==="workspace_save_model_settings")return {notebook_id:"notebook-1",version:2,selection:savedNotebookModelFixture().selection,replayed:false};
+    return {run_id:"run-1",run_result_id:"result-1",answer:"정상 답변",insufficient:false,citations:[]};
+  }});
+  assert.equal((await adapter.getModelSettings()).version,1);
+  await adapter.saveModelSettings({...savedNotebookModelFixture().selection,expected_version:1},{idempotencyKey:"request-model-0001"});
+  await adapter.askQuestion({question:"안녕하세요",modelSettingsVersion:2});
+  assert.deepEqual(calls,[{command:"workspace_get_model_settings",input:{workspace_id:"workspace-1",notebook_id:"notebook-1"}},
+    {command:"workspace_save_model_settings",input:{workspace_id:"workspace-1",notebook_id:"notebook-1",...savedNotebookModelFixture().selection,expected_version:1,request_idempotency_key:"request-model-0001"}},
+    {command:"workspace_ask_question",input:{workspace_id:"workspace-1",notebook_id:"notebook-1",question:"안녕하세요",model_settings_version:2}}]);
+  for(const modelSettingsVersion of [0,-1,true,"2"])
+    await assert.rejects(()=>adapter.askQuestion({question:"안녕하세요",modelSettingsVersion}),error=>error.code==="INVALID_REQUEST");
+  await assert.rejects(()=>adapter.saveModelSettings({...savedNotebookModelFixture().selection,expected_version:1,origin:"notebook"},{idempotencyKey:"request-model-0001"}));
+  assert.equal(calls.length,3);
+});
+
 function mergeGateAuthSession() {
   return { user_id: "user-login-1", tenant_id: "tenant-login-1", workspace_id: "workspace-login-1",
     session_id: "session-login-1", device_id: "device-login-1", client_kind: "web", delivery: "same_origin_secure_cookie",
@@ -364,10 +385,14 @@ test("실제 React Tree는 Login 실패·성공·권한 없음·Logout 경쟁을
         job_state: "completed"
       }];
       if (command === "workspace_list_studio_outputs") return [];
-      if (command === "workspace_ask_question") return {
+      if (command === "workspace_get_model_settings") return {...savedNotebookModelFixture(),notebook_id:args.input.notebook_id};
+      if (command === "workspace_ask_question") {
+        assert.equal(args.input.model_settings_version,1,"실제 Native adapter는 본인 저장 설정 version을 전달해야 한다");
+        return {
         run_id: "run-1", run_result_id: "result-1", answer: "StrictMode 질문 성공", insufficient: false,
         citations: [{ citation_id: "citation-1", source_id: "source-workspace-1", source_version_id: "version-workspace-1", evidence_span_id: "span-1", page: 1, origin: "raw_source", context_item_id: "source-workspace-1", locator: { kind: "page", value: "1" } }]
       };
+      }
       if (command === "recovery_cloud_list_backups") return { data: [], etag: null };
       if (command === "local_service_status") return { state: "ready", retryable: false, error_code: null };
       throw new Error(`unexpected:${command}`);
