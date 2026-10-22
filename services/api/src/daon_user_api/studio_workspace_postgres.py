@@ -332,6 +332,72 @@ class PostgresStudioWorkspaceRepository:
             enqueue_studio_event(connection,context,operation=operation,target_type=target_type,
                 target_id=target_id,origin_event_id=audit_event_id)
 
+    def require_typed_origin_current(self,connection,context,request):
+        """원 질문 Run/Result는 현재 본인·원 Notebook의 실제 부모일 때만 계보로 받는다."""
+        if not request.source_only:
+            origin=connection.execute("SELECT /* studio-typed:origin */ 1 FROM runs r JOIN run_results rr "
+                "ON (rr.tenant_id,rr.workspace_id,rr.run_id)=(r.tenant_id,r.workspace_id,r.record_id) "
+                "JOIN notebook_bindings b ON (b.tenant_id,b.workspace_id,b.record_id)=(r.tenant_id,r.workspace_id,r.conversation_id) "
+                "AND b.binding_kind='conversation_thread' WHERE r.tenant_id=%s AND r.workspace_id=%s AND r.record_id=%s "
+                "AND rr.record_id=%s AND r.created_by=%s AND rr.created_by=r.created_by AND r.state='completed' AND b.notebook_id=%s",
+                (context.tenant_id,context.workspace_id,request.run_id,request.run_result_id,context.actor_id,context.notebook_id)).fetchone()
+            if origin is None:raise StudioError("RESOURCE_UNAVAILABLE",404)
+
+    def load_revision_input(self,context,output_id,previous_id,settings):
+        """원 산출물의 서버 snapshot에서만 재생성 입력을 복원한다."""
+        from .studio_execution import safe_id
+        safe_id(output_id);safe_id(previous_id)
+        if self._cloud_store is None:raise StudioError("STUDIO_DATABASE_UNAVAILABLE",503)
+        with self._cloud_store._transaction(self._cloud(context,"studio.edit")) as connection:
+            self._require_output_sources(connection,context,previous_id,action=Action.EDIT)
+            row=connection.execute("SELECT /* studio-typed:revision-input */ ov.canonical_json,ov.canonical_text,ov.digest_sha256,"
+                "gs.canonical_json,gs.canonical_text,gs.digest_sha256,o.canonical_json->>'output_type' "
+                "FROM output_versions ov JOIN generation_settings_snapshots gs ON "
+                "(gs.tenant_id,gs.workspace_id,gs.record_id)=(ov.tenant_id,ov.workspace_id,ov.generation_settings_snapshot_id) "
+                "JOIN studio_outputs o ON (o.tenant_id,o.workspace_id,o.record_id)=(ov.tenant_id,ov.workspace_id,ov.studio_output_id) "
+                "WHERE ov.tenant_id=%s AND ov.workspace_id=%s AND ov.studio_output_id=%s AND ov.record_id=%s",
+                (context.tenant_id,context.workspace_id,output_id,previous_id)).fetchone()
+            if row is None:raise StudioError("RESOURCE_UNAVAILABLE",404)
+            for offset in (0,3):
+                if (type(row[offset]) is not dict or canonical_json_bytes(row[offset]).decode()!=row[offset+1]
+                    or hashlib.sha256(row[offset+1].encode()).hexdigest()!=row[offset+2]):raise StudioError("STUDIO_OUTPUT_UNAVAILABLE",409)
+            previous,snapshot=row[0],row[3]
+            output_type=previous.get("output_type")
+            if type(output_type) is not str or output_type!=row[6] or snapshot.get("output_type")!=output_type:raise StudioError("STUDIO_VERSION_CHANGED",409)
+            self.require_typed_revision_current(connection,context,output_type,output_id,previous_id)
+            names={"purpose","audience","language","source_version_ids","ruleset_version_id","length","structure","output_format","review_condition"}
+            if settings is not None and (type(settings) is not dict or set(settings)!=names):raise StudioError("STUDIO_SETTINGS_INCOMPLETE")
+            effective={name:snapshot.get(name) for name in names} if settings is None else dict(settings)
+            versions=effective["source_version_ids"]
+            if type(versions) not in (list,tuple) or any(type(v) is not str for v in versions) or len(versions)!=len(set(versions)):raise StudioError("STUDIO_INPUT_INVALID")
+            for name in names-{"source_version_ids","ruleset_version_id"}:
+                if type(effective[name]) is not str:raise StudioError("STUDIO_INPUT_INVALID")
+            source_only=snapshot.get("source_only",False)
+            if type(source_only) is not bool:raise StudioError("STUDIO_INPUT_INVALID")
+            request=StudioGenerationRequest(output_type,snapshot.get("source_id"),tuple(versions),snapshot.get("run_id"),snapshot.get("run_result_id"),
+                effective["purpose"],effective["audience"],effective["ruleset_version_id"],effective["length"],effective["structure"],
+                effective["output_format"],effective["review_condition"],effective["language"],source_only,None)
+            self._require_generation_scope(connection,context,request.source_version_ids)
+            projection=self._policy_projection(connection,context,run_id=None if request.source_only else request.run_id)
+            if projection["review_condition"]!=request.review_condition or projection["ruleset_version_id"]!=request.ruleset_version_id:
+                raise StudioError("POLICY_PROJECTION_MISMATCH",409)
+            return request
+
+    def require_typed_revision_current(self,connection,context,output_type,output_id,previous_id):
+        """재생성 승인·전송·게시가 공유하는 현재 산출물 버전 검사."""
+        self._require_output_sources(connection,context,previous_id,action=Action.EDIT)
+        connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",("studio-output|"+context.tenant_id+"|"+context.workspace_id+"|"+output_id,))
+        previous=connection.execute("SELECT /* studio-typed:previous */ output_versions.aggregate_id,content_version,output_versions.record_id,"
+            "output_versions.canonical_json->>'output_type',o.canonical_json->>'output_type' FROM output_versions "
+            "JOIN studio_outputs o ON (o.tenant_id,o.workspace_id,o.record_id)=(output_versions.tenant_id,output_versions.workspace_id,output_versions.studio_output_id) "
+            "WHERE output_versions.tenant_id=%s AND output_versions.workspace_id=%s AND studio_output_id=%s AND EXISTS(SELECT 1 FROM notebook_bindings b "
+            "WHERE b.tenant_id=output_versions.tenant_id AND b.workspace_id=output_versions.workspace_id AND b.notebook_id=%s "
+            "AND b.binding_kind='output_version' AND b.record_id=output_versions.record_id) ORDER BY content_version DESC,output_versions.record_id DESC LIMIT 1",
+            (context.tenant_id,context.workspace_id,output_id,context.notebook_id)).fetchone()
+        if previous is None or previous[2]!=previous_id:raise StudioError("STUDIO_VERSION_CHANGED",409)
+        if previous[3]!=output_type or previous[4]!=output_type:raise StudioError("STUDIO_VERSION_CHANGED",409)
+        return previous
+
     def persist_typed_generation(self,connection,context,request,idempotency_key,typed,evidence,*,execution_ids,metadata):
         """단회 실행 terminal의 savepoint 안에서만 사용하는 실제 typed 저장 경계.
 
@@ -344,7 +410,7 @@ class PostgresStudioWorkspaceRepository:
         if (type(typed) is not TypedStudioResult or typed.insufficient is not False or typed.content is None
             or typed.generator_version!=GENERATOR_VERSION or not typed.cited_chunk_ids):
             raise StudioError("STUDIO_OUTPUT_UNAVAILABLE",409)
-        for value in (idempotency_key,execution_ids["run"],execution_ids["attempt"]):safe_id(value)
+        for value in (idempotency_key,execution_ids["run"],execution_ids["attempt"],execution_ids["result"]):safe_id(value)
         self._require_generation_scope(connection,context,request.source_version_ids)
         projection=self._policy_projection(connection,context,run_id=None if request.source_only else request.run_id)
         if projection["review_condition"]!=request.review_condition or projection["ruleset_version_id"]!=request.ruleset_version_id:
@@ -358,40 +424,33 @@ class PostgresStudioWorkspaceRepository:
             item=by_id[chunk_id]
             for name in ("chunk_id","source_version_id","evidence_span_id"):safe_id(item[name])
             if item["source_version_id"] not in request.source_version_ids:raise StudioError("EVIDENCE_REQUIRED",409)
-            citations.append({"citation_id":chunk_id,"source_version_id":item["source_version_id"],"evidence_span_id":item["evidence_span_id"],"page":item["page"]})
-        if not request.source_only:
-            origin=connection.execute("SELECT /* studio-typed:origin */ 1 FROM runs r JOIN run_results rr "
-                "ON (rr.tenant_id,rr.workspace_id,rr.run_id)=(r.tenant_id,r.workspace_id,r.record_id) "
-                "JOIN notebook_bindings b ON (b.tenant_id,b.workspace_id,b.record_id)=(r.tenant_id,r.workspace_id,r.conversation_id) "
-                "AND b.binding_kind='conversation_thread' WHERE r.tenant_id=%s AND r.workspace_id=%s AND r.record_id=%s "
-                "AND rr.record_id=%s AND r.created_by=%s AND b.notebook_id=%s",
-                (context.tenant_id,context.workspace_id,request.run_id,request.run_result_id,context.actor_id,context.notebook_id)).fetchone()
-            if origin is None:raise StudioError("RESOURCE_UNAVAILABLE",404)
+            locator_kind=item.get("locator_kind","page")
+            if locator_kind not in {"page","section","image_region","sheet_cell","docx_block","pptx_block","audio_segment"}:
+                raise StudioError("EVIDENCE_REQUIRED",409)
+            locator_value=item.get("locator_value")
+            if locator_value is None:locator_value=str(item["page"]) if locator_kind=="page" else item["evidence_span_id"] if locator_kind=="section" else None
+            if type(locator_value) is not str or not locator_value or len(locator_value)>2048:raise StudioError("EVIDENCE_REQUIRED",409)
+            safe_id(item["source_id"])
+            citations.append({"citation_id":self._opaque("citation",execution_ids["run"],chunk_id),"source_id":item["source_id"],
+                "source_version_id":item["source_version_id"],"evidence_span_id":item["evidence_span_id"],"page":item["page"],
+                "locator":{"kind":locator_kind,"value":locator_value}})
+        self.require_typed_origin_current(connection,context,request)
         operation="studio.typed.generate" if metadata["operation"]=="generate" else "studio.typed.regenerate"
         scope=(context.tenant_id,context.workspace_id,context.actor_id,operation,idempotency_key)
         settings_id=self._opaque("settings",*scope);generation_id=self._opaque("generation",*scope)
         version_id=self._opaque("output-version",*scope)
         previous_id=metadata["previous_version_id"];previous=None
         if metadata["operation"]=="regenerate":
-            self._require_output_sources(connection,context,previous_id,action=Action.EDIT)
             output_id=metadata["output_id"]
-            connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",("studio-output|"+context.tenant_id+"|"+context.workspace_id+"|"+output_id,))
-            previous=connection.execute("SELECT /* studio-typed:previous */ output_versions.aggregate_id,content_version,output_versions.record_id,"
-                "output_versions.canonical_json->>'output_type',o.canonical_json->>'output_type' FROM output_versions "
-                "JOIN studio_outputs o ON (o.tenant_id,o.workspace_id,o.record_id)=(output_versions.tenant_id,output_versions.workspace_id,output_versions.studio_output_id) "
-                "WHERE output_versions.tenant_id=%s AND output_versions.workspace_id=%s AND studio_output_id=%s AND EXISTS(SELECT 1 FROM notebook_bindings b "
-                "WHERE b.tenant_id=output_versions.tenant_id AND b.workspace_id=output_versions.workspace_id AND b.notebook_id=%s "
-                "AND b.binding_kind='output_version' AND b.record_id=output_versions.record_id) ORDER BY content_version DESC,output_versions.record_id DESC LIMIT 1",
-                (context.tenant_id,context.workspace_id,output_id,context.notebook_id)).fetchone()
-            if previous is None or previous[2]!=previous_id:raise StudioError("STUDIO_VERSION_CHANGED",409)
-            if previous[3]!=request.output_type or previous[4]!=request.output_type:raise StudioError("STUDIO_VERSION_CHANGED",409)
+            previous=self.require_typed_revision_current(connection,context,request.output_type,output_id,previous_id)
         else:
             output_id=self._opaque("output",*scope)
         if self._creation_enforcer is not None:
             self._creation_enforcer(connection,context.tenant_id,"studio.generate",{"generation_runs":1,"studio_outputs":1 if previous is None else 0})
         request_payload=asdict(request);request_payload["source_version_ids"]=list(request.source_version_ids)
         fingerprint=hashlib.sha256(canonical_json_bytes({**request_payload,"execution_run_id":execution_ids["run"],"previous_version_id":previous_id})).hexdigest()
-        settings={**request_payload,"server_policy_projection":projection,"actual_model_selection":metadata["selection"],
+        settings={**request_payload,"revision_type":metadata["revision_type"],"change_reason":metadata["change_reason"],
+                  "server_policy_projection":projection,"actual_model_selection":metadata["selection"],
                   "generator_version":GENERATOR_VERSION,"execution_lineage":{"run_id":execution_ids["run"],"model_attempt_id":execution_ids["attempt"]}}
         self._insert(connection,context,"generation_settings_snapshots",settings_id,settings)
         self._insert(connection,context,"generation_requests",generation_id,settings,state="configuring",
@@ -402,7 +461,7 @@ class PostgresStudioWorkspaceRepository:
             self._insert(connection,context,"studio_outputs",output_id,{"output_type":request.output_type,"title":request.purpose,"purpose":request.purpose},
                          extra_columns=("generation_request_id",),extra_values=(generation_id,))
         payload={**request_payload,"content":typed.content,"previous_version_id":previous_id,
-                 "revision_type":metadata["revision_type"],"change_reason":"typed_generation",
+                 "revision_type":metadata["revision_type"],"change_reason":metadata["change_reason"] if previous is not None else "initial_generation",
                  "approval_required":True,"actual_model_selection":metadata["selection"],"generator_version":GENERATOR_VERSION,
                  "execution_lineage":settings["execution_lineage"],"source_lineage":{"tenant_id":context.tenant_id,"workspace_id":context.workspace_id,
                     "notebook_id":context.notebook_id,"source_version_ids":list(request.source_version_ids),"run_id":request.run_id,"run_result_id":request.run_result_id}}
@@ -416,6 +475,9 @@ class PostgresStudioWorkspaceRepository:
                 "VALUES(%s,%s,%s,%s,%s,NULL,%s,now()) ON CONFLICT DO NOTHING",
                 (context.tenant_id,context.workspace_id,context.notebook_id,table_kind,record,context.actor_id))
         for index,citation in enumerate(citations):
+            self._insert(connection,context,"citations",citation["citation_id"],{**citation,"run_result_id":execution_ids["result"],"origin":"raw_source","context_item_id":citation["source_id"]},
+                         extra_columns=("run_result_id","source_version_id","evidence_span_id"),
+                         extra_values=(execution_ids["result"],citation["source_version_id"],citation["evidence_span_id"]))
             self._insert(connection,context,"evidence_references",self._opaque("evidence-reference",*scope,str(index)),citation,
                          extra_columns=("output_version_id","source_version_id","evidence_span_id"),
                          extra_values=(version_id,citation["source_version_id"],citation["evidence_span_id"]))
@@ -642,15 +704,37 @@ class PostgresStudioWorkspaceRepository:
             raise StudioError(error.code, 404 if error.code == "STUDIO_JOB_NOT_FOUND" else 503) from error
         if context.notebook_id is None or job.request_json.get("notebook_id") != context.notebook_id:
             raise StudioError("RESOURCE_UNAVAILABLE", 404)
+        actions=None
         with self._cloud_store._transaction(self._cloud(context, "studio.read")) as connection:
             self._require_generation_scope(connection, context,
                 tuple(job.request_json.get("source_version_ids", ())), action=Action.VIEW)
+            if "execution_plan_id" in job.request_json and job.state in {"completed","failed","unavailable"}:
+                row=connection.execute("SELECT /* studio-typed:terminal-actions */ t.canonical_json,t.canonical_text,t.digest_sha256,t.created_by "
+                    "FROM run_steps t JOIN runs r ON (r.tenant_id,r.workspace_id,r.record_id)=(t.tenant_id,t.workspace_id,t.run_id) "
+                    "JOIN generation_settings_snapshots p ON (p.tenant_id,p.workspace_id,p.record_id)=(r.tenant_id,r.workspace_id,r.canonical_json->>'plan_id') "
+                    "WHERE r.tenant_id=%s AND r.workspace_id=%s AND r.created_by=%s AND t.created_by=r.created_by "
+                    "AND r.canonical_json->>'kind'='studio_execution' AND r.canonical_json->>'job_id'=%s "
+                    "AND r.canonical_json->>'notebook_id'=%s AND p.record_id=%s AND p.created_by=r.created_by "
+                    "AND p.canonical_json->'scope'->>'notebook_id'=r.canonical_json->>'notebook_id' "
+                    "AND p.canonical_json->>'fingerprint'=t.canonical_json->>'plan_fingerprint' "
+                    "AND t.canonical_json->>'kind' IN ('studio_execution_terminal','studio_execution_uncertain')",
+                    (context.tenant_id,context.workspace_id,context.actor_id,job.job_id,context.notebook_id,job.request_json["execution_plan_id"])).fetchone()
+                if (row is None or type(row[0]) is not dict or row[3]!=context.actor_id or canonical_json_bytes(row[0]).decode()!=row[1]
+                    or hashlib.sha256(row[1].encode()).hexdigest()!=row[2]):raise StudioError("STUDIO_OUTPUT_UNAVAILABLE",409)
+                terminal=row[0].get("result")
+                if (type(terminal) is not dict or terminal.get("job_id")!=job.job_id or terminal.get("status")!=job.state
+                    or terminal.get("safe_error_code")!=job.safe_error_code or terminal.get("studio_output_id")!=job.studio_output_id
+                    or terminal.get("output_version_id")!=job.output_version_id):raise StudioError("STUDIO_OUTPUT_UNAVAILABLE",409)
+                actions=terminal.get("next_actions")
+                if type(actions) is not list or len(actions)>4 or any(type(v) is not str or not 1<=len(v)<=120 for v in actions):
+                    raise StudioError("STUDIO_OUTPUT_UNAVAILABLE",409)
         result = {
             "job_id": job.job_id, "status": job.state, "output_type": job.request_json.get("output_type"),
             "title": job.request_json.get("purpose"), "studio_output_id": job.studio_output_id,
             "output_version_id": job.output_version_id, "error_code": job.safe_error_code,
             "created_at": job.created_at, "completed_at": job.completed_at,
         }
+        if actions is not None:result["next_actions"]=list(actions)
         if job.state == "completed" and job.studio_output_id:
             versions = self.list_versions(context, job.studio_output_id)
             result["output"] = versions[0] if versions else None
@@ -1094,7 +1178,7 @@ class PostgresStudioWorkspaceRepository:
                 payload = dict(cast(Mapping[str, object], row[0]))
                 output_type = str(payload.get("output_type", ""))
                 if format_name not in FORMATS.get(output_type, frozenset()): raise StudioError("EXPORT_FORMAT_UNSUPPORTED")
-                exported = export_studio_output(format_name, str(payload.get("purpose", "Studio 산출물")), cast(Mapping[str, object], payload.get("content", {})), {"output_version_id": version_id, "created_at": row[1].isoformat(), "knowledge_scope": ",".join(cast(list[str], payload.get("source_version_ids", []))), "evidence_appendix": f"EvidenceReference {row[2]}건"}, output_type=output_type)
+                exported = export_studio_output(format_name, str(payload.get("purpose", "Studio 산출물")), cast(Mapping[str, object], payload.get("content", {})), {"output_version_id": version_id, "created_at": row[1].isoformat(), "knowledge_scope": ",".join(cast(list[str], payload.get("source_version_ids", []))), "evidence_appendix": f"EvidenceReference {row[2]}건"}, output_type=output_type,generator_version=payload.get("generator_version"))
                 if self._object_storage is None: raise StudioError("OBJECT_STORAGE_UNAVAILABLE", 503)
                 scope = self._cloud(context, "studio.export")
                 object_id = hashlib.sha256(f"{context.tenant_id}|{context.workspace_id}|{version_id}|{format_name}".encode()).hexdigest()[:32]

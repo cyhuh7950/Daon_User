@@ -833,7 +833,7 @@ test("Product Studio OpenAPI는 Runtime method·exact body·7 media type 불일�
   const responseMismatch = structuredClone(document);
   responseMismatch.paths["/api/v1/reviews"].post.responses["201"].$ref = "#/components/responses/CreatedResponse";
   assert.throws(() => validateOpenApiDocument(responseMismatch), /Studio Runtime response mismatch/);
-  assert.ok(document.components.schemas.StudioRevisionRequest.properties.settings.$ref.endsWith("/StudioGenerationSettings"));
+  assert.deepEqual(document.components.schemas.StudioRevisionRequest.properties.settings.anyOf,[{$ref:"#/components/schemas/StudioGenerationSettings"},{type:"null"}]);
   assert.ok(document.components.schemas.StudioVersionMutationEnvelope.properties.data.required.includes("content"));
   assert.deepEqual(document.components.schemas.StudioVersionMutationEnvelope.properties.data.properties.content.oneOf, [
     { type: "string" }, { type: "object" },
@@ -891,4 +891,37 @@ test("D Notebook 모델 설정은 닫힌 GET/PATCH와 질문 version 결속을 �
     b=>{delete b.components.schemas.GroundedQuestionAuthorizationRequest.properties.model_settings_version;},
     b=>{b.components.schemas.NotebookModelSettingsCandidate.properties.endpoint={type:"string"};},
   ]){const b=structuredClone(d);mutate(b);assert.throws(()=>validateOpenApiDocument(b),/Notebook model settings|Notebook method mismatch.*model-settings/u);}
+});
+
+
+test("E Studio 생성 인증·비동기 재생성은 닫힌 계약과 목적별 입력을 유지한다",async()=>{
+  const document=await loadContract(),schemas=document.components.schemas;
+  assert.ok(document.paths['/api/v1/studio-generation-requests/authorization']?.post);
+  assert.deepEqual(schemas.StudioGenerationAuthorizationRequest.oneOf.map(value=>value.$ref),[
+    '#/components/schemas/StudioGenerateAuthorization','#/components/schemas/StudioRegenerateAuthorization']);
+  assert.equal(document.paths['/api/v1/studio-outputs/{id}/versions'].post.responses['202'].$ref,'#/components/responses/StudioGenerationMutationResponse');
+  assert.equal(schemas.StudioJobProjection.properties.next_actions.maxItems,4);
+  assert.equal(schemas.StudioJobProjection.properties.next_actions.items.maxLength,120);
+  assert.doesNotThrow(()=>validateOpenApiDocument(document));
+  for(const change of [
+    d=>{delete d.paths['/api/v1/studio-generation-requests/authorization'];},
+    d=>{d.components.schemas.StudioRegenerateAuthorization.additionalProperties=true;},
+    d=>{d.components.schemas.StudioRegenerateAuthorization.properties.settings={$ref:'#/components/schemas/StudioGenerationSettings'};},
+    d=>{d.components.schemas.StudioRevisionRequest.oneOf[2].properties.settings={type:'object'};},
+    d=>{d.components.schemas.StudioRegenerateAuthorization.properties.source_version_ids={type:'array'};},
+    d=>{d.components.schemas.StudioJobProjection.properties.next_actions.maxItems=5;},
+    d=>{delete d.paths['/api/v1/studio-outputs/{id}/versions'].post.responses['202'];},
+  ]){const invalid=structuredClone(document);change(invalid);assert.throws(()=>validateOpenApiDocument(invalid));}
+});
+
+test('E 재생성 설정은 AI의 명시 null과 설정 변경의 완전 객체를 구별한다',async()=>{
+  const schemas=(await loadContract()).components.schemas;
+  for(const name of ['StudioRegenerateAuthorization','StudioRevisionRequest']){
+    assert.deepEqual(schemas[name].properties.settings,{anyOf:[{$ref:'#/components/schemas/StudioGenerationSettings'},{type:'null'}]});
+    const branch=schemas[name].oneOf.find(item=>item.properties.revision_type.const==='settings_change');
+    assert.deepEqual(branch.properties.settings,{$ref:'#/components/schemas/StudioGenerationSettings'});
+    assert.ok(branch.required.includes('settings'));
+  }
+  assert.equal(schemas.StudioGenerationSettings.additionalProperties,false);
+  assert.ok(schemas.StudioGenerationSettings.required.includes('purpose'));
 });

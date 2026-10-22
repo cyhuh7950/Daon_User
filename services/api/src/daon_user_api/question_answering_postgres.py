@@ -854,6 +854,46 @@ class PostgresQuestionAnsweringRepository:
             str(row[0]), str(row[1]), filename, content, content.count(b"\f") + 1,
         )
 
+    @staticmethod
+    def _citation_notebook_scope(context):
+        """과거 질문 binding 또는 실제 Studio 실행·산출물 계보만 원문 읽기에 사용한다."""
+        if context.notebook_id is None:
+            return " AND NOT EXISTS(SELECT 1 FROM run_results sr WHERE sr.tenant_id=c.tenant_id AND sr.workspace_id=c.workspace_id AND sr.record_id=c.run_result_id AND sr.canonical_json->>'kind'='studio_execution')",()
+        clause=""" AND EXISTS(SELECT 1 FROM run_results rr JOIN runs r
+          ON (r.tenant_id,r.workspace_id,r.record_id)=(rr.tenant_id,rr.workspace_id,rr.run_id)
+          CROSS JOIN (SELECT %s::text notebook_id,%s::text actor_id) scope
+          WHERE (rr.tenant_id,rr.workspace_id,rr.record_id)=(c.tenant_id,c.workspace_id,c.run_result_id)
+          AND (EXISTS(SELECT 1 FROM notebook_bindings nb WHERE
+            (nb.tenant_id,nb.workspace_id,nb.record_id)=(r.tenant_id,r.workspace_id,r.conversation_id)
+            AND nb.binding_kind='conversation_thread' AND nb.notebook_id=scope.notebook_id)
+          OR (rr.canonical_json->>'kind'='studio_execution' AND r.canonical_json->>'kind'='studio_execution'
+            AND r.canonical_json->>'notebook_id'=scope.notebook_id
+            AND rr.canonical_json->>'notebook_id'=scope.notebook_id
+            AND r.state='completed' AND r.created_by=scope.actor_id AND rr.created_by=scope.actor_id AND c.created_by=scope.actor_id
+            AND EXISTS(SELECT 1 FROM model_attempts ma JOIN routing_decisions rd
+              ON (rd.tenant_id,rd.workspace_id,rd.record_id)=(ma.tenant_id,ma.workspace_id,ma.routing_decision_id)
+              WHERE (ma.tenant_id,ma.workspace_id,ma.record_id)=(rr.tenant_id,rr.workspace_id,rr.selected_model_attempt_id)
+              AND rd.run_id=r.record_id AND ma.routing_decision_id=rr.routing_decision_id)
+            AND EXISTS(SELECT 1 FROM output_versions ov JOIN notebook_bindings nb
+              ON (nb.tenant_id,nb.workspace_id,nb.record_id)=(ov.tenant_id,ov.workspace_id,ov.record_id)
+              WHERE (ov.tenant_id,ov.workspace_id)=(r.tenant_id,r.workspace_id)
+              AND nb.binding_kind='output_version' AND nb.notebook_id=scope.notebook_id
+              AND ov.created_by=scope.actor_id
+              AND ov.canonical_json->'source_lineage'->>'notebook_id'=scope.notebook_id
+              AND ov.canonical_json->'execution_lineage'->>'run_id'=r.record_id
+              AND ov.canonical_json->'execution_lineage'->>'model_attempt_id'=rr.selected_model_attempt_id
+              AND EXISTS(SELECT 1 FROM evidence_references er WHERE
+                (er.tenant_id,er.workspace_id,er.output_version_id)=(ov.tenant_id,ov.workspace_id,ov.record_id)
+                AND er.source_version_id=c.source_version_id AND er.evidence_span_id=c.evidence_span_id
+                AND er.canonical_json->>'citation_id'=c.record_id)))))"""
+        return clause,(context.notebook_id,context.actor_id)
+
+    def _check_studio_citation_source(self,connection,context,row,*,studio_flag_index):
+        if len(row)>studio_flag_index and row[studio_flag_index] is True:
+            from .question_answering_service import QuestionInputSource
+            self._knowledge_selections(connection,context,(QuestionInputSource(
+                origin="raw_source",context_item_id=row[0],source_id=row[0],source_version_id=row[1]),),write=False)
+
     def read_citation_pdf(
         self, context: QuestionContext, citation_id: str,
     ) -> tuple[CitationPdfContent, int]:
@@ -863,28 +903,19 @@ class PostgresQuestionAnsweringRepository:
             with self._cloud_store._transaction(
                 self._cloud_context(context, "citation.read"),
             ) as connection:
-                notebook_clause = (
-                    " AND EXISTS (SELECT 1 FROM run_results rr JOIN runs r ON "
-                    "r.tenant_id=rr.tenant_id AND r.workspace_id=rr.workspace_id "
-                    "AND r.record_id=rr.run_id JOIN notebook_bindings nb ON "
-                    "nb.tenant_id=r.tenant_id AND nb.workspace_id=r.workspace_id "
-                    "AND nb.binding_kind='conversation_thread' AND nb.record_id=r.conversation_id "
-                    "WHERE rr.tenant_id=c.tenant_id AND rr.workspace_id=c.workspace_id "
-                    "AND rr.record_id=c.run_result_id AND nb.notebook_id=%s)"
-                    if context.notebook_id is not None else ""
-                )
+                notebook_clause,notebook_params=self._citation_notebook_scope(context)
                 row = connection.execute(
                     "SELECT c.canonical_json->>'source_id',c.source_version_id,"
-                    "c.canonical_json->>'page',es.canonical_json->>'page' "
+                    "c.canonical_json->>'page',es.canonical_json->>'page',EXISTS(SELECT 1 FROM run_results sr WHERE (sr.tenant_id,sr.workspace_id,sr.record_id)=(c.tenant_id,c.workspace_id,c.run_result_id) AND sr.canonical_json->>'kind'='studio_execution') "
                     "FROM citations c JOIN evidence_spans es ON "
                     "es.tenant_id=c.tenant_id AND es.workspace_id=c.workspace_id "
                     "AND es.record_id=c.evidence_span_id WHERE c.record_id=%s "
                     "AND NOT EXISTS (SELECT 1 FROM deletion_requests dr WHERE dr.tenant_id=c.tenant_id "
                     "AND dr.workspace_id=c.workspace_id AND dr.source_id=c.canonical_json->>'source_id' "
                     "AND dr.source_active=false)" + notebook_clause,
-                    (citation_id, context.notebook_id)
-                    if context.notebook_id is not None else (citation_id,),
+                    (citation_id,*notebook_params),
                 ).fetchone()
+                if row is not None:self._check_studio_citation_source(connection,context,row,studio_flag_index=4)
         except CloudDatabaseError as error:
             raise QuestionRepositoryError(
                 "QUESTION_DATABASE_UNAVAILABLE", status=503, retryable=error.retryable,
@@ -913,22 +944,13 @@ class PostgresQuestionAnsweringRepository:
             with self._cloud_store._transaction(
                 self._cloud_context(context, "citation.read"),
             ) as connection:
-                notebook_clause = (
-                    " AND EXISTS (SELECT 1 FROM run_results rr JOIN runs r ON "
-                    "r.tenant_id=rr.tenant_id AND r.workspace_id=rr.workspace_id "
-                    "AND r.record_id=rr.run_id JOIN notebook_bindings nb ON "
-                    "nb.tenant_id=r.tenant_id AND nb.workspace_id=r.workspace_id "
-                    "AND nb.binding_kind='conversation_thread' AND nb.record_id=r.conversation_id "
-                    "WHERE rr.tenant_id=c.tenant_id AND rr.workspace_id=c.workspace_id "
-                    "AND rr.record_id=c.run_result_id AND nb.notebook_id=%s)"
-                    if context.notebook_id is not None else ""
-                )
+                notebook_clause,notebook_params=self._citation_notebook_scope(context)
                 row = connection.execute(
                     "SELECT c.canonical_json->>'source_id',c.source_version_id,"
                     "c.canonical_json->>'page',es.canonical_json->>'page',"
                     "es.canonical_json,s.canonical_json->>'kind',"
                     "COALESCE(sv.canonical_json->>'filename',s.canonical_json->>'filename',sv.record_id),"
-                    "s.state,es.record_id,c.canonical_json->'locator' FROM citations c JOIN evidence_spans es ON "
+                    "s.state,es.record_id,c.canonical_json->'locator',EXISTS(SELECT 1 FROM run_results sr WHERE (sr.tenant_id,sr.workspace_id,sr.record_id)=(c.tenant_id,c.workspace_id,c.run_result_id) AND sr.canonical_json->>'kind'='studio_execution') FROM citations c JOIN evidence_spans es ON "
                     "es.tenant_id=c.tenant_id AND es.workspace_id=c.workspace_id "
                     "AND es.record_id=c.evidence_span_id AND es.source_version_id=c.source_version_id JOIN source_versions sv ON "
                     "sv.tenant_id=c.tenant_id AND sv.workspace_id=c.workspace_id "
@@ -943,9 +965,9 @@ class PostgresQuestionAnsweringRepository:
                     "AND newer.version>sv.version) AND NOT EXISTS (SELECT 1 FROM deletion_requests dr "
                     "WHERE dr.tenant_id=s.tenant_id AND dr.workspace_id=s.workspace_id "
                     "AND dr.source_id=s.record_id AND dr.source_active=false)" + notebook_clause,
-                    (citation_id, context.notebook_id)
-                    if context.notebook_id is not None else (citation_id,),
+                    (citation_id,*notebook_params),
                 ).fetchone()
+                if row is not None:self._check_studio_citation_source(connection,context,row,studio_flag_index=10)
         except CloudDatabaseError as error:
             raise QuestionRepositoryError(
                 "QUESTION_DATABASE_UNAVAILABLE", status=503, retryable=error.retryable,

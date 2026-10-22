@@ -13,6 +13,7 @@ CTX=StudioExecutionContext("tenant-qa","workspace-qa","actor-qa","trace-qa","pol
 META={"operation":"generate","output_id":None,"previous_version_id":None,"selection":{"connection_id":"connection-qa","model_id":"model-qa","provider_code":"CUSTOM","provider_kind":"external_api","adapter_type":"openai_compatible","connection_version":1,"catalog_version":1,"credential_version":0,"reasoning_effort":None,"model_settings_version":1,"reasoning_profile_version":None,"endpoint_digest":"a"*64},"policy_fingerprint":"b"*64,"payload_digest":"c"*64,"evidence_digest":"d"*64,"sources":[{"source_id":"source-qa","source_version_id":"version-qa","source_digest":"e"*64,"index_version_id":"index-qa","index_digest":"f"*64}]}
 REQUEST={"output_type":"slides","source_id":None,"source_version_ids":["version-qa"],"run_id":None,"run_result_id":None,"purpose":"자료 정리","audience":"독자","ruleset_version_id":None,"length":"short","structure":"summary","output_format":"pdf","review_condition":"review_required","language":"ko","source_only":True,"intended_model_selection":{"connection_id":"connection-qa","model_id":"model-qa","reasoning_effort":None,"model_settings_version":1,"reasoning_profile_version":None}}
 META["revision_type"]="initial"
+META["change_reason"]=None
 class Result:
  def __init__(self,rows=()):self.rows=rows
  def fetchone(self):return self.rows[0] if self.rows else None
@@ -47,6 +48,8 @@ class Store:
    if params[2] in self.rows:return Result()
    value=params[4].obj
    self.rows[params[2]]=(value,params[5],params[6],params[7]);return Result([(params[2],)])
+  if "studio-execution:job-replay-read" in sql:
+   row=self.jobs.get(params[2]);return Result([(*row,*getattr(self,"job_outputs",{}).get(params[2],(None,None)))] if row else [])
   if "studio-execution:job-read" in sql:
    row=self.jobs.get(params[2]);return Result([row] if row else [])
   if "studio-execution:canon-read" in sql:
@@ -86,6 +89,23 @@ class StudioExecutionRepositoryTests(unittest.TestCase):
   with self.assertRaises(StudioError):self.repo.prepare(CTX,REQUEST,"studio-request-key-1",{**META,"raw_payload":"must not store"})
   self.repo.clock=lambda:NOW+timedelta(seconds=301)
   with self.assertRaises(StudioError):self.repo.prepare(CTX,REQUEST,"studio-request-key-1",META)
+ def test_completed_regeneration_exact_replay_checks_its_own_latest_version_without_new_admission(self):
+  metadata={**META,"operation":"regenerate","revision_type":"settings_change","change_reason":"검토 범위 조정","output_id":"output-qa","previous_version_id":"previous-qa"}
+  plan=self.repo.prepare(CTX,REQUEST,"studio-regen-key-1",metadata)
+  job,_=self.repo.enqueue(CTX,plan,"studio-regen-key-1",authorization_mode="policy_approved")
+  payload,_,actor=self.store.jobs[job["job_id"]];self.store.jobs[job["job_id"]]=(payload,"completed",actor)
+  self.store.job_outputs={job["job_id"]:("output-qa","own-new-version-qa")}
+  self.repo.clock=lambda:NOW+timedelta(seconds=301)
+  with patch.object(self.repo,"_current") as current:
+   restored,result=self.repo.read_replay(CTX,"studio-regen-key-1",request=REQUEST,revision_type="settings_change",change_reason="검토 범위 조정",output_id="output-qa",previous_version_id="previous-qa")
+  self.assertEqual(result["output_version_id"],"own-new-version-qa")
+  self.assertEqual(current.call_args.args[3]["previous_version_id"],"own-new-version-qa")
+  self.assertEqual(restored["metadata"]["previous_version_id"],"previous-qa")
+  self.assertEqual(len(self.store.jobs),1)
+  for change in ({"request":{**REQUEST,"purpose":"다른 입력"}},{"change_reason":"다른 사유"}):
+   options={"request":REQUEST,"revision_type":"settings_change","change_reason":"검토 범위 조정","output_id":"output-qa","previous_version_id":"previous-qa",**change}
+   with self.assertRaises(StudioError):self.repo.read_replay(CTX,"studio-regen-key-1",**options)
+
  def test_cloud_failure_rolls_back_admission_job_and_same_binding_can_recover(self):
   plan=self.repo.prepare(CTX,REQUEST,"studio-request-key-1",META)
   self.store.fail_admission=True
@@ -156,6 +176,9 @@ class StudioExecutionRepositoryTests(unittest.TestCase):
  def test_terminal_output_savepoint_rollback_keeps_cost_and_exact_replay(self):
   plan,job,claim=self.started()
   def failed_output(conn):
+   self.assertTrue(("model_attempts",claim["ids"]["attempt"]) in self.store.canons)
+   self.assertEqual(len(self.store.costs),1)
+   self.assertIsNone(self.store.canons[("model_attempts",claim["ids"]["attempt"])]["safe_error_code"])
    conn.rows["injected-half-output"]=("must rollback",)
    raise StudioError("STUDIO_DATABASE_UNAVAILABLE",503)
   result=self.repo.finish(CTX,plan,"studio-request-key-1",job_id=job["job_id"],job_version=1,
@@ -247,25 +270,37 @@ class StudioExecutionRepositoryTests(unittest.TestCase):
   self.assertEqual(self.repo.finish(CTX,plan,"studio-request-key-1",**kwargs),uncertain)
   self.assertEqual(len(self.store.costs),2)
   with self.assertRaises(StudioError):self.repo.finish(CTX,plan,"studio-request-key-1",**{**kwargs,"usage":{"total_tokens":19}})
+ def test_same_usage_different_response_cannot_replay_terminal(self):
+  plan,job,claim=self.started()
+  kwargs=dict(job_id=job["job_id"],job_version=1,provider_outcome="succeeded",usage={},safe_error_code="STUDIO_OUTPUT_UNAVAILABLE",response_digest="a"*64)
+  first=self.repo.finish(CTX,plan,"studio-request-key-1",**kwargs)
+  self.assertEqual(self.repo.finish(CTX,plan,"studio-request-key-1",**kwargs),first)
+  with self.assertRaises(StudioError):self.repo.finish(CTX,plan,"studio-request-key-1",**{**kwargs,"response_digest":"b"*64})
 
 class StudioCurrentBindingTests(unittest.TestCase):
- def current(self,metadata_row):
+ def current(self,metadata_row,*,revision=None,previous=("aggregate-qa",2,"previous-qa","slides","slides"),request_payload=None,origin=(1,)):
   from types import SimpleNamespace
-  order=[]
+  order=[];self_test=self
   class Connection:
    def execute(self,sql,params=()):
     order.append("metadata" if "studio-execution:model-metadata" in sql else "sql")
     if "studio-execution:model-metadata" in sql:return Result([metadata_row] if metadata_row else [])
     if "studio-execution:session" in sql:return Result([(1,)])
     if "studio-execution:source" in sql:return Result([("source-qa","e"*64,"index-qa","f"*64)])
+    if "studio-typed:origin" in sql:
+     for required in ("r.created_by=%s","rr.created_by=r.created_by","b.notebook_id=%s"):self_test.assertIn(required,sql)
+     return Result([origin] if origin else [])
+    if "studio-typed:previous" in sql:return Result([previous] if previous else [])
+    if "pg_advisory_xact_lock" in sql:return Result()
     raise AssertionError("UNEXPECTED_SQL")
   repo=PostgresStudioExecutionRepository(Store(),clock=lambda:NOW)
   policy=SimpleNamespace(fingerprint="sha256:"+"b"*64)
   with patch("daon_user_api.studio_execution_postgres.assert_execution_current",side_effect=lambda *a:order.append("model-settings")), \
        patch.object(repo.workspace,"_require_generation_scope",side_effect=lambda *a:order.append("notebook")), \
+       patch.object(repo.workspace,"_require_output_sources"), \
        patch("daon_user_api.studio_execution_postgres._current_auth_grant"), \
        patch.object(repo,"_effective_policy",return_value=policy):
-   repo._current(Connection(),CTX,REQUEST,META)
+   repo._current(Connection(),CTX,request_payload or REQUEST,revision or META)
   return order
  def test_model_settings_lock_precedes_notebook_lock(self):
   order=self.current((1,1,0,"a"*64,"CUSTOM","openai_compatible"))
@@ -279,15 +314,63 @@ class StudioCurrentBindingTests(unittest.TestCase):
     with self.assertRaises(StudioError) as error:self.current(tuple(changed))
     self.assertEqual(error.exception.code,"STUDIO_MODEL_CHANGED")
   with self.assertRaises(StudioError):self.current(None)
+ def test_current_origin_guard_rejects_missing_or_foreign_parent_before_admission_and_claim(self):
+  request={**REQUEST,"source_only":False,"source_id":"source-qa","run_id":"origin-run","run_result_id":"origin-result"}
+  self.current((1,1,0,"a"*64,"CUSTOM","openai_compatible"),request_payload=request)
+  with self.assertRaises(StudioError) as error:self.current((1,1,0,"a"*64,"CUSTOM","openai_compatible"),request_payload=request,origin=None)
+  self.assertEqual(error.exception.code,"RESOURCE_UNAVAILABLE")
+ def test_regeneration_previous_changed_or_different_type_rejected_before_start(self):
+  metadata={**META,"operation":"regenerate","revision_type":"ai_regeneration","change_reason":"자료 재정리", "output_id":"output-qa","previous_version_id":"previous-qa"}
+  self.current((1,1,0,"a"*64,"CUSTOM","openai_compatible"),revision=metadata)
+  for previous in (("aggregate-qa",3,"newer-qa","slides","slides"),("aggregate-qa",2,"previous-qa","quiz","slides"),None):
+   with self.subTest(previous=previous),self.assertRaises(StudioError):self.current((1,1,0,"a"*64,"CUSTOM","openai_compatible"),revision=metadata,previous=previous)
 
 class StudioTypedPersistenceTests(unittest.TestCase):
+ def test_terminal_material_actions_are_read_only_from_matching_immutable_observation(self):
+  import hashlib
+  from types import SimpleNamespace
+  from daon_user_api.data_canon import canonical_json_bytes
+  from daon_user_api.studio_generation_queue import StudioGenerationJob
+  from daon_user_api.studio_workspace_postgres import PostgresStudioWorkspaceRepository
+  job=StudioGenerationJob(CTX.tenant_id,CTX.workspace_id,"job-qa",CTX.actor_id,CTX.trace_id,CTX.policy_version,"key-qa",
+   {**REQUEST,"notebook_id":CTX.notebook_id,"execution_plan_id":"plan-qa"},"unavailable",1,2,"STUDIO_OUTPUT_UNAVAILABLE")
+  store=Store();repo=PostgresStudioWorkspaceRepository(store);repo._generation_queue=SimpleNamespace(get=lambda *args:job)
+  result={"job_id":"job-qa","status":"unavailable","safe_error_code":"STUDIO_OUTPUT_UNAVAILABLE","next_actions":["선택한 자료를 보완해 주세요."],"studio_output_id":None,"output_version_id":None}
+  payload={"kind":"studio_execution_terminal","job_id":"job-qa","result":result}
+  text=canonical_json_bytes(payload).decode();row=(payload,text,hashlib.sha256(text.encode()).hexdigest(),CTX.actor_id)
+  with patch.object(repo,"_require_generation_scope"),patch.object(store,"execute",side_effect=lambda sql,params:Result([row]) if "studio-typed:terminal-actions" in sql else self.fail("UNEXPECTED_QUERY")):
+   view=repo.get_generation_job(CTX,"job-qa")
+   self.assertEqual(view["next_actions"],result["next_actions"])
+   row=(payload,text,"0"*64,CTX.actor_id)
+   with self.assertRaises(StudioError):repo.get_generation_job(CTX,"job-qa")
+
+ def test_revision_input_is_restored_only_from_exact_stored_snapshot_and_current_previous(self):
+  import hashlib,json
+  from daon_user_api.data_canon import canonical_json_bytes
+  from daon_user_api.studio_workspace_postgres import PostgresStudioWorkspaceRepository
+  payload={**REQUEST,"intended_model_selection":None}
+  text=canonical_json_bytes(payload).decode();checksum=hashlib.sha256(text.encode()).hexdigest()
+  root={"output_type":"slides"};row=(payload,text,checksum,payload,text,checksum,"slides")
+  store=Store();repo=PostgresStudioWorkspaceRepository(store)
+  def execute(sql,params=()):
+   if "studio-typed:revision-input" in sql:return Result([row])
+   raise AssertionError("UNEXPECTED_REVISION_INPUT_QUERY")
+  with patch.object(repo,"_require_output_sources"),patch.object(repo,"require_typed_revision_current",return_value=("aggregate",1,"previous-qa","slides","slides")) as current,patch.object(repo,"_require_generation_scope"),patch.object(repo,"_policy_projection",return_value={"review_condition":"review_required","ruleset_version_id":None}),patch.object(store,"execute",side_effect=execute):
+   restored=repo.load_revision_input(CTX,"output-qa","previous-qa",None)
+   self.assertEqual(restored.output_type,"slides");self.assertEqual(restored.source_version_ids,("version-qa",))
+   self.assertIsNone(restored.intended_model_selection)
+   current.assert_called_once()
+   with self.assertRaises(StudioError):repo.load_revision_input(CTX,"output-qa","previous-qa",{"purpose":"누락된 나머지 설정"})
+   row=(payload,text,"0"*64,payload,text,checksum,"slides")
+   with self.assertRaises(StudioError):repo.load_revision_input(CTX,"output-qa","previous-qa",None)
+
  def test_validated_content_is_saved_in_actual_studio_writer_with_actual_execution_lineage(self):
   from types import SimpleNamespace
   from daon_user_api.studio_workspace_postgres import PostgresStudioWorkspaceRepository
   from daon_user_api.studio_workspace import StudioGenerationRequest
   from daon_user_api.studio_typed_generation import parse_typed_output
   request=StudioGenerationRequest(**{**REQUEST,"source_version_ids":tuple(REQUEST["source_version_ids"])})
-  evidence=[{"chunk_id":"chunk-qa","text":"원문 전체입니다.","page":1,"source_version_id":"version-qa","source_id":"source-qa","evidence_span_id":"span-qa"}]
+  evidence=[{"chunk_id":"chunk-qa","text":"원문 전체입니다.","page":1,"source_version_id":"version-qa","source_id":"source-qa","evidence_span_id":"span-qa","locator_kind":"docx_block","locator_value":"block-qa"}]
   typed=parse_typed_output(request,{"content":{"slides":[{"title":"원문","body":"원문 전체입니다.","evidence":["chunk-qa"]}]},
    "cited_chunk_ids":["chunk-qa"],"insufficient":False,"next_actions":[]},evidence,request_id="generation-qa",model_id="model-qa")
   repo=PostgresStudioWorkspaceRepository(Store());writes=[];transitions=[];audits=[]
@@ -298,21 +381,26 @@ class StudioTypedPersistenceTests(unittest.TestCase):
        patch.object(repo,"_transition",side_effect=lambda *args:transitions.append(args[2:]) or 2), \
        patch.object(repo,"_finish",side_effect=lambda *args:audits.append(args)):
    result=repo.persist_typed_generation(repo._cloud_store,CTX,request,"studio-request-key-1",typed,evidence,
-    execution_ids={"run":"studio-run-qa","attempt":"studio-attempt-qa"},metadata=META)
+    execution_ids={"run":"studio-run-qa","attempt":"studio-attempt-qa","result":"studio-result-qa"},metadata=META)
    with patch.object(repo,"_require_output_sources"),patch.object(repo._cloud_store,"execute",return_value=Result([("aggregate-qa",2,"previous-qa","slides","slides")])):
     repo.persist_typed_generation(repo._cloud_store,CTX,request,"studio-request-key-2",typed,evidence,
-     execution_ids={"run":"studio-run-qa-2","attempt":"studio-attempt-qa-2"},
-     metadata={**META,"operation":"regenerate","revision_type":"settings_change","output_id":"output-qa","previous_version_id":"previous-qa"})
+     execution_ids={"run":"studio-run-qa-2","attempt":"studio-attempt-qa-2","result":"studio-result-qa-2"},
+     metadata={**META,"operation":"regenerate","revision_type":"settings_change","change_reason":"검토 범위를 조정했습니다.","output_id":"output-qa","previous_version_id":"previous-qa"})
    before=len(writes)
    for prior_type,root_type in (("quiz","slides"),("slides","quiz")):
     with self.subTest(previous=prior_type,root=root_type),patch.object(repo,"_require_output_sources"),patch.object(repo._cloud_store,"execute",return_value=Result([("aggregate-qa",2,"previous-qa",prior_type,root_type)])):
      with self.assertRaises(StudioError):repo.persist_typed_generation(repo._cloud_store,CTX,request,"studio-request-key-3",typed,evidence,
-      execution_ids={"run":"studio-run-qa-3","attempt":"studio-attempt-qa-3"},
-      metadata={**META,"operation":"regenerate","revision_type":"ai_regeneration","output_id":"output-qa","previous_version_id":"previous-qa"})
+      execution_ids={"run":"studio-run-qa-3","attempt":"studio-attempt-qa-3","result":"studio-result-qa-3"},
+      metadata={**META,"operation":"regenerate","revision_type":"ai_regeneration","change_reason":"근거를 다시 정리해 주세요.","output_id":"output-qa","previous_version_id":"previous-qa"})
    self.assertEqual(len(writes),before)
   self.assertEqual(set(result),{"studio_output_id","output_version_id"})
   payload=next(p for table,_,p,_ in writes if table=="output_versions")
   self.assertEqual(payload["content"],typed.content)
+  citation=next(p for table,_,p,_ in writes if table=="citations")
+  citation_record=next(record for table,record,_,_ in writes if table=="citations")
+  self.assertNotEqual(citation_record,"chunk-qa")
+  self.assertEqual(citation["run_result_id"],"studio-result-qa")
+  self.assertEqual(citation["locator"],{"kind":"docx_block","value":"block-qa"})
   self.assertEqual(payload["execution_lineage"],{"run_id":"studio-run-qa","model_attempt_id":"studio-attempt-qa"})
   self.assertEqual(payload["actual_model_selection"],META["selection"])
   self.assertEqual(payload["generator_version"],"studio-selected-evidence-v1")
@@ -320,5 +408,6 @@ class StudioTypedPersistenceTests(unittest.TestCase):
   self.assertEqual(len(audits),2)
   changed=[(p,v) for table,_,p,v in writes if table=="output_versions"][-1]
   self.assertEqual(changed[0]["revision_type"],"settings_change")
+  self.assertEqual(changed[0]["change_reason"],"검토 범위를 조정했습니다.")
   self.assertEqual(changed[1]["aggregate_id"],"aggregate-qa")
   self.assertEqual(changed[1]["extra_values"][-2:],(3,"previous-qa"))

@@ -118,3 +118,12 @@ def test_s18_selected_context_legacy_raw_origin_and_insufficient_general():
     selected = PostgresNotebookRepository(_ReadStore([], [], insufficient=True)).read_selected_context(context, "notebook-s18")
     assert selected.conversation.insufficient is True
     assert selected.conversation.citations == ()
+
+
+def test_private_studio_execution_snapshots_are_not_generic_notebook_selections():
+    from pathlib import Path
+    query=PostgresNotebookRepository._TARGET_QUERIES["generation_settings"]
+    source=(Path(__file__).resolve().parents[1]/"src/daon_user_api/notebook_postgres.py").read_text(encoding="utf-8")
+    for kind in ("notebook_model_settings","studio_execution_plan","studio_execution_admission"):
+        assert kind in query
+        assert kind in source[source.index("private_settings.canonical_json"):]

@@ -19,7 +19,7 @@ from .open_law_source_access import _current_auth_grant,OpenLawAccessError
 from .operations_telemetry import make_cost_receipt
 from .operations_telemetry_postgres import record_cost_in_transaction
 
-_META_KEYS={"operation","revision_type","output_id","previous_version_id","selection","policy_fingerprint","payload_digest","evidence_digest","sources"}
+_META_KEYS={"operation","revision_type","change_reason","output_id","previous_version_id","selection","policy_fingerprint","payload_digest","evidence_digest","sources"}
 _SELECTION_KEYS={"connection_id","model_id","provider_code","provider_kind","adapter_type","connection_version","catalog_version","credential_version","reasoning_effort","model_settings_version","reasoning_profile_version","endpoint_digest"}
 _SOURCE_KEYS={"source_id","source_version_id","source_digest","index_version_id","index_digest"}
 _REQUEST_KEYS={"output_type","source_id","source_version_ids","run_id","run_result_id","purpose","audience","ruleset_version_id","length","structure","output_format","review_condition","language","source_only","intended_model_selection"}
@@ -45,10 +45,12 @@ def validate_inputs(request,metadata):
         if checked.intended_model_selection is None:_unavailable()
         if metadata["operation"] not in {"generate","regenerate"}:_unavailable()
         if metadata["operation"]=="generate":
-            if metadata["output_id"] is not None or metadata["previous_version_id"] is not None or metadata["revision_type"]!="initial":_unavailable()
+            if metadata["output_id"] is not None or metadata["previous_version_id"] is not None or metadata["revision_type"]!="initial" or metadata["change_reason"] is not None:_unavailable()
         else:
             safe_id(metadata["output_id"]);safe_id(metadata["previous_version_id"])
             if metadata["revision_type"] not in {"ai_regeneration","settings_change"}:_unavailable()
+            reason=metadata["change_reason"]
+            if type(reason) is not str or not 1<=len(reason.strip())<=500:_unavailable()
         selected=metadata["selection"]
         if type(selected) is not dict or set(selected)!=_SELECTION_KEYS:_unavailable()
         for key in ("connection_id","provider_code","provider_kind","adapter_type"):
@@ -94,6 +96,7 @@ class PostgresStudioExecutionRepository:
             raise StudioError("STUDIO_MODEL_CHANGED",409) from None
         # Same current normal role/Notebook/Source rules as the existing Studio writer.
         self.workspace._require_generation_scope(conn,context,tuple(request["source_version_ids"]))
+        self.workspace.require_typed_origin_current(conn,context,SimpleNamespace(**request))
         try:_current_auth_grant(context,conn,Action.EDIT)
         except OpenLawAccessError:raise StudioError("RESOURCE_UNAVAILABLE",404) from None
         session=conn.execute("SELECT /* studio-execution:session */ 1 FROM identity_sessions s JOIN identity_devices d "
@@ -128,6 +131,8 @@ class PostgresStudioExecutionRepository:
                 (context.tenant_id,context.workspace_id,source["source_version_id"])).fetchone()
             if current is None or tuple(current)!=(source["source_id"],source["source_digest"],source["index_version_id"],source["index_digest"]):
                 raise StudioError("STUDIO_SOURCE_CHANGED",409)
+        if metadata["operation"]=="regenerate":
+            self.workspace.require_typed_revision_current(conn,context,request["output_type"],metadata["output_id"],metadata["previous_version_id"])
         effective=self._effective_policy(conn,context)
         if effective.fingerprint!="sha256:"+metadata["policy_fingerprint"]:
             raise StudioError("STUDIO_POLICY_CHANGED",409)
@@ -163,6 +168,44 @@ class PostgresStudioExecutionRepository:
             (context.tenant_id,context.workspace_id,record_id,record_id,Jsonb(payload),text,checksum,context.actor_id,context.trace_id)).fetchone()
         if created is None and PostgresStudioExecutionRepository._read(conn,context,record_id)!=payload:
             raise StudioError("IDEMPOTENCY_CONFLICT",409)
+
+    def read_replay(self,context,key,*,request=None,revision_type="initial",change_reason=None,output_id=None,previous_version_id=None,settings=None,model_settings_version=None):
+        """실제로 접수된 같은 요청의 영수증만 현재 권한 아래 읽는다. 새 승인/전송이 아니다."""
+        safe_id(key)
+        root=digest([context.tenant_id,context.workspace_id,context.actor_id,key])[:48]
+        with self.store._transaction(self._cloud(context)) as conn:
+            self._lock(conn,context,key)
+            plan=self._read(conn,context,"studio-plan-"+root)
+            if plan is None:return None
+            if set(plan)!=_PLAN_KEYS or plan.get("kind")!="studio_execution_plan":_unavailable()
+            validate_inputs(plan["request"],plan["metadata"])
+            if plan.get("schema_version")!=1 or plan.get("plan_id")!="studio-plan-"+root or plan["fingerprint"]!=digest({name:plan[name] for name in ("scope","request","metadata","key_digest")}):_unavailable()
+            if plan["scope"]!=context.scope() or plan["key_digest"]!=digest(key):raise StudioError("IDEMPOTENCY_CONFLICT",409)
+            expected={"revision_type":revision_type,"change_reason":change_reason,"output_id":output_id,"previous_version_id":previous_version_id}
+            if any(plan["metadata"].get(k)!=v for k,v in expected.items()):raise StudioError("IDEMPOTENCY_CONFLICT",409)
+            if request is not None and plan["request"]!=request:raise StudioError("IDEMPOTENCY_CONFLICT",409)
+            if model_settings_version is not None and plan["request"]["intended_model_selection"]["model_settings_version"]!=model_settings_version:
+                raise StudioError("IDEMPOTENCY_CONFLICT",409)
+            if settings is not None and (type(settings) is not dict or settings!={name:plan["request"][name] for name in
+                ("purpose","audience","language","source_version_ids","ruleset_version_id","length","structure","output_format","review_condition")}):
+                raise StudioError("IDEMPOTENCY_CONFLICT",409)
+            job=conn.execute("SELECT /* studio-execution:job-replay-read */ request_json,state,actor_id,studio_output_id,output_version_id "
+                "FROM studio_generation_jobs WHERE tenant_id=%s AND workspace_id=%s AND job_id=%s",
+                (context.tenant_id,context.workspace_id,"studio-job-"+root)).fetchone()
+            if job is None:return None
+            if len(job)!=5 or job[1] not in {"queued","leased","generating","completed","failed","unavailable"}:_unavailable()
+            payload={**plan["request"],"notebook_id":context.notebook_id,"execution_plan_id":plan["plan_id"]}
+            admission=self._read(conn,context,plan["plan_id"]+"-admitted")
+            if job[0]!=payload or job[2]!=context.actor_id or admission is None or admission!={"kind":"studio_execution_admission",
+                "plan_id":plan["plan_id"],"plan_fingerprint":plan["fingerprint"],"scope":context.scope(),"authorization_mode":admission.get("authorization_mode"),"key_digest":digest(key)} or admission.get("authorization_mode") not in {"step_up","policy_approved"}:
+                raise StudioError("IDEMPOTENCY_CONFLICT",409)
+            metadata=plan["metadata"]
+            if metadata["operation"]=="regenerate" and job[1]=="completed":
+                if job[3]!=metadata["output_id"]:raise StudioError("IDEMPOTENCY_CONFLICT",409)
+                safe_id(job[4]);metadata={**metadata,"previous_version_id":job[4]}
+            self._current(conn,context,plan["request"],metadata)
+            return plan,{"job_id":"studio-job-"+root,"status":job[1],"output_type":plan["request"]["output_type"],
+                "studio_output_id":job[3],"output_version_id":job[4]}
 
     def prepare(self,context,request,key,metadata):
         safe_id(key);validate_inputs(request,metadata)
@@ -218,6 +261,32 @@ class PostgresStudioExecutionRepository:
         ids["profile"]="studio-profile-"+digest([context.tenant_id,context.workspace_id,selection["connection_id"],selection["connection_version"]])[:40]
         ids["deployment"]="studio-deployment-"+digest([ids["profile"],ids["artifact"]])[:40]
         return ids
+
+    def load_job(self,job):
+        """현재 공개 접근 허가가 아닌 내부 불변 admission의 소유 범위만 복원한다."""
+        scope=SimpleNamespace(tenant_id=job.tenant_id,workspace_id=job.workspace_id,actor_id=job.actor_id)
+        plan_id=job.request_json.get("execution_plan_id");safe_id(plan_id)
+        with self.store._transaction(CloudAccessContext(job.tenant_id,job.workspace_id,job.actor_id,"studio.create")) as conn:
+            plan=self._read(conn,scope,plan_id)
+        if (type(plan) is not dict or set(plan)!=_PLAN_KEYS or plan["kind"]!="studio_execution_plan" or plan["schema_version"]!=1
+            or plan["plan_id"]!=plan_id or plan["key_digest"]!=digest(job.idempotency_key)
+            or plan["scope"].get("tenant_id")!=job.tenant_id or plan["scope"].get("workspace_id")!=job.workspace_id
+            or plan["scope"].get("actor_id")!=job.actor_id or plan["scope"].get("notebook_id")!=job.request_json.get("notebook_id")):_unavailable()
+        validate_inputs(plan["request"],plan["metadata"])
+        expected={**plan["request"],"notebook_id":plan["scope"]["notebook_id"],"execution_plan_id":plan_id}
+        if dict(job.request_json)!=expected:raise StudioError("IDEMPOTENCY_CONFLICT",409)
+        context=StudioExecutionContext(**plan["scope"],trace_id=job.trace_id,policy_version=job.policy_version)
+        return context,plan
+
+    def has_started(self,context,plan,*,job_id):
+        ids=self._ids(context,plan)
+        with self.store._transaction(self._cloud(context)) as conn:
+            start=self._canon_read(conn,context,"run_steps",ids["start"],("run_id",))
+            if start is None:return False
+            if (start[3]!=context.actor_id or start[4]!=ids["run"] or start[0].get("plan_fingerprint")!=plan["fingerprint"]
+                or start[0].get("job_id")!=job_id or canonical_json_bytes(start[0]).decode()!=start[1]
+                or hashlib.sha256(start[1].encode()).hexdigest()!=start[2]):_unavailable()
+            return True
 
     @staticmethod
     def _canon_read(conn,context,table,record_id,extras=()):
@@ -304,7 +373,7 @@ class PostgresStudioExecutionRepository:
         return {"dispatch_owner":True,"ids":ids,"started_at":now}
 
     def finish(self,context,plan,key,*,job_id,job_version,provider_outcome,usage,
-               reported_cost=None,safe_error_code=None,next_actions=(),publish=None):
+               reported_cost=None,safe_error_code=None,next_actions=(),publish=None,response_digest=None):
         """실제 호출의 회계와 현재 산출물 공개 권한을 분리한다.
 
         publish는 현재 검사를 통과한 경우에만 같은 connection/savepoint에서
@@ -314,6 +383,7 @@ class PostgresStudioExecutionRepository:
         if (type(job_version) is not int or job_version<1 or provider_outcome not in {"succeeded","failed","cancelled"}
             or plan["scope"]!=context.scope() or plan["key_digest"]!=digest(key)):_unavailable()
         if safe_error_code not in {None,"STUDIO_OUTPUT_UNAVAILABLE","STUDIO_GENERATION_UNCERTAIN","STUDIO_PROVIDER_FAILED"}:_unavailable()
+        if response_digest is not None:_hex(response_digest)
         if type(next_actions) not in (tuple,list) or len(next_actions)>4 or any(type(v) is not str or not 1<=len(v)<=120 for v in next_actions):_unavailable()
         counters={name:usage[name] for name in ("prompt_tokens","completion_tokens","total_tokens")
                   if type(usage) is dict and type(usage.get(name)) is int and 0<=usage[name]<=2**63-1}
@@ -321,7 +391,7 @@ class PostgresStudioExecutionRepository:
         receipt=make_cost_receipt(reported_cost,counters,provider_connection_id=plan["metadata"]["selection"]["connection_id"],
                                   outcome=provider_outcome,observed_at=now)
         observation=digest({"provider_outcome":provider_outcome,"usage":counters,"receipt_id":receipt.receipt_id,
-                            "safe_error_code":safe_error_code,"next_actions":list(next_actions)})
+                            "safe_error_code":safe_error_code,"next_actions":list(next_actions),"response_digest":response_digest})
         ids=self._ids(context,plan)
         with self.store._transaction(self._cloud(context)) as conn:
             self._lock(conn,context,key)
@@ -355,12 +425,20 @@ class PostgresStudioExecutionRepository:
             started=_utc(datetime.fromisoformat(start[0]["started_at"]))
             if now<started:_unavailable()
             lease_current=not late and job[1]=="generating" and job[3]==job_version
+            self._canon(conn,context,"model_attempts",ids["attempt"],{"kind":"studio_execution","run_id":ids["run"],
+                "plan_fingerprint":plan["fingerprint"],"provider_outcome":provider_outcome,"model_selection":plan["metadata"]["selection"]},
+                extras={"routing_decision_id":ids["routing"],"model_deployment_id":ids["deployment"],"model_artifact_id":ids["artifact"],
+                        "candidate_order":1,"started_at":started,"finished_at":now,"safe_error_code":safe_error_code,
+                        "cost_amount":receipt.amount,"usage_json":Jsonb(counters)})
+            record_cost_in_transaction(conn,context,ids["run"],receipt,model_attempt_id=ids["attempt"])
             code=safe_error_code if lease_current else "STUDIO_GENERATION_UNCERTAIN";output=None
             if provider_outcome=="succeeded" and code is None and publish is not None:
                 # Savepoint rollback cannot erase the already observed call's accounting.
                 try:
                     with conn.transaction():
                         self._current(conn,context,plan["request"],plan["metadata"])
+                        self._canon(conn,context,"run_results",ids["result"],{"kind":"studio_execution","plan_fingerprint":plan["fingerprint"],"notebook_id":context.notebook_id},
+                            extras={"run_id":ids["run"],"routing_decision_id":ids["routing"],"selected_model_attempt_id":ids["attempt"]})
                         output=publish(conn)
                         if (type(output) is not dict or set(output)!={"studio_output_id","output_version_id"}):_unavailable()
                         for value in output.values():safe_id(value)
@@ -375,12 +453,6 @@ class PostgresStudioExecutionRepository:
             result={"job_id":job_id,"status":status,"safe_error_code":code,"next_actions":list(next_actions),
                     "studio_output_id":None if output is None else output["studio_output_id"],
                     "output_version_id":None if output is None else output["output_version_id"]}
-            self._canon(conn,context,"model_attempts",ids["attempt"],{"kind":"studio_execution","run_id":ids["run"],
-                "plan_fingerprint":plan["fingerprint"],"provider_outcome":provider_outcome,"model_selection":plan["metadata"]["selection"]},
-                extras={"routing_decision_id":ids["routing"],"model_deployment_id":ids["deployment"],"model_artifact_id":ids["artifact"],
-                        "candidate_order":1,"started_at":started,"finished_at":now,"safe_error_code":code,
-                        "cost_amount":receipt.amount,"usage_json":Jsonb(counters)})
-            record_cost_in_transaction(conn,context,ids["run"],receipt,model_attempt_id=ids["attempt"])
             if late:
                 # Only the actual dispatch owner's observation can fill this slot.
                 # It never rewrites the failed Run/job or publishes a late artifact.
@@ -395,8 +467,6 @@ class PostgresStudioExecutionRepository:
             version=run[1]
             if status=="completed":
                 version=self.workspace._transition(conn,context,"Run",ids["run"],version,"validating","studio-transition-"+digest([ids["run"],"validating"])[:40])
-                self._canon(conn,context,"run_results",ids["result"],{"kind":"studio_execution","plan_fingerprint":plan["fingerprint"],**output},
-                    extras={"run_id":ids["run"],"routing_decision_id":ids["routing"],"selected_model_attempt_id":ids["attempt"]})
             self.workspace._transition(conn,context,"Run",ids["run"],version,"completed" if status=="completed" else "failed",
                                        "studio-transition-"+digest([ids["run"],status])[:40])
             self._canon(conn,context,"run_steps",ids["terminal"],{"kind":"studio_execution_terminal","plan_fingerprint":plan["fingerprint"],

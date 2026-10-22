@@ -125,6 +125,37 @@ class FakeObjectStorage:
 
 
 class PostgresQuestionAnsweringRepositoryTests(unittest.TestCase):
+    def test_studio_citation_requires_actual_output_attempt_lineage_and_current_source(self):
+        from dataclasses import replace
+        from unittest.mock import patch
+        context=replace(self.context,notebook_id="notebook-cp3")
+        self.cloud.connection.citation_row=("source-cp3","source-version-cp3","2","2",True)
+        with patch.object(self.repository,"_knowledge_selections",return_value=()) as current,patch.object(self.repository,"read_current_pdf",return_value="current-pdf"):
+            value,page=self.repository.read_citation_pdf(context,"citation-studio")
+        self.assertEqual((value,page),("current-pdf",2))
+        selected=current.call_args.args[2][0]
+        self.assertEqual((selected.origin,selected.source_id,selected.source_version_id),("raw_source","source-cp3","source-version-cp3"))
+        self.assertIs(current.call_args.kwargs["write"],False)
+        query=next(sql for sql in self.cloud.connection.queries if "FROM citations c" in sql)
+        for required in ("model_attempts ma","routing_decisions rd","output_versions ov","evidence_references er", "ov.created_by=scope.actor_id", "er.canonical_json->>'citation_id'=c.record_id", "r.canonical_json->>'notebook_id'=scope.notebook_id", "rr.canonical_json->>'notebook_id'=scope.notebook_id", "ov.canonical_json->'source_lineage'->>'notebook_id'=scope.notebook_id"):
+            self.assertIn(required,query)
+        with patch.object(self.repository,"_knowledge_selections",side_effect=QuestionRepositoryError("QUESTION_SOURCE_UNAVAILABLE",status=404)),patch.object(self.repository,"read_current_pdf") as content:
+            with self.assertRaises(QuestionRepositoryError):self.repository.read_citation_pdf(context,"citation-studio")
+            content.assert_not_called()
+        # 관계 대역: 다른 Notebook에 같은 산출물·Source를 재binding해도 원 Notebook 지문은 바뀌지 않는다.
+        original_execute=self.cloud.connection.execute
+        def rebound_query(sql,params=()):
+            if "FROM citations c" in sql and params[1]!="notebook-cp3":
+                for required in ("r.canonical_json->>'notebook_id'=scope.notebook_id","rr.canonical_json->>'notebook_id'=scope.notebook_id","ov.canonical_json->'source_lineage'->>'notebook_id'=scope.notebook_id"):
+                    self.assertIn(required,sql)
+                return Cursor()
+            return original_execute(sql,params)
+        with patch.object(self.cloud.connection,"execute",side_effect=rebound_query),patch.object(self.repository,"read_current_pdf") as content:
+            with self.assertRaises(QuestionRepositoryError):self.repository.read_citation_pdf(replace(context,notebook_id="rebound-notebook"),"citation-studio")
+            content.assert_not_called()
+        clause,params=self.repository._citation_notebook_scope(self.context)
+        self.assertIn("NOT EXISTS",clause);self.assertEqual(params,())
+
     def test_c_new_metadata_read_rejects_invalid_answer_types_length_and_bool(self):
         for answer,insufficient in (("x"*8001,False),(True,False),(1,False),("정상",0),("",False)):
             with self.subTest(kind=type(answer).__name__,length=len(answer) if isinstance(answer,str) else None):

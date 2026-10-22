@@ -2488,11 +2488,13 @@ test("D 질문 오류는 모델 설정 원인과 명시 재선택 조치를 안�
 
 
 test("D 실제 StudioPane 생성은 Web POST에 의도한 선택 version만 전달한다",async()=>{
-  const {createStudioGeneration}=await import("../../apps/web/lib/product-workspace-api.js");
+  const {createStudioGeneration,authorizeStudioGeneration}=await import("../../apps/web/lib/product-workspace-api.js");
   const calls=[];
   const workspace=await mountS17ReconnectWorkspace(s18Adapter({loadNotebookConversation:async()=>({...s18Answer("근거 답변"),citations:[{citation_id:"citation-d",source_id:"source-1",source_version_id:"version-1",evidence_span_id:"span-d",page:1,origin:"raw_source",context_item_id:"source-1",origin_label:"원본 자료",authority_label:"Source",locator:{kind:"page",value:"1"}}]}),
+    authorizeGeneration:(input,options)=>authorizeStudioGeneration("workspace-1",input,{...options,notebookId:"notebook-s18",fetchImpl:async(url,options)=>{
+      calls.push({url,body:JSON.parse(options.body),key:options.headers['Idempotency-Key']});return Response.json({data:{step_up_authorization_id:null,expires_at:"2099-01-01T00:00:00Z",generation_fingerprint:'a'.repeat(64)},meta:{trace_id:"trace-1",workspace_id:"workspace-1"}},{status:201});}}),
     createGeneration:(input,options)=>createStudioGeneration("workspace-1",input,{...options,notebookId:"notebook-s18",fetchImpl:async(url,options)=>{
-      calls.push({url,body:JSON.parse(options.body)});return Response.json({data:{job_id:"job-d",status:"queued"}},{status:201});}}),
+      calls.push({url,body:JSON.parse(options.body),key:options.headers["Idempotency-Key"]});return Response.json({data:{job_id:"job-d",status:"queued",output_type:"evidence_report"},meta:{trace_id:"trace-1",workspace_id:"workspace-1",replayed:false}},{status:201});}}),
   }),{outputRoot:tmpdir()});
   const button=text=>findElements(workspace.container,n=>n.tagName==="BUTTON"&&n.textContent.trim()===text)[0];
   const field=label=>findElements(workspace.container,n=>n.tagName==="LABEL"&&n.textContent.startsWith(label))[0];
@@ -2508,12 +2510,14 @@ test("D 실제 StudioPane 생성은 Web POST에 의도한 선택 version만 전�
     await workspace.act(async()=>button("설정 확인").dispatchEvent(new MinimalEvent("click")));
     const form=findElements(workspace.container,n=>n.tagName==="FORM"&&n.getAttribute("class")==="studio-config-form")[0];
     await workspace.act(async()=>{s18Props(form).onSubmit({preventDefault(){}});await Promise.resolve();await Promise.resolve();});
-    assert.equal(calls.length,1);
-    assert.equal(calls[0].url,"/bff/api/studio-generation-requests");
-    assert.equal(calls[0].body.model_settings_version,1);
-    assert.equal(calls[0].body.run_id,"run-s18");
-    assert.equal(Object.hasOwn(calls[0].body,"intended_model_selection"),false);
-    assert.equal(Object.hasOwn(calls[0].body,"model_id"),false);
+    assert.equal(calls.length,2);
+    assert.equal(calls[0].url,"/bff/api/studio-generation-requests/authorization");
+    assert.equal(calls[0].key,calls[1].key);
+    assert.equal(calls[1].url,"/bff/api/studio-generation-requests");
+    assert.equal(calls[1].body.model_settings_version,1);
+    assert.equal(calls[1].body.run_id,"run-s18");
+    assert.equal(Object.hasOwn(calls[1].body,"intended_model_selection"),false);
+    assert.equal(Object.hasOwn(calls[1].body,"model_id"),false);
   }finally{await workspace.cleanup();}
 });
 

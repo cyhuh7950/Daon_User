@@ -21,6 +21,69 @@ METADATA = {
 
 
 class StudioExportTests(unittest.TestCase):
+    def test_modern_formatter_preserves_literal_source_words_outside_state_keys(self):
+        from daon_user_api.studio_export import _typed_document_lines
+        for kind,content in [
+            ("evidence_report",{"summary":"draft","body":"verified","conclusion":"draft"}),
+            ("knowledge_map",{"nodes":[{"id":"a","label":"draft","confidence":"verified"}],"edges":[{"source":"a","target":"b","condition":"verified"}]}),
+            ("flashcards",{"cards":[{"question":"draft","answer":"verified","evidence":["draft"]}]}),
+        ]:
+            with self.subTest(kind=kind):
+                text="\n".join(_typed_document_lines(content,kind))
+                self.assertIn("draft",text);self.assertIn("verified",text)
+
+    def test_modern_formatter_hides_empty_warnings_and_labels_internal_fields(self):
+        from daon_user_api.studio_export import _typed_document_lines
+        content={"sections":[],"review_state":"draft","template_id":"source-based","warnings":[]}
+        draft="\n".join(_typed_document_lines(content,"business_draft"))
+        self.assertIn("검토 상태: 초안",draft)
+        self.assertIn("문서 구성: source-based",draft)
+        self.assertNotIn("review_state",draft);self.assertNotIn("template_id",draft)
+        self.assertNotIn("주의사항",draft)
+        graph="\n".join(_typed_document_lines({"nodes":[{"id":"a","confidence":"verified"}],"edges":[{"source":"a","target":"b","condition":"온전한 원문"}],"warnings":[]},"knowledge_map"))
+        self.assertIn("관계 근거: 온전한 원문",graph);self.assertIn("원문 확인: 원문 확인됨",graph)
+        self.assertNotIn("condition",graph);self.assertNotIn("verified",graph)
+
+    def test_typed_graph_preserves_32_long_labels_in_visible_legend_and_bounds_canvas(self):
+        content={"relation_mode":"quoted_context","nodes":[{"id":f"node-{i}","label":f"항목{i} "+"긴한글자료명"*10+f" 끝표식{i}","evidence":"chunk-1"} for i in range(1,33)],
+                 "edges":[{"source":f"node-{i}","target":f"node-{i+1}","condition":"선택 원문에서 함께 나타난 항목입니다.","direction":"none"} for i in range(1,32)]}
+        options={"output_type":"knowledge_map","generator_version":"studio-selected-evidence-v1"}
+        svg=export_studio_output("svg","긴 항목 연결",content,METADATA,**options)
+        root=ElementTree.fromstring(svg.content)
+        self.assertEqual(len(root.findall("{http://www.w3.org/2000/svg}line")),31)
+        visible="".join(root.itertext());self.assertIn("끝표식32",visible);self.assertIn("방향 미확정",visible)
+        png=export_studio_output("png","긴 항목 연결",content,METADATA,**options)
+        image=Image.open(BytesIO(png.content));self.assertLessEqual(image.width*image.height,8388608)
+        self.assertLessEqual(image.height,16384);self.assertGreater(image.height,480)
+        pdf=export_studio_output("pdf","긴 항목 연결",content,METADATA,**options)
+        text="\n".join(page.extract_text() for page in PdfReader(BytesIO(pdf.content)).pages)
+        self.assertIn("끝표식32",text);self.assertIn("방향 미확정",text)
+        oversized={**content,"edges":[{**content["edges"][0],"condition":"자료"*100000}]}
+        with self.assertRaises(StudioExportError) as error:export_studio_output("png","자료",oversized,METADATA,**options)
+        self.assertEqual(str(error.exception),"EXPORT_TOO_LARGE")
+        with self.assertRaises(StudioExportError):export_studio_output("svg","자료",{**content,"warnings":["불가문자\x01"]},METADATA,**options)
+
+    def test_legacy_document_shape_does_not_opt_into_new_typed_rendering(self):
+        content={"summary":"요약","body":"기존 본문","conclusion":"기존 결론"}
+        output=export_studio_output("pdf","기존 저장자료",content,METADATA,output_type="evidence_report")
+        text="\n".join(page.extract_text() for page in PdfReader(BytesIO(output.content)).pages)
+        self.assertIn('body | 기존 본문',text)
+        modern=export_studio_output("pdf","기존 저장자료",content,METADATA,output_type="evidence_report",generator_version="studio-selected-evidence-v1")
+        modern_text="\n".join(page.extract_text() for page in PdfReader(BytesIO(modern.content)).pages)
+        self.assertNotIn('body | 기존 본문',modern_text);self.assertIn("본문",modern_text)
+
+    def test_new_typed_documents_have_real_sections_cards_and_undirected_graph(self):
+        from test_studio_typed_generation import VALID,EVIDENCE,request,envelope
+        from daon_user_api.studio_typed_generation import parse_typed_output,GENERATOR_VERSION
+        for kind in ("evidence_report","business_draft","flashcards","quiz","knowledge_map","slides"):
+            with self.subTest(kind=kind):
+                typed=parse_typed_output(request(kind),envelope(VALID[kind]),EVIDENCE,request_id="generation-qa",model_id="model-qa")
+                output=export_studio_output("pdf","검토 자료",typed.content,METADATA,output_type=kind,generator_version=GENERATOR_VERSION)
+                reader=PdfReader(BytesIO(output.content));text="\n".join(page.extract_text() for page in reader.pages)
+                self.assertNotIn('"body":',text);self.assertNotIn('"questions":',text)
+                for label in {"evidence_report":["요약","본문","결론"],"business_draft":["본문"],"flashcards":["질문","답"],"quiz":["문제","정답","해설"],"knowledge_map":["방향 미확정","인용 맥락"],"slides":["계약기간"]}[kind]:self.assertIn(label,text)
+                if kind=="slides":self.assertLess(text.index("계약기간"),text.index("갑은 계약기간"))
+
     def test_all_approved_formats_return_real_bytes_and_safe_headers(self) -> None:
         for format_name in ("docx", "pdf", "xlsx", "csv", "json", "svg", "png"):
             exported = export_studio_output(format_name, "승인 산출물", "근거 내용", METADATA)

@@ -42,7 +42,7 @@ class PostgresNotebookRepository:
         "conversation_thread": "SELECT 1 FROM conversations WHERE tenant_id=%s AND workspace_id=%s AND record_id=%s",
         "studio_output": "SELECT 1 FROM studio_outputs WHERE tenant_id=%s AND workspace_id=%s AND record_id=%s",
         "output_version": "SELECT 1 FROM output_versions WHERE tenant_id=%s AND workspace_id=%s AND record_id=%s",
-        "generation_settings": "SELECT 1 FROM generation_settings_snapshots WHERE tenant_id=%s AND workspace_id=%s AND record_id=%s AND canonical_json->>'kind' IS DISTINCT FROM 'notebook_model_settings'",
+        "generation_settings": "SELECT 1 FROM generation_settings_snapshots WHERE tenant_id=%s AND workspace_id=%s AND record_id=%s AND coalesce(canonical_json->>'kind','') NOT IN ('notebook_model_settings','studio_execution_plan','studio_execution_admission')",
     }
     def __init__(self, store: PostgresCloudStore, *, creation_enforcer=None) -> None:  # type: ignore[no-untyped-def]
         self._store = store
@@ -411,7 +411,7 @@ class PostgresNotebookRepository:
                     "AND a.user_id=%s AND a.source_version_id=notebook_bindings.version_id AND a.allowed=0)) "
                     "AND NOT (binding_kind='generation_settings' AND EXISTS (SELECT 1 FROM generation_settings_snapshots private_settings "
                     "WHERE private_settings.tenant_id=notebook_bindings.tenant_id AND private_settings.workspace_id=notebook_bindings.workspace_id "
-                    "AND private_settings.record_id=notebook_bindings.record_id AND private_settings.canonical_json->>'kind'='notebook_model_settings')) "
+                    "AND private_settings.record_id=notebook_bindings.record_id AND private_settings.canonical_json->>'kind' IN ('notebook_model_settings','studio_execution_plan','studio_execution_admission'))) "
                     "ORDER BY binding_kind,created_at,record_id",
                     (context.tenant_id, context.workspace_id, notebook_id, context.actor_id),
                 ).fetchall()

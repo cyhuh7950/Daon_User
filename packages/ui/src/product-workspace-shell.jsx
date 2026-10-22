@@ -791,11 +791,18 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
   const canSubmitQuestion=()=>modelReady||(modelLoadedScope.current?.adapter===adapter&&modelLoadedScope.current?.workspaceId===workspaceId
     &&notebookModel.status==="ready"&&notebookModel.view?.version===0&&!viewState.selectedSource&&!selectedKnowledgeId&&!isGeneralConversationIntent(question));
   const modelExecutionRef=useRef(null);modelExecutionRef.current=modelReady?notebookModel.view.version:null;
-  const studioModelAdapter=useMemo(()=>adapter?{...adapter,createGeneration:typeof adapter.createGeneration==="function"?async(input,options)=>{
-    const version=modelExecutionRef.current;
-    if(version===null)throw new Error("NOTEBOOK_MODEL_SETTINGS_CHANGED");
-    return adapter.createGeneration({...input,model_settings_version:version},options);
-  }:undefined}:null,[adapter]);
+  const studioModelAdapter=useMemo(()=>{
+    if(!adapter)return null;
+    const selectedInput=input=>{
+      const version=modelExecutionRef.current;
+      if(version===null||input.model_settings_version!==version)throw new Error("NOTEBOOK_MODEL_SETTINGS_CHANGED");
+      return input;
+    };
+    return {...adapter,getStudioModelSettingsVersion:()=>modelExecutionRef.current,
+      authorizeGeneration:typeof adapter.authorizeGeneration==="function"?(input,options)=>adapter.authorizeGeneration(selectedInput(input),options):undefined,
+      createGeneration:typeof adapter.createGeneration==="function"?(input,options)=>adapter.createGeneration(selectedInput(input),options):undefined,
+      createStudioVersion:typeof adapter.createStudioVersion==="function"?(id,input,options)=>adapter.createStudioVersion(id,input.revision_type==="user_edit"?input:selectedInput(input),options):undefined};
+  },[adapter]);
   const [conversationTurns,setConversationTurns]=useState([]);
   const conversationTurnsRef=useRef([]);
   const conversationOwnerRef=useRef({adapter,workspaceId});
@@ -2365,7 +2372,6 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
         </SafePane>
         <SafePane id="product-pane-studio" title="업무 Studio" description="근거가 확인된 답변으로 보고서를 생성하고 저장 결과를 확인합니다.">
           {desktopStudio ? desktopStudio : <><ProductStudioPane
-            key={`${viewState.answer?.run_id ?? "no-run"}:${viewState.selectedSource?.sourceVersionId ?? "no-source"}`}
             adapter={studioModelAdapter}
             initialOutput={notificationOutput}
             onKnowledgeRegistered={() => setLoadRevision((current) => current + 1)}

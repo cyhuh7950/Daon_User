@@ -278,7 +278,7 @@ class OperationsTelemetryTests(unittest.TestCase):
             tenant_id=ledger.context.tenant_id,workspace_id=ledger.context.workspace_id,actor_id=ledger.context.actor_id,
             trace_id=ledger.context.trace_id,policy_version=ledger.context.policy_version))
         context.scope='workspace_visible'
-        log=[];deny=[False];after=[lambda:None]
+        log=[];deny=[False];after=[lambda:None];studio=[False]
         self.assertTrue(callable(getattr(pg.PostgresOperationsTelemetryRepository,'read_cost_receipts',None)),'M2-3 cost read missing')
         class Connection:
             info=ledger.info
@@ -296,7 +296,7 @@ class OperationsTelemetryTests(unittest.TestCase):
             def _execute(self,sql,params=()):
                 log.append((sql,params))
                 if sql.startswith(('SET LOCAL ','SELECT set_config')):return SimpleNamespace()
-                if '/* operations-cost:run */' in sql:return SimpleNamespace(fetchall=lambda:[('run-a','other-actor','notebook-a',['version-a'])])
+                if '/* operations-cost:run */' in sql:return SimpleNamespace(fetchall=lambda:[('run-a','other-actor','notebook-a',['version-a'],studio[0])])
                 if '/* operations-cost:binding */' in sql:return SimpleNamespace(fetchone=lambda:(1,))
                 if sql.startswith('SELECT NOT EXISTS (SELECT 1 FROM identity_auth_source_access'):return SimpleNamespace(fetchone=lambda:(not deny[0],))
                 if sql.startswith(('SELECT canonical_json FROM source_versions','SELECT canonical_json FROM public.source_versions')):return SimpleNamespace(fetchone=lambda:({},))
@@ -304,7 +304,9 @@ class OperationsTelemetryTests(unittest.TestCase):
                 if sql=='SELECT * FROM public.read_operations_cost_receipts(%s,%s)':
                     after[0]()
                     return SimpleNamespace(fetchall=lambda:[dict(run_id='run-a',actor_id='other-actor',model_attempt_id='attempt-a',
-                        state='known',amount=Decimal('1.25'),currency='KRW',observed_at=NOW,received_at=NOW)])
+                        state='known',amount=Decimal('1.25'),currency='KRW',observed_at=NOW,received_at=NOW)]+([
+                        dict(run_id='run-a',actor_id='other-actor',model_attempt_id=None,state='uncertain',amount=None,currency=None,
+                            observed_at=NOW,received_at=NOW)] if studio[0] else []))
                 return ledger.execute(sql,params)
         class Pool:
             closed=False
@@ -322,6 +324,13 @@ class OperationsTelemetryTests(unittest.TestCase):
             self.addCleanup(repo.close)
             rows=repo.read_cost_receipts(context,('run-a',));self.assertEqual(rows[0]['amount'],Decimal('1.25'))
             self.assertEqual(set(rows[0]),{'run_id','actor_id','model_attempt_id','state','amount','currency','observed_at','received_at'})
+            studio[0]=True
+            rows=repo.read_cost_receipts(context,('run-a',))
+            self.assertEqual(len(rows),1);self.assertEqual(rows[0]['model_attempt_id'],'attempt-a')
+            query=next(sql for sql,_ in log if '/* operations-cost:run */' in sql)
+            for required in ("LEFT JOIN public.notebook_bindings", "studio_execution_plan", "p.created_by=r.created_by", "r.conversation_id IS NULL"):
+                self.assertIn(required,query)
+            studio[0]=False
             for mode in ('self','source','late-source','organization','non-manager','late-manager'):
                 deny[0]=False;after[0]=lambda:None;context.scope='workspace_visible';ledger.workflow_state='active';ledger.auth.auth_role='organization_admin'
                 if mode=='self':context.scope='self'

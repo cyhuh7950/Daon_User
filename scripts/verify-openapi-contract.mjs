@@ -80,6 +80,8 @@ export const REQUIRED_PATHS = Object.freeze([
   "/api/v1/sources/{id}/processing-runs",
   "/api/v1/sources/{id}/transcripts",
   "/api/v1/studio-generation-requests",
+  "/api/v1/studio-generation-requests/authorization",
+  "/api/v1/studio-generation-jobs/{job_id}",
   "/api/v1/studio-outputs",
   "/api/v1/studio-outputs/{id}/versions",
   "/api/v1/studio-outputs/{id}/versions/{version_id}/exports/{format_name}",
@@ -266,6 +268,52 @@ function validateQuestionGroundingContract(document) {
   check(same(operation.responses?.["201"]?.content?.["application/json"]?.schema,ref("GroundedQuestionAuthorizationEnvelope")));
 }
 
+function validateStudioExecutionContract(document) {
+  const check=value=>{if(!value)fail("Studio execution contract mismatch");};
+  const same=(left,right)=>JSON.stringify(canonicalizeDocument(left))===JSON.stringify(canonicalizeDocument(right));
+  const schemas=document.components?.schemas??{},paths=document.paths??{};
+  const ref=name=>({$ref:`#/components/schemas/${name}`});
+  const auth=paths['/api/v1/studio-generation-requests/authorization'];
+  check(same(Object.keys(auth??{}),['post']));
+  check(auth?.post?.requestBody?.$ref==='#/components/requestBodies/StudioGenerationAuthorization');
+  check(auth?.post?.responses?.['201']?.$ref==='#/components/responses/StudioGenerationAuthorizationResponse');
+  check(same(auth?.post?.parameters,[{$ref:'#/components/parameters/IdempotencyKey'}]));
+  check(same(schemas.StudioGenerationAuthorizationRequest?.oneOf,[ref('StudioGenerateAuthorization'),ref('StudioRegenerateAuthorization')]));
+  const regen=schemas.StudioRegenerateAuthorization;
+  check(regen?.type==='object'&&regen.additionalProperties===false);
+  check(same(Object.keys(regen?.properties??{}).sort(),['workspace_id','notebook_id','operation','output_id','previous_version_id','revision_type','change_reason','model_settings_version','settings','password'].sort()));
+  check(same(regen.required,['workspace_id','notebook_id','operation','output_id','previous_version_id','revision_type','change_reason','model_settings_version']));
+  check(same(regen.properties.operation,{type:'string',const:'regenerate'}));
+  check(same(regen.properties.revision_type,{type:'string',enum:['ai_regeneration','settings_change']}));
+  check(same(regen.properties.model_settings_version,{type:'integer',minimum:1}));
+  check(same(regen.oneOf,[{properties:{revision_type:{const:'ai_regeneration'},settings:{type:'null'}}},{properties:{revision_type:{const:'settings_change'},settings:ref('StudioGenerationSettings')},required:['settings']}]));
+  for(const name of ['StudioGenerateAuthorization','StudioRegenerateAuthorization'])check(same(schemas[name]?.properties?.password,{type:['string','null'],maxLength:1024,writeOnly:true}));
+  const generate=schemas.StudioGenerateAuthorization;
+  check(generate?.additionalProperties===false&&generate.properties.operation.const==='generate'&&generate.required.includes('model_settings_version'));
+  check(!Object.hasOwn(generate.properties,'step_up_authorization_id')&&!Object.hasOwn(generate.properties,'output_id'));
+  check(schemas.StudioGenerationRequest?.required?.includes('model_settings_version'));
+  check(same(schemas.StudioGenerationRequest?.properties?.model_settings_version,{type:'integer',minimum:1}));
+  check(paths['/api/v1/studio-outputs/{id}/versions']?.post?.responses?.['202']?.$ref==='#/components/responses/StudioGenerationMutationResponse');
+  for(const name of ['StudioRegenerateAuthorization','StudioRevisionRequest'])check(same(schemas[name].properties.settings,{anyOf:[ref('StudioGenerationSettings'),{type:'null'}]}));
+  const revision=schemas.StudioRevisionRequest;
+  check(revision.additionalProperties===false&&!revision.required.includes('content')&&revision.oneOf?.length===3);
+  check(same(revision.oneOf[1],{properties:{revision_type:{const:'ai_regeneration'},settings:{type:'null'}},required:['model_settings_version']}));
+  check(same(revision.oneOf[2],{properties:{revision_type:{const:'settings_change'},settings:ref('StudioGenerationSettings')},required:['model_settings_version','settings']}));
+  const job=schemas.StudioJobProjection;
+  check(job?.additionalProperties===false&&same(job.required,['job_id','status','output_type']));
+  check(same(job.properties.next_actions,{type:'array',maxItems:4,items:{type:'string',minLength:1,maxLength:120}}));
+  check(same(job.properties.status,{type:'string',enum:['queued','leased','generating','completed','failed','unavailable']}));
+  check(same(schemas.StudioGenerationMutationEnvelope?.properties?.data,ref('StudioJobProjection')));
+  const get=paths['/api/v1/studio-generation-jobs/{job_id}'];
+  check(same(Object.keys(get??{}),['get']));
+  check(get.get.responses?.['200']?.$ref==='#/components/responses/StudioJobResponse');
+  check(same(get.get.parameters.map(p=>[p.name,p.in,p.required]),[['job_id','path',true],['workspace_id','query',true],['notebook_id','query',true]]));
+  for(const name of ['StudioJobResponse','StudioGenerationAuthorizationResponse']){
+    const headers=document.components.responses[name]?.headers;
+    check(headers?.ETag?.$ref==='#/components/headers/ETag'&&headers['Cache-Control']?.schema?.const==='no-store');
+  }
+}
+
 function validateNotebookModelSettingsContract(document) {
   const check=condition=>{if(!condition)fail("Notebook model settings contract invalid");};
   const same=(a,b)=>JSON.stringify(canonicalizeDocument(a))===JSON.stringify(canonicalizeDocument(b));
@@ -278,7 +326,7 @@ function validateNotebookModelSettingsContract(document) {
   const route=document.paths?.["/api/v1/workspaces/{id}/notebooks/{notebook_id}/model-settings"];
   check(same(Object.keys(route??{}),["get","patch"]));
   const version={type:"integer",minimum:1};
-  for(const name of ["GroundedQuestionRequest","GroundedQuestionAuthorizationRequest","StudioGenerationRequest"])
+  for(const name of ["GroundedQuestionRequest","GroundedQuestionAuthorizationRequest"])
     check(same(schemas[name]?.properties?.model_settings_version,version)&&!schemas[name].required.includes("model_settings_version"));
   const props={connection_id:ref("OpaqueId"),model_id:{type:"string",minLength:1,maxLength:255,pattern:"^[^\\x00-\\x20\\x7f]+$"},
     reasoning_effort:{type:["string","null"],enum:[null,"none","low","medium","high"]}};
@@ -1203,6 +1251,14 @@ export function validateOpenApiDocument(document) {
   if (Array.isArray(questionAuthorizationForScan?.required)) {
     questionAuthorizationForScan.required = questionAuthorizationForScan.required.map((field) => field === "password" ? "question_reauthentication_input" : field);
   }
+  // 승인된 Studio 생성 전용 재인증 입력 두 곳만 기존 질문 입력과 같은 방식으로 검사한다.
+  for(const name of ['StudioGenerateAuthorization','StudioRegenerateAuthorization']){
+    const schema=secretScanDocument.components?.schemas?.[name];
+    if(isObject(schema?.properties?.password)){
+      schema.properties.studio_reauthentication_input=schema.properties.password;
+      delete schema.properties.password;
+    }
+  }
   const serialized = JSON.stringify(secretScanDocument);
   for (const pattern of FORBIDDEN_SOURCE_TOKENS) if (pattern.test(serialized)) fail(`forbidden token ${pattern}`);
 
@@ -1248,6 +1304,7 @@ export function validateOpenApiDocument(document) {
   }
   validateNotebookConversationContract(document);
   validateNotebookModelSettingsContract(document);
+  validateStudioExecutionContract(document);
   validateQuestionGroundingContract(document);
   const syncItem = document.components?.schemas?.SyncItemInput;
   if (

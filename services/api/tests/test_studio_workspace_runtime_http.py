@@ -103,8 +103,19 @@ class StudioWorkspaceRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_generation_version_action_and_export_routes_are_real_and_safe(self):
+        # E 신규 생성은 명시 선택과 실행 port를 사용한다. 이 HTTP 경계 시험은 테스트 소유 대역이며,
+        # 실제 coordinator/Identity/SQL 및 단회 실행은 test_studio_execution_runtime_http.py에서 별도 검증한다.
+        from dataclasses import replace
+        from types import SimpleNamespace
+        from daon_user_api.notebook_model_settings import NotebookModelExecution,NotebookModelSelection
+        execution=SimpleNamespace(enqueue=lambda context,request,key,**kwargs:self.studio.enqueue(context.studio(),request,key))
+        selection=NotebookModelExecution(NotebookModelSelection("connection-qa","model-qa",None),1,None)
+        dependencies=replace(self.dependencies,studio_execution_service=execution,
+            notebook_model_settings_service=SimpleNamespace(require_execution=lambda context,notebook,version:selection if version==1 else None))
+        await self.client.aclose()
+        self.client=httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(dependencies)),base_url="http://127.0.0.1")
         generation = {
-            "workspace_id": "workspace-001", "notebook_id": "notebook-001", "output_type": "evidence_report", "source_id": "source-1",
+            "workspace_id": "workspace-001", "notebook_id": "notebook-001", "model_settings_version":1, "output_type": "evidence_report", "source_id": "source-1",
             "source_version_ids": ["source-version-1"], "run_id": "run-1", "run_result_id": "result-1",
             "settings": {"purpose": "목적", "audience": "독자", "source_version_ids": ["source-version-1"],
                          "ruleset_version_id": None, "length": "short", "structure": "summary", "output_format": "pdf", "review_condition": "review_required"},

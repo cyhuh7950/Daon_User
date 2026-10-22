@@ -243,7 +243,68 @@ def _metric_cards(content: object) -> list[list[str]]:
     return [[f"{_visual_label(key)}: {_visual_value(value)}" for key, value in content.items()]] if isinstance(content, Mapping) else [[scalar(content)]]
 
 
-def _typed_pdf(title: str, content: object, metadata: Mapping[str, str], output_type: str) -> bytes:
+_TYPED_LABELS={"criterion":"점검 기준","observation":"확인 기록","question":"질문","answer":"답","explanation":"해설",
+    "answer_index":"정답 번호","options":"보기","id":"항목 ID","source":"연결 항목 1","target":"연결 항목 2",
+    "condition":"관계 근거","confidence":"원문 확인","template_id":"문서 구성","review_state":"검토 상태","citations":"인용 근거","conclusion":"결론"}
+
+
+def _typed_display_value(value: object, *, field: str | None = None) -> str:
+    if isinstance(value,Mapping):return "\n".join(f"{_TYPED_LABELS.get(key,_visual_label(key))}: {_typed_display_value(item,field=key)}" for key,item in value.items())
+    if isinstance(value,(list,tuple)) and any(isinstance(item,Mapping) for item in value):return "\n".join(_typed_display_value(item) for item in value)
+    if isinstance(value,str) and field in {"review_state","confidence","status","judgement","state"}:return {"draft":"초안","verified":"원문 확인됨","unverified":"미확인","needs_review":"검토 필요"}.get(value,value)
+    return _display(value)
+
+
+def _typed_document_lines(content: Mapping[str, object], output_type: str) -> list[str]:
+    """신규 typed 자료의 본문을 사용자가 읽는 순서로 표시한다. 저장 JSON은 수정하지 않는다."""
+    labels={"summary":"요약","body":"본문","conclusion":"결론","evidence":"근거","warnings":"주의사항","lineage":"생성 계보",
+            "question":"질문","answer":"답","explanation":"해설","format":"문서 형식","status":"검토 상태","citations":"인용 근거"}
+    lines=[];handled=set()
+    if output_type=="evidence_report":
+        for key in ("summary","body","conclusion","citations"):
+            if key in content:lines.extend([labels[key],_typed_display_value(content[key])]);handled.add(key)
+    elif output_type in {"business_draft","flashcards","quiz"}:
+        collection={"business_draft":"sections","flashcards":"cards","quiz":"questions"}[output_type]
+        handled.add(collection)
+        for index,item in enumerate(content.get(collection,()),1):
+            if not isinstance(item,Mapping):continue
+            if output_type=="business_draft":
+                lines.extend([str(item.get("title",f"본문 {index}")),str(item.get("body","")),"근거: "+_typed_display_value(item.get("evidence",[]))])
+            elif output_type=="flashcards":
+                lines.extend([f"질문 {index}",str(item.get("question","")),"답",str(item.get("answer","")),"근거: "+_typed_display_value(item.get("evidence",[]))])
+            else:
+                lines.extend([f"문제 {index}",str(item.get("question",""))])
+                options=item.get("options",[])
+                lines.extend(f"{number}. {option}" for number,option in enumerate(options,1))
+                answer=item.get("answer_index")
+                lines.extend(["정답: "+(str(answer+1) if type(answer) is int else str(item.get("answer","확인 필요"))),"해설",str(item.get("explanation","")),"근거: "+_typed_display_value(item.get("evidence",[]))])
+    elif output_type=="knowledge_map":
+        lines.append("인용 맥락 연결 · 방향 미확정: 선은 원문에 함께 나타난 항목을 연결하며 인과나 전달 방향을 확정하지 않습니다.")
+        handled.update(("nodes","edges","relation_mode"))
+        for index,node in enumerate(content.get("nodes",()),1):lines.append(f"항목 {index}: {_typed_display_value(node)}")
+        for edge in content.get("edges",()):lines.append("연결 근거: "+_typed_display_value({key:value for key,value in edge.items() if key!="direction"}))
+    for key,value in content.items():
+        if key == "warnings" and value == []:continue
+        if key not in handled:lines.append(f"{labels.get(key,_TYPED_LABELS.get(key,_visual_label(key)))}: {_typed_display_value(value,field=key)}")
+    return lines
+
+
+def _typed_visual_content(value: object) -> object:
+    """새 typed의 표시 순서와 내부 상태 라벨만 정렬한다."""
+    order=("title","summary","criterion","observation","question","body","answer","options","answer_index","explanation","evidence","judgement","ruleset_id","action")
+    if isinstance(value,Mapping):
+        result={}
+        for key in (*[name for name in order if name in value],*[name for name in value if name not in order]):
+            item=value[key]
+            if key in {"judgement","state","ruleset_id","status"} and isinstance(item,str):
+                item={"needs_review":"검토 필요","none":"지정 없음","same":"원문 동일","changed":"원문 차이 있음","draft":"초안"}.get(item,item)
+            result[key]=_typed_visual_content(item)
+        return result
+    if isinstance(value,(tuple,list)):return [_typed_visual_content(item) for item in value]
+    return value
+
+
+def _typed_pdf(title: str, content: object, metadata: Mapping[str, str], output_type: str, *, modern: bool = False) -> bytes:
     from pathlib import Path
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
@@ -260,6 +321,9 @@ def _typed_pdf(title: str, content: object, metadata: Mapping[str, str], output_
     def paragraph(value: object, style=body):
         return Paragraph(escape(str(value)).replace("\n", "<br/>"), style)
     story = []
+    if modern:content=_typed_visual_content(content)
+    display_label=lambda key:_TYPED_LABELS.get(key,_visual_label(key)) if modern else _visual_label(key)
+    display_value=_typed_display_value if modern else _visual_value
     if output_type == "slides" and isinstance(content, Mapping) and isinstance(content.get("slides"), (list, tuple)) and content["slides"]:
         for index, slide in enumerate(content["slides"]):
             if index:
@@ -267,17 +331,33 @@ def _typed_pdf(title: str, content: object, metadata: Mapping[str, str], output_
             story.append(paragraph(f"{title} · {index + 1}", heading))
             if isinstance(slide, Mapping):
                 for key, value in slide.items():
-                    story.append(paragraph(value if key == "title" else f"{_visual_label(key)}: {_visual_value(value)}", heading if key == "title" else body))
+                    story.append(paragraph(value if key == "title" else f"{display_label(key)}: {display_value(value)}", heading if key == "title" else body))
                     story.append(Spacer(1, 8))
             else:
                 story.append(paragraph(slide))
         for key, value in content.items():
             if key != "slides":
-                story.append(paragraph(f"{_visual_label(key)}: {_visual_value(value)}"))
+                story.append(paragraph(f"{display_label(key)}: {display_value(value)}"))
+    elif modern and output_type in {"evidence_report","business_draft","flashcards","quiz","knowledge_map"} and isinstance(content,Mapping):
+        story.append(paragraph(title,heading))
+        if output_type=="knowledge_map":
+            from reportlab.graphics.shapes import Drawing,Circle,Line,String
+            nodes,edges=_graph(content);width=A4[0]-80;height=max(180,((len(nodes)+3)//4)*55+40)
+            drawing=Drawing(width,height)
+            positions={str(node.get("id",index)):(45+(index%4)*130,height-30-(index//4)*55) for index,node in enumerate(nodes)}
+            if len(nodes)>32:raise StudioExportError("EXPORT_TOO_LARGE")
+            for edge in edges:
+                start,end=positions.get(str(edge.get("source"))),positions.get(str(edge.get("target")))
+                if start and end:drawing.add(Line(*start,*end,strokeColor=colors.HexColor("#475569"),strokeWidth=2))
+            for index,node in enumerate(nodes):
+                x,y=positions[str(node.get("id",index))];drawing.add(Circle(x,y,14,fillColor=colors.HexColor("#dbeafe")))
+                drawing.add(String(x,y-4,f"항목 {index+1}",fontName=font,fontSize=7,textAnchor="middle"))
+            story.append(drawing)
+        for line in _typed_document_lines(content,output_type):story.extend([paragraph(line),Spacer(1,8)])
     elif output_type in {"comparison_table", "compliance_checklist"}:
         story.append(paragraph(title, heading))
         rows = _structured_rows(content)
-        rows = [[_visual_label(key) for key in rows[0]], *rows[1:]]
+        rows = [[display_label(key) for key in rows[0]], *rows[1:]]
         columns = max((len(row) for row in rows), default=1)
         if columns > 32:
             raise StudioExportError("EXPORT_TOO_LARGE")
@@ -292,7 +372,7 @@ def _typed_pdf(title: str, content: object, metadata: Mapping[str, str], output_
             collection = next((key for key in ("items", "rows", "sections") if content.get(key)), None)
             for key, value in content.items():
                 if key != collection:
-                    story.append(paragraph(f"{_visual_label(key)}: {_visual_value(value)}"))
+                    story.append(paragraph(f"{display_label(key)}: {display_value(value)}"))
     else:
         story.append(paragraph(title, heading))
         cards = _metric_cards(content)
@@ -372,6 +452,43 @@ def _infographic(format_name: str, title: str, content: object, metadata: Mappin
 
 def _chunk(kind: bytes, data: bytes) -> bytes:
     return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", binascii.crc32(kind + data) & 0xffffffff)
+
+
+def _quoted_graph(format_name: str,title: str,content: Mapping[str,object],metadata: Mapping[str,str]) -> bytes:
+    """신규 무방향 인용 맥락 그림과 긴 원문 범례를 모두 보존한다."""
+    _validate_svg_xml((title,content,metadata))
+    nodes,edges=_graph(content)
+    if len(nodes)>32:raise StudioExportError("EXPORT_TOO_LARGE")
+    extra=80+((len(nodes)+3)//4)*70
+    positions={str(node.get("id",index)):(100+(index%4)*200,50+(index//4)*70) for index,node in enumerate(nodes)}
+    legend={"metrics":[{"내용":line} for line in _typed_document_lines(content,"knowledge_map")]}
+    width,base_height,*_=_card_layout(title,legend,metadata)
+    height=base_height+extra
+    if height>MAX_RENDER_DIMENSION or width*height>MAX_RENDER_PIXELS:raise StudioExportError("EXPORT_TOO_LARGE")
+    if format_name=="svg":
+        base=_infographic("svg",title,legend,metadata).decode("utf-8")
+        inner=base[base.index(">")+1:base.rindex("</svg>")]
+        elements=[]
+        for edge in edges:
+            start,end=positions.get(str(edge.get("source"))),positions.get(str(edge.get("target")))
+            if start and end:elements.append(f'<line x1="{start[0]}" y1="{start[1]}" x2="{end[0]}" y2="{end[1]}" stroke="#475569" stroke-width="2"/>')
+        for index,node in enumerate(nodes):
+            x,y=positions[str(node.get("id",index))]
+            elements.extend([f'<circle cx="{x}" cy="{y}" r="20" fill="#dbeafe" stroke="#1d4ed8"/>',f'<text x="{x}" y="{y+5}" text-anchor="middle" font-size="14">항목 {index+1}</text>'])
+        return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">'+"".join(elements)+f'<g transform="translate(0,{extra})">'+inner+'</g></svg>').encode("utf-8")
+    from pathlib import Path
+    from PIL import Image,ImageDraw,ImageFont,PngImagePlugin
+    base=Image.open(BytesIO(_infographic("png",title,legend,metadata)))
+    image=Image.new("RGB",(width,height),"white");image.paste(base,(0,extra));draw=ImageDraw.Draw(image)
+    font=ImageFont.truetype(str(Path(__file__).parent/"assets"/"NanumGothic-Regular.ttf"),14)
+    for edge in edges:
+        start,end=positions.get(str(edge.get("source"))),positions.get(str(edge.get("target")))
+        if start and end:draw.line((*start,*end),fill="#475569",width=2)
+    for index,node in enumerate(nodes):
+        x,y=positions[str(node.get("id",index))];draw.ellipse((x-20,y-20,x+20,y+20),fill="#dbeafe",outline="#1d4ed8")
+        draw.text((x,y),f"항목 {index+1}",font=font,fill="#0f172a",anchor="mm")
+    info=PngImagePlugin.PngInfo();info.add_itxt("Studio",_payload(title,content,dict(metadata)))
+    output=BytesIO();image.save(output,format="PNG",pnginfo=info);return output.getvalue()
 
 
 def _graph(content: object) -> tuple[list[Mapping[str, object]], list[Mapping[str, object]]]:
@@ -454,7 +571,7 @@ def _png_graph(text: str, content: object) -> bytes:
     return b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)) + _chunk(b"tEXt", b"Studio\x00" + text.encode("utf-8")) + _chunk(b"IDAT", zlib.compress(scanlines)) + _chunk(b"IEND", b"")
 
 
-def export_studio_output(format_name: str, title: str, content: object, metadata: dict[str, str], *, output_type: str | None = None) -> StudioExport:
+def export_studio_output(format_name: str, title: str, content: object, metadata: dict[str, str], *, output_type: str | None = None, generator_version: str | None = None) -> StudioExport:
     if format_name not in MEDIA_TYPES:
         raise StudioExportError("EXPORT_FORMAT_UNSUPPORTED")
     if output_type is not None:
@@ -470,10 +587,15 @@ def export_studio_output(format_name: str, title: str, content: object, metadata
     if len(encoded_content) > MAX_EXPORT_BYTES:
         raise StudioExportError("EXPORT_TOO_LARGE")
     text = _payload(title, content, metadata)
+    modern=generator_version=="studio-selected-evidence-v1"
+    if modern and isinstance(content,Mapping) and format_name in {"docx","pdf"}:
+        text="\n\n".join([title,*_typed_document_lines(content,output_type),"근거 부록",*(_visual_label(k)+": "+v for k,v in metadata.items())])
     if format_name == "docx": data = _docx(text)
     elif format_name == "xlsx": data = _xlsx([["제목", title], *_structured_rows(content), [], ["근거 부록", ""], *[[key, value] for key, value in metadata.items()]])
-    elif format_name == "pdf": data = _typed_pdf(title, content, metadata, output_type) if output_type in {"comparison_table", "compliance_checklist", "slides", "infographic"} else _pdf(text)
+    elif format_name == "pdf": data = _typed_pdf(title, content, metadata, output_type,modern=modern) if modern or output_type in {"comparison_table", "compliance_checklist", "slides", "infographic"} else _pdf(text)
     elif format_name == "json": data = json.dumps({"title": title, "output_type": output_type, "content": content, "metadata": metadata}, ensure_ascii=False).encode()
+    elif format_name == "svg" and modern and output_type=="knowledge_map": data=_quoted_graph("svg",title,content,metadata)
+    elif format_name == "png" and modern and output_type=="knowledge_map": data=_quoted_graph("png",title,content,metadata)
     elif format_name == "svg": data = _infographic(format_name, title, content, metadata) if output_type == "infographic" else _svg_graph(title, content, metadata)
     elif format_name == "png": data = _infographic(format_name, title, content, metadata) if output_type == "infographic" else _png_graph(text, content)
     else:

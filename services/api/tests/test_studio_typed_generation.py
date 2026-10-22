@@ -40,6 +40,66 @@ VALID={
 }
 
 class StudioTypedGenerationTests(unittest.TestCase):
+    def test_protocol_response_extraction_keeps_raw_duplicate_detection_and_usage(self):
+        from daon_user_api.studio_typed_generation import extract_typed_response
+        raw=json.dumps(envelope(VALID["slides"]),ensure_ascii=False)
+        for provider,response in (("CUSTOM",{"choices":[{"message":{"content":raw}}],"usage":{"prompt_tokens":7,"completion_tokens":True}}),
+                                  ("OLLAMA",{"message":{"content":raw},"prompt_eval_count":7,"eval_count":True}),
+                                  ("OMNIROUTE",{"status":"completed","output":[{"type":"reasoning","summary":"HIDDEN_REASONING"},{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":raw}]}],"usage":{"input_tokens":7,"output_tokens":True}})):
+            with self.subTest(provider=provider):
+                result=extract_typed_response(provider,response)
+                self.assertEqual(result.raw,raw);self.assertEqual(result.usage,{"prompt_tokens":7})
+                self.assertNotIn("HIDDEN_REASONING",repr(result))
+        duplicate=raw[:-1]+',"insufficient":false}'
+        result=extract_typed_response("CUSTOM",{"choices":[{"message":{"content":duplicate}}]})
+        with self.assertRaises(StudioError):self.parse("slides",result.raw)
+    def test_messages_protocol_and_invalid_body_keep_observed_usage_separate(self):
+        from daon_user_api.studio_typed_generation import extract_typed_response,observe_provider_usage
+        raw=json.dumps(envelope(VALID["slides"]),ensure_ascii=False)
+        response={"content":[{"type":"thinking","thinking":"HIDDEN_REASONING"},{"type":"text","text":raw}],
+                  "usage":{"input_tokens":8,"output_tokens":5,"cost":"0.02","currency":"USD"}}
+        result=extract_typed_response("CUSTOM",response,adapter_type="anthropic_compatible")
+        self.assertEqual(result.raw,raw);self.assertEqual(result.usage,{"prompt_tokens":8,"completion_tokens":5})
+        counters,cost=observe_provider_usage("CUSTOM",{**response,"content":[]})
+        self.assertEqual(counters,result.usage);self.assertEqual(cost.amount,result.reported_cost.amount)
+        with self.assertRaises(StudioError):extract_typed_response("CUSTOM",{**response,"content":[]},adapter_type="anthropic_compatible")
+        with self.assertRaises(StudioError):extract_typed_response("CUSTOM",response,adapter_type="openai_compatible")
+        with self.assertRaises(StudioError):extract_typed_response("CUSTOM",{"choices":[{"message":{"content":raw}}],"usage":response["usage"]},adapter_type="anthropic_compatible")
+    def test_typed_wire_is_explicit_for_every_supported_protocol_without_question_schema(self):
+        from types import SimpleNamespace
+        from daon_user_api.studio_typed_generation import build_typed_payload
+        for provider in ("OLLAMA","OMNIROUTE","GROQ","MISTRAL","UPSTAGE","OPENROUTER","EOUL_GATEWAY","CUSTOM"):
+            for kind in VALID:
+                with self.subTest(provider=provider,kind=kind):
+                    selected=SimpleNamespace(provider_code=provider,model_id="model-qa",adapter_type="openai_compatible",reasoning_effort=None,reasoning_profile_version=None)
+                    payload=build_typed_payload(request(kind),EVIDENCE,selected)
+                    self.assertEqual(payload["model"],"model-qa")
+                    self.assertNotIn("reasoning_effort",payload)
+                    if provider=="OLLAMA":schema=payload["format"];self.assertEqual(payload["options"]["num_predict"],512)
+                    elif provider=="OMNIROUTE":schema=payload["text"]["format"]["schema"];self.assertEqual(payload["max_output_tokens"],512)
+                    else:schema=payload["response_format"]["json_schema"]["schema"];self.assertEqual(payload["max_tokens"],512)
+                    self.assertEqual(set(schema["required"]),{"content","cited_chunk_ids","insufficient","next_actions"})
+                    self.assertFalse(schema["additionalProperties"])
+                    self.assertNotIn("grounding_status",schema["properties"])
+        selected=SimpleNamespace(provider_code="CUSTOM",model_id="model-qa",adapter_type="anthropic_compatible",reasoning_effort=None,reasoning_profile_version=None)
+        messages=build_typed_payload(request("slides"),EVIDENCE,selected)
+        self.assertIn("system",messages);self.assertEqual(messages["max_tokens"],512)
+    def test_typed_wire_effort_bounds_unsupported_provider_and_size_fail_closed(self):
+        from types import SimpleNamespace
+        from daon_user_api.studio_typed_generation import build_typed_payload
+        selected=SimpleNamespace(provider_code="UPSTAGE",model_id="solar-pro4",adapter_type="openai_compatible",reasoning_effort="high",reasoning_profile_version="upstage-solar-pro4-safe-wire-v1")
+        self.assertEqual(build_typed_payload(request("slides"),EVIDENCE,selected)["reasoning_effort"],"high")
+        for provider,model,effort,profile in (("GEMINI","model-qa",None,None),("OPENROUTER","solar-pro4","high",None),("UPSTAGE","solar-mini4","high",None),("UPSTAGE","solar-pro4","max","upstage-solar-pro4-safe-wire-v1")):
+            with self.subTest(provider=provider,model=model),self.assertRaises(StudioError):
+                build_typed_payload(request("slides"),EVIDENCE,SimpleNamespace(provider_code=provider,model_id=model,adapter_type="openai_compatible",reasoning_effort=effort,reasoning_profile_version=profile))
+        with self.assertRaises(StudioError):build_typed_payload(request("slides"),tuple({**v,"text":"가"*8000} for v in EVIDENCE),selected)
+    def test_comparison_versions_are_real_source_versions_or_absent_never_chunk_ids(self):
+        raw=envelope(VALID["comparison_table"])
+        plain=self.parse("comparison_table",raw).content["rows"][0]
+        self.assertNotIn("baseline_version",plain);self.assertNotIn("current_version",plain)
+        evidence=tuple({**item,"source_version_id":"source-version-"+str(i)} for i,item in enumerate(EVIDENCE,1))
+        row=parse_typed_output(request("comparison_table"),raw,evidence,request_id="generation-qa",model_id="model-qa").content["rows"][0]
+        self.assertEqual(row["baseline_version"],"source-version-1");self.assertEqual(row["current_version"],"source-version-2")
     def parse(self,kind,raw):
         return parse_typed_output(request(kind),raw,EVIDENCE,request_id="generation-qa",model_id="model-qa")
     def test_nine_types_preserve_distinct_real_content_and_server_lineage(self):

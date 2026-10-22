@@ -983,6 +983,7 @@ class RuntimeDependencies:
     studio_report_service: Any | None = None
     studio_report_repository: Any | None = None
     studio_workspace_service: Any | None = None
+    studio_execution_service: Any | None = None
     studio_approval_lifecycle_repository: Any | None = None
     organization_repository: SqliteOrganizationRepository | None = None
     egress_policy_service: EgressPolicyService | None = None
@@ -1315,7 +1316,38 @@ class StudioGenerationBody(BaseModel):
     run_result_id: str | None = None
     source_only: bool = False
     model_settings_version: int | None = Field(default=None,strict=True,ge=1)
+    step_up_authorization_id: str | None = Field(default=None,repr=False)
     settings: StudioSettingsBody
+
+
+class StudioGenerationAuthorizationBody(StudioGenerationBody):
+    operation: Literal["generate"]
+    model_settings_version: int = Field(strict=True,ge=1)
+    password: str | None = Field(default=None,max_length=1024,repr=False)
+
+    @model_validator(mode="after")
+    def validate_operation(self):
+        if "step_up_authorization_id" in self.model_fields_set:raise ValueError("STUDIO_INPUT_INVALID")
+        return self
+
+
+class StudioRegenerationAuthorizationBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    workspace_id: str
+    notebook_id: str
+    operation: Literal["regenerate"]
+    output_id: str
+    previous_version_id: str
+    revision_type: Literal["ai_regeneration","settings_change"]
+    change_reason: str = Field(min_length=1,max_length=500)
+    model_settings_version: int = Field(strict=True,ge=1)
+    settings: StudioSettingsBody | None = None
+    password: str | None = Field(default=None,max_length=1024,repr=False)
+
+    @model_validator(mode="after")
+    def validate_operation(self):
+        if (self.revision_type=="settings_change")!=(self.settings is not None):raise ValueError("STUDIO_INPUT_INVALID")
+        return self
 
 
 class StudioRevisionBody(BaseModel):
@@ -1323,10 +1355,20 @@ class StudioRevisionBody(BaseModel):
     workspace_id: str
     notebook_id: str
     previous_version_id: str
-    revision_type: str
-    change_reason: str
-    content: str
+    revision_type: Literal["user_edit","ai_regeneration","settings_change"]
+    change_reason: str = Field(min_length=1,max_length=500)
+    content: str | None = None
     settings: StudioSettingsBody | None = None
+    model_settings_version: int | None = Field(default=None,strict=True,ge=1)
+    step_up_authorization_id: str | None = Field(default=None,repr=False)
+
+    @model_validator(mode="after")
+    def validate_revision(self):
+        if self.revision_type=="user_edit" and (type(self.content) is not str or not self.content.strip()):raise ValueError("STUDIO_INPUT_INVALID")
+        if self.revision_type=="settings_change" and self.settings is None:raise ValueError("STUDIO_INPUT_INVALID")
+        if self.revision_type=="ai_regeneration" and self.settings is not None:raise ValueError("STUDIO_INPUT_INVALID")
+        if self.revision_type=="user_edit" and (self.model_settings_version is not None or self.step_up_authorization_id is not None):raise ValueError("STUDIO_INPUT_INVALID")
+        return self
 
 
 class StudioActionBody(BaseModel):
@@ -2632,6 +2674,13 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             dependencies.cloud_store, dependencies.object_storage,
             creation_enforcer=enforce_license_creation if license_enforcement_enabled else None,
         ))
+    studio_execution_service=dependencies.studio_execution_service
+    if studio_execution_service is None and dependencies.cloud_store is not None:
+        from .studio_execution import build_studio_execution_service
+        studio_execution_service=build_studio_execution_service(dependencies.cloud_store,cipher=provider_cipher,
+            user_credentials=user_provider_credential_service,identity=dependencies.identity_service,
+            policy_service=egress_policy_service,cost_sessions=_build_run_cost_sessions(dependencies.cloud_store,dependencies.settings),
+            workspace_repository=studio_workspace_service._repository if type(studio_workspace_service) is StudioWorkspaceService else None)
     host_capacity_collector=_build_host_capacity_collector(dependencies.cloud_store,dependencies.settings)
     host_capacity_stop=asyncio.Event()
     host_capacity_task:asyncio.Task[None]|None=None
@@ -3198,6 +3247,9 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     async def studio_workspace_error(request: Request, error: StudioError) -> JSONResponse:
         public_codes = {
             "STUDIO_INPUT_INVALID", "STUDIO_DATABASE_UNAVAILABLE", "STUDIO_SERVICE_UNAVAILABLE",
+            "STUDIO_MODEL_CHANGED","STUDIO_SOURCE_CHANGED","STUDIO_POLICY_CHANGED","STUDIO_INPUT_CHANGED","STUDIO_VERSION_CHANGED",
+            "STUDIO_COST_LIMIT_UNAVAILABLE","STUDIO_OUTPUT_UNAVAILABLE","STUDIO_AUTHORIZATION_EXPIRED","STUDIO_GENERATION_UNCERTAIN",
+            "STUDIO_CURRENT_ACCESS_DENIED","STUDIO_OUTPUT_SAVE_FAILED","STUDIO_JOB_LEASE_LOST",
             "STEP_UP_REQUIRED", "CHANGE_REASON_REQUIRED", "REVISION_TYPE_INVALID",
             "EXPORT_FORMAT_UNSUPPORTED", "RESOURCE_UNAVAILABLE", "IDEMPOTENCY_CONFLICT",
             "POLICY_PROJECTION_MISMATCH", "EVIDENCE_COVERAGE_INCOMPLETE", "REVIEW_REQUEST_REQUIRED",
@@ -5175,6 +5227,65 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             await _record_notebook_question_failure(principal,id,body,request,admission_run_id,admission_fingerprint,error)
             raise
 
+    async def _studio_typed_input(body,principal,request):
+        from .studio_execution import StudioExecutionContext
+        dependencies.authorization_service.authorize_action(principal=principal,workspace_id=body.workspace_id,action=Action.GENERATE,
+            trace_id=request.state.trace_id,policy_version=dependencies.settings.policy_version)
+        if body.model_settings_version is None:raise NotebookModelSettingsError("NOTEBOOK_MODEL_SELECTION_REQUIRED",409)
+        if body.source_version_ids!=body.settings.source_version_ids or body.source_only!=(body.run_id is None and body.run_result_id is None):
+            raise StudioError("STUDIO_INPUT_INVALID")
+        if not body.source_only and (body.run_id is None or body.run_result_id is None):raise StudioError("STUDIO_INPUT_INVALID")
+        if notebook_model_settings_service is None:raise NotebookModelSettingsError("NOTEBOOK_MODEL_SETTINGS_UNAVAILABLE",503)
+        binding=await asyncio.to_thread(notebook_model_settings_service.require_execution,
+            notebook_context(principal,body.workspace_id,request),body.notebook_id,body.model_settings_version)
+        context=StudioExecutionContext(principal.tenant_id,body.workspace_id,principal.user_id,request.state.trace_id,
+            dependencies.settings.policy_version,body.notebook_id,principal.session_id,principal.device_id)
+        generation=StudioGenerationRequest(body.output_type,body.source_id,tuple(body.source_version_ids),body.run_id,body.run_result_id,
+            body.settings.purpose,body.settings.audience,body.settings.ruleset_version_id,body.settings.length,body.settings.structure,
+            body.settings.output_format,body.settings.review_condition,body.settings.language,body.source_only,binding.as_dict())
+        return context,generation
+
+    async def _studio_revision_typed_input(body,output_id,idempotency_key,principal,request):
+        from types import SimpleNamespace
+        from dataclasses import asdict
+        from .studio_execution import StudioExecutionContext
+        context=StudioExecutionContext(principal.tenant_id,body.workspace_id,principal.user_id,request.state.trace_id,
+            dependencies.settings.policy_version,body.notebook_id,principal.session_id,principal.device_id)
+        restored=await asyncio.to_thread(studio_execution_service.revision_request,context,output_id,body.previous_version_id,
+            body.settings.model_dump() if body.revision_type=="settings_change" and body.settings is not None else None,key=idempotency_key,revision_type=body.revision_type,
+            change_reason=body.change_reason,model_settings_version=body.model_settings_version)
+        values=asdict(restored)
+        setting_names=("purpose","audience","ruleset_version_id","length","structure","output_format","review_condition","language")
+        effective_settings={name:values[name] for name in setting_names}
+        effective_settings["source_version_ids"]=list(restored.source_version_ids)
+        input_body=SimpleNamespace(workspace_id=body.workspace_id,notebook_id=body.notebook_id,output_type=restored.output_type,
+            source_id=restored.source_id,source_version_ids=list(restored.source_version_ids),run_id=restored.run_id,
+            run_result_id=restored.run_result_id,source_only=restored.source_only,model_settings_version=body.model_settings_version,
+            settings=StudioSettingsBody(**effective_settings))
+        execution_context,generation=await _studio_typed_input(input_body,principal,request)
+        return execution_context,generation
+
+    @app.post("/api/v1/studio-generation-requests/authorization",status_code=201)
+    async def authorize_product_studio_generation(body:StudioGenerationAuthorizationBody|StudioRegenerationAuthorizationBody,request:Request,
+        idempotency_key:str=Header(alias="Idempotency-Key"))->JSONResponse:
+        _require_query_keys(request,frozenset());_studio_idempotency_key(idempotency_key)
+        principal=_principal(request,dependencies)
+        dependencies.authorization_service.authorize_action(principal=principal,workspace_id=body.workspace_id,action=Action.EDIT,
+            trace_id=request.state.trace_id,policy_version=dependencies.settings.policy_version)
+        if studio_execution_service is None:raise StudioError("STUDIO_SERVICE_UNAVAILABLE",503)
+        if body.operation=="generate":context,generation=await _studio_typed_input(body,principal,request)
+        else:context,generation=await _studio_revision_typed_input(body,body.output_id,idempotency_key,principal,request)
+        result=await asyncio.to_thread(studio_execution_service.authorize,context,generation,idempotency_key,
+            access_token=_credential(request)[0],password=body.password,
+            revision_type="initial" if body.operation=="generate" else body.revision_type,
+            change_reason=None if body.operation=="generate" else body.change_reason,
+            output_id=None if body.operation=="generate" else body.output_id,
+            previous_version_id=None if body.operation=="generate" else body.previous_version_id)
+        response=JSONResponse({"data":_enum_json(result),"meta":{"trace_id":request.state.trace_id,"workspace_id":body.workspace_id}},status_code=201)
+        response.headers["Cache-Control"]="no-store"
+        response.headers["ETag"]='"studio-generation-authorization:'+result["generation_fingerprint"]+'"'
+        return response
+
     @app.post("/api/v1/studio-generation-requests", status_code=201)
     async def create_product_studio_generation(
         body: StudioGenerationBody, request: Request,
@@ -5196,30 +5307,11 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 license_service.require_new_generation,
                 _license_context(principal, body.workspace_id, request, dependencies),
             )
-        if body.source_version_ids != body.settings.source_version_ids:
-            raise StudioError("STUDIO_INPUT_INVALID")
-        if body.source_only != (body.run_id is None and body.run_result_id is None):
-            raise StudioError("STUDIO_INPUT_INVALID")
-        if not body.source_only and (body.run_id is None or body.run_result_id is None):
-            raise StudioError("STUDIO_INPUT_INVALID")
-        intended=None
-        if body.model_settings_version is not None:
-            if notebook_model_settings_service is None:
-                raise NotebookModelSettingsError("NOTEBOOK_MODEL_SETTINGS_UNAVAILABLE",503)
-            binding=await asyncio.to_thread(notebook_model_settings_service.require_execution,
-                notebook_context(principal,body.workspace_id,request),body.notebook_id,body.model_settings_version)
-            intended=binding.as_dict()
+        context,generation=await _studio_typed_input(body,principal,request)
+        if studio_execution_service is None:raise StudioError("STUDIO_SERVICE_UNAVAILABLE",503)
         output, replayed = await asyncio.to_thread(
-            studio_workspace_service.enqueue,
-            _product_studio_context(principal, body.workspace_id, request, dependencies, body.notebook_id),
-            StudioGenerationRequest(
-                body.output_type, body.source_id, tuple(body.source_version_ids), body.run_id,
-                body.run_result_id, body.settings.purpose, body.settings.audience,
-                body.settings.ruleset_version_id, body.settings.length, body.settings.structure,
-                body.settings.output_format, body.settings.review_condition, body.settings.language,
-                body.source_only, intended,
-            ),
-            idempotency_key,
+            studio_execution_service.enqueue,context,generation,idempotency_key,
+            access_token=_credential(request)[0],step_up_authorization_id=body.step_up_authorization_id,
         )
         serialized_output = _enum_json(output)
         if not isinstance(serialized_output, dict):
@@ -5267,7 +5359,9 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             "citations": data.get("output", {}).get("citations", []) if isinstance(data.get("output"), dict) else [],
             "verification_required": data.get("status") != "completed",
         }
-        return JSONResponse({"data": data, "meta": {"trace_id": request.state.trace_id, "workspace_id": workspace_id}})
+        response=_json_with_etag({"data":data,"meta":{"trace_id":request.state.trace_id,"workspace_id":workspace_id}},json.dumps(data,sort_keys=True))
+        response.headers["Cache-Control"]="no-store"
+        return response
 
     @app.get("/api/v1/studio-outputs")
     async def list_product_studio_outputs(
@@ -5328,10 +5422,19 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         )
         if studio_workspace_service is None:
             raise StudioError("STUDIO_SERVICE_UNAVAILABLE", 503)
+        if body.revision_type!="user_edit":
+            execution_context,generation=await _studio_revision_typed_input(body,output_id,idempotency_key,principal,request)
+            output,replayed=await asyncio.to_thread(studio_execution_service.enqueue,execution_context,generation,idempotency_key,
+                access_token=_credential(request)[0],step_up_authorization_id=body.step_up_authorization_id,
+                revision_type=body.revision_type,change_reason=body.change_reason,output_id=output_id,previous_version_id=body.previous_version_id)
+            response=JSONResponse({"data":_enum_json(output),"meta":{"trace_id":request.state.trace_id,"workspace_id":body.workspace_id,"replayed":replayed}},status_code=202)
+            response.headers["ETag"]=f'"studio-job:{output["job_id"]}"'
+            response.headers["Cache-Control"]="no-store"
+            return response
         version, replayed = await asyncio.to_thread(
             studio_workspace_service.revise,
             _product_studio_context(principal, body.workspace_id, request, dependencies, body.notebook_id), output_id,
-            body.model_dump(exclude={"workspace_id", "notebook_id"}), idempotency_key,
+            body.model_dump(exclude={"workspace_id", "notebook_id","model_settings_version","step_up_authorization_id"}), idempotency_key,
         )
         response = JSONResponse({"data": _enum_json(version), "meta": {
             "trace_id": request.state.trace_id, "workspace_id": body.workspace_id, "replayed": replayed,

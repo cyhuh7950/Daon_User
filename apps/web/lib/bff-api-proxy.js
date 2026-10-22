@@ -518,6 +518,9 @@ function routeFor(method, segments) {
       ? { path: `/api/v1/studio-generation-jobs/${encodeURIComponent(segments[1])}`, query: STUDIO_QUERY, requiredQuery: STUDIO_QUERY }
       : { methodRejected: true };
   }
+  if(segments.length===2&&segments[0]==="studio-generation-requests"&&segments[1]==="authorization"){
+    return method==="POST"?{path:"/api/v1/studio-generation-requests/authorization",query:null}:{methodRejected:true};
+  }
   if (segments.length === 1 && new Set([
     "studio-generation-requests", "studio-outputs", "reviews", "approval-requests",
     "approvals", "deliveries", "knowledge-registrations",
