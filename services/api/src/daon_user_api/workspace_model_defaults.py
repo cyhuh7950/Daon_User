@@ -346,6 +346,8 @@ class ResolvedModel:
     reasoning_effort: str | None = None
     model_settings_version: int | None = None
     reasoning_profile_version: str | None = None
+    reasoning_contract: str = "unknown"
+    reasoning_connection_version: int = 1
 
     @property
     def profile_id(self) -> str:
@@ -424,7 +426,7 @@ class PostgresWorkspaceModelResolver:
                     "c.encrypted_credential,c.credential_nonce,c.encryption_key_version,"
                     "c.credential_schema_version,c.credential_version,c.enabled,c.verification_status,"
                     "m.effective_capabilities,m.catalog_status,m.catalog_version,"
-                    "c.access_mode,c.credential_requirement,c.adapter_type "
+                    "c.access_mode,c.credential_requirement,c.adapter_type,c.reasoning_contract,c.version "
                     + source + "JOIN system_provider_allowed_models a ON a.connection_id=m.connection_id AND a.model_id=m.model_id "
                     + condition, parameters,
                 ).fetchone()
@@ -464,8 +466,8 @@ class PostgresWorkspaceModelResolver:
             if (connection_id,model_id)!=(selected.selection.connection_id,selected.selection.model_id):
                 raise WorkspaceModelUnavailable("NOTEBOOK_MODEL_SETTINGS_CHANGED")
             from .notebook_model_settings import validate_effort
-            profile = validate_effort(provider_code,str(values[17]),model_id,selected.selection.reasoning_effort)
-            if profile != selected.profile_version:
+            profile = validate_effort(provider_code,str(values[17]),model_id,selected.selection.reasoning_effort,reasoning_contract=str(values[18]),connection_version=int(values[19]))
+            if selected.selection.reasoning_effort is not None and profile != selected.profile_version:
                 raise WorkspaceModelUnavailable("NOTEBOOK_MODEL_SETTINGS_CHANGED")
         credential_version = int(values[9])
         credential: bytearray | None = None
@@ -517,9 +519,10 @@ class PostgresWorkspaceModelResolver:
             daon_fallback_allowed=not native_asr and provider_code not in _ROUTING_GATEWAYS | {"SENTENCE_TRANSFORMERS"},
             _credential=credential,
             adapter_type=str(values[17]),
+            reasoning_contract=str(values[18]),reasoning_connection_version=int(values[19]),
             reasoning_effort=None if selected is None else selected.selection.reasoning_effort,
             model_settings_version=None if selected is None else selected.version,
-            reasoning_profile_version=None if selected is None else selected.profile_version,
+            reasoning_profile_version=None if selected is None or selected.selection.reasoning_effort is None else selected.profile_version,
         )
         try:
             yield resolved

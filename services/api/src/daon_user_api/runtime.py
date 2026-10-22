@@ -1579,6 +1579,7 @@ class ProviderConnectionCreateBody(BaseModel):
     logical_model_ids: list[str] = Field(default_factory=list, max_length=256)
     allowed_model_ids: list[str] = Field(default_factory=list, max_length=256)
     auto_model_id: str | None = Field(default=None, max_length=256)
+    reasoning_contract: Literal["unknown", "unsupported", "router_effort_v1"] = "unknown"
     access_mode: str = "public"
     credential_requirement: str = "required"
     short_code: str = ""
@@ -1598,6 +1599,7 @@ class ProviderConnectionUpdateBody(BaseModel):
     logical_model_ids: list[str] = Field(default_factory=list, max_length=256)
     allowed_model_ids: list[str] = Field(default_factory=list, max_length=256)
     auto_model_id: str | None = Field(default=None, max_length=256)
+    reasoning_contract: Literal["unknown", "unsupported", "router_effort_v1"] = "unknown"
     access_mode: str = "public"
     credential_requirement: str = "required"
     short_code: str = ""
@@ -7207,6 +7209,8 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             credential_requirement=body.credential_requirement, short_code=body.short_code,
             adapter_type=body.adapter_type, test_credential=body.test_credential,
             auto_model_id=body.auto_model_id,
+            reasoning_contract=body.reasoning_contract,
+            reasoning_contract_specified="reasoning_contract" in body.model_fields_set,
         )
         try:
             item, replayed = await asyncio.to_thread(
@@ -7238,7 +7242,9 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             credential_requirement=body.credential_requirement, short_code=body.short_code,
             adapter_type=body.adapter_type, test_credential=body.test_credential,
             auto_model_id=body.auto_model_id,
+            reasoning_contract=body.reasoning_contract,
             auto_model_id_specified="auto_model_id" in body.model_fields_set,
+            reasoning_contract_specified="reasoning_contract" in body.model_fields_set,
         )
         try:
             item, replayed = await asyncio.to_thread(

@@ -1209,6 +1209,12 @@ function validateSystemOperationsContract(document) {
 }
 
 export function validateOpenApiDocument(document) {
+  const reasoningContract={type:"string",enum:["unknown","unsupported","router_effort_v1"],default:"unknown"};
+  for(const name of ["ProviderConnectionAdminView","ProviderConnectionCreateRequest","ProviderConnectionUpdateRequest"]){
+    if(JSON.stringify(document?.components?.schemas?.[name]?.properties?.reasoning_contract)!==JSON.stringify(reasoningContract))
+      fail("provider reasoning contract must be an exact optional enum");
+    if(document.components.schemas[name].required?.includes("reasoning_contract"))fail("provider reasoning contract must remain optional");
+  }
   validateAccountSettings(document);
   validateStudioApprovalLifecycle(document);
   if (!isObject(document)) fail("document must be an object");

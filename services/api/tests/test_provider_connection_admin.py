@@ -272,7 +272,7 @@ class Connection:
                 record["verified_at"], record["version"], catalog_status, record["catalog_version"],
                 record["access_mode"], record["credential_requirement"], record["short_code"], record["adapter_type"],
                 record.get("provider_name", record["provider_code"]),
-                record.get("auto_model_id"),
+                record.get("auto_model_id"), record.get("reasoning_contract","unknown"),
             )])
         if normalized.startswith("SELECT model_id,reported_capabilities,effective_capabilities"):
             return Cursor(rows=[(*item[:6], item[6] if len(item) > 6 else "upstream") for item in self.database.models])
@@ -310,11 +310,11 @@ class CompatibleConnection(Connection):
         if normalized.startswith("SELECT connection_id,provider_code,display_name,base_url,encrypted_credential"):
             if record is None or record["connection_id"] != params[0]:
                 return Cursor(None)
-            return Cursor(tuple(record.get(key) for key in (
+            return Cursor(tuple(record.get(key,"unknown" if key=="reasoning_contract" else None) for key in (
                 "connection_id", "provider_code", "display_name", "base_url", "encrypted_credential",
                 "credential_nonce", "encryption_key_version", "credential_schema_version", "credential_version",
                 "enabled", "verification_status", "verified_at", "version", "access_mode",
-                "credential_requirement", "short_code", "adapter_type", "provider_name", "auto_model_id",
+                "credential_requirement", "short_code", "adapter_type", "provider_name", "auto_model_id", "reasoning_contract",
             )))
         if normalized.startswith("INSERT INTO system_provider_connections"):
             columns_sql, values_sql = normalized.split(" VALUES ", 1)
@@ -326,7 +326,7 @@ class CompatibleConnection(Connection):
                 "connection_id", "provider_code", "display_name", "base_url", "encrypted_credential",
                 "credential_nonce", "encryption_key_version", "credential_schema_version", "credential_version",
                 "enabled", "verification_status", "verified_at", "version", "updated_by", "trace_id", "policy_version",
-                "access_mode", "credential_requirement", "short_code", "adapter_type", "provider_name", "auto_model_id",
+                "access_mode", "credential_requirement", "short_code", "adapter_type", "provider_name", "auto_model_id", "reasoning_contract",
             )
             assert values[12] == "1" and all(value == "%s" for value in values[:12] + values[13:])
             bound_values = (*params[:12], 1, *params[12:])
@@ -340,7 +340,7 @@ class CompatibleConnection(Connection):
                 "display_name", "base_url", "encrypted_credential", "credential_nonce",
                 "encryption_key_version", "credential_schema_version", "credential_version", "enabled",
                 "verification_status", "verified_at", "access_mode", "credential_requirement", "short_code",
-                "adapter_type", "provider_name", "auto_model_id", "updated_by", "trace_id", "policy_version",
+                "adapter_type", "provider_name", "auto_model_id", "reasoning_contract", "updated_by", "trace_id", "policy_version",
             ), params[:-2])))
             record["version"] += 1
             return Cursor((record["version"],))
@@ -2246,6 +2246,57 @@ def test_hc_auto_setting_unspecified_never_injects_provider_model_id(monkeypatch
     assert saved["auto_model_id"] is None and database.system_connection["auto_model_id"] is None
     assert [row["model_id"] for row in saved["models"]]==["manual-model"]
     assert saved["allowed_model_ids"]==["manual-model"]
+
+
+def test_reasoning_contract_saved_and_omitted_update_preserves_configuration(monkeypatch):
+    transport=FixtureTransport()
+    transport.responses["https://models.example/v1/chat/completions"]=TransportResponse(200,{"choices":[{"message":{"content":"ready"}}]})
+    service,database=compatible_service(monkeypatch,transport)
+    saved,_=service.create_connection(context(),replace(custom_command(),reasoning_contract="router_effort_v1"),"reasoning-create")
+    assert saved["reasoning_contract"]==database.system_connection["reasoning_contract"]=="router_effort_v1"
+    command=ProviderConnectionUpdateCommand(display_name="새 표시명",base_url=saved["base_url"],credential=None,
+        logical_model_ids=(),enabled=saved["enabled"],expected_version=1,access_mode=saved["access_mode"],
+        credential_requirement=saved["credential_requirement"],short_code=saved["short_code"],adapter_type=saved["adapter_type"],
+        allowed_model_ids=tuple(saved["allowed_model_ids"]))
+    before=len(transport.requests)
+    updated,_=service.update_connection(context(),saved["connection_id"],command,"reasoning-preserve")
+    assert updated["reasoning_contract"]=="router_effort_v1" and len(transport.requests)==before
+    changed,_=service.update_connection(context(),saved["connection_id"],replace(command,expected_version=2,reasoning_contract="unsupported",reasoning_contract_specified=True),"reasoning-change")
+    assert changed["reasoning_contract"]=="unsupported" and changed["version"]==3
+    with pytest.raises(ProviderConnectionAdminError,match="IDEMPOTENCY_KEY_REUSED"):
+        service.update_connection(context(),saved["connection_id"],replace(command,expected_version=2,reasoning_contract="unknown",reasoning_contract_specified=True),"reasoning-change")
+
+
+@pytest.mark.parametrize("contract",[None,True,{},"other"])
+def test_invalid_reasoning_contract_never_probes_or_writes(monkeypatch,contract):
+    transport=FixtureTransport();service,database=compatible_service(monkeypatch,transport)
+    with pytest.raises(ProviderConnectionAdminError,match="PROVIDER_CONNECTION_INVALID"):
+        service.create_connection(context(),replace(custom_command(),reasoning_contract=contract),"reasoning-invalid")
+    assert transport.requests==[] and database.system_connection is None
+
+
+def test_unsupported_protocol_reasoning_contract_is_not_guessed(monkeypatch):
+    transport=FixtureTransport();service,database=compatible_service(monkeypatch,transport)
+    with pytest.raises(ProviderConnectionAdminError,match="PROVIDER_CONNECTION_INVALID"):
+        service.create_connection(context(),replace(custom_command(adapter_type="anthropic_compatible"),reasoning_contract="router_effort_v1"),"reasoning-invalid-protocol")
+    assert transport.requests==[] and database.system_connection is None
+
+
+def test_omitted_create_reasoning_contract_preserves_legacy_fingerprint_and_explicit_unknown_is_bound(monkeypatch):
+    transport=FixtureTransport();service,database=compatible_service(monkeypatch,transport)
+    command=replace(custom_command(),access_mode="personal",credential=None,allowed_model_ids=())
+    captures=[];run=service._mutations.run
+    def capture(*args,**kwargs):
+        captures.append(deepcopy(kwargs["fingerprint_payload"]))
+        return run(*args,**kwargs)
+    monkeypatch.setattr(service._mutations,"run",capture)
+    saved,replayed=service.create_connection(context(),command,"legacy-omitted-contract")
+    assert not replayed and "reasoning_contract" not in captures[-1]
+    assert service.create_connection(context(),command,"legacy-omitted-contract")== (saved,True)
+    assert captures[-1]==captures[0]
+    with pytest.raises(ProviderConnectionAdminError,match="IDEMPOTENCY_KEY_REUSED"):
+        service.create_connection(context(),replace(command,reasoning_contract_specified=True),"legacy-omitted-contract")
+    assert captures[-1]=={**captures[0],"reasoning_contract":"unknown"}
 
 @pytest.mark.parametrize("provider",["OMNIROUTE","OPENROUTER"])
 def test_hc_auto_setting_exact_id_is_registered_and_verified_without_provider_rewrite(monkeypatch,provider):

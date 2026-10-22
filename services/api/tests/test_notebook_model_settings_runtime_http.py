@@ -83,7 +83,14 @@ class NotebookModelSettingsHttpTests(unittest.IsolatedAsyncioTestCase):
     async def test_studio_intended_selection_is_server_bound_and_stale_or_forged_is_rejected(self):
         from test_studio_workspace_runtime_http import FakeStudioWorkspace
         studio=FakeStudioWorkspace()
-        dependencies=replace(self.dependencies,studio_workspace_service=studio)
+        class EnqueueCapture:
+            # E 이후 실제 생성 접수 port가 필수다. 이 시험은 HTTP 선택 결속만 검사한다.
+            def __init__(self):self.calls=[]
+            def enqueue(self,context,generation,key,**kwargs):
+                self.calls.append((context,key,generation))
+                return {"job_id":"studio-model-job","state":"queued"},False
+        execution=EnqueueCapture()
+        dependencies=replace(self.dependencies,studio_workspace_service=studio,studio_execution_service=execution)
         body={"workspace_id":"workspace-001","notebook_id":"notebook-cp3","output_type":"evidence_report",
             "source_id":"source-1","source_version_ids":["source-version-1"],"run_id":"run-1","run_result_id":"result-1",
             "settings":{"purpose":"목적","audience":"독자","source_version_ids":["source-version-1"],"ruleset_version_id":None,
@@ -97,17 +104,18 @@ class NotebookModelSettingsHttpTests(unittest.IsolatedAsyncioTestCase):
                 result=await client.post("/api/v1/studio-generation-requests",cookies=cookies,
                     headers={"Idempotency-Key":"studio-intended-request-01"},json=body)
                 self.assertEqual(result.status_code,201,result.text)
-                intent=studio.calls[0][2].intended_model_selection
+                intent=execution.calls[0][2].intended_model_selection
                 self.assertEqual(intent,{"connection_id":"connection-a","model_id":"solar-pro4","reasoning_effort":"low",
-                    "model_settings_version":1,"reasoning_profile_version":"upstage-solar-pro4-safe-wire-v1"})
-                self.assertEqual(studio.calls[0][2].run_id,"run-1")
+                    "model_settings_version":1,"reasoning_profile_version":"router-effort-v1-c3"})
+                self.assertEqual(execution.calls[0][2].run_id,"run-1")
+                self.assertEqual(studio.calls,[])
                 stale=await client.post("/api/v1/studio-generation-requests",cookies=cookies,
                     headers={"Idempotency-Key":"studio-intended-request-02"},json={**body,"model_settings_version":2})
                 self.assertEqual(stale.status_code,409)
                 forged=await client.post("/api/v1/studio-generation-requests",cookies=cookies,
                     headers={"Idempotency-Key":"studio-intended-request-03"},json={**body,"intended_model_selection":intent})
                 self.assertEqual(forged.status_code,400)
-                self.assertEqual(len(studio.calls),1)
+                self.assertEqual(len(execution.calls),1)
 
     async def test_current_real_authorization_revocation_rejects_read_and_save(self):
         from test_identity_support import TRACE_ID,POLICY_VERSION

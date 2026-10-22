@@ -686,6 +686,8 @@ def row(
     effective_capabilities: list[str] | None = None, credential_version: int = 4,
     access_mode: str = "public", credential_requirement: str = "required",
     adapter_type: str = "",
+    reasoning_contract: str = "unknown",
+    connection_version: int = 3,
     model_id: str = "assistant-default",
     base_url: str = "https://gateway.example.com",
 ):
@@ -700,7 +702,7 @@ def row(
         None if sealed is None else sealed.schema_version,
         credential_version, enabled, verification_status,
         effective_capabilities if effective_capabilities is not None else [capability],
-        catalog_status, 9, access_mode, credential_requirement, adapter_type,
+        catalog_status, 9, access_mode, credential_requirement, adapter_type, reasoning_contract, connection_version,
     )
 
 

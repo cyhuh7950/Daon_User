@@ -6677,6 +6677,7 @@
         "type": "object", "additionalProperties": false,
         "required": ["connection_id", "provider_code", "display_name", "enabled", "configured", "credential_version", "verification_status", "verified_at", "version", "catalog_status", "catalog_version", "models"],
         "properties": {
+          "reasoning_contract": { "type": "string", "enum": ["unknown", "unsupported", "router_effort_v1"], "default": "unknown" },
           "connection_id": { "$ref": "#/components/schemas/OpaqueId" },
           "provider_code": { "$ref": "#/components/schemas/ProviderCode" },
           "display_name": { "type": "string", "minLength": 1, "maxLength": 256 },
@@ -6707,6 +6708,7 @@
         "type": "object", "additionalProperties": false,
         "required": ["connection_id", "provider_code", "display_name", "base_url", "enabled", "expected_version"],
         "properties": {
+          "reasoning_contract": { "type": "string", "enum": ["unknown", "unsupported", "router_effort_v1"], "default": "unknown" },
           "connection_id": { "$ref": "#/components/schemas/OpaqueId" }, "provider_code": { "$ref": "#/components/schemas/ProviderCode" },
           "display_name": { "type": "string", "minLength": 1, "maxLength": 256 }, "base_url": { "type": "string", "minLength": 1, "maxLength": 2048 },
           "credential": { "type": "string", "minLength": 1, "maxLength": 16384, "writeOnly": true },
@@ -6718,6 +6720,7 @@
         "type": "object", "additionalProperties": false,
         "required": ["display_name", "base_url", "enabled", "expected_version"],
         "properties": {
+          "reasoning_contract": { "type": "string", "enum": ["unknown", "unsupported", "router_effort_v1"], "default": "unknown" },
           "display_name": { "type": "string", "minLength": 1, "maxLength": 256 }, "base_url": { "type": "string", "minLength": 1, "maxLength": 2048 },
           "credential": { "type": "string", "minLength": 1, "maxLength": 16384, "writeOnly": true },
           "logical_model_ids": { "type": "array", "maxItems": 256, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 256 } },

@@ -8,6 +8,38 @@ import { pathToFileURL } from "node:url";
 import { providerSettingsApi } from "../../apps/web/lib/provider-settings-api.js";
 import { MinimalEvent, buttonByText, findElements, installMinimalDom } from "./product-studio-dom.mjs";
 
+test("HC2 미지 추론 계약은 전송 전에 거부하고 명시 계약은 그대로 보낸다",async()=>{
+  const previous=globalThis.fetch;const calls=[];
+  globalThis.fetch=async(url,options)=>{calls.push(JSON.parse(options.body));return Response.json({data:{}});};
+  try{
+    for(const reasoning_contract of [null,true,"other",{}])await assert.rejects(()=>providerSettingsApi.updateConnection("connection-a",{reasoning_contract},"request-a"),error=>error.code==="PROVIDER_CONNECTION_INVALID");
+    assert.equal(calls.length,0);
+    for(const reasoning_contract of ["unknown","unsupported","router_effort_v1"])await providerSettingsApi.updateConnection("connection-a",{reasoning_contract},"request-a");
+    assert.deepEqual(calls.map(v=>v.reasoning_contract),["unknown","unsupported","router_effort_v1"]);
+  }finally{globalThis.fetch=previous;}
+});
+
+test("HC2 연결 추론 계약은 설정에서 변경하고 명시 저장·재조회한다",async()=>{
+  const item={...s26Connection("reasoning"),allowed_model_ids:["model-a"],reasoning_contract:"unknown",verification_status:"verified",catalog_status:"ready"};
+  const fixture=adminFixture({existingConnections:[item]}),base=fixture.fetch;
+  fixture.fetch=async(url,options={})=>{
+    if(String(url)===`/bff/api/admin/provider-connections/${item.connection_id}`&&options.method==="PUT"){
+      const body=JSON.parse(options.body);fixture.requests.push({path:String(url),method:"PUT",body,key:options.headers["Idempotency-Key"]});
+      Object.assign(item,body,{version:2});return Response.json({data:item});
+    }return base(url,options);
+  };
+  const view=await mountAdminFixture(fixture,"hc2-reasoning-contract");
+  try{
+    const control=controlFor(view.container,"추론 옵션");assert.equal(reactProps(control).value,"unknown");
+    await fill(view.act,control,"router_effort_v1");
+    assert.equal(item.reasoning_contract,"unknown");assert.equal(fixture.requests.filter(v=>v.method==="PUT").length,0);
+    await click(view.act,buttonByText(view.container,"변경사항 저장"));
+    const saved=fixture.requests.find(v=>v.method==="PUT");assert.equal(saved.body.reasoning_contract,"router_effort_v1");assert.equal(saved.body.expected_version,1);assert.ok(saved.key);
+    assert.match(view.container.textContent,/서버 저장값을 확인/u);
+    assert.equal(reactProps(controlFor(view.container,"추론 옵션")).value,"router_effort_v1");
+  }finally{await view.cleanup();}
+});
+
 const read = (file) => readFile(new URL(`../../${file}`, import.meta.url), "utf8");
 
 test("pending compatible registration is a distinct no-cost UI action", async () => {

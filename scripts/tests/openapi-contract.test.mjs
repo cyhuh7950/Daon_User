@@ -18,6 +18,15 @@ async function loadContract() {
   return JSON.parse(await readFile(contractPath, "utf8"));
 }
 
+test("HC2 연결 추론 계약은 기존 CRUD의 선택 enum 하나이며 변조를 거부한다",async()=>{
+  const document=await loadContract();assert.doesNotThrow(()=>validateOpenApiDocument(document));
+  for(const name of ["ProviderConnectionAdminView","ProviderConnectionCreateRequest","ProviderConnectionUpdateRequest"]){
+    for(const mutate of [s=>delete s.properties.reasoning_contract,s=>s.properties.reasoning_contract.enum.push("other"),s=>s.required.push("reasoning_contract")]){
+      const invalid=structuredClone(document);mutate(invalid.components.schemas[name]);assert.throws(()=>validateOpenApiDocument(invalid));
+    }
+  }
+});
+
 test('C 근거 응답은 기존5·10 신규11·Run 없는 notice를 닫힌 분기로 선언하고 변조를 거부한다',async()=>{
   const document=await loadContract(),schemas=document.components.schemas;
   assert.deepEqual(schemas.GroundedAnswerEnvelope.properties.data.oneOf.map(item=>item.$ref),[

@@ -52,6 +52,7 @@ function emptyConnectionDraft(defaultEndpoint = "") {
     base_url: defaultEndpoint,
     logical_model_ids: "",
     auto_model_id: "",
+    reasoning_contract: "unknown",
     short_code: "",
     access_mode: "public",
     credential_requirement: "required",
@@ -74,6 +75,7 @@ function draftFromConnection(connection) {
     base_url: connection.base_url || "",
     logical_model_ids: (connection.allowed_model_ids ?? []).join("\n"),
     auto_model_id: connection.auto_model_id ?? "",
+    reasoning_contract: connection.reasoning_contract ?? "unknown",
     short_code: connection.short_code ?? "",
     access_mode: connection.access_mode ?? "public",
     credential_requirement: connection.credential_requirement ?? "required",
@@ -195,6 +197,7 @@ function connectionDraftValues(draft) {
     credential_requirement: draft.credential_requirement,
     adapter_type: draft.adapter_type,
     auto_model_id: (draft.auto_model_id ?? "").trim(),
+    reasoning_contract: draft.reasoning_contract ?? "unknown",
     models: normalizedLogicalModels(draft.logical_model_ids ?? (draft.allowed_model_ids ?? []).join("\n")).sort(),
     enabled: draft.enabled,
   };
@@ -539,6 +542,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
           logical_model_ids: nativeAsr ? [] : modelIds,
           allowed_model_ids: nativeAsr ? ['faster-whisper-base'] : modelIds,
           auto_model_id: draft.auto_model_id.trim() || null,
+          reasoning_contract: draft.reasoning_contract,
           short_code: draft.short_code.trim().toUpperCase(),
           access_mode: draft.credential_requirement === "none" ? "public" : draft.access_mode,
           credential_requirement: draft.credential_requirement,
@@ -826,6 +830,10 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
                 <div className="provider-field-wide provider-configuration-columns">
                   <div className="provider-configuration-settings">
                     <label>인증 유형{nativeAsr || draft.version > 0 && compatible ? <input readOnly value={draft.credential_requirement === "none" ? "Key 불필요" : "Key 필요"} /> : <select value={draft.credential_requirement} onChange={(event) => { discardPreview(); if (event.target.value === "none") setCredential(""); setDraft((current) => ({ ...current, credential_requirement: event.target.value, access_mode: event.target.value === "none" ? "public" : current.access_mode })); }}><option value="required">Key 필요</option><option value="none">Key 불필요</option></select>}</label>
+                    <label>추론 옵션<select aria-label="추론 옵션" value={draft.reasoning_contract} onChange={event=>setDraft(current=>({...current,reasoning_contract:event.target.value}))}>
+                      <option value="unknown">지원 정보 미확인</option><option value="unsupported">추론 선택 없음</option>
+                      <option value="router_effort_v1">낮음·보통·높음 지원</option>
+                    </select></label>
                     {routerConfigurable ? <label className="styled-check"><input type="checkbox" checked={routerAutoEnabled||Boolean(draft.auto_model_id)} onChange={(event) => {
                       setRouterAutoEnabled(event.target.checked);
                       if(!event.target.checked)setDraft(current=>({...current,auto_model_id:""}));

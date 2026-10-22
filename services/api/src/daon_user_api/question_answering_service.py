@@ -102,11 +102,10 @@ class QuestionAdapterRegistry:
         provider_payload: dict[str, object]
 
         def __post_init__(self):
-            effort=getattr(self.selection,"reasoning_effort",None)
-            if effort is not None:
-                from .notebook_model_settings import validate_effort
-                validate_effort(self.selection.provider_code,getattr(self.selection,"adapter_type",""),self.selection.model_id,effort)
-                self.provider_payload["reasoning_effort"]=effort
+            from .notebook_model_settings import reasoning_wire_fields
+            self.provider_payload.update(reasoning_wire_fields(self.selection.provider_code,getattr(self.selection,"adapter_type",""),
+                getattr(self.selection,"reasoning_effort",None),reasoning_contract=getattr(self.selection,"reasoning_contract","unknown"),
+                connection_version=getattr(self.selection,"reasoning_connection_version",1)))
 
     def prepare(
         self, selection: ResolvedModel, evidence, question: str, trace_id: str,  # type: ignore[no-untyped-def]

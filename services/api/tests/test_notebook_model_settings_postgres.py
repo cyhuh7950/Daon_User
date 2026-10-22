@@ -9,7 +9,7 @@ from daon_user_api.notebook_model_settings import NotebookModelSettingsError
 class Store:
     def __init__(self):
         self.rows=[];self.bindings=[];self.calls=[];self.denied=False;self.fail_binding=False
-        self.candidates=[("connection-a","UPSTAGE","공용 연결","solar-pro4",3,5,"UPSTAGE",["text_generation"])]
+        self.candidates=[("connection-a","UPSTAGE","공용 연결","solar-pro4",3,5,"UPSTAGE",["text_generation"],"router_effort_v1")]
     @contextmanager
     def _transaction(self,context):
         old=deepcopy((self.rows,self.bindings))
@@ -92,12 +92,38 @@ def test_scope_and_settings_version_are_exact(setup_service):
     assert bound.as_dict()["model_settings_version"]==1
 
 def test_profile_change_requires_reselection_instead_of_reinterpreting_stored_effort(setup_service):
-    service,store,context=setup_service;save(service,context)
+    service,store,context=setup_service;save(service,context,reasoning_effort="low")
     aggregate,row=store.rows[0];payload=deepcopy(row[3]);payload["profile_version"]="other-profile-v1"
     from daon_user_api.notebook_model_settings_postgres import canonical,digest
     store.rows[0]=(aggregate,(*row[:3],payload,canonical(payload),digest(payload),row[6]))
     assert service.read(context,"notebook-a")["effective_selection"] is None
     with pytest.raises(NotebookModelSettingsError):service.require_execution(context,"notebook-a",1)
+
+
+def test_unselected_effort_survives_connection_contract_change_without_snapshot_rewrite(setup_service):
+    service,store,context=setup_service
+    store.candidates=[(*store.candidates[0][:8],"unknown")]
+    save(service,context)
+    before=deepcopy(store.rows)
+    store.candidates=[(*store.candidates[0][:4],4,*store.candidates[0][5:8],"router_effort_v1")]
+    assert service.read(context,"notebook-a")["effective_selection"] is not None
+    assert service.require_execution(context,"notebook-a",1).profile_version is None
+    assert save(service,context)["replayed"] is True
+    assert store.rows==before
+
+
+def test_contract_and_connection_version_change_invalidate_saved_effort_and_replay(setup_service):
+    service,store,context=setup_service
+    save(service,context,reasoning_effort="low")
+    store.candidates=[(*store.candidates[0][:4],4,*store.candidates[0][5:])]
+    assert service.read(context,"notebook-a")["effective_selection"] is None
+    with pytest.raises(NotebookModelSettingsError,match="CHANGED"):save(service,context,reasoning_effort="low")
+    with pytest.raises(NotebookModelSettingsError):service.require_execution(context,"notebook-a",1)
+    store.candidates=[(*store.candidates[0][:8],"unknown")]
+    assert service.read(context,"notebook-a")["available_models"][0]["reasoning"]["status"]=="unknown"
+    with pytest.raises(NotebookModelSettingsError):save(service,context,reasoning_effort="low",expected_version=1,idempotency_key="new-request")
+    assert save(service,context,reasoning_effort=None,expected_version=1,idempotency_key="new-request")["version"]==2
+    assert service.require_execution(context,"notebook-a",2).selection.reasoning_effort is None
 
 
 def test_current_execution_permission_denial_removes_candidate_and_blocks_replay(setup_service):
@@ -117,7 +143,7 @@ def test_private_snapshot_without_exact_notebook_binding_is_not_executable(setup
 @pytest.mark.parametrize("provider,model",[("OMNIROUTE","auto"),("OMNIROUTE","cc/claude-sonnet"),("OPENROUTER","openrouter/auto")])
 def test_registered_gateway_selection_save_execution_and_permission_revocation(setup_service,provider,model):
     service,store,context=setup_service
-    store.candidates=[("connection-a",provider,"명시 허용 Gateway",model,3,5,provider,["text_generation"])]
+    store.candidates=[("connection-a",provider,"명시 허용 Gateway",model,3,5,provider,["text_generation"],"router_effort_v1")]
     before=len(store.rows)
     view=service.read(context,"notebook-a")
     assert [candidate["model_id"] for candidate in view["available_models"]]==[model]

@@ -2377,6 +2377,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
               </select></label>
               {(()=>{const selection=displayedSelection;const candidate=notebookModel.view?.available_models.find(r=>r.connection_id===selection?.connection_id&&r.model_id===selection?.model_id);
                 const supported=candidate?.reasoning.status==="supported";
+                if(candidate?.reasoning.status==="unsupported")return null;
                 return <label>추론 단계<select aria-label="추론 단계" value={selection?.reasoning_effort??""}
                   disabled={questionPending||notebookModel.status!=="ready"||!supported}
                   onChange={event=>saveNotebookModel({...selection,reasoning_effort:event.target.value||null})}>

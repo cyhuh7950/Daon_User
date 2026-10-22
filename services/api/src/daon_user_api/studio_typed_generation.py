@@ -135,7 +135,7 @@ def extract_typed_response(provider,response,*,adapter_type=None):
 
 def build_typed_payload(request,evidence,selection):
     """실지원 protocol별 구조만 구성한다. 전송·자격·모델 전환·한도 증액 없음."""
-    from .notebook_model_settings import validate_effort,NotebookModelSettingsError
+    from .notebook_model_settings import validate_effort,reasoning_wire_fields,NotebookModelSettingsError
     from .question_answering import AnthropicMessagesTextGenerationAdapter
     if type(request) is not StudioGenerationRequest or request.output_type not in SUPPORTED_TYPES:_invalid()
     provider=selection.provider_code;adapter=selection.adapter_type
@@ -143,8 +143,8 @@ def build_typed_payload(request,evidence,selection):
     if provider=="CUSTOM" and adapter not in {"","CUSTOM","openai_compatible","anthropic_compatible"}:_invalid()
     effort=getattr(selection,"reasoning_effort",None)
     try:
-        profile=validate_effort(provider,adapter,selection.model_id,effort)
-        if profile!=getattr(selection,"reasoning_profile_version",None):_invalid()
+        profile=validate_effort(provider,adapter,selection.model_id,effort,reasoning_contract=getattr(selection,"reasoning_contract","unknown"),connection_version=getattr(selection,"reasoning_connection_version",1))
+        if effort is not None and profile!=getattr(selection,"reasoning_profile_version",None):_invalid()
     except NotebookModelSettingsError:_invalid()
     def obj(properties):return {"type":"object","properties":properties,"required":list(properties),"additionalProperties":False}
     def array(item):return {"type":"array","items":item}
@@ -183,7 +183,6 @@ def build_typed_payload(request,evidence,selection):
     chat={"model":selection.model_id,"messages":[{"role":"system","content":role},
           {"role":"user","content":json.dumps(user,ensure_ascii=False,separators=(",",":"))}],
           "max_tokens":512,"response_format":{"type":"json_schema","json_schema":{"name":"daon_studio_"+request.output_type,"strict":True,"schema":schema}}}
-    if effort is not None:chat["reasoning_effort"]=effort
     if provider=="OLLAMA":
         payload={"model":selection.model_id,"stream":False,"keep_alive":"5m","options":{"num_predict":512,"temperature":0},"format":schema,"messages":chat["messages"]}
     elif provider=="OMNIROUTE":
@@ -193,6 +192,7 @@ def build_typed_payload(request,evidence,selection):
         payload=AnthropicMessagesTextGenerationAdapter._messages_payload(chat)
         payload["max_tokens"]=512
     else:payload=chat
+    payload.update(reasoning_wire_fields(provider,adapter,effort,reasoning_contract=getattr(selection,"reasoning_contract","unknown"),connection_version=getattr(selection,"reasoning_connection_version",1)))
     _load(payload)  # 동일한 엄격 UTF-8/64KiB 경계. 절단하거나 다른 형식으로 전환하지 않는다.
     return payload
 

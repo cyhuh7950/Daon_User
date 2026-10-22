@@ -440,6 +440,19 @@ function s18Adapter(overrides = {}) {
     listKnowledgePackages: async () => [{ package_id: "package-s18", producer: "daon3", producer_version: "3.0", authority: "approved", registration_state: "registered" }],
     ...overrides };
 }
+
+test("HC2 미지원 추론은 숨기고 미확인은 비활성 상태로 미지정 질문을 실행한다",async()=>{
+  for(const status of ["unsupported","unknown"]){
+    const calls=[];const view=dModelView();view.available_models[0].reasoning={status,values:[],profile_version:null};
+    const workspace=await mountS17ReconnectWorkspace(s18Adapter({getModelSettings:async()=>view,askQuestion:async(input)=>{calls.push(input);return s18Answer();}}));
+    try{
+      const controls=findElements(workspace.container,node=>node.getAttribute?.("aria-label")==="추론 단계");
+      assert.equal(controls.length,status==="unsupported"?0:1);if(controls[0])assert.equal(controls[0].disabled,true);
+      await s18Type(workspace,"안녕하세요");await workspace.act(async()=>s18Submit(workspace));
+      assert.equal(calls.length,1);assert.equal(calls[0].modelSettingsVersion,1);
+    }finally{await workspace.cleanup();}
+  }
+});
 const s18Composer = workspace => findElements(workspace.container, node => node.tagName === "FORM" && node.getAttribute("class") === "conversation-composer")[0];
 const s18Props = node => node[Object.keys(node).find(key => key.startsWith("__reactProps$"))];
 const s18Submit = workspace => s18Props(s18Composer(workspace)).onSubmit({ preventDefault() {} });

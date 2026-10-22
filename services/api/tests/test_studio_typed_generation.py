@@ -87,7 +87,7 @@ class StudioTypedGenerationTests(unittest.TestCase):
     def test_typed_wire_effort_bounds_unsupported_provider_and_size_fail_closed(self):
         from types import SimpleNamespace
         from daon_user_api.studio_typed_generation import build_typed_payload
-        selected=SimpleNamespace(provider_code="UPSTAGE",model_id="solar-pro4",adapter_type="openai_compatible",reasoning_effort="high",reasoning_profile_version="upstage-solar-pro4-safe-wire-v1")
+        selected=SimpleNamespace(provider_code="UPSTAGE",model_id="solar-pro4",adapter_type="openai_compatible",reasoning_effort="high",reasoning_contract="router_effort_v1",reasoning_profile_version="router-effort-v1-c1")
         self.assertEqual(build_typed_payload(request("slides"),EVIDENCE,selected)["reasoning_effort"],"high")
         for provider,model,effort,profile in (("GEMINI","model-qa",None,None),("OPENROUTER","solar-pro4","high",None),("UPSTAGE","solar-mini4","high",None),("UPSTAGE","solar-pro4","max","upstage-solar-pro4-safe-wire-v1")):
             with self.subTest(provider=provider,model=model),self.assertRaises(StudioError):

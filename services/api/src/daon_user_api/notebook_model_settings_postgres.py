@@ -85,7 +85,7 @@ class PostgresNotebookModelSettingsService:
     @staticmethod
     def _candidates(conn,context):
         permissions=PostgresNotebookModelSettingsService._permissions(conn,context)
-        rows=conn.execute("SELECT c.connection_id,c.provider_code,c.display_name,m.model_id,c.version,m.catalog_version,c.adapter_type,m.effective_capabilities "
+        rows=conn.execute("SELECT c.connection_id,c.provider_code,c.display_name,m.model_id,c.version,m.catalog_version,c.adapter_type,m.effective_capabilities,c.reasoning_contract "
             "FROM system_provider_connections c JOIN system_provider_models m ON m.connection_id=c.connection_id "
             "JOIN system_provider_allowed_models a ON (a.connection_id,a.model_id)=(m.connection_id,m.model_id) "
             "LEFT JOIN user_provider_credentials u ON u.connection_id=c.connection_id AND u.tenant_id=%s AND u.user_id=%s "
@@ -123,7 +123,7 @@ class PostgresNotebookModelSettingsService:
                 if current is not None:
                     try:
                         candidate=self._selected(current["selection"],candidates)
-                        if current["profile_version"]!=candidate["reasoning"]["profile_version"]:
+                        if current["selection"]["reasoning_effort"] is not None and current["profile_version"]!=candidate["reasoning"]["profile_version"]:
                             raise NotebookModelSettingsError("NOTEBOOK_MODEL_UNAVAILABLE",422)
                         effective={**current["selection"],"origin":"notebook"}
                     except NotebookModelSettingsError as error:
@@ -157,7 +157,7 @@ class PostgresNotebookModelSettingsService:
                     if old["key_hash"]==key_hash:
                         if old["request_digest"]!=request_digest or old["selection"]!=selected:
                             raise NotebookModelSettingsError("NOTEBOOK_MODEL_SETTINGS_CONFLICT",409)
-                        if old["profile_version"]!=candidate["reasoning"]["profile_version"]:
+                        if selected["reasoning_effort"] is not None and old["profile_version"]!=candidate["reasoning"]["profile_version"]:
                             raise NotebookModelSettingsError("NOTEBOOK_MODEL_SETTINGS_CHANGED",409)
                         return {"notebook_id":notebook_id,"version":old["version"],"selection":old["selection"],"replayed":True}
                 current=decoded[0] if decoded else None
@@ -166,7 +166,7 @@ class PostgresNotebookModelSettingsService:
                 version=expected_version+1;record=aggregate+"-"+str(version)
                 payload={"kind":_KIND,"schema_version":1,"tenant_id":context.tenant_id,"workspace_id":context.workspace_id,
                     "actor_id":context.actor_id,"notebook_id":notebook_id,"selection":selected,
-                    "profile_version":candidate["reasoning"]["profile_version"],"request_digest":request_digest,"key_hash":key_hash}
+                    "profile_version":None if reasoning_effort is None else candidate["reasoning"]["profile_version"],"request_digest":request_digest,"key_hash":key_hash}
                 now=datetime.now(timezone.utc)
                 conn.execute("INSERT INTO generation_settings_snapshots (tenant_id,workspace_id,record_id,aggregate_id,version,previous_version_id,schema_version,canonical_json,canonical_text,digest_sha256,created_by,trace_id,created_at) "
                     "VALUES (%s,%s,%s,%s,%s,%s,1,%s,%s,%s,%s,%s,%s)",
@@ -185,7 +185,7 @@ class PostgresNotebookModelSettingsService:
         if view["selection"] is None or view["effective_selection"] is None:
             raise NotebookModelSettingsError("NOTEBOOK_MODEL_UNAVAILABLE",409)
         candidate=self._selected(view["selection"],view["available_models"])
-        return NotebookModelExecution(NotebookModelSelection(**view["selection"]),version,candidate["reasoning"]["profile_version"])
+        return NotebookModelExecution(NotebookModelSelection(**view["selection"]),version,None if view["selection"]["reasoning_effort"] is None else candidate["reasoning"]["profile_version"])
 
 
 def assert_execution_current(conn,context):
@@ -200,8 +200,8 @@ def assert_execution_current(conn,context):
     if not rows:raise NotebookModelSettingsError("NOTEBOOK_MODEL_SETTINGS_CHANGED",409)
     current=decode_snapshot(context,context.notebook_id,rows[0])
     if (current["version"]!=binding.version or current["selection"]!=binding.selection.as_dict()
-            or current["profile_version"]!=binding.profile_version):
+            or binding.selection.reasoning_effort is not None and current["profile_version"]!=binding.profile_version):
         raise NotebookModelSettingsError("NOTEBOOK_MODEL_SETTINGS_CHANGED",409)
     candidate=PostgresNotebookModelSettingsService._selected(current["selection"],PostgresNotebookModelSettingsService._candidates(conn,context))
-    if candidate["reasoning"]["profile_version"]!=binding.profile_version:
+    if binding.selection.reasoning_effort is not None and candidate["reasoning"]["profile_version"]!=binding.profile_version:
         raise NotebookModelSettingsError("NOTEBOOK_MODEL_SETTINGS_CHANGED",409)
