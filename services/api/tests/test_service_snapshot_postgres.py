@@ -1782,7 +1782,7 @@ class ServiceSnapshotOperatorTests(unittest.TestCase):
     def test_operator_normal_assembly_consumes_image_proofs_and_schema_checked_ports(self):
         m = self.module()
         self.assertTrue(callable(getattr(m, "capture_service", None)), "실제 고정 port 조립 미구현")
-        self.assertEqual(m.current_schema_revision(), "0071")
+        self.assertEqual(m.current_schema_revision(), "0074")
 
     def test_operator_pg_identity_is_bounded_readonly_and_closes_on_error(self):
         import json
@@ -1963,7 +1963,7 @@ class ServiceSnapshotOperatorTests(unittest.TestCase):
                     def open_snapshot(port, spec, *, cancelled):
                         object_ref = snapshot_module.SnapshotObjectRef("tenant-a", "workspace-a", "source", "a"*32, "completed",
                             hashlib.sha256(b"synthetic-object").hexdigest(), len(b"synthetic-object"))
-                        port._active = snapshot_module.SnapshotLease("snapshot-a", "0070" if mode=="schema" else "0071", (object_ref,), port._runtime_inventory,
+                        port._active = snapshot_module.SnapshotLease("snapshot-a", "0070" if mode=="schema" else "0074", (object_ref,), port._runtime_inventory,
                             {"roles": [], "memberships": [], "relations": [], "functions": []})
                         port._deadline, port._external_cancel = time.monotonic()+30, cancelled
                         try: yield port._active
@@ -2024,7 +2024,7 @@ class ServiceSnapshotOperatorTests(unittest.TestCase):
                         self.assertEqual(sum(isinstance(event, tuple) and event[0]=="save" for event in events), 5, "API/doc/Studio 동일 image는 archive 한 개")
                         self.assertEqual(events.count("load"), 10)
                         self.assertEqual(len(physical_reads), 4)
-                        self.assertEqual(result.schema_revision, "0071")
+                        self.assertEqual(result.schema_revision, "0074")
                         source.unlink()  # 본인 합성 원본만 제거한 뒤 실제 보존본 readback.
                         verifier = snapshot_module.ServiceSnapshotExecutor(folder / "capture", master_key=key, ports=None)
                         readback = io.BytesIO(); verifier.read_stream(config.spec, "capture-a", "runtime:runtime-a", readback)

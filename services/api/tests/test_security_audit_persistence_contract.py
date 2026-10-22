@@ -39,7 +39,7 @@ class SecurityAuditPersistenceContractTests(unittest.TestCase):
         self.assertIn("CREATE TABLE IF NOT EXISTS step_up_idempotency", identity_source)
         self.assertIn("CREATE TABLE IF NOT EXISTS step_up_consumptions", identity_source)
 
-    def test_admin_sensitive_mutations_bind_step_up_but_questions_use_session_policy(self) -> None:
+    def test_sensitive_mutations_and_policy_required_questions_bind_step_up(self) -> None:
         source = (ROOT / "services/api/src/daon_user_api/runtime.py").read_text(
             encoding="utf-8"
         )
@@ -59,8 +59,12 @@ class SecurityAuditPersistenceContractTests(unittest.TestCase):
         )[1].split(
             '@app.post("/api/v1/studio-generation-requests"', 1,
         )[0]
-        self.assertNotIn('operation="question.external_transfer"', question_route)
-        self.assertNotIn("consume_step_up(", question_route)
+        self.assertIn('if getattr(effective, "question_step_up_required", True) is not False:', question_route)
+        self.assertIn('operation="question.external_transfer"', question_route)
+        self.assertIn("consume_step_up(", question_route)
+        self.assertIn('approved_authorization["authorization_mode"] = "policy_approved"', question_route)
+        self.assertIn('policy_version=request_fingerprint', question_route)
+        self.assertIn('idempotency_key=idempotency_key', question_route)
         self.assertIn("requested_permissions=(Permission.EXTERNAL_LLM,)", question_route)
 
 

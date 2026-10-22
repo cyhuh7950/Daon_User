@@ -373,10 +373,12 @@ def test_actual_studio_consumer_rejects_disabled_law_copy(monkeypatch, operation
     cloud = Cloud()
     execute = cloud.connection.execute
     def law(sql, params=()):
+        if sql.startswith('SELECT DISTINCT er.source_version_id FROM evidence_references er '):
+            return Result(rows=[('law-version-1',)])
         if sql.startswith('SELECT canonical_json FROM source_versions'):
             return Result(({'origin_kind':'mcp_open_law', 'connector_id':'mcp-open-law-go-kr','snapshot_id':'law-snapshot'},))
         if sql.startswith('SELECT ov.record_id,ov.content_version'):
-            return Result(rows=[('version-1',1,None,'draft',{'content':'stored law copy',
+            return Result(rows=[('version-1',1,None,'draft',{'content':'stored law copy', 'output_format':'pdf',
                 'source_version_ids':['law-version-1']},'settings-1',
                 [{'source_version_id':'law-version-1','evidence_span_id':'law-span-1'}],None,None,None,None,None)])
         return execute(sql, params)
@@ -482,6 +484,8 @@ class Connection:
         if 'FROM identity_auth_tenant_permission_rules' in sql or 'FROM identity_auth_workspace_permission_rules' in sql:
             row={'effect':'deny','locked':1} if self.deny_download and params[-1]=='file_download_share' else None
             return SimpleNamespace(fetchone=lambda:row)
+        if sql.startswith('SELECT NOT EXISTS (SELECT 1 FROM identity_auth_source_access '):
+            return SimpleNamespace(fetchone=lambda:(self.source_allowed,))
         if 'FROM identity_auth_source_access' in sql:
             return SimpleNamespace(fetchone=lambda:{'allowed':int(self.source_allowed)})
         if sql.startswith('SELECT canonical_json FROM source_versions'):

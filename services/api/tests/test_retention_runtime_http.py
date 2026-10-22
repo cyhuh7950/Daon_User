@@ -55,8 +55,15 @@ class RetentionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
             "sync_preview_retention_inventory_lock",
         ):
             self.assertEqual(migration.count(f"CREATE TRIGGER {trigger}"), 1)
+        creation = repository.split("    def create_request(", 1)[1].split("\n    def get_request", 1)[0]
+        self.assertIn("PostgresSourceCleanupRepository(self, authorization_key)", creation)
+        self.assertIn("SourceDeletionCleanup(repository, self._object_storage).execute(", creation)
+        cleanup = (root / "src/daon_user_api/source_deletion_cleanup.py").read_text(encoding="utf-8")
+        prepare = cleanup.split("    def prepare(", 1)[1].split("\n    def ", 1)[0]
+        self.assertIn("self._service._lock_source(connection, context, source_id)", prepare)
+        self.assertLess(prepare.index("self._service._lock_source("), prepare.index("SELECT notebook_id,source_version_ids"))
         for operation in (
-            "def create_request", "def cancel", "def apply_legal_hold",
+            "def cancel", "def apply_legal_hold",
             "def release_legal_hold", "def purge",
         ):
             start = repository.index(operation)
@@ -115,12 +122,21 @@ class RetentionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         settings = RuntimeSettings.for_test(
             database_path=self.db_path, policy_version=POLICY_VERSION
         )
+        class ConfirmedRequestPort:
+            """저장소만 시험 소유 참조 포트이며 HTTP 인증·현재 ACL·Notebook 검사는 실제로 소비한다."""
+            def __init__(inner, reference): inner.reference = reference
+            def __getattr__(inner, name): return getattr(inner.reference, name)
+            def create_request(inner, context, *, notebook_id, step_up_verified, authorization_key, **kwargs):
+                if step_up_verified is not True or not notebook_id or len(authorization_key) != 64:
+                    raise AssertionError("CONFIRMED_RETENTION_SCOPE_REQUIRED")
+                return inner.reference.create_request(context, **kwargs)
+
         self.dependencies = RuntimeDependencies(
             settings=settings, identity_service=self.identity,
             authorization_service=self.authorization, audit_store=self.audit,
             identity_repository=self.identity_repository,
             authorization_repository=self.authorization_repository,
-            retention_service=self.retention,
+            retention_service=ConfirmedRequestPort(self.retention),
         )
         self.client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=create_app(self.dependencies)),
@@ -226,14 +242,16 @@ class RetentionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(port.scopes, [(self.credentials.user_id, notebook_id)] * 3)
 
     async def test_six_route_http_semantics_guards_and_safe_payloads(self) -> None:
+        notebook_id = await self._s16_notebook()
+        body = {"notebook_id": notebook_id, "step_up_authorization_id": self._step_up(self.source_id)}
         create_headers = {"Idempotency-Key": "idem-http-create", "If-Match": "*"}
         created = await self.client.post(
             f"/api/v1/sources/{self.source_id}/deletion-requests",
-            headers=create_headers, json={},
+            headers=create_headers, json=body,
         )
         replay = await self.client.post(
             f"/api/v1/sources/{self.source_id}/deletion-requests",
-            headers=create_headers, json={},
+            headers=create_headers, json=body,
         )
         self.assertEqual((created.status_code, replay.status_code), (201, 201))
         request_id = created.json()["data"]["request_id"]
@@ -293,15 +311,17 @@ class RetentionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         safe_codes = set(json.loads(openapi_path.read_text(encoding="utf-8"))[
             "components"
         ]["schemas"]["SafeErrorCode"]["enum"])
+        notebook_id = await self._s16_notebook()
+        body = {"notebook_id": notebook_id, "step_up_authorization_id": self._step_up(self.source_id)}
         missing = await self.client.post(
             "/api/v1/sources/fixture-source-missing/deletion-requests",
             headers={"Idempotency-Key": "idem-safe-missing", "If-Match": "*"},
-                json={},
+            json={"notebook_id": notebook_id, "step_up_authorization_id": self._step_up("fixture-source-missing")},
         )
         created = await self.client.post(
             f"/api/v1/sources/{self.source_id}/deletion-requests",
             headers={"Idempotency-Key": "idem-safe-create", "If-Match": "*"},
-            json={},
+            json=body,
         )
         self.assertEqual(created.status_code, 201)
         request_id = created.json()["data"]["request_id"]
@@ -310,7 +330,7 @@ class RetentionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         reused = await self.client.post(
             f"/api/v1/sources/{self.source_id}/deletion-requests",
             headers={"Idempotency-Key": "idem-safe-create", "If-Match": "*"},
-            json={"inventory": changed_inventory},
+            json={**body, "inventory": changed_inventory},
         )
         conflict = await self.client.post(
             f"/api/v1/deletion-requests/{request_id}/cancel",

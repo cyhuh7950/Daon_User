@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from unittest.mock import Mock
 from contextlib import contextmanager
 
 from daon_user_api.document_index_postgres import IndexedEvidenceChunk
@@ -12,13 +13,17 @@ from daon_user_api.question_answering_postgres import (
     ReadyQuestionSource,
     StoredQuestionAnswer,
 )
-from daon_user_api.question_answering_service import QuestionAnsweringService, QuestionInputSource
+from daon_user_api.question_answering_service import QuestionAnsweringService, QuestionInputSource, QuestionGroundingNotice
 from daon_user_api.workspace_model_defaults import ResolvedModel
 
 
 class _ProviderSettings:
+    def __init__(self):
+        self.calls = 0
+
     @contextmanager
     def resolve(self, context, capability):  # type: ignore[no-untyped-def]
+        self.calls += 1
         model = ResolvedModel(
             "profile-upstage", "UPSTAGE", "solar-pro4", capability,
             "https://api.upstage.ai/v1", 1, 1, 1, "external_api",
@@ -81,6 +86,8 @@ class _Transport:
             payload.update({
                 "cited_chunk_ids": self.cited_chunk_ids,
                 "insufficient": False,
+                "grounding_status": "sufficient",
+                "next_actions": [],
             })
         return {"choices": [{"message": {"content": json.dumps(payload, ensure_ascii=False)}}]}
 
@@ -107,7 +114,7 @@ class NotebookLmChatGroundingTests(unittest.TestCase):
         repository = _Repository({"source-missing"})
         service = QuestionAnsweringService(
             _ProviderSettings(), repository, _Index({"version-ready": (evidence,)}),
-            _Credentials(), _Transport("사용 가능한 근거로 답변합니다.", ["chunk-ready"]), _Egress(),
+            _Credentials(), _Transport(evidence.text, ["chunk-ready"]), _Egress(),
         )
 
         answer = service.ask(
@@ -117,31 +124,35 @@ class NotebookLmChatGroundingTests(unittest.TestCase):
         )
 
         self.assertFalse(answer.insufficient)
+        self.assertEqual(answer.answer, evidence.text)
+        self.assertEqual(repository.persisted["result"].grounding_status, "sufficient")
+        self.assertEqual(repository.persisted["result"].next_actions, ())
         self.assertEqual(repository.persisted["context_sources"], (sources[1],))
         self.assertEqual(repository.persisted["context_mode"], "mixed")
 
-    def test_all_unavailable_selection_uses_general_conversation(self) -> None:
+    def test_all_unavailable_selection_returns_notice_before_model_or_egress(self) -> None:
         sources = (
             QuestionInputSource("raw_source", "source-missing", "source-missing", "version-missing"),
         )
         repository = _Repository({"source-missing"})
         transport = _Transport("선택한 자료가 없어 일반 상담으로 답변합니다.")
-        service = QuestionAnsweringService(
-            _ProviderSettings(), repository, _Index({}), _Credentials(), transport, _Egress(),
-        )
+        settings = _ProviderSettings()
+        egress = Mock()
+        service = QuestionAnsweringService(settings, repository, _Index({}), _Credentials(), transport, egress)
+        for operation in (service.ask, service.prepare_authorization):
+            with self.assertRaises(QuestionGroundingNotice) as caught:
+                operation(
+                    _context(), source_id="source-missing", source_version_id="version-missing",
+                    question="다음 작업은 어떻게 진행하지?",
+                    context_mode="raw_only", context_sources=sources,
+                    **({"run_id": "run-all-unavailable"} if operation == service.ask else {}),
+                )
+            self.assertEqual(caught.exception.grounding_status, "no_relevant_evidence")
+        self.assertEqual(settings.calls, 0)
+        self.assertEqual(transport.calls, 0)
+        egress.authorize.assert_not_called()
+        self.assertIsNone(repository.persisted)
 
-        answer = service.ask(
-            _context(), source_id="source-missing", source_version_id="version-missing",
-            question="다음 작업은 어떻게 진행하지?", run_id="run-all-unavailable",
-            context_mode="raw_only", context_sources=sources,
-        )
-
-        self.assertFalse(answer.insufficient)
-        self.assertEqual(transport.calls, 1)
-        self.assertEqual(repository.persisted["context_mode"], "general_ungrounded")
-        self.assertEqual(repository.persisted["context_sources"], ())
-        self.assertIsNone(repository.persisted["source_id"])
-        self.assertNotIn("근거가 부족하여 답변할 수 없습니다", answer.answer)
 
 
 if __name__ == "__main__":

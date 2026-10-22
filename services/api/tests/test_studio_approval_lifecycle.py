@@ -293,7 +293,13 @@ def test_s24_lifecycle_notices_hide_overdue_pending_without_waiting_for_worker()
     from daon_user_api.studio_approval_lifecycle import StudioApprovalLifecycleRepository
     store = PolicyStore()
     original = store.connection.execute
+    current = {"notice-old": ("pending", NOW, NOW), "notice-due": ("pending", NOW+timedelta(days=1), NOW), "notice-done": ("approved", NOW+timedelta(days=1), NOW)}
+    rechecks = []
     def execute(sql, params=()):
+        if sql.startswith("SELECT r.state,studio_approval_deadline(r.canonical_json,r.created_at),clock_timestamp() "):
+            assert params[:2] == ("tenant-1", "workspace-1") and params[3] == "actor-1"
+            rechecks.append(params[2])
+            return Result(current.get(params[2]))
         if sql.startswith("SELECT n.notification_id"):
             # Last two columns are the stored deadline and DB clock, not host time.
             return Result(rows=[
@@ -313,6 +319,14 @@ def test_s24_lifecycle_notices_hide_overdue_pending_without_waiting_for_worker()
     result = StudioApprovalLifecycleRepository(store).list_notices(action_context())
     assert [item["notification_id"] for item in result["items"]] == ["notice-due", "notice-expired"]
     assert result["unread_count"] == 2
+    assert "notice-due" in rechecks
+    # 앞선 목록이 대기/미래 만료로 관측했어도 현재 회수 또는 DB 시각의
+    # 정확한 만료 경계에서는 안내를 숨겨야 한다.
+    for current_row in (("withdrawn", NOW+timedelta(days=1), NOW), ("pending", NOW+timedelta(days=1), NOW+timedelta(days=1))):
+        current["notice-due"] = current_row
+        result = StudioApprovalLifecycleRepository(store).list_notices(action_context())
+        assert [item["notification_id"] for item in result["items"]] == ["notice-expired"]
+        assert result["unread_count"] == 1
 
 
 @pytest.mark.parametrize("action", ["approval", "approval_request"])
@@ -374,6 +388,9 @@ def test_s24_lifecycle_notice_limit_cannot_hide_current_accessible_notebook(bloc
     db.executemany("INSERT INTO notebooks VALUES(?,?,?,?)",[("tenant-1","workspace-1",name,"actor-1") for name in ("notebook-1","notebook-other")])
     store=PolicyStore(); original=store.connection.execute; reads=[]
     def execute(sql,params=()):
+        if sql.startswith("SELECT r.state,studio_approval_deadline(r.canonical_json,r.created_at),clock_timestamp() "):
+            row = db.execute(sql.replace("%s", "?"), params).fetchone()
+            return Result(None if row is None else (row[0], datetime.fromisoformat(row[1]), datetime.fromisoformat(row[2])))
         if sql.startswith("SELECT n.notification_id"):
             reads.append(1)
             values=db.execute(sql.replace("%s","?"),tuple(v.isoformat() if isinstance(v,datetime) else v for v in params)).fetchall()
