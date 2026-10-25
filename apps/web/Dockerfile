@@ -1,4 +1,7 @@
-FROM node:22-bookworm-slim AS deps
+FROM node:24.22.1-bookworm-slim AS base
+RUN npm install --global npm@11.19.1
+
+FROM base AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY apps/web/package.json apps/web/package.json
@@ -6,13 +9,13 @@ COPY packages packages
 COPY vendor/braces-3.0.3.tgz vendor/braces-3.0.3.tgz
 RUN npm ci --ignore-scripts
 
-FROM node:22-bookworm-slim AS builder
+FROM base AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build --workspace @daon-user/web
 
-FROM node:22-bookworm-slim AS runner
+FROM base AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3330

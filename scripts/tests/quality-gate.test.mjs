@@ -443,8 +443,8 @@ test("GitHub Workflow는 JSON으로도 유효한 YAML 1.2이며 공통 Runner �
   const workflowPath = path.resolve(".github/workflows/release-1-quality-gate.yml");
   const workflow = JSON.parse(await readFile(workflowPath, "utf8"));
   const approvedToolchains = JSON.parse(await readFile(path.resolve("toolchain-versions.json"), "utf8")).toolchains;
-  assert.equal(approvedToolchains.npm, "11.12.1");
-  assert.equal(approvedToolchains.corepack, "0.35.0");
+  assert.equal(approvedToolchains.npm, "11.19.1");
+  assert.equal(approvedToolchains.corepack, "0.36.0");
   assert.equal(approvedToolchains.uv, "0.11.2");
   assert.deepEqual(workflow.on, {
     pull_request: { branches: ["master"] },
