@@ -35,7 +35,7 @@ async function runFixture({ stepOverrides = {}, envOverrides = {}, phaseStatus =
     execFileSync(process.execPath, [writer], { cwd: root, env: {
       ...process.env, IOS_REPOSITORY_ROOT: fixtureRoot, IOS_EVIDENCE_DIR: evidenceDir,
       GITHUB_SHA: "a".repeat(40), RUNNER_NAME: "GitHub Actions 1", ImageOS: "macos26", ImageVersion: "20260720.1",
-      IOS_NPM_VERSION: "11.12.1", IOS_UV_VERSION: "uv 0.11.2", IOS_XCODE_VERSION: "26.6", IOS_XCODE_BUILD_VERSION: "17G86", IOS_SDK_VERSION: "26.0",
+      IOS_NPM_VERSION: "11.19.1", IOS_UV_VERSION: "uv 0.11.2", IOS_XCODE_VERSION: "26.6", IOS_XCODE_BUILD_VERSION: "17G86", IOS_SDK_VERSION: "26.0",
       IOS_COCOAPODS_VERSION: "1.16.2", IOS_RUBY_VERSION: "ruby 3.3.0", IOS_BUNDLER_VERSION: "Bundler version 2.6.0",
       IOS_SIMULATOR_RUNTIME: "iOS 26.0", IOS_SIMULATOR_DEVICE: "iPhone 17 Pro",
       SIMULATOR_UDID: "11111111-2222-3333-4444-555555555555", ...envOverrides
