@@ -1,7 +1,7 @@
 {
   "name":"@daon-user/root","version":"0.0.0","private":true,
-  "packageManager":"npm@11.19.1",
-  "engines":{"node":"24.22.1","npm":"11.19.1"},
+  "packageManager":"npm@11.12.1",
+  "engines":{"node":"24.18.0","npm":"11.12.1"},
   "workspaces":["apps/*","packages/*"],
   "scripts":{"verify:toolchain":"node scripts/verify-toolchain-baseline.mjs","verify:independence":"node scripts/verify-repository-independence.mjs","verify:product-foundation":"node --test scripts/tests/product-foundation.test.mjs","lint:workspace":"node scripts/lint-workspace.mjs","verify:workspace":"node --test scripts/tests/workspace.test.mjs scripts/tests/workspace-lint.test.mjs scripts/tests/source-knowledge.test.mjs","verify:desktop-lint":"node scripts/lint-workspace.mjs apps/desktop/src/main.jsx apps/desktop/src/desktop-shell.jsx apps/desktop/src/desktop-shell-model.js","verify:desktop-type":"node scripts/run-isolated-desktop-cargo.mjs check","verify:desktop-unit":"node --test scripts/tests/desktop-tauri-shell.test.mjs","verify:desktop-build":"npm run build --workspace @daon-user/desktop","build:desktop-installer":"node scripts/run-isolated-desktop-cargo.mjs installer","cleanup:desktop-cargo":"node scripts/run-isolated-desktop-cargo.mjs cleanup","verify:quality-gate":"node scripts/verify-quality-gate.mjs"},
   "devDependencies":{"typescript":"7.0.2"},

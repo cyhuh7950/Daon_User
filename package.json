@@ -58,6 +58,7 @@
     "braces": "file:vendor/braces-3.0.3.tgz"
   },
   "overrides": {
+    "body-parser": "2.4.0",
     "braces": "file:vendor/braces-3.0.3.tgz",
     "compression": "1.8.2",
     "launch-editor": "2.14.2",
