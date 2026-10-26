@@ -266,3 +266,36 @@ test("인증 화면은 공식 오류 코드만 표시하고 임의 서버 오류
     await rm(output, { recursive: true, force: true });
   }
 });
+
+
+test("UI55 로그인 시안은 전용 카드·제품명·세로 입력·로그인과 하단 링크를 분리하고 가입에는 적용하지 않는다", async()=>{
+  const view=await renderEntry('apps/web/lib/auth-pane.jsx','AuthPane',{},async()=>{throw Error('UNEXPECTED_AUTH_CALL');});
+  try{
+    const card=findElements(view.container,n=>n.tagName==='SECTION')[0];
+    assert.ok(card.getAttribute('class').split(' ').includes('daon-auth-pane-login'));
+    assert.match(card.textContent,/Daon2-User/u);
+    const inputs=findElements(card,n=>n.tagName==='INPUT');const props=n=>n[Object.keys(n).find(k=>k.startsWith('__reactProps'))];
+    assert.deepEqual(inputs.map(n=>props(n).name),['login-id','password']);
+    assert.equal(props(inputs[1]).type,'password');assert.equal(props(inputs[0]).autoComplete,'username');
+    const links=findElements(card,n=>n.getAttribute('class')==='daon-auth-login-links')[0];assert.ok(links);
+    assert.deepEqual(findElements(links,n=>n.tagName==='BUTTON').map(n=>n.textContent),['가입하기','이메일 인증하기','비밀번호를 잊으셨나요?']);
+    await view.act(async()=>{buttonByText(view.container,'가입하기').dispatchEvent(new MinimalEvent('click'));});
+    assert.equal(card.getAttribute('class'),'daon-auth-pane');assert.doesNotMatch(card.textContent,/Daon2-User/u);
+  }finally{await view.cleanup();}
+});
+
+
+test("UI55 로그인 submit 버튼의 클릭과 Enter submit이 이어져도 인증 요청은 한 번이다",async()=>{
+  let release;const held=new Promise(resolve=>{release=resolve;});let logins=0;
+  const view=await renderEntry('apps/web/lib/auth-pane.jsx','AuthPane',{},async url=>{
+    if(url.endsWith('/login')){logins+=1;await held;return Response.json({data:{user_id:entrySession.user_id,tenant_id:entrySession.tenant_id,workspace_id:null}});}
+    return Response.json({data:entrySession,meta:{trace_id:'trace-ui55'}});
+  });
+  try{
+    const button=buttonByText(view.container,'로그인');const props=n=>n[Object.keys(n).find(k=>k.startsWith('__reactProps'))];
+    assert.equal(props(button).type,'submit');
+    await view.act(async()=>{button.dispatchEvent(new MinimalEvent('click'));findElements(view.container,n=>n.tagName==='FORM')[0].dispatchEvent(new MinimalEvent('submit'));await Promise.resolve();});
+    assert.equal(logins,1);assert.equal(button.disabled,true);
+    await view.act(async()=>{release();await held;await Promise.resolve();});assert.equal(logins,1);assert.deepEqual(view.redirects,['/operations']);
+  }finally{release();await view.cleanup();}
+});

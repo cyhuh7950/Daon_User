@@ -946,7 +946,9 @@ for (const event of ['focus', 'visibilitychange']) test(`S42 ${event} 복귀는 
     assert.match(view.container.textContent,/S42 이전 정상 답변/u); assert.equal(calls,2);
     revalidate=true;
     await view.act(async()=>{view.dom.document.dispatchEvent(new MinimalEvent(event));});
-    assert.doesNotMatch(view.container.textContent,/S42 이전 정상 답변/u); assert.equal(calls,3);
+    // 정상 재검증 중 본문은 유지하되 hidden/inert/aria-hidden으로 접근을 차단한다.
+    const guarded=findElements(view.container,node=>node.getAttribute?.('data-session-validated')==='false')[0];
+    assert.ok(guarded);assert.equal(guarded.hidden,true);assert.equal(guarded.inert,true);assert.equal(guarded.getAttribute('aria-hidden'),'true');assert.equal(calls,3);
     await view.act(async()=>{release(s42Session({user_id:'other-user',session_id:'other-session'}));await held;});
     assert.doesNotMatch(view.container.textContent,/S42 이전 정상 답변/u);
   } finally {release(s42Session());await view.cleanup();}
@@ -1801,4 +1803,84 @@ test("강제 변경 화면은 확인 불일치와 double-submit을 막고 성공
     await view.act(async () => { release(); await pending; await Promise.resolve(); });
     assert.deepEqual(redirects, ["/"]);
   } finally { await view.cleanup(); }
+});
+
+
+for (const event of ["focus", "visibilitychange"]) test(`UI55 정상 ${event} 재검증은 기존 Notebook DOM·초안·열린 패널과 adapter를 보존한다`, async()=>{
+  let session=s42Session(),hold=false,release;const gate=new Promise(resolve=>{release=resolve;});let notebookReads=0,contexts=0,adapters=0;
+  const view=await render('apps/web/components/notebook-product-workspace.jsx','NotebookProductWorkspace',{
+    notebookId:'notebook-s42',getLocationSearch:()=>'',getSession:async()=>({...session}),
+    getSelectedNotebook:async()=>{notebookReads+=1;if(hold)await gate;return {data:{title:'유지할 Notebook'}};},
+    getSelectedContext:async()=>{contexts+=1;return {data:s42SelectedContext()};},
+    createWorkspaceAdapter:()=>{adapters+=1;return s42TargetAdapter();},
+  },'.ui55-retained-');
+  try{
+    await view.act(async()=>{await Promise.resolve();});
+    const textarea=findElements(view.container,n=>n.tagName==='TEXTAREA')[0];assert.ok(textarea);
+    await view.act(async()=>{reactProps(textarea).onChange({currentTarget:{value:'처리 중에도 보존할 질문\n두 번째 줄'}});});
+    const settings=buttonByText(view.container,'설정');await view.act(async()=>{settings.dispatchEvent(new MinimalEvent('click'));});
+    const menu=findElements(view.container,n=>n.getAttribute?.('role')==='menu')[0];assert.ok(menu);
+    hold=true;await view.act(async()=>{view.dom.document.dispatchEvent(new MinimalEvent('blur'));view.dom.document.dispatchEvent(new MinimalEvent(event));});
+    const protectedArea=findElements(view.container,n=>n.getAttribute?.('data-session-validated')==='false')[0];
+    assert.ok(protectedArea);assert.equal(protectedArea.hidden,true);assert.equal(protectedArea.inert,true);
+    assert.equal(findElements(view.container,n=>n.tagName==='TEXTAREA')[0],textarea,'재검증 중 unmount하지 않는다');
+    await view.act(async()=>{release();await gate;await Promise.resolve();});
+    assert.equal(findElements(view.container,n=>n.tagName==='TEXTAREA')[0],textarea);
+    assert.equal(reactProps(textarea).value,'처리 중에도 보존할 질문\n두 번째 줄');
+    assert.equal(findElements(view.container,n=>n.getAttribute?.('role')==='menu')[0],menu);
+    assert.equal(protectedArea.hidden,false);assert.equal(protectedArea.inert,false);
+    assert.equal(notebookReads,2);assert.equal(contexts,1);assert.equal(adapters,1);
+  }finally{release();await view.cleanup();}
+});
+
+
+for(const scenario of ['session_id','user_id','tenant_id','workspace_id','expired','password','notebook-denied','notebook-error','after-get-changed']) test(`UI55 focus ${scenario}는 이전 본문을 폐기하고 복원하지 않는다`,async()=>{
+  let recheck=false,sessionReads=0,notebookReads=0,contexts=0;const redirects=[];
+  const view=await render('apps/web/components/notebook-product-workspace.jsx','NotebookProductWorkspace',{
+    notebookId:'notebook-s42',getLocationSearch:()=>'',navigate:path=>redirects.push(path),
+    getSession:async()=>{if(!recheck)return s42Session();sessionReads+=1;
+      if(scenario==='expired')throw Error('AUTHENTICATION_REQUIRED');
+      if(scenario==='password')return s42Session({password_change_required:true});
+      if(['session_id','user_id','tenant_id','workspace_id'].includes(scenario))return s42Session({[scenario]:'changed-identity'});
+      if(scenario==='after-get-changed'&&sessionReads===2)return s42Session({user_id:'changed-after-access'});
+      return s42Session();},
+    getSelectedNotebook:async()=>{if(recheck){notebookReads+=1;if(scenario==='notebook-denied')throw Error('NOTEBOOK_NOT_FOUND');if(scenario==='notebook-error')throw Error('UNAVAILABLE');}return {data:{title:'원래 Notebook'}};},
+    getSelectedContext:async()=>{contexts+=1;return {data:s42SelectedContext()};},createWorkspaceAdapter:()=>s42TargetAdapter(),
+  },'.ui55-denied-');
+  try{
+    assert.match(view.container.textContent,/S42 이전 정상 답변/u);recheck=true;
+    await view.act(async()=>{view.dom.document.dispatchEvent(new MinimalEvent('focus'));await Promise.resolve();});
+    assert.doesNotMatch(view.container.textContent,/S42 이전 정상 답변/u);assert.equal(contexts,1);
+    assert.equal(findElements(view.container,n=>n.tagName==='TEXTAREA').length,0);
+    if(scenario==='expired')assert.deepEqual(redirects,['/']);else if(scenario==='password')assert.deepEqual(redirects,['/password-change']);
+    else assert.match(view.container.textContent,/NOTEBOOK_NOT_FOUND|NOTEBOOK_UNAVAILABLE/u);
+    assert.equal(notebookReads,['notebook-denied','notebook-error','after-get-changed'].includes(scenario)?1:0);
+  }finally{await view.cleanup();}
+});
+
+test('UI55 focus 재검증 중 다시 숨긴 뒤 늦은 성공은 이전 본문을 표시하지 않는다',async()=>{
+  let held=false,release;const gate=new Promise(resolve=>{release=resolve;});
+  const view=await render('apps/web/components/notebook-product-workspace.jsx','NotebookProductWorkspace',{
+    notebookId:'notebook-s42',getLocationSearch:()=>'',getSession:async()=>s42Session(),getSelectedNotebook:async()=>{if(held)await gate;return {data:{title:'Notebook'}};},
+    getSelectedContext:async()=>({data:s42SelectedContext()}),createWorkspaceAdapter:()=>s42TargetAdapter(),
+  },'.ui55-late-focus-');
+  try{
+    const textarea=findElements(view.container,n=>n.tagName==='TEXTAREA')[0];held=true;
+    await view.act(async()=>{view.dom.document.dispatchEvent(new MinimalEvent('focus'));});
+    await view.act(async()=>{view.dom.document.dispatchEvent(new MinimalEvent('blur'));release();await gate;});
+    const guarded=findElements(view.container,n=>n.getAttribute?.('data-session-validated')==='false')[0];assert.ok(guarded);assert.equal(guarded.hidden,true);assert.equal(guarded.inert,true);
+    assert.equal(findElements(view.container,n=>n.tagName==='TEXTAREA')[0],textarea);
+  }finally{release();await view.cleanup();}
+});
+
+for(const event of ['popstate','pageshow']) test(`UI55 ${event} 전체 대상 재조회는 계속 유지한다`,async()=>{
+  let contexts=0;
+  const view=await render('apps/web/components/notebook-product-workspace.jsx','NotebookProductWorkspace',{
+    notebookId:'notebook-s42',getLocationSearch:()=>'?run_id=run-previous',getSession:async()=>s42Session(),getSelectedNotebook:async()=>({data:{title:'Notebook'}}),
+    getSelectedContext:async(ws,nb,options)=>{assert.equal(options.runId,'run-previous');contexts+=1;return {data:s42SelectedContext()};},createWorkspaceAdapter:()=>s42TargetAdapter(),
+  },'.ui55-full-target-');
+  try{
+    const restore=new MinimalEvent(event);if(event==='pageshow')restore.persisted=true;
+    await view.act(async()=>{view.dom.document.dispatchEvent(restore);await Promise.resolve();});assert.equal(contexts,2);
+  }finally{await view.cleanup();}
 });

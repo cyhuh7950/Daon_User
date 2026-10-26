@@ -99,7 +99,8 @@ export function AuthPane({ onLoginComplete } = {}) {
   const title = screen === "login" ? "로그인" : screen === "signup" ? "가입" : "비밀번호 재설정";
 
   return (
-    <section className="daon-auth-pane" aria-labelledby="daon-auth-title">
+    <section className={screen === "login" ? "daon-auth-pane daon-auth-pane-login" : "daon-auth-pane"} aria-labelledby="daon-auth-title">
+      {screen === "login" ? <p className="daon-auth-product">Daon2-User</p> : null}
       <div className="daon-auth-heading"><h2 id="daon-auth-title">{title}</h2><span title="가입 후 이메일 인증을 완료해야 로그인할 수 있습니다." aria-label="도움말">ⓘ</span></div>
 
       {screen === "login" && (
@@ -109,7 +110,9 @@ export function AuthPane({ onLoginComplete } = {}) {
             <label>비밀번호<input name="password" type="password" value={form.password} onInput={update("password")} autoComplete="current-password" /></label>
           </div>
           <div className="daon-auth-actions">
-            <button type="button" disabled={busy} onClick={() => run("login", { login_id: form.login_id, password: form.password }, "로그인했습니다.")}>로그인</button>
+            <button type="submit" disabled={busy} onClick={() => run("login", { login_id: form.login_id, password: form.password }, "로그인했습니다.")}>로그인</button>
+          </div>
+          <div className="daon-auth-login-links">
             <button className="daon-auth-link" type="button" disabled={busy} onClick={() => changeScreen("signup")}>가입하기</button>
             <button className="daon-auth-link" type="button" disabled={busy} onClick={() => changeScreen("signup", "verify")}>이메일 인증하기</button>
             <button className="daon-auth-link" type="button" disabled={busy} onClick={() => changeScreen("password-reset")}>비밀번호를 잊으셨나요?</button>

@@ -2421,25 +2421,25 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
               {imageCitationLoaded ? <span className="citation-image-region" aria-label="근거 영역" style={{ left: `${imageCitation.region.x / imageCitation.region.imageWidth * 100}%`, top: `${imageCitation.region.y / imageCitation.region.imageHeight * 100}%`, width: `${imageCitation.region.width / imageCitation.region.imageWidth * 100}%`, height: `${imageCitation.region.height / imageCitation.region.imageHeight * 100}%` }} /> : null}
             </div>}
           </section> : null}</div><form className="conversation-composer" onSubmit={askQuestion}>
-            <label><span className="sr-only">질문</span><textarea rows="2" disabled={questionPending} placeholder={viewState.selectedSource || selectedKnowledgeId ? "선택한 지식과 작업에 대해 질문하세요" : "작업 내용이나 궁금한 점을 질문하세요"} value={question} onChange={(event) => setQuestion(event.currentTarget.value)} /></label>
+            <label><span className="sr-only">질문</span><textarea rows="1" disabled={questionPending} placeholder="선택한 지식과 작업에 대해 질문하세요" value={question} onChange={(event) => setQuestion(event.currentTarget.value)} /></label>
             <div className="notebook-model-settings" aria-label="Notebook 모델 설정">
-              <label>Provider · 모델<select aria-label="Provider · 모델" disabled={questionPending||notebookModel.status!=="ready"}
+              <label><span className="sr-only">Provider · 모델</span><select aria-label="Provider · 모델" disabled={questionPending||notebookModel.status!=="ready"}
                 value={displayedSelection?JSON.stringify([displayedSelection.connection_id,displayedSelection.model_id]):""}
                 onChange={event=>{const row=notebookModel.view?.available_models.find(v=>JSON.stringify([v.connection_id,v.model_id])===event.target.value);
                   if(row)return saveNotebookModel({connection_id:row.connection_id,model_id:row.model_id,reasoning_effort:null});}}>
                 <option value="">모델을 직접 선택해 주세요</option>
-                {(notebookModel.view?.available_models??[]).map(row=><option key={JSON.stringify([row.connection_id,row.model_id])} value={JSON.stringify([row.connection_id,row.model_id])}>{row.display_name} · {row.provider_code} / {row.model_id}</option>)}
+                {(notebookModel.view?.available_models??[]).map(row=><option key={JSON.stringify([row.connection_id,row.model_id])} value={JSON.stringify([row.connection_id,row.model_id])}>{row.display_name} · {row.model_id}</option>)}
               </select></label>
               {(()=>{const selection=displayedSelection;const candidate=notebookModel.view?.available_models.find(r=>r.connection_id===selection?.connection_id&&r.model_id===selection?.model_id);
                 const supported=candidate?.reasoning.status==="supported";
                 if(candidate?.reasoning.status==="unsupported")return null;
-                return <label>추론 단계<select aria-label="추론 단계" value={selection?.reasoning_effort??""}
+                return <label><span className="sr-only">추론 단계</span><select aria-label="추론 단계" value={selection?.reasoning_effort??""}
                   disabled={questionPending||notebookModel.status!=="ready"||!supported}
                   onChange={event=>saveNotebookModel({...selection,reasoning_effort:event.target.value||null})}>
-                  <option value="">{supported?"미지정":candidate?.reasoning.status==="unsupported"?"현재 실행 경로 미지원":"추론 설정 정보 없음"}</option>
+                  <option value="">모델 기본</option>
                   {(candidate?.reasoning.values??[]).map(v=><option key={v.value} value={v.value}>{v.label}</option>)}
                 </select></label>;})()}
-              <small role="status">{notebookModel.status==="saving"?"모델 설정 저장 중":notebookModel.status==="loading"?"모델 설정 조회 중":notebookModel.status==="unsupported"?"모델 설정 조회를 지원하지 않는 연결입니다":notebookModel.status==="error"?"모델 설정을 확인하지 못했습니다. 재조회 후 다시 선택해 주세요.":modelReady?"모델 설정 저장됨":notebookModel.view?.selection?"저장한 모델을 사용할 수 없습니다. 다시 선택해 주세요.":workspaceDefault?"Workspace 기본값 · 실행할 때 현재 모델을 저장합니다.":"사용 가능한 모델을 직접 선택해 주세요."}</small>
+              <small className={notebookModel.status==="ready"&&(modelReady||workspaceDefault)?"sr-only":undefined} role="status">{notebookModel.status==="saving"?"모델 설정 저장 중":notebookModel.status==="loading"?"모델 설정 조회 중":notebookModel.status==="unsupported"?"모델 설정 조회를 지원하지 않는 연결입니다":notebookModel.status==="error"?"모델 설정을 확인하지 못했습니다. 재조회 후 다시 선택해 주세요.":modelReady?"모델 설정 저장됨":notebookModel.view?.selection?"저장한 모델을 사용할 수 없습니다. 다시 선택해 주세요.":workspaceDefault?"Workspace 기본값 · 실행할 때 현재 모델을 저장합니다.":"사용 가능한 모델을 직접 선택해 주세요."}</small>
               {notebookModel.status==="error"?<><button type="button" onClick={()=>loadNotebookModel()}>마지막 저장값 다시 조회</button>
                 {modelSaveRetry.current?<button type="button" onClick={()=>saveNotebookModel(notebookModel.draft,{retry:true})}>같은 저장 요청 재시도</button>:null}</>:null}
             </div>
