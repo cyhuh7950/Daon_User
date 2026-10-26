@@ -273,14 +273,14 @@ test("UI55 로그인 시안은 전용 카드·제품명·세로 입력·로그�
   try{
     const card=findElements(view.container,n=>n.tagName==='SECTION')[0];
     assert.ok(card.getAttribute('class').split(' ').includes('daon-auth-pane-login'));
-    assert.match(card.textContent,/Daon2-User/u);
+    assert.equal(card.textContent.includes('Daon2-User'),true);
     const inputs=findElements(card,n=>n.tagName==='INPUT');const props=n=>n[Object.keys(n).find(k=>k.startsWith('__reactProps'))];
     assert.deepEqual(inputs.map(n=>props(n).name),['login-id','password']);
     assert.equal(props(inputs[1]).type,'password');assert.equal(props(inputs[0]).autoComplete,'username');
     const links=findElements(card,n=>n.getAttribute('class')==='daon-auth-login-links')[0];assert.ok(links);
     assert.deepEqual(findElements(links,n=>n.tagName==='BUTTON').map(n=>n.textContent),['가입하기','이메일 인증하기','비밀번호를 잊으셨나요?']);
     await view.act(async()=>{buttonByText(view.container,'가입하기').dispatchEvent(new MinimalEvent('click'));});
-    assert.equal(card.getAttribute('class'),'daon-auth-pane');assert.doesNotMatch(card.textContent,/Daon2-User/u);
+    assert.equal(card.getAttribute('class'),'daon-auth-pane');assert.equal(card.textContent.includes('Daon2-User'),false);
   }finally{await view.cleanup();}
 });
 
