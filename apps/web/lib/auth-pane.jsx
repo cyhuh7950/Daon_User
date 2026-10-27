@@ -100,7 +100,7 @@ export function AuthPane({ onLoginComplete } = {}) {
 
   return (
     <section className={screen === "login" ? "daon-auth-pane daon-auth-pane-login" : "daon-auth-pane"} aria-labelledby="daon-auth-title">
-      {screen === "login" ? <p className="daon-auth-product">Daon2-User</p> : null}
+      {screen === "login" ? <p className="daon-auth-product">Daon-User</p> : null}
       <div className="daon-auth-heading"><h2 id="daon-auth-title">{title}</h2><span title="가입 후 이메일 인증을 완료해야 로그인할 수 있습니다." aria-label="도움말">ⓘ</span></div>
 
       {screen === "login" && (
