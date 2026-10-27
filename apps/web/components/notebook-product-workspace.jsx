@@ -42,6 +42,7 @@ export function NotebookProductWorkspace({
   const logoutPending = useRef(false);
   const requestEpoch = useRef(0);
   const protectedRoot = useRef(null);
+  const validatedView = useRef(null);
   const [sessionValidated, setSessionValidated] = useState(false);
   const [view, setView] = useState({ state: "loading", workspaceId: null, notebook: null, context: null, error: null });
 
@@ -58,6 +59,7 @@ export function NotebookProductWorkspace({
     const epoch = ++requestEpoch.current;
     const active = () => !signal?.aborted && requestEpoch.current === epoch;
     conceal();
+    validatedView.current = null;
     if (!SAFE_ID.test(notebookId || "")) {
       setView({ state: "error", workspaceId: null, context: null, error: "NOTEBOOK_NOT_FOUND" });
       reveal();
@@ -65,7 +67,8 @@ export function NotebookProductWorkspace({
     }
     setView((current) => ({ ...current, state: "loading", error: null }));
     try {
-      const selection = notificationSelection(getLocationSearch());
+      const search = getLocationSearch();
+      const selection = notificationSelection(search);
       const session = await getSession({ signal });
       if (!active()) return;
       if (session.password_change_required) {
@@ -128,6 +131,8 @@ export function NotebookProductWorkspace({
       const currentSession = await getSession({ signal });
       if (!active()) return;
       if (!sameSession(session, currentSession) || currentSession.password_change_required) throw new Error("NOTEBOOK_UNAVAILABLE");
+      if (active()) validatedView.current = { notebookId, search,
+        session: Object.fromEntries(SESSION_FIELDS.map(key => [key, session[key]])) };
       if (active()) setView({
         state: "ready", workspaceId: session.workspace_id, notebook: notebook.data, context: selected.data,
         error: null, notice, initialSourceVersionId:selection.sourceVersionId ?? null, initialStudioOutput,
@@ -148,6 +153,44 @@ export function NotebookProductWorkspace({
   }, [conceal, getSelectedContext, getSelectedNotebook, getSelectedJob, getLocationSearch, getTargetSources,
     getTargetOutputs, getTargetVersions, getSession, navigate, notebookId, reveal]);
 
+  // 일반 창 복귀는 현재 접근권한만 재검사한다. 기존 context/adapter/본문은
+  // hidden·inert 아래 유지하여 진행 중인 질문과 사용자 입력을 unmount하지 않는다.
+  const revalidateCurrent = useCallback(async (signal) => {
+    const prior = validatedView.current;
+    if (!prior || prior.notebookId !== notebookId) {
+      return load(signal);
+    }
+    const epoch = ++requestEpoch.current;
+    const active = () => !signal?.aborted && requestEpoch.current === epoch;
+    conceal();
+    try {
+      if (prior.search !== getLocationSearch()) return load(signal);
+      const session = await getSession({ signal });
+      if (!active()) return;
+      if (session.password_change_required) {
+        validatedView.current = null;
+        setView({ state: "error", workspaceId: null, notebook: null, context: null, error: "NOTEBOOK_UNAVAILABLE" });
+        navigate("/password-change");
+        return;
+      }
+      if (!sameSession(prior.session, session)) throw new Error("NOTEBOOK_UNAVAILABLE");
+      await getSelectedNotebook(session.workspace_id, notebookId, { signal });
+      if (!active()) return;
+      const currentSession = await getSession({ signal });
+      if (!active()) return;
+      if (!sameSession(prior.session, currentSession) || !sameSession(session, currentSession)
+          || currentSession.password_change_required) throw new Error("NOTEBOOK_UNAVAILABLE");
+      reveal();
+    } catch (error) {
+      if (!active()) return;
+      validatedView.current = null;
+      setView({ state: "error", workspaceId: null, notebook: null, context: null,
+        error: SAFE_ERRORS.has(error?.message) ? error.message : "NOTEBOOK_UNAVAILABLE" });
+      if (error?.message === "AUTHENTICATION_REQUIRED") { navigate("/"); return; }
+      reveal();
+    }
+  }, [conceal, getLocationSearch, getSelectedNotebook, getSession, load, navigate, notebookId, reveal]);
+
   useEffect(() => {
     const controller = new AbortController();
     void load(controller.signal);
@@ -156,31 +199,34 @@ export function NotebookProductWorkspace({
 
   useEffect(() => {
     let controller = null;
-    const revalidate = () => {
+    const request = (retain) => {
       conceal();
       controller?.abort();
       controller = new AbortController();
-      void load(controller.signal);
+      void (retain ? revalidateCurrent(controller.signal) : load(controller.signal));
     };
-    const onPageShow = (event) => { if (event.persisted) revalidate(); };
-    const onPageHide = () => { requestEpoch.current += 1; controller?.abort(); conceal(); };
-    const onVisibility = () => { if (document.visibilityState === "hidden") onPageHide(); else revalidate(); };
+    const concealCurrent = () => { requestEpoch.current += 1; controller?.abort(); conceal(); };
+    const onPageShow = (event) => { if (event.persisted) request(false); };
+    const onPageHide = () => { validatedView.current = null; concealCurrent(); };
+    const onFocus = () => request(true);
+    const onPopState = () => request(false);
+    const onVisibility = () => { if (document.visibilityState === "hidden") concealCurrent(); else request(true); };
     window.addEventListener("pageshow", onPageShow);
     window.addEventListener("pagehide", onPageHide);
-    window.addEventListener("popstate", revalidate);
-    window.addEventListener("blur", onPageHide);
-    window.addEventListener("focus", revalidate);
+    window.addEventListener("popstate", onPopState);
+    window.addEventListener("blur", concealCurrent);
+    window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
       controller?.abort();
       window.removeEventListener("pageshow", onPageShow);
       window.removeEventListener("pagehide", onPageHide);
-      window.removeEventListener("popstate", revalidate);
-      window.removeEventListener("blur", onPageHide);
-      window.removeEventListener("focus", revalidate);
+      window.removeEventListener("popstate", onPopState);
+      window.removeEventListener("blur", concealCurrent);
+      window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [conceal, load]);
+  }, [conceal, load, revalidateCurrent]);
 
   const adapter = useMemo(() => view.state === "ready"
     ? createNotebookContextWorkspaceAdapter(

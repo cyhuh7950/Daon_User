@@ -464,3 +464,21 @@ select { width: 100%; min-height: var(--daon-target-desktop-control); margin-top
 .notebook-model-settings label { display: flex; align-items: center; gap: 4px; }
 .notebook-model-settings select { max-width: 260px; min-height: 28px; font: inherit; color: inherit; background: var(--workspace-surface); border: 1px solid var(--workspace-border); border-radius: 6px; }
 .notebook-model-settings small { flex-basis: 100%; font-size: 10px; color: var(--workspace-muted); }
+
+
+.conversation-composer { display: flex; flex-wrap: wrap; align-items: center; min-height: 56px; box-sizing: border-box; gap: 6px; padding: 8px; border-radius: 16px; }
+.conversation-composer > label { flex: 1 1 200px; }
+.conversation-composer textarea { display: block; box-sizing: border-box; min-height: 36px; max-height: 180px; field-sizing: content; overflow: auto; resize: vertical; padding: 9px 4px; line-height: 18px; }
+.conversation-composer textarea::placeholder { color: var(--workspace-muted); opacity: 1; }
+.conversation-composer:focus-within { border-color: var(--workspace-violet); outline: 2px solid var(--workspace-violet-soft); outline-offset: 1px; }
+.conversation-composer .notebook-model-settings { flex: 0 1 auto; max-width: 100%; gap: 6px; }
+.conversation-composer .notebook-model-settings label { min-width: 0; max-width: 100%; }
+.conversation-composer .notebook-model-settings select { max-width: min(240px, 100%); min-width: 0; min-height: 34px; padding: 0 8px; border: 1px solid var(--workspace-border); border-radius: 9px; font-size: 11px; }
+.conversation-composer .notebook-model-settings select:focus-visible { outline: 2px solid var(--workspace-violet); outline-offset: 2px; }
+.conversation-composer .notebook-model-settings small:not(.sr-only) { flex-basis: 100%; }
+.conversation-composer .composer-submit { flex: 0 0 34px; align-self: center; width: 34px; height: 34px; border-radius: 50%; }
+
+.conversation-composer .composer-auth { flex: 0 0 100%; min-width: 0; overflow-wrap: anywhere; }
+.conversation-composer .composer-auth input { width: 100%; min-width: 0; box-sizing: border-box; }
+.conversation-composer .notebook-model-settings small:not(.sr-only) { min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 420px) { .conversation-composer .composer-auth label { grid-template-columns: minmax(0, 1fr); } }

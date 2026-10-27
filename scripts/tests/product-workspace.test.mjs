@@ -2743,3 +2743,19 @@ test("D 입력 정리는 trim 전 제출 원문과 다르게 바뀐 공백도 �
     assert.equal(textarea.value,"안녕 ");assert.match(workspace.container.textContent,/인사 답변/u);
   }finally{pending.resolve(s18Answer());await workspace.cleanup();}
 });
+
+
+test("UI55 compact composer는 설정 연결명·정확 모델과 모델 기본을 표시하고 줄바꿈 초안을 보존한다",async()=>{
+  const model=dModelView();model.available_models[0].display_name='운영 연결';model.available_models[0].provider_code='CUSTOM';
+  model.available_models[0].model_id='registered/auto';model.selection.model_id='registered/auto';model.effective_selection.model_id='registered/auto';
+  const saves=[];const workspace=await mountS17ReconnectWorkspace(s18Adapter({getModelSettings:async()=>model,saveModelSettings:async input=>{saves.push(input);}}));
+  try{
+    const form=s18Composer(workspace),textarea=findElements(form,n=>n.tagName==='TEXTAREA')[0];
+    assert.equal(textarea.getAttribute('rows'),'1');assert.equal(textarea.getAttribute('placeholder'),'선택한 지식과 작업에 대해 질문하세요');
+    const modelSelect=findElements(form,n=>n.getAttribute?.('aria-label')==='Provider · 모델')[0];
+    assert.equal(findElements(modelSelect,n=>n.tagName==='OPTION').at(-1).textContent,'운영 연결 · registered/auto');
+    const effort=findElements(form,n=>n.getAttribute?.('aria-label')==='추론 단계')[0];assert.equal(findElements(effort,n=>n.tagName==='OPTION')[0].textContent,'모델 기본');
+    await s18Type(workspace,'첫 줄\n두 번째 줄');assert.equal(s18Props(textarea).value,'첫 줄\n두 번째 줄');assert.deepEqual(saves,[]);
+    const status=findElements(form,n=>n.tagName==='SMALL'&&n.getAttribute?.('role')==='status')[0];assert.equal(status.getAttribute('class'),'sr-only');
+  }finally{await workspace.cleanup();}
+});
